@@ -17,9 +17,11 @@ export function AppleAppGlyph({ name }: AppleAppGlyphProps) {
   switch (name) {
     case "dashboard":
       return <svg {...common}><path d="M4.5 15.5a8 8 0 1 1 15 0" /><path d="m12 12 4.2-3.2" /><circle cx="12" cy="12" r="1.4" /><path d="M7 17.5h10" /></svg>;
+    case "ai_image_service":
     case "product_workflow":
     case "product_processing":
       return <svg {...common}><rect x="4" y="5" width="7" height="6" rx="1.5" /><rect x="13" y="5" width="7" height="6" rx="1.5" /><rect x="4" y="13" width="7" height="6" rx="1.5" /><path d="M16.5 13v6M13.5 16h6" /></svg>;
+    case "data_insights":
     case "sourcing_workflow":
     case "price_verification":
       return <svg {...common}><path d="M6 3.8h8l4 4V13" /><path d="M14 3.8V8h4" /><path d="M6 3.8v16.4h6" /><path d="M8.7 11h4.6M8.7 14h2.8" /><circle cx="16" cy="17" r="3" /><path d="m18.2 19.2 2 2" /></svg>;
@@ -47,6 +49,9 @@ export function AppleAppGlyph({ name }: AppleAppGlyphProps) {
       return <svg {...common}><path d="m12 3 1.2 4.1L17 8.5l-3.8 1.4L12 14l-1.2-4.1L7 8.5l3.8-1.4L12 3Z" /><path d="m18.5 13 .7 2.3 2.1.7-2.1.8-.7 2.2-.7-2.2-2.1-.8 2.1-.7.7-2.3Z" /><path d="m5.5 13 .6 1.8 1.7.7-1.7.6-.6 1.9-.6-1.9-1.7-.6 1.7-.7.6-1.8Z" /></svg>;
     case "personal_center":
       return <svg {...common}><circle cx="12" cy="8" r="3.2" /><path d="M5.5 20c.5-4 2.7-6 6.5-6s6 2 6.5 6" /></svg>;
+    case "overseas_listing":
+      return <svg {...common}><path d="M12 15.5V4.5" /><path d="m7.5 9 4.5-4.5L16.5 9" /><path d="M5 20h14" /></svg>;
+    case "system_settings":
     case "basic_settings":
       return <svg {...common}><circle cx="12" cy="12" r="6.8" /><circle cx="12" cy="12" r="2.8" /><path d="M12 2.5v2.7M12 18.8v2.7M2.5 12h2.7M18.8 12h2.7M5.3 5.3l1.9 1.9M16.8 16.8l1.9 1.9M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9" /></svg>;
     default:

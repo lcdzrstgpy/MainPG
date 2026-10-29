@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MainPG 团队看板</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app" id="app" data-view="loading">
+    <!-- 登录 -->
+    <section class="auth" id="authView">
+      <div class="auth-card">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span>MainPG 团队看板</span>
+        </div>
+        <h1>登录查看团队店铺数据</h1>
+        <p class="muted">用你平时登录工作台的账号即可，组长账号能看到组内成员的店铺。</p>
+        <form id="loginForm" autocomplete="on">
+          <label class="field">
+            <span>账号</span>
+            <input id="loginUsername" type="text" autocomplete="username" placeholder="用户名或邮箱" required />
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <input id="loginPassword" type="password" autocomplete="current-password" placeholder="密码" required />
+          </label>
+          <button class="btn primary block" type="submit" id="loginBtn">登录</button>
+          <p class="error" id="loginError" role="alert"></p>
+        </form>
+      </div>
+    </section>
+
+    <!-- 看板 -->
+    <section class="dashboard" id="dashboardView">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span>MainPG 团队看板</span>
+        </div>
+        <nav class="nav" id="nav">
+          <button class="nav-item active" data-page="overview">概览</button>
+          <button class="nav-item" data-page="metrics">店铺指标</button>
+          <button class="nav-item" data-page="orders">订单明细</button>
+          <button class="nav-item" data-page="finance">财务流水</button>
+          <button class="nav-item" data-page="traffic">流量与销量</button>
+          <button class="nav-item" data-page="settlement">结算数据</button>
+          <button class="nav-item" data-page="stores">店铺列表</button>
+        </nav>
+        <div class="sidebar-foot">
+          <span class="who" id="whoSide"></span>
+          <button class="chip ghost" id="logoutBtn">退出</button>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <div class="topbar-right">
+            <div class="range" id="rangeGroup">
+              <button data-range="week" class="chip">本周</button>
+              <button data-range="7d" class="chip active">近 7 天</button>
+              <button data-range="30d" class="chip">近 30 天</button>
+              <button data-range="all" class="chip">全部</button>
+            </div>
+            <div class="filter-wrap">
+              <button class="chip ghost" id="storeFilterBtn" title="选择要统计的店铺">店铺 <span id="storeFilterCount">0</span></button>
+              <div class="store-filter" id="storeFilterPop" hidden></div>
+            </div>
+            <span class="who" id="who"></span>
+            <button class="chip ghost" id="refreshBtn" title="刷新">刷新</button>
+          </div>
+        </header>
+
+        <main class="content">
+          <!-- 概览 -->
+          <section class="page" data-page="overview" id="pageOverview">
+            <div class="hero" id="hero">
+              <div class="hero-main">
+                <span class="eyebrow" id="scopeLabel">数据范围</span>
+                <div class="hero-number">
+                  <span class="currency">¥</span><span id="totalGmv">0</span>
+                </div>
+                <p class="muted" id="rangeLabel">—</p>
+              </div>
+              <div class="hero-side">
+                <div class="pill" id="storeCountPill">0 家店铺</div>
+                <div class="pill" id="accountCountPill">0 个账号</div>
+                <div class="pill warn" id="flagPill" hidden>0 条标记</div>
+              </div>
+            </div>
+
+            <div class="kpis" id="kpis">
+              <article class="kpi"><span>订单数</span><strong id="kpiOrders">0</strong><small id="kpiOrdersSub">—</small></article>
+              <article class="kpi"><span>销售件数</span><strong id="kpiItems">0</strong><small id="kpiItemsSub">—</small></article>
+              <article class="kpi"><span>结算回款</span><strong id="kpiPayback">0</strong><small id="kpiPaybackSub">—</small></article>
+              <article class="kpi"><span>费用支出</span><strong id="kpiExpense">0</strong><small id="kpiExpenseSub">—</small></article>
+              <article class="kpi"><span>客单价</span><strong id="kpiAov">0</strong><small>GMV / 订单数</small></article>
+            </div>
+
+            <article class="panel trend-panel">
+              <div class="panel-head">
+                <h2>经营趋势</h2>
+                <div class="head-tools">
+                  <div class="seg" id="trendScale">
+                    <button data-scale="day" type="button">按日</button>
+                    <button data-scale="month" type="button">按月</button>
+                  </div>
+                  <div class="seg" id="trendMode">
+                    <button data-mode="store" class="active" type="button">分店铺</button>
+                    <button data-mode="total" type="button">总计</button>
+                  </div>
+                </div>
+              </div>
+              <div class="chart-block">
+                <div class="chart-title">
+                  <strong>订单数量</strong>
+                  <span class="muted" id="trendWindow">—</span>
+                </div>
+                <div class="chart big" id="trendOrders"></div>
+              </div>
+              <div class="chart-block">
+                <div class="chart-title">
+                  <strong>GMV 金额</strong>
+                  <span class="muted">滚轮缩放 · 拖动平移 · 双击还原</span>
+                </div>
+                <div class="chart big" id="trendAmount"></div>
+              </div>
+              <div class="legend" id="trendLegend"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>店铺排行</h2>
+                <span class="muted">按 GMV</span>
+              </div>
+              <div class="ranks" id="rankList"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>店铺明细</h2>
+                <span class="muted" id="tableHint"></span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>店铺</th>
+                      <th>店铺码</th>
+                      <th>归属员工</th>
+                      <th class="num">GMV</th>
+                      <th class="num">订单</th>
+                      <th class="num">回款</th>
+                      <th class="num">费用</th>
+                      <th>最后上报</th>
+                      <th class="num">标记</th>
+                    </tr>
+                  </thead>
+                  <tbody id="storeRows"></tbody>
+                </table>
+              </div>
+              <div class="empty" id="emptyState" hidden>
+                <strong>还没有可看的店铺数据</strong>
+                <p>确认这几件事后再刷新：员工已登录工作台 → 店铺已同步为正式店铺码 → 采集过数据 → 在「数据采集」里提交本周汇总。</p>
+              </div>
+            </article>
+          </section>
+
+          <!-- 店铺指标 -->
+          <section class="page" data-page="metrics" id="pageMetrics" hidden>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>店铺指标</h2>
+                <span class="muted" id="metricsHint">—</span>
+              </div>
+              <div class="sum-grid" id="metricSums"></div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>店铺</th>
+                      <th>店铺码</th>
+                      <th>归属员工</th>
+                      <th class="num">待发货</th>
+                      <th class="num">在售商品</th>
+                      <th class="num">近 30 日销量</th>
+                      <th class="num">退货退款待处理</th>
+                      <th class="num">取消订单待处理</th>
+                      <th>采集时间</th>
+                    </tr>
+                  </thead>
+                  <tbody id="metricRows"></tbody>
+                </table>
+              </div>
+              <div class="empty" id="metricsEmpty" hidden>
+                <strong>还没有店铺指标</strong>
+                <p>员工在工作台采集店铺首页后，提交汇总时会把待发货、在售商品、近 30 日销量等指标一起上报。</p>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h2>采集批次</h2>
+                <span class="muted" id="batchHint">—</span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>批次</th>
+                      <th>模式</th>
+                      <th class="num">父订单</th>
+                      <th class="num">子订单</th>
+                      <th class="num">件数</th>
+                      <th>入库时间</th>
+                    </tr>
+                  </thead>
+                  <tbody id="batchRows"></tbody>
+                </table>
+              </div>
+              <div class="empty" id="batchEmpty" hidden>
+                <strong>还没有采集批次</strong>
+                <p>员工提交汇总时会把最近 50 次采集入库记录一起上报。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- 订单明细 -->
+          <section class="page" data-page="orders" id="pageOrders" hidden>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>订单明细</h2>
+                <span class="muted" id="ordersHint">—</span>
+              </div>
+              <div class="filters">
+                <label class="field inline">
+                  <span>订单状态</span>
+                  <select id="orderStatus">
+                    <option value="">全部</option>
+                    <option value="待发货">待发货</option>
+                    <option value="已发货">已发货</option>
+                    <option value="已签收">已签收</option>
+                    <option value="已取消">已取消</option>
+                  </select>
+                </label>
+                <label class="field inline grow">
+                  <span>搜索</span>
+                  <input id="orderKeyword" type="text" placeholder="PO 单号 / 子订单 / SKU / 商品名" />
+                </label>
+                <button class="btn primary" id="orderQueryBtn" type="button">查询</button>
+                <button class="chip ghost" id="orderResetBtn" type="button">重置</button>
+              </div>
+              <div class="sum-grid" id="orderSums"></div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>店铺</th>
+                      <th>PO 单号</th>
+                      <th>站点</th>
+                      <th>订单状态</th>
+                      <th>订单时间</th>
+                      <th class="num">SKU / 件数</th>
+                      <th class="num">GMV</th>
+                      <th class="num">销售回款</th>
+                      <th class="num">销售冲回</th>
+                      <th class="num">采购成本</th>
+                      <th class="num">头程</th>
+                      <th class="num">尾程</th>
+                      <th class="num">总利润</th>
+                    </tr>
+                  </thead>
+                  <tbody id="orderRows"></tbody>
+                </table>
+              </div>
+              <div class="pager" id="orderPager" hidden></div>
+              <div class="empty" id="ordersEmpty" hidden>
+                <strong>还没有订单明细</strong>
+                <p>员工在「数据采集」提交汇总后，这里会显示订单明细。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- 财务流水 -->
+          <section class="page" data-page="finance" id="pageFinance" hidden>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>财务流水</h2>
+                <span class="muted" id="financeHint">—</span>
+              </div>
+              <div class="sum-grid" id="financeSums"></div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>店铺</th>
+                      <th>类型</th>
+                      <th>分类</th>
+                      <th class="num">金额</th>
+                      <th>币种</th>
+                      <th>备注</th>
+                    </tr>
+                  </thead>
+                  <tbody id="financeRows"></tbody>
+                </table>
+              </div>
+              <div class="pager" id="financePager" hidden></div>
+              <div class="empty" id="financeEmpty" hidden>
+                <strong>还没有财务流水</strong>
+                <p>提交汇总后，对账中心的流水会同步到这里。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- 流量与销量 -->
+          <section class="page" data-page="traffic" id="pageTraffic" hidden>
+            <article class="panel">
+              <div class="panel-head">
+                <h2>按小时流量</h2>
+                <div class="head-tools">
+                  <div class="seg" id="fluxMode">
+                    <button data-flux-mode="all" type="button" class="active">汇总</button>
+                    <button data-flux-mode="store" type="button">分店铺</button>
+                  </div>
+                  <select id="fluxStore" class="chip ghost" hidden></select>
+                </div>
+              </div>
+              <div class="chart-block">
+                <div class="chart-title">
+                  <strong>流量趋势（按小时）</strong>
+                  <span class="muted" id="fluxTrendHint">—</span>
+                </div>
+                <div class="chart" id="fluxTrendChart"></div>
+              </div>
+              <div class="chart-block">
+                <div class="chart-title">
+                  <strong>渠道构成（按小时）</strong>
+                  <span class="muted" id="fluxChannelHint">—</span>
+                </div>
+                <div class="chart" id="fluxChannelChart"></div>
+              </div>
+              <div class="legend" id="fluxLegend"></div>
+            </article>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h2>流量快照</h2>
+                <span class="muted" id="trafficHint">—</span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>统计日期</th>
+                      <th>店铺</th>
+                      <th>口径</th>
+                      <th class="num">曝光</th>
+                      <th class="num">点击</th>
+                      <th class="num">访客</th>
+                      <th class="num">点击率</th>
+                      <th class="num">成交单</th>
+                    </tr>
+                  </thead>
+                  <tbody id="trafficRows"></tbody>
+                </table>
+              </div>
+              <div class="pager" id="trafficPager" hidden></div>
+              <div class="empty" id="trafficEmpty" hidden>
+                <strong>还没有流量数据</strong>
+                <p>提交汇总后，商品流量与销量会同步到这里。</p>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">
+                <h2>销量快照</h2>
+                <span class="muted" id="salesHint">—</span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>统计日期</th>
+                      <th>店铺</th>
+                      <th>区域</th>
+                      <th>指标</th>
+                    </tr>
+                  </thead>
+                  <tbody id="salesRows"></tbody>
+                </table>
+              </div>
+              <div class="pager" id="salesPager" hidden></div>
+              <div class="empty" id="salesEmpty" hidden>
+                <strong>还没有销量数据</strong>
+                <p>提交汇总后，销量分析结果会同步到这里。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- 结算 -->
+          <section class="page" data-page="settlement" id="pageSettlement" hidden>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>结算数据</h2>
+                <span class="muted" id="settlementHint">—</span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>店铺</th>
+                      <th>PO 单号</th>
+                      <th>状态</th>
+                      <th class="num">销售回款</th>
+                      <th class="num">销售冲回</th>
+                      <th class="num">运费回款</th>
+                      <th class="num">运费冲回</th>
+                      <th class="num">申报价</th>
+                      <th class="num">件数</th>
+                      <th>抓取时间</th>
+                    </tr>
+                  </thead>
+                  <tbody id="settlementRows"></tbody>
+                </table>
+              </div>
+              <div class="pager" id="settlementPager" hidden></div>
+              <div class="empty" id="settlementEmpty" hidden>
+                <strong>还没有结算数据</strong>
+                <p>提交汇总后，结算数据会同步到这里。</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- 店铺列表 -->
+          <section class="page" data-page="stores" id="pageStores" hidden>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>店铺列表</h2>
+                <span class="muted" id="storesHint">—</span>
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>店铺</th>
+                      <th>店铺码</th>
+                      <th>归属员工</th>
+                      <th>平台</th>
+                      <th>最后上报</th>
+                      <th class="num">标记</th>
+                      <th class="num">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="allStoreRows"></tbody>
+                </table>
+              </div>
+              <div class="empty" id="storesEmpty" hidden>
+                <strong>还没有登记店铺</strong>
+                <p>员工在工作台绑定店铺并同步正式店铺码后会出现。</p>
+              </div>
+            </div>
+          </section>
+
+        </main>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

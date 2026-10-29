@@ -8,10 +8,27 @@ const themeStyles = readFileSync(new URL("../../shared/styles/themes.css", impor
 
 test("sidebar distinguishes group expansion from opening a concrete page", () => {
   assert.match(source, /onToggleGroup:/);
+  assert.match(source, /onToggleSubgroup:/);
   assert.match(source, /onOpenModule:/);
   assert.match(source, /isWorkspaceNavigationGroup\(module\)/);
   assert.match(source, /onToggleGroup\(module\)/);
-  assert.match(source, /onOpenModule\(child\.id\)/);
+  assert.match(source, /onOpenModule\(item\.id\)/);
+});
+
+test("collapsed flyout closes after selecting a page or clicking outside", () => {
+  assert.match(source, /onCloseGroups:/);
+  assert.match(source, /flyout: boolean/);
+  assert.match(source, /document\.addEventListener\("pointerdown"/);
+  assert.match(source, /if \(flyout\) onCloseGroups\(\)/);
+});
+
+test("sidebar renders a third navigation level for nested subgroups", () => {
+  assert.match(source, /isWorkspaceNavigationGroup\(child\)/);
+  assert.match(source, /SubgroupSection/);
+  assert.match(source, /expandedSubgroupId === child\.id/);
+  assert.match(source, /sidebar-subgroup-items/);
+  assert.match(globalStyles, /\.sidebar-subgroup-toggle/);
+  assert.match(globalStyles, /\.sidebar-subitem\.is-nested/);
 });
 
 test("sidebar exposes the current accordion state to assistive technology", () => {

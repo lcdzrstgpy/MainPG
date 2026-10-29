@@ -112,7 +112,10 @@ from .domain.prompts import (
     ARK_GRID_IMAGE_PROMPT_B,
     ARK_GRID_IMAGE_PROMPT_C,
     ARK_GRID_IMAGE_PROMPT_D,
+    GRID_FINAL_GATE,
+    GRID_PROMPT_PRIORITY,
     GRID_RUNTIME_CONTRACT,
+    GRID_TEMPLATE_GATES,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
     TWO_IMAGE_RUNTIME_CONTRACT,
     format_prompt,
@@ -966,30 +969,92 @@ def _preset_image_template(preset_id: str = "") -> str:
     return _PRESET_IMAGE_TEMPLATES.get(str(preset_id or "").strip().lower(), "")
 
 
-# ── 场景 / 背景族（批次级）─────────────────────────────────────────────────
-# 「四格只像换了背景」的根因：模板只约束机位，不约束「这是哪个地方」。
-# 这里给每格指派一个不同的背景族，并规定主体的画面位置，让四格是「四个地点」
-# 而不是「同一套景换个角度」。档位由处理设置的「场景风格」决定：
-#   minimal 极简 / lifestyle 生活 / ornate 花哨 / smart 按批次稳定轮换。
-_SCENE_FAMILIES: dict[str, tuple[str, ...]] = {
-    "minimal": (
-        "warm neutral gradient backdrop with a soft vignette",
-        "pale oak tabletop with one soft grounded shadow",
-        "light grey stone plinth in a pale studio",
-        "soft beige paper sweep with a long clean shadow",
+# ── 场景 / 背景（批次级）───────────────────────────────────────────────────
+# 模板负责「这是哪一种摄影类型」，场景风格只负责「这套画面有多花」。
+# 原因：四套模板如果共用同一组背景，用户切换模板几乎看不出差别；反过来，
+# 模板类型必须自带场地（影棚 / 生活台面 / 平铺台面 / 环境远景），差异才一眼可见。
+_TEMPLATE_SCENES: dict[str, tuple[tuple[str, str], ...]] = {
+    "a": (  # 影棚无缝：只有背景纸与基座，没有房间、没有地平线
+        (
+            "warm-grey seamless paper sweep",
+            "a low white riser, a folded linen square, a ceramic dish, a dried stem",
+        ),
+        (
+            "pale stone plinth on a high-key sweep",
+            "a marble slab, a folded cloth, a stone block, a green sprig",
+        ),
+        (
+            "charcoal seamless sweep with one hard shadow",
+            "an acrylic cube, a matte cube, a ceramic bowl, a folded grey cloth",
+        ),
+        (
+            "beige paper roll curving without a horizon",
+            "a kraft box, a rolled linen, a ceramic cup, a dried branch",
+        ),
     ),
-    "lifestyle": (
-        "warm wooden table with wrinkled linen and a half-finished coffee",
-        "sunlit wall with a hard window-frame shadow across the frame",
-        "marble bathroom counter with a folded towel and water droplets",
-        "entryway console with keys, a small plant and a paper bag",
+    "b": (  # 人景叙事：真实生活台面，背景要有房间纵深
+        (
+            "warm wooden table with wrinkled linen",
+            "a coffee mug, an open notebook, folded glasses, a small plant, a linen napkin",
+        ),
+        (
+            "marble bathroom counter",
+            "a folded towel, a soap dish, a bamboo tray, a glass jar, a rolled towel",
+        ),
+        (
+            "kitchen island with a wooden board",
+            "a ceramic bowl, a glass jar, a folded cloth, fresh herbs, a mug",
+        ),
+        (
+            "bedside table under a warm lamp",
+            "a stacked book, folded glasses, a small vase, a wooden tray, a candle",
+        ),
     ),
-    "ornate": (
-        "dried flowers and scattered petals around a linen runner",
-        "festive gift setting with ribbon, boxes and warm bokeh lights",
-        "dark velvet drapery with deep folds and a dramatic side light",
-        "chrome pedestal with mirrored acrylic blocks and coloured reflections",
+    "c": (  # 静物平铺：只有平面，不要墙、不要竖立物件
+        (
+            "pale oak tabletop seen from directly above",
+            "a kraft paper box, a folded linen cloth, a ceramic cup, a dried branch",
+        ),
+        (
+            "light grey stone slab",
+            "a folded grey cloth, a marble coaster, a sculptural block, a green sprig",
+        ),
+        (
+            "soft beige paper surface",
+            "a paper box, a ribbon roll, a ceramic dish, a dried flower",
+        ),
+        (
+            "deep grey felt surface",
+            "a folded linen runner, a wooden block, a ceramic bowl, a dried stem",
+        ),
     ),
+    "d": (  # 环境远景：整间房或户外，商品只占小比例
+        (
+            "sunlit living room with a sofa and rug",
+            "cushions, a throw, a side table, a floor lamp, a potted plant",
+        ),
+        (
+            "entryway with a console and a mirror",
+            "a woven basket, a potted plant, a paper bag, a ceramic tray, a folded scarf",
+        ),
+        (
+            "balcony with a rattan chair",
+            "potted plants, a watering can, a side table, a folded throw, a lantern",
+        ),
+        (
+            "bedroom corner beside a window",
+            "a bed corner, a rug, a nightstand, a table lamp, a potted plant",
+        ),
+    ),
+}
+_SCENE_TEMPLATE_ALIASES = {
+    "a": "a",
+    "b": "b",
+    "c": "c",
+    "d": "d",
+    "_b": "b",
+    "_c": "c",
+    "_d": "d",
 }
 _SCENE_STYLE_ALIASES = {
     "smart": "smart",
@@ -1002,43 +1067,69 @@ _SCENE_STYLE_ALIASES = {
     "fancy": "ornate",
     "festive": "ornate",
 }
-_SCENE_PLACEMENTS = (
-    "Panel 1: centred hero, product upright and fully readable.",
-    "Panel 2: product on the LEFT third, its shadow falling into the empty right side.",
-    "Panel 3: product in the LOWER-RIGHT third, tight crop with a softly blurred foreground edge.",
-    "Panel 4: centred orthographic view with generous clear space around the product.",
-)
+_SCENE_STYLE_OVERLAY = {
+    "minimal": "Styling: matte, low-saturation props, clean empty space, nothing decorative.",
+    "lifestyle": "Styling: warm lived-in props with everyday wear and one personal object.",
+    "ornate": "Styling: add one decorative flourish per panel (dried flowers, ribbon, brass tray or candle) and a richer colour story.",
+}
+_TEMPLATE_PLACEMENTS = {
+    "a": (
+        "Panel 2: product centre on the RIGHT golden line at x=61.8%, y=46%, filling 55%-62% of the panel.",
+        "Panel 3: product centre on the LOWER-LEFT golden intersection at x=38.2%, y=61.8%, filling 70%-80%.",
+        "Panel 4: orthographic at x=50%, y=57%, clear space 12%-18%.",
+    ),
+    "b": (
+        "Panel 2: product centre on the LEFT golden line at x=38.2%, y=52%, filling 50%-58%, with room depth behind it.",
+        "Panel 3: product centre on the UPPER-RIGHT golden intersection at x=61.8%, y=38.2%, filling 65%-75%.",
+        "Panel 4: orthographic at x=50%, y=55%, clear space 12%-18%.",
+    ),
+    "c": (
+        "Panel 2: overhead, product centre on the RIGHT golden line x=61.8%, y=48%, laid flat with props in even rows.",
+        "Panel 3: overhead, product centre on the LOWER-LEFT golden intersection x=38.2%, y=61.8%, tight macro on material.",
+        "Panel 4: overhead orthographic at x=50%, y=54%, clear space 12%-18%.",
+    ),
+    "d": (
+        "Panel 2: product small at 18%-28% fill, centre on the LEFT golden line x=38.2%, y=56%, whole room visible.",
+        "Panel 3: product small at 18%-28% fill, centre on the RIGHT golden intersection x=61.8%, y=44%, different space and time of day.",
+        "Panel 4: orthographic at x=50%, y=55%, clear space 12%-18%.",
+    ),
+}
 
 
-def _scene_family_plan(scene_style: str, seed: int, *, allow_people: bool = False) -> str:
-    """按批次生成四格背景族与主体位置，返回一段短提示块。
+def _scene_family_plan(
+    scene_style: str, seed: int, *, template: str = "a", allow_people: bool = False
+) -> str:
+    """按「模板 + 场景风格」生成本批次的地点、配饰物与主体位置。
 
-    只描述「主体之外」的画面：背景是什么地方、主体落在画面哪个位置、背景要更安静。
-    刻意保持短：长背景清单会和运行时契约抢注意力，模型反而只记住最后一两句。
+    模板决定场地类型（影棚 / 生活台面 / 平铺台面 / 环境远景），场景风格只调浓淡，
+    所以用户切换模板时能立刻看出这是另一种摄影，而不是同一套景换个角度。
     """
 
+    key = _SCENE_TEMPLATE_ALIASES.get(str(template or "").strip().lower(), "a")
     style = _SCENE_STYLE_ALIASES.get(str(scene_style or "").strip().lower(), "smart")
     if style == "smart":
         style = ("minimal", "lifestyle", "ornate")[seed % 3]
-    families = _SCENE_FAMILIES[style]
-    offset = seed % len(families)
-    # Panel 1 固定纯白（平台主图合规），只给 2-4 格分配三个不同背景族。
-    chosen = [families[(offset + index) % len(families)] for index in range(3)]
-    people_rule = "" if allow_people else " No people, hands or fingers in any panel."
-    real_set_rule = (
-        ""
-        if style == "minimal"
-        else " This batch is a real-set shoot: ignore any 'seamless studio / no room / no horizon / paper sweep' wording in the style section above - the backgrounds are exactly the four places listed here."
-    )
+    pool = _TEMPLATE_SCENES[key]
+    offset = seed % len(pool)
+    # Panel 1 固定纯白（平台主图合规），只给 2-4 格分配三个不同地点。
+    chosen = [pool[(offset + index) % len(pool)] for index in range(3)]
+    people_rule = "" if allow_people else " No people, hands or fingers."
     lines = [
-        "SCENE PLAN (this batch, non-overridable):",
-        "- Panel 1 background: pure white seamless studio sweep (fixed, no props).",
-        *(f"- Panel {index + 2} background: {family}." for index, family in enumerate(chosen)),
-        "- Three different places: never reuse one backdrop for two of Panels 2-4, and never just swap props on the same set.",
-        *(f"- {placement}" for placement in _SCENE_PLACEMENTS),
-        "- Keep every background quieter than the product: lower saturation, no text, no logos, no brand marks; props never cover or crop the product."
-        + people_rule
-        + real_set_rule,
+        "SCENE PLAN (non-overridable; outranks every prop count written above):",
+        "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product (riser block, folded linen, ceramic dish, dried stem).",
+        *(
+            f"- Panel {index + 2}: {place}. At least four props go around the product - {props} - behind or beside it, never covering it."
+            for index, (place, props) in enumerate(chosen)
+        ),
+        "- Every panel shows at least four separate props; zero, one or two is a failure, and no prop set repeats across panels.",
+        "- Panels 2-4 are three different places: never two crops of one set and never the same room twice.",
+        "- Never copy a backdrop, surface, prop arrangement or camera position from the references - they define the product only; build every set from this plan.",
+        "- Decor: one small kraft tag or paper sticker per panel 2-4, one short English word (NEW, HANDMADE, SAMPLE), never on the product, no brand or claim. Panel 1 has no text.",
+        "- Golden ratio: Panels 2-3 sit on the 38% or 62% lines, never the centre lines; only Panel 1 and Panel 4 may be centred.",
+        *(f"- {placement}" for placement in _TEMPLATE_PLACEMENTS[key]),
+        f"- {_SCENE_STYLE_OVERLAY[style]}",
+        "- Backgrounds stay quieter than the product: low saturation, nothing printed on the backdrop, no logos; props never cover or crop the product."
+        + people_rule,
     ]
     return "\n".join(lines)
 
@@ -10676,11 +10767,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     hashlib.sha256(f"{task_id}:{draft_id}:scene".encode("utf-8")).hexdigest()[:8], 16
                 )
                 scene_block = _scene_family_plan(
-                    scene_style, scene_seed, allow_people=allows_people
+                    scene_style,
+                    scene_seed,
+                    template=_template_suffix,
+                    allow_people=allows_people,
                 )
                 grid_prompt = append_subject_analysis(
-                    f"{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
+                    f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
                     vision_identity,
+                ) + "\n\n" + GRID_FINAL_GATE.format(
+                    template_check=GRID_TEMPLATE_GATES.get(
+                        _template_suffix, GRID_TEMPLATE_GATES[""]
+                    )
                 )
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.

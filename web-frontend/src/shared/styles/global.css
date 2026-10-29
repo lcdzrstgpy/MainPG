@@ -775,9 +775,10 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
     top: -6px;
     left: calc(100% + 12px);
     z-index: 60;
-    width: 178px;
+    width: 200px;
     grid-template-rows: 1fr;
-    max-height: 320px;
+    /* 三级菜单展开后会更高：只留视口兜底，内容本身靠贴边夹取，不再按 320px 截断。 */
+    max-height: min(560px, calc(100vh - 24px));
     margin: 0;
     padding: 6px;
     overflow: hidden auto;
@@ -815,6 +816,28 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
     padding: 9px 10px 9px 34px;
     white-space: nowrap;
   }
+
+  /* 浮层里三级菜单再缩一级缩进，200px 宽也放得下长标签。 */
+  .sidebar-card.is-collapsed .sidebar-subgroup-items {
+    margin-left: 8px;
+    padding-left: 6px;
+  }
+
+  .sidebar-card.is-collapsed .sidebar-subitem.is-nested {
+    padding-left: 40px;
+  }
+}
+
+/* 浮层/侧栏较窄时标签统一省略，避免图标和箭头被挤出可视区。 */
+.sidebar-subitem > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-subitem > .sidebar-module-badge,
+.sidebar-subitem > .sidebar-subgroup-caret {
+  flex: 0 0 auto;
 }
 
 @media (max-width: 800px) {
@@ -864,12 +887,69 @@ html[data-topbar-collapse="on"] .avatar-preview-layer {
   to { opacity: 1; }
 }
 
+/* ---- 三级导航：一级浮层里的二级分组标题与缩进子项 ---- */
+.sidebar-subgroup {
+  display: grid;
+  gap: 3px;
+}
+
+.sidebar-subgroup-toggle {
+  padding-left: 10px;
+}
+
+/* 父分组只做文字着色：真正的「选中」胶囊留给滑块和三级叶子项，
+   否则会出现两条并排高亮，看起来像同时选中了两个菜单。 */
+.sidebar-subgroup-toggle.is-active-parent {
+  color: var(--theme-primary, #0877d3);
+  background: transparent;
+}
+
+.sidebar-subgroup-caret {
+  width: 13px;
+  margin-left: auto;
+  color: #91a4b6;
+  font-size: .7rem;
+  transform: rotate(-90deg);
+  transition: transform .22s cubic-bezier(.22, .8, .32, 1), color .18s ease;
+}
+
+.sidebar-subgroup-caret.is-expanded {
+  margin-left: auto;
+  color: currentColor;
+  transform: rotate(0);
+}
+
+.sidebar-subgroup-items {
+  display: grid;
+  gap: 3px;
+  margin-left: 16px;
+  padding-left: 10px;
+  border-left: 1px solid var(--theme-card-border, #e5edf4);
+}
+
+.sidebar-subgroup.is-expanded .sidebar-subgroup-items {
+  animation: sidebar-panel-reveal .2s ease both;
+}
+
+.sidebar-subitem.is-nested {
+  padding-left: 10px;
+  font-size: .8rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sidebar-submenu.is-panel-group.is-expanded .sidebar-subitem {
     animation: none;
   }
 
   .sidebar-submenu.is-panel-group .sidebar-subitem > span:first-child {
+    transition: none;
+  }
+
+  .sidebar-subgroup.is-expanded .sidebar-subgroup-items {
+    animation: none;
+  }
+
+  .sidebar-subgroup-caret {
     transition: none;
   }
 }

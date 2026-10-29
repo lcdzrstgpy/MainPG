@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --ink: #1b2430;
+        --ink-strong: #111a24;
+        --text: #1f2937;
+        --muted: #6b7280;
+        --dim: #7c8798;
+        --border: #e8edf3;
+        --border-strong: #d6dde6;
+        --surface: #ffffff;
+        --canvas: #f6f7f9;
+        --positive: #0f9d6e;
+        --warning: #d97706;
+      }
+      * { box-sizing: border-box; }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 12px;
+        background: var(--canvas);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font-size: 12px;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        box-shadow: 0 10px 28px rgba(17, 24, 39, .08);
+        overflow: hidden;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 14px 13px;
+        border-bottom: 1px solid var(--border);
+      }
+      .mark {
+        display: grid;
+        place-items: center;
+        flex: 0 0 34px;
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: var(--ink);
+      }
+      .mark img { width: 24px; height: 24px; object-fit: contain; display: block; }
+      .brand { min-width: 0; display: grid; gap: 2px; }
+      .brand strong {
+        font-size: 13.5px;
+        font-weight: 700;
+        letter-spacing: .02em;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+      .brand small { font-size: 10.5px; color: var(--dim); letter-spacing: .01em; }
+      .icon-btn {
+        margin-left: auto;
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #f7f8fa;
+        color: #3a4453;
+        cursor: pointer;
+        transition: border-color .16s ease, color .16s ease, background .16s ease;
+      }
+      .icon-btn:hover { border-color: var(--ink); color: var(--ink); background: #f2f4f7; }
+      .icon-btn svg { width: 14px; height: 14px; }
+
+      .status {
+        margin: 12px 14px 0;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fafbfc;
+      }
+      .status-head { display: flex; align-items: center; gap: 7px; }
+      .dot {
+        flex: 0 0 7px;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--warning);
+        box-shadow: 0 0 0 3px rgba(217, 119, 6, .12);
+      }
+      #company { font-size: 12px; font-weight: 600; color: var(--ink); }
+      #company[data-connected="true"] ~ .ver { color: var(--dim); }
+      .status[data-connected="true"] .dot {
+        background: var(--positive);
+        box-shadow: 0 0 0 3px rgba(15, 157, 110, .12);
+      }
+      .status[data-connected="true"] #company { color: var(--positive); }
+      .ver { margin-left: auto; font-size: 10.5px; color: var(--dim); }
+      #status { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); word-break: break-all; }
+
+      .field { display: block; padding: 14px 14px 0; }
+      .field > span { font-size: 11px; color: var(--muted); }
+      .input-row { display: flex; gap: 8px; margin-top: 6px; }
+      input[type="text"], input:not([type]) {
+        flex: 1;
+        min-width: 0;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 9px;
+        background: var(--surface);
+        color: var(--ink);
+        font-family: inherit;
+        font-size: 12px;
+      }
+      input:focus {
+        outline: none;
+        border-color: var(--ink);
+        box-shadow: 0 0 0 3px rgba(27, 36, 48, .08);
+      }
+      .btn {
+        height: 34px;
+        padding: 0 12px;
+        border-radius: 9px;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background .16s ease, border-color .16s ease, color .16s ease;
+      }
+      .btn:disabled { opacity: .55; cursor: default; }
+      .ghost {
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: #3a4453;
+        white-space: nowrap;
+      }
+      .ghost:hover:not(:disabled) { border-color: var(--ink); color: var(--ink); }
+      .primary {
+        width: calc(100% - 28px);
+        margin: 12px 14px 0;
+        height: 38px;
+        border: 1px solid var(--ink);
+        background: var(--ink);
+        color: #fff;
+        letter-spacing: .02em;
+      }
+      .primary:hover:not(:disabled) { background: var(--ink-strong); border-color: var(--ink-strong); }
+
+      .option {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 12px 14px 0;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fafbfc;
+        cursor: pointer;
+      }
+      .option input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        accent-color: var(--ink);
+      }
+      .option span { font-size: 11.5px; line-height: 1.5; color: #4b5563; }
+
+      footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px 14px 13px;
+        font-size: 10.5px;
+        color: #7c8798;
+        letter-spacing: .02em;
+        white-space: nowrap;
+      }
+      footer b { font-weight: 600; color: #5b6675; }
+
+      .device {
+        display: grid;
+        gap: 8px;
+        margin: 12px 14px 0;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: linear-gradient(180deg, #fbfcfd 0%, #f5f7f9 100%);
+      }
+      .device-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .device-head strong { font-size: 12px; color: var(--ink); }
+      #deviceState { font-size: 10.5px; color: var(--dim); }
+      #deviceState[data-paired="true"] { color: var(--positive); font-weight: 600; }
+      .device .hint { margin: 0; font-size: 10.5px; line-height: 1.5; color: var(--dim); }
+      .device .input-row { margin-top: 0; }
+      .device .unpair { width: 100%; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <header>
+        <span class="mark"><img src="assets/jieye-char-white.png" alt="界野" /></span>
+        <div class="brand">
+          <strong>界野 · 采集助手</strong>
+          <small>TEMU Y2 工作台连接</small>
+        </div>
+        <button class="icon-btn" id="openWorkbench" type="button" title="打开工作台" aria-label="打开工作台">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 4h6v6" />
+            <path d="M20 4 11 13" />
+            <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+          </svg>
+        </button>
+      </header>
+
+      <section class="status" id="statusCard" data-connected="false">
+        <div class="status-head">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="company">公司未确认</span>
+          <span class="ver" id="version">v—</span>
+        </div>
+        <p id="status">待连接</p>
+      </section>
+
+      <label class="field">
+        <span>工作台地址</span>
+        <div class="input-row">
+          <input id="baseUrl" value="http://127.0.0.1:8010" placeholder="http://127.0.0.1:8010" />
+          <button class="btn ghost" id="save">保存</button>
+        </div>
+      </label>
+
+      <button class="btn primary" id="connect">连接插件</button>
+
+      <section class="device" id="deviceCard">
+        <div class="device-head">
+          <strong>设备配对</strong>
+          <span id="deviceState">未配对</span>
+        </div>
+        <p class="hint">配对一次长期有效，不用保持工作台页面打开</p>
+        <div class="input-row">
+          <input id="pairCode" placeholder="6 位配对码" maxlength="6" inputmode="numeric" />
+          <button class="btn ghost" id="pair" type="button">配对</button>
+        </div>
+        <button class="btn ghost unpair" id="unpair" type="button" hidden>解除配对</button>
+      </section>
+
+      <label class="option" for="includeProcessed">
+        <input type="checkbox" id="includeProcessed" />
+        <span>已处理过的商品也继续入池</span>
+      </label>
+
+      <footer>
+        <span><b>界野</b> · Workbench Connector</span>
+        <span>仅本机连接</span>
+      </footer>
+    </div>
+    <script src="tenant_context.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

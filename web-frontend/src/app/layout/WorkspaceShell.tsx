@@ -13,6 +13,8 @@ import {
 } from "../navigation/modules";
 import { Sidebar } from "./Sidebar";
 import { TopNavigation, type WorkspaceTab } from "./TopNavigation";
+import { AdSlot } from "../../shared/components/AdSlot";
+import type { AdTarget } from "../../shared/ads/adConfig";
 import { PeachGarden } from "../../shared/components/PeachGarden";
 import { AlpineMeadow } from "../../shared/components/AlpineMeadow";
 import { InkTap } from "../../shared/components/InkTap";
@@ -37,6 +39,7 @@ const ProfitActivityProductsPage = lazy(() => import("../../modules/profit_activ
 const ProfitActivityTestPage = lazy(() => import("../../modules/profit_activity/pages/ProfitActivityTestPage").then((m) => ({ default: m.ProfitActivityTestPage })));
 const PriceVerificationPage = lazy(() => import("../../modules/price_verification/pages/PriceVerificationPage").then((m) => ({ default: m.PriceVerificationPage })));
 const SourcingLedgerPage = lazy(() => import("../../modules/sourcing_ledger/pages/SourcingLedgerPage").then((m) => ({ default: m.SourcingLedgerPage })));
+const OrderProfitPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitPage").then((m) => ({ default: m.OrderProfitPage })));
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
 const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
@@ -54,7 +57,6 @@ const PodReplicaPage = lazy(() => import("../../modules/pod_replica/pages/PodRep
 const PodFissionPage = lazy(() => import("../../modules/pod_fission/pages/PodFissionPage").then((m) => ({ default: m.PodFissionPage })));
 const AiVideoPage = lazy(() => import("../../modules/ai_video/pages/AiVideoPage").then((m) => ({ default: m.AiVideoPage })));
 const PersonalCenterPage = lazy(() => import("../../modules/personal_center/pages/PersonalCenterPage").then((m) => ({ default: m.PersonalCenterPage })));
-const OrderProfitPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitPage").then((m) => ({ default: m.OrderProfitPage })));
 import { TEMU_PUBLISH_PREFILL_EVENT, TEMU_PUBLISH_PREFILL_KEY } from "../../modules/temu_publish/types";
 import type { ProductProcessingOptions } from "../../modules/product_processing/types";
 import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/products";
@@ -126,7 +128,7 @@ function filterModulesForRole(items: WorkspaceNavigationItem[], isAdmin: boolean
   const visible: WorkspaceNavigationItem[] = [];
   for (const item of items) {
     if (isWorkspaceNavigationGroup(item)) {
-      const children = item.children.filter((child) => !child.adminOnly);
+      const children = filterModulesForRole(item.children, isAdmin);
       if (children.length) visible.push({ ...item, children });
     } else if (!item.adminOnly) {
       visible.push(item);
@@ -135,8 +137,25 @@ function filterModulesForRole(items: WorkspaceNavigationItem[], isAdmin: boolean
   return visible;
 }
 
-function navigationGroupForModule(id: WorkspaceModuleId, groups: WorkspaceNavigationGroup[]) {
-  return groups.find((group) => group.children.some((child) => child.id === id));
+/** 模块所在的一级分组与二级分组（「图像服务 → POD定制 → 全定制」这类三层结构）。 */
+function navigationPathForModule(id: WorkspaceModuleId, groups: WorkspaceNavigationGroup[]) {
+  for (const group of groups) {
+    if (group.panels?.length) {
+      if (group.defaultChildId === id) return { group, subgroup: null as WorkspaceNavigationGroup | null };
+      continue;
+    }
+    for (const child of group.children) {
+      if (!isWorkspaceNavigationGroup(child)) {
+        if (child.id === id) return { group, subgroup: null as WorkspaceNavigationGroup | null };
+        continue;
+      }
+      if (child.id === id) return { group, subgroup: child };
+      if (child.children.some((leaf) => !isWorkspaceNavigationGroup(leaf) && leaf.id === id)) {
+        return { group, subgroup: child };
+      }
+    }
+  }
+  return null;
 }
 
 function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): WorkspaceTab {
@@ -257,6 +276,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const [sidebarHovered, setSidebarHovered] = useState(false);
   const [isNarrowDesktop, setIsNarrowDesktop] = useState(() => window.matchMedia(NARROW_DESKTOP_QUERY).matches);
   const [expandedGroupId, setExpandedGroupId] = useState<WorkspaceNavigationGroupId | null>(null);
+  // 三级导航：一级分组展开后，二级分组（产品处理 / POD定制 …）单独记录展开项。
+  const [expandedSubgroupId, setExpandedSubgroupId] = useState<WorkspaceNavigationGroupId | null>(null);
   // 个人中心当前面板：由侧栏子导航驱动，状态放在这一层，切页签回来仍保持上次位置。
   const [personalPanel, setPersonalPanel] = useState<PersonalCenterPanelId>("wallet");
   const isAdmin = isAdminRole(currentRole);
@@ -496,16 +517,20 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   const openModule = (id: WorkspaceModuleId) => {
     if (id === "daily_selection_collection") return;
-    setExpandedGroupId(navigationGroupForModule(id, navigationGroups)?.id ?? null);
+    const path = navigationPathForModule(id, navigationGroups);
+    setExpandedGroupId(path?.group.id ?? null);
+    setExpandedSubgroupId(path?.subgroup?.id ?? null);
     setTabs((current) => current.some((tab) => tab.key === id) ? current : [...current, moduleTab(id, flatModules)]);
     activateTab(id);
     setWorkspaceNotice("");
   };
 
   /** 侧栏「个人中心」子导航：只切面板，不新开页签；个人中心未打开时顺带打开。 */
-  const openPersonalPanel = (panel: PersonalCenterPanelId) => {
+  const openPersonalPanel = (panel: PersonalCenterPanelId, groupId: WorkspaceNavigationGroupId = "personal_center") => {
     setPersonalPanel(panel);
     openModule("personal_center");
+    // openModule 只能定位到「个人中心」这一级；系统设置共用同一页面，展开态要盖回去。
+    setExpandedGroupId(groupId);
   };
 
   /** 侧栏「AI 视频」子导航：写当前路径，必要时先打开页签；未原生化路径仍由 iframe 承接。 */
@@ -519,10 +544,57 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   /** 侧栏面板分组的统一入口：按分组把点击分派到各自的页内面板。 */
   const openNavigationPanel = (group: WorkspaceNavigationGroup, panelId: string) => {
     if (group.id === "personal_center") {
-      openPersonalPanel(panelId as PersonalCenterPanelId);
+      openPersonalPanel(panelId as PersonalCenterPanelId, "personal_center");
+      return;
+    }
+    if (group.id === "system_settings") {
+      openPersonalPanel(panelId as PersonalCenterPanelId, "system_settings");
       return;
     }
     if (group.id === "ai_video") openAiVideoPanel(panelId as AiVideoNavHref);
+  };
+
+  /**
+   * 二级分组（产品处理 / POD定制 …）的展开。
+   *
+   * 展开时如果当前页不在这个分组里，顺带进入它的默认页——否则会出现
+   * 「POD定制 展开了、高亮的却是产品处理」的双选中错觉（2026-10-29 反馈）。
+   * 当前页已经在分组内时只展开，避免把 AI 视频正在看的项目重置回默认入口。
+   */
+  const toggleNavigationSubgroup = (group: WorkspaceNavigationGroup) => {
+    if (expandedSubgroupId === group.id) {
+      setExpandedSubgroupId(null);
+      return;
+    }
+    const containsActivePage = group.panels?.length
+      ? group.children.some((child) => !isWorkspaceNavigationGroup(child) && child.id === activeModuleId)
+      : group.children.some((child) => (
+        isWorkspaceNavigationGroup(child)
+          ? child.children.some((leaf) => !isWorkspaceNavigationGroup(leaf) && leaf.id === activeModuleId)
+          : child.id === activeModuleId
+      ));
+    setExpandedSubgroupId(group.id);
+    if (containsActivePage) return;
+    if (group.panels?.length) {
+      openNavigationPanel(group, group.defaultPanelId ?? group.panels[0].id);
+      return;
+    }
+    openModule(group.defaultChildId);
+  };
+
+  /** 推广位跳转：只放行工作台内页面与 http(s) 落地页，避免配置写错时跳出奇怪协议。 */
+  const openAdTarget = (target: AdTarget) => {
+    if (target.type === "module") {
+      openModule(target.moduleId);
+      return;
+    }
+    if (target.type === "panel") {
+      openPersonalPanel(target.panelId);
+      return;
+    }
+    if (/^https?:\/\//i.test(target.href)) {
+      window.open(target.href, "_blank", "noopener,noreferrer");
+    }
   };
 
   // 操作答疑兜底按钮「去提交问题反馈」：先打开/切到「个人中心」页签，再把原问题交给它预填。
@@ -747,7 +819,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   }, []);
 
   const openComboGenerate = (setId: string) => {
-    setExpandedGroupId("combo_workflow");
+    setExpandedGroupId("ai_image_service");
+    setExpandedSubgroupId("combo_workflow");
     setTabs((current) => {
       const existing = current.find((tab) => tab.moduleId === "combo_generate");
       if (existing) {
@@ -761,7 +834,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   // 从「商品货源及成本展示」的 SKU 明细跳转到「利润活动」单品利润表单，并预填成本与货源链接。
   const openProfitActivity = (prefill: ProfitActivityPrefill) => {
-    setExpandedGroupId("sourcing_workflow");
+    setExpandedGroupId("data_insights");
+    setExpandedSubgroupId("sourcing_workflow");
     setTabs((current) => {
       const existing = current.find((tab) => tab.moduleId === "profit_activity");
       if (existing) {
@@ -782,9 +856,20 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     window.history.replaceState({}, "", window.location.pathname);
   }, []);
 
+  /** 收起态浮层：选中页面或点到侧栏外面时全部收回。 */
+  const closeNavigationGroups = () => {
+    setExpandedGroupId(null);
+    setExpandedSubgroupId(null);
+  };
+
   const openNavigationGroup = (group: WorkspaceNavigationGroup) => {
     if (expandedGroupId === group.id) {
       setExpandedGroupId(null);
+      setExpandedSubgroupId(null);
+      return;
+    }
+    if (group.panels?.length) {
+      openNavigationPanel(group, group.defaultPanelId ?? group.panels[0].id);
       return;
     }
     setExpandedGroupId(group.id);
@@ -796,7 +881,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
     // 目标标签已不存在（异步流程里被关闭）时直接返回，避免把 activeTabKey
     // 设成无效值导致所有面板 hidden、内容区整片空白。
     if (!tab) return;
-    setExpandedGroupId(navigationGroupForModule(tab.moduleId, navigationGroups)?.id ?? null);
+    const path = navigationPathForModule(tab.moduleId, navigationGroups);
+    setExpandedGroupId(path?.group.id ?? null);
+    setExpandedSubgroupId(path?.subgroup?.id ?? null);
     activateTab(key);
   };
 
@@ -807,7 +894,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       const next = current.filter((tab) => tab.key !== key);
       if (activeTabKey === key) {
         const nextActive = next[next.length - 1] ?? moduleTab("dashboard", flatModules);
-        setExpandedGroupId(navigationGroupForModule(nextActive.moduleId, navigationGroups)?.id ?? null);
+        const path = navigationPathForModule(nextActive.moduleId, navigationGroups);
+        setExpandedGroupId(path?.group.id ?? null);
+        setExpandedSubgroupId(path?.subgroup?.id ?? null);
         setActiveTabKey(nextActive.key);
       }
       return next;
@@ -1068,7 +1157,10 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <OrderProfitPage view="accounts" isActive={isActive} />;
         break;
       case "order_profit_capture":
-        content = <OrderProfitPage view="capture" isActive={isActive} />;
+        content = <OrderProfitPage view="capture" isActive={isActive} onOpenAccounts={() => openModule("order_profit_accounts")} />;
+        break;
+      case "order_profit_records":
+        content = <OrderProfitPage view="records" isActive={isActive} />;
         break;
       case "order_profit_home":
         content = <OrderProfitPage isActive={isActive} view="home" onOpenCapture={() => openModule("order_profit_capture")} />;
@@ -1102,6 +1194,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   // 只在悬浮层打开时抑制；平时（expandedGroupId 为空）触碰展开照常。
   const sidebarTemporarilyExpanded =
     sidebarIsCollapsed && sidebarHovered && sidebarHoverExpand && expandedGroupId === null;
+  // 子菜单是否浮在内容上：收起态，或桌面 Dock（apple）模式的常驻浮层。
+  const sidebarUsesFlyout = (sidebarIsCollapsed && !sidebarTemporarilyExpanded) || uiMode === "apple";
 
   return (
     <main className={`workspace-shell${playEntryAnimation ? " is-brand-entering" : ""}`} ref={shellRef}>
@@ -1111,11 +1205,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       <DessertTap theme={theme} uiMode={uiMode} enabled={tapEffects} />
       <Sidebar
         collapsed={sidebarIsCollapsed && !sidebarTemporarilyExpanded}
+        flyout={sidebarUsesFlyout}
         activeId={activeModuleId}
         expandedGroupId={expandedGroupId}
+        expandedSubgroupId={expandedSubgroupId}
         modules={visibleModules}
         onOpenModule={openModule}
         onToggleGroup={openNavigationGroup}
+        onToggleSubgroup={toggleNavigationSubgroup}
         onHoverChange={setSidebarHovered}
         activePanelId={
           activeModuleId === "personal_center"
@@ -1126,6 +1223,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         }
         onOpenPanel={openNavigationPanel}
         badges={{ dimension_canvas: dimensionNotifications.length }}
+        onCloseGroups={closeNavigationGroups}
+        onOpenAdTarget={openAdTarget}
       />
       <section className="workspace-main">
         <TopNavigation sidebarPinned={!sidebarIsCollapsed} activeKey={activeTabKey} tabs={tabs} onToggleSidebar={toggleSidebarCollapsed} onSelectTab={selectTab} onCloseTab={closeTab} onOpenPersonalCenter={() => openModule("personal_center")} onOpenGuide={openGuideBoardPanel} onSignOut={onSignOut} />
@@ -1158,6 +1257,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
               {renderTab(tab)}
             </div>
           ))}
+          <AdSlot slot="footer" placement="footer" onOpenTarget={openAdTarget} />
         </div>
       </section>
       <button

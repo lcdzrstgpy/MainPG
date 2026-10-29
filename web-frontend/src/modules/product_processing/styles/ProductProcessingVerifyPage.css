@@ -1866,7 +1866,9 @@
 
 .precheck-core-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  /* 固定 5 列在窄栏里会把「物流包裹长(cm)」压成竖排、徽标顶出输入框；
+     改为按最小可读宽度自动折行：宽栏仍是 5 列，窄栏自动落到 2 列或单列。 */
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 10px;
 }
 
@@ -1874,6 +1876,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   font-size: 0.74rem;
   font-weight: 700;
   color: #526a82;
@@ -1883,12 +1886,17 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px 5px;
+  min-width: 0;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .precheck-provenance-badge {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
+  max-width: 100%;
   padding: 1px 7px;
   border-radius: 999px;
   font-size: 0.62rem;
@@ -1902,6 +1910,7 @@
 
 .precheck-core-grid input {
   width: 100%;
+  min-width: 0;
   padding: 6px 8px;
   border: 1px solid var(--theme-module-border, #dbe7f1);
   border-radius: 8px;

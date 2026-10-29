@@ -366,6 +366,16 @@
 .combo-preset-zh { color: #6f849a; font-size: 12px; line-height: 1.6; margin: 0 0 12px; padding: 0 2px; }
 .combo-preset-custom label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: #526a82; font-weight: 700; margin-bottom: 12px; }
 .combo-preset-custom textarea { max-height: 160px; }
+/* 导演模式：全局五层 + 逐图卡片（与商品处理同一套卡片） */
+.combo-preset-section { margin: 18px 0 6px; padding-top: 12px; border-top: 1px dashed #dbe8f2; }
+.combo-preset-hint { color: #6f849a; font-size: 12px; line-height: 1.6; margin: 0 0 10px; }
+.combo-preset-layer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 14px; margin-bottom: 10px; }
+.combo-preset-layer-grid > label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12.5px; font-weight: 700; color: #526a82; }
+.combo-preset-layer-grid select { width: 100%; min-width: 0; }
+.combo-preset-checkbox { flex-direction: row !important; align-items: center; gap: 8px; font-weight: 600; }
+.combo-preset-panel-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 12px; }
+.combo-preset-panel-tabs button { padding: 7px 12px; border-radius: 9px; border: 1px solid #d5e6f1; background: #fff; color: #526a82; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.combo-preset-panel-tabs button.is-active { border-color: transparent; color: #fff; background: linear-gradient(105deg, #087bf5, #14c8c0); }
 .combo-preset-tip { color: #8aa0b4; font-size: 12px; margin-top: 14px; }
 
 /* 历史组合套装页 */

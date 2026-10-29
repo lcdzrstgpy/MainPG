@@ -40,29 +40,28 @@ for _pkg in ("uvicorn", "qcloud_cos", "rapidocr_onnxruntime", "onnxruntime", "op
     binaries += _b
     hiddenimports += _h
 
-# 运行期按 Path(__file__) 相对位置读取的迁移 SQL（必须按原目录结构打进包）
-for _rel in (
-    "wh_local/data_collection/migrations",
-    "wh_local/modules/ai_service/migrations",
-    "wh_local/modules/help_agent/migrations",
-    "wh_local/modules/pod_customization/migrations",
-    "wh_local/modules/product_processing/migrations",
-    "wh_local/modules/sourcing_ledger/migrations",
-    "wh_local/modules/profit_activity/migrations",
-    "wh_local/modules/combo_kit/migrations",
-    "wh_local/price_verification/migrations",
-    # 主题商店的可下载主题包（chinese / violet / dessert / diamond / quirky）。
-    # 2026-10-22：以前漏了这一项，安装版 /themes 恒返回空数组，用户在主题商店里
-    # 永远看不到这些主题（BUILTIN 只有 classic/sunset/peach/alpine）。
-    # 后端按 wh_local/data/themes 相对位置找目录，打包后落在 _internal 下，
-    # 正好命中 main.py 里 sys._MEIPASS 那个候选路径。
-    "wh_local/data/themes",
-):
-    _src = ROOT / _rel
-    if _src.is_dir():
-        datas.append((str(_src), _rel))
-    else:
-        print(f"[workbench.spec] WARNING: 缺失 {_rel}")
+# 运行期按 Path(__file__) 相对位置读取的迁移 SQL（必须按原目录结构打进包）。
+# 自动扫描 wh_local 下所有 migrations 目录：以前是手写白名单，新增模块（如 order_profit）
+# 忘记登记就会导致冻结版缺表、启动即崩，所以这里改成自动收集。
+_migration_dirs = sorted(
+    path for path in (ROOT / "wh_local").rglob("migrations") if path.is_dir()
+)
+for _src in _migration_dirs:
+    datas.append((str(_src), _src.relative_to(ROOT).as_posix()))
+print(f"[workbench.spec] bundled {len(_migration_dirs)} migration dirs")
+if not any(path.parts[-2] == "order_profit" for path in _migration_dirs):
+    print("[workbench.spec] WARNING: 未找到 order_profit/migrations，订单利润会缺表")
+
+# 主题商店的可下载主题包（chinese / violet / dessert / diamond / quirky）。
+# 2026-10-22：以前漏了这一项，安装版 /themes 恒返回空数组，用户在主题商店里
+# 永远看不到这些主题（BUILTIN 只有 classic/sunset/peach/alpine）。
+# 后端按 wh_local/data/themes 相对位置找目录，打包后落在 _internal 下，
+# 正好命中 main.py 里 sys._MEIPASS 那个候选路径。
+_themes = ROOT / "wh_local/data/themes"
+if _themes.is_dir():
+    datas.append((str(_themes), "wh_local/data/themes"))
+else:
+    print("[workbench.spec] WARNING: 缺失 wh_local/data/themes")
 
 # 操作答疑 FAQ 数据（service.faq_data_path() 按 __file__ / _MEIPASS 相对位置读取）
 _help_agent_data = ROOT / "wh_local/modules/help_agent/data"

@@ -92,7 +92,7 @@ export const GUIDE_BOARD_META: GuideBoardMeta[] = [
   },
   {
     id: "sourcing_workflow",
-    label: "核价及货源",
+    label: "商品核价及利润",
     iconClass: "iconfont icon-audit",
     description: "拉取 Temu 核价信息并对接货源",
   },

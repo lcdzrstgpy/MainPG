@@ -17,7 +17,7 @@ logger = logging.getLogger("wh_local.config")
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.5"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -52,6 +52,7 @@ class LocalRuntimeConfig:
     dev_admin_token: str
     customer_auth_base_url: str
     announce_base_url: str
+    team_api_base_url: str
     onebound_1688_api_key: str
     onebound_1688_api_secret: str
     onebound_1688_base_url: str
@@ -220,6 +221,10 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         announce_base_url=os.environ.get(
             "WH_LOCAL_ANNOUNCE_BASE_URL",
             "https://workbench.haocoming.top/publish-api",
+        ),
+        team_api_base_url=os.environ.get(
+            "WH_LOCAL_TEAM_API_BASE_URL",
+            "https://workbench.haocoming.top/team-api",
         ),
         onebound_1688_api_key=os.environ.get(
             "DAILY_SELECTION_ONEBOUND_API_KEY", local_secrets.get("api_key", "")

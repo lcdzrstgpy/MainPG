@@ -33,16 +33,20 @@ export type WorkspaceModuleId =
   | "order_profit_sales"
   | "order_profit_recon"
   | "order_profit_settlement"
+  | "order_profit_records"
   | "personal_center";
 
 export type WorkspaceNavigationGroupId =
+  | "ai_image_service"
   | "product_workflow"
   | "combo_workflow"
+  | "pod_workflow"
+  | "data_insights"
   | "sourcing_workflow"
   | "order_profit"
-  | "pod_workflow"
-  | "temu_publish_workflow"
+  | "overseas_listing"
   | "personal_center"
+  | "system_settings"
   | "ai_video";
 
 /** 个人中心页面内的二级面板；点击只切换面板，不新开页签。 */
@@ -55,7 +59,8 @@ export type PersonalCenterPanelId =
   | "storage"
   | "migration"
   | "promo"
-  | "feedback";
+  | "feedback"
+  | "plugin";
 
 export type WorkspaceNavigationPanel = {
   /** 面板标识：个人中心用面板 key，AI 视频用 iframe 内路径。 */
@@ -84,9 +89,12 @@ export type WorkspaceNavigationGroup = {
   iconClass?: string;
   description: string;
   defaultChildId: WorkspaceModuleId;
-  children: WorkspaceModule[];
-  /** 页面内二级面板（个人中心）：子导航只切面板，不新开页签。 */
+  /** 子项可以继续是分组（如「图像服务 → POD定制 → 全定制」），最多三层。 */
+  children: WorkspaceNavigationItem[];
+  /** 页面内二级面板（个人中心 / 系统设置）：子导航只切面板，不新开页签。 */
   panels?: WorkspaceNavigationPanel[];
+  /** 面板分组展开时默认落到的面板，缺省为第一个面板。 */
+  defaultPanelId?: string;
 };
 
 export type WorkspaceNavigationItem = WorkspaceModule | WorkspaceNavigationGroup;
@@ -283,6 +291,13 @@ const orderProfitModules: WorkspaceModule[] = [
     iconClass: "iconfont icon-cloud-download",
     description: "插件会话、一键采集与实时进度",
   },
+  {
+    id: "order_profit_records",
+    label: "采集记录",
+    icon: "",
+    iconClass: "iconfont icon-time-circle",
+    description: "最近一次入库记录与采集批次",
+  },
 ];
 
 /** 合并前的单页入口：只保留路由，避免浏览器里已保存的旧页签失效。 */
@@ -301,14 +316,6 @@ const orderProfitLegacyModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-radarchart",
     description: "商品/店铺流量与转化",
-    hiddenFromSidebar: true,
-  },
-  {
-    id: "order_profit_sales",
-    label: "经营概览",
-    icon: "",
-    iconClass: "iconfont icon-linechart",
-    description: "销量、售罄与库存水位",
     hiddenFromSidebar: true,
   },
   {
@@ -353,16 +360,21 @@ const personalCenter: WorkspaceModule = {
   description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
 };
 
-/** 个人中心侧栏子导航：顺序与原页内横条一致。 */
+/** 个人中心侧栏子导航：只保留账户与消费相关面板。 */
 export const personalCenterPanels: WorkspaceNavigationPanel[] = [
   { id: "wallet", label: "积分钱包", iconClass: "iconfont icon-wallet-fill" },
   { id: "usage", label: "消费流水", iconClass: "iconfont icon-accountbook-fill" },
   { id: "pricing", label: "计费规则", iconClass: "iconfont icon-calculator" },
-  { id: "preferences", label: "偏好设置", iconClass: "iconfont icon-skin" },
-  { id: "version", label: "系统版本", iconClass: "iconfont icon-setting" },
-  { id: "storage", label: "存储空间", iconClass: "iconfont icon-database" },
-  { id: "promo", label: "推广计划", iconClass: "iconfont icon-gift" },
   { id: "feedback", label: "意见反馈", iconClass: "iconfont icon-message" },
+  { id: "promo", label: "推广计划", iconClass: "iconfont icon-gift" },
+];
+
+/** 系统设置侧栏子导航：从个人中心拆出，仍复用同一页面的面板。 */
+export const systemSettingPanels: WorkspaceNavigationPanel[] = [
+  { id: "version", label: "系统版本", iconClass: "iconfont icon-setting" },
+  { id: "preferences", label: "偏好设置", iconClass: "iconfont icon-skin" },
+  { id: "storage", label: "存储空间", iconClass: "iconfont icon-database" },
+  { id: "plugin", label: "插件设置", iconClass: "iconfont icon-link" },
 ];
 
 /** AI 视频侧栏子导航：直接复用内嵌 ClipForge 的 7 个入口定义。 */
@@ -390,69 +402,86 @@ const processingTasks: WorkspaceModule = {
   hiddenFromSidebar: true,
 };
 
+/** 图像服务下的二级分组：产品处理、POD定制、商品自定义、AI 视频。 */
+const productWorkflow: WorkspaceNavigationGroup = {
+  id: "product_workflow",
+  label: "产品处理",
+  icon: "",
+  iconClass: "iconfont icon-build",
+  description: "采集、处理与尺寸图制作",
+  defaultChildId: "daily_selection",
+  children: [collection, productProcessing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
+};
+
+const comboWorkflow: WorkspaceNavigationGroup = {
+  id: "combo_workflow",
+  label: "商品自定义",
+  icon: "",
+  iconClass: "iconfont icon-layout",
+  description: "组合生图、提示词模板预设与历史组合套装",
+  defaultChildId: "combo_generate",
+  children: [comboGenerate, comboPromptPreset, comboHistory],
+};
+
+const podWorkflow: WorkspaceNavigationGroup = {
+  id: "pod_workflow",
+  label: "POD定制",
+  icon: "",
+  iconClass: "iconfont icon-skin",
+  description: "POD 全定制、半定制、爆款复刻与爆款裂变",
+  defaultChildId: "pod_customization",
+  children: [podCustomization, podSemiCustomization, podReplica, podFission],
+};
+
+const aiVideoWorkflow: WorkspaceNavigationGroup = {
+  // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
+  id: "ai_video",
+  label: "AI视频（实验）",
+  icon: "",
+  iconClass: "iconfont icon-video",
+  description: "通过 ClipForge 生成电商短视频",
+  defaultChildId: "ai_video",
+  children: [aiVideo],
+  panels: aiVideoPanels,
+};
+
+/** 数据信息下的二级分组：商品核价及利润、店铺数据管理。 */
+const sourcingWorkflow: WorkspaceNavigationGroup = {
+  id: "sourcing_workflow",
+  label: "商品核价及利润",
+  icon: "",
+  iconClass: "iconfont icon-audit",
+  description: "核价、利润与货源产品管理",
+  defaultChildId: "sourcing_ledger",
+  children: [sourcingLedger, priceVerification, profitActivity, productLibrary],
+};
+
+const orderProfitWorkflow: WorkspaceNavigationGroup = {
+  id: "order_profit",
+  label: "店铺数据管理",
+  icon: "",
+  iconClass: "iconfont icon-accountbook-fill",
+  description: "Temu 店铺指标、订单与账户资金",
+  defaultChildId: "order_profit_overview",
+  children: orderProfitModules,
+};
+
 export const workspaceModules: WorkspaceNavigationItem[] = [
   dashboard,
   {
-    id: "product_workflow",
-    label: "产品处理",
+    // 一级分组「图像服务」：二级仍是分组，三级才是具体页面。
+    id: "ai_image_service",
+    label: "图像服务",
     icon: "",
-    iconClass: "iconfont icon-build",
-    description: "采集、处理与尺寸图制作",
+    iconClass: "iconfont icon-image",
+    description: "产品处理、POD定制、商品自定义与 AI 视频",
     defaultChildId: "daily_selection",
-    children: [collection, productProcessing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
+    children: [productWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
   },
   {
-    id: "combo_workflow",
-    label: "商品组合套装",
-    icon: "",
-    iconClass: "iconfont icon-layout",
-    description: "组合生图、提示词模板预设与历史组合套装",
-    defaultChildId: "combo_generate",
-    children: [comboGenerate, comboPromptPreset, comboHistory],
-  },
-  {
-    id: "pod_workflow",
-    label: "POD定制",
-    icon: "",
-    iconClass: "iconfont icon-skin",
-    description: "POD 全定制、半定制、爆款复刻与爆款裂变",
-    defaultChildId: "pod_customization",
-    children: [podCustomization, podSemiCustomization, podReplica, podFission],
-  },
-  {
-    id: "sourcing_workflow",
-    label: "核价及货源",
-    icon: "",
-    iconClass: "iconfont icon-audit",
-    description: "核价、利润与货源产品管理",
-    defaultChildId: "sourcing_ledger",
-    children: [sourcingLedger, priceVerification, profitActivity, productLibrary],
-  },
-  {
-    // 店铺数据是一级入口，二级菜单平铺（订单状态在页面内横向切换）。
-    id: "order_profit",
-    label: "店铺数据",
-    icon: "",
-    iconClass: "iconfont icon-accountbook-fill",
-    description: "Temu 店铺指标、订单与账户资金",
-    defaultChildId: "order_profit_overview",
-    children: orderProfitModules,
-  },
-  {
-    // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
-    id: "ai_video",
-    label: "AI 视频（实验）",
-    icon: "",
-    iconClass: "iconfont icon-video",
-    description: "通过 ClipForge 生成电商短视频",
-    defaultChildId: "ai_video",
-    children: [aiVideo],
-    panels: aiVideoPanels,
-  },
-  {
-    // 发布商品分组：发布页与草稿库是同级子项，固定在个人中心上方。
-    id: "temu_publish_workflow",
-    label: "发布商品",
+    // 海外上架即原「发布商品」：发布页与草稿库是同级子项。
+    id: "overseas_listing",
+    label: "海外上架",
     icon: "",
     iconClass: "iconfont icon-upload",
     description: "Temu 商品发布与草稿库",
@@ -460,15 +489,37 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [temuPublish, temuDraftLibrary],
   },
   {
+    id: "data_insights",
+    label: "数据信息",
+    icon: "",
+    iconClass: "iconfont icon-reconciliation",
+    description: "商品核价及利润、店铺数据管理",
+    defaultChildId: "sourcing_ledger",
+    children: [sourcingWorkflow, orderProfitWorkflow],
+  },
+  {
     // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。
     id: "personal_center",
     label: "个人中心",
     icon: "",
     iconClass: "iconfont icon-user",
-    description: "账户资料、积分钱包、充值订单与服务器账本安全状态",
+    description: "账户资料、积分钱包、消费流水、计费规则与推广计划",
     defaultChildId: "personal_center",
+    defaultPanelId: "wallet",
     children: [personalCenter],
     panels: personalCenterPanels,
+  },
+  {
+    // 系统设置复用个人中心页面的面板，只是侧栏按一级入口独立成组。
+    id: "system_settings",
+    label: "系统设置",
+    icon: "",
+    iconClass: "iconfont icon-setting",
+    description: "系统版本、偏好设置与存储空间",
+    defaultChildId: "personal_center",
+    defaultPanelId: "version",
+    children: [personalCenter],
+    panels: systemSettingPanels,
   },
 ];
 
