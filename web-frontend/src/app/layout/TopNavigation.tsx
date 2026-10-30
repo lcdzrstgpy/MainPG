@@ -80,6 +80,72 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const hasRunning = activeTasks.length > 0;
   const [progressPanelOpen, setProgressPanelOpen] = useState(false);
   const progressPanelRef = useRef<HTMLDivElement>(null);
+  // 页签栏：单行横向滚动，溢出时给一个「全部页签」入口，不再堆成好几排。
+  const lowerRowRef = useRef<HTMLDivElement>(null);
+  const tabMenuRef = useRef<HTMLDivElement>(null);
+  const [tabsOverflow, setTabsOverflow] = useState(false);
+  const [tabMenuOpen, setTabMenuOpen] = useState(false);
+  const tabStripNode = () => lowerRowRef.current?.querySelector<HTMLDivElement>(".tab-strip") ?? null;
+
+  // 切页签/开关页签后，把当前页签滚进可视区，避免它被挤到看不见的位置。
+  useEffect(() => {
+    const strip = tabStripNode();
+    const tab = strip?.querySelector<HTMLElement>(".page-tab.is-active");
+    if (!strip || !tab) return;
+    const tabRect = tab.getBoundingClientRect();
+    const stripRect = strip.getBoundingClientRect();
+    if (tabRect.left < stripRect.left + 8) {
+      strip.scrollBy({ left: tabRect.left - stripRect.left - 8, behavior: "smooth" });
+    } else if (tabRect.right > stripRect.right - 8) {
+      strip.scrollBy({ left: tabRect.right - stripRect.right + 8, behavior: "smooth" });
+    }
+  }, [activeKey, activeTabSignature]);
+
+  // 页签是否已经超出宽度：只有溢出时才显示「全部页签」按钮。
+  useEffect(() => {
+    const strip = tabStripNode();
+    if (!strip) return;
+    const measure = () => setTabsOverflow(strip.scrollWidth - strip.clientWidth > 4);
+    measure();
+    strip.addEventListener("scroll", measure, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(strip);
+    return () => {
+      strip.removeEventListener("scroll", measure);
+      observer.disconnect();
+    };
+  }, [activeTabSignature]);
+
+  // 鼠标滚轮上下滚也能横向翻页签（标签多时不用去够滚动条）。
+  useEffect(() => {
+    const strip = tabStripNode();
+    if (!strip) return;
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (strip.scrollWidth <= strip.clientWidth) return;
+      strip.scrollLeft += event.deltaY;
+      event.preventDefault();
+    };
+    strip.addEventListener("wheel", onWheel, { passive: false });
+    return () => strip.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // 点外面 / Esc 关闭「全部页签」浮层。
+  useEffect(() => {
+    if (!tabMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!tabMenuRef.current?.contains(event.target as Node)) setTabMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTabMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [tabMenuOpen]);
 
   // 点面板外部 / 按 Esc 关闭：和用户菜单一致的心智，别让浮层粘住。
   useEffect(() => {
@@ -498,7 +564,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
           />
         </div>
       </div>
-      <div className="topbar-lower-row">
+      <div className="topbar-lower-row" ref={lowerRowRef}>
         <div
           className="tab-strip"
           aria-label="内容页标签导航"
@@ -513,6 +579,57 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
             </div>
           ))}
         </div>
+        {tabsOverflow && (
+          <div className="tab-overflow" ref={tabMenuRef}>
+            <button
+              type="button"
+              className={`tab-overflow-trigger ${tabMenuOpen ? "is-open" : ""}`}
+              onClick={() => setTabMenuOpen((open) => !open)}
+              aria-expanded={tabMenuOpen}
+              aria-label={`全部页签（${tabs.length} 个）`}
+              title="全部页签"
+            >
+              <span aria-hidden="true">⋯</span>
+              <span className="tab-overflow-count">{tabs.length}</span>
+            </button>
+            {tabMenuOpen && (
+              <div className="tab-overflow-panel" role="dialog" aria-label="全部页签">
+                <div className="tab-overflow-head">
+                  <strong>全部页签</strong>
+                  <span>{tabs.length} 个</span>
+                </div>
+                <ul>
+                  {tabs.map((tab) => (
+                    <li key={tab.key}>
+                      <button
+                        type="button"
+                        className={`tab-overflow-item ${activeKey === tab.key ? "is-active" : ""}`}
+                        onClick={() => {
+                          onSelectTab(tab.key);
+                          setTabMenuOpen(false);
+                        }}
+                      >
+                        <span className={tab.iconClass} aria-hidden="true">{tab.icon}</span>
+                        <span className="tab-overflow-label">{tab.label}</span>
+                      </button>
+                      {tab.moduleId !== "dashboard" && (
+                        <button
+                          type="button"
+                          className="tab-overflow-close"
+                          onClick={() => closeTabWithEffect(tab.key)}
+                          aria-label={`关闭${tab.label}`}
+                          title="关闭页签"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
         {(hasRunning || justFinished.length > 0) && (
           <div className="task-progress" ref={progressPanelRef}>
             <button
