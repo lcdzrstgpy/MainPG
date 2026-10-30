@@ -200,6 +200,29 @@ def test_submit_week_submits_shops_that_only_have_local_code(tmp_path: Path) -> 
     assert client.payloads[0]["stores"][0]["store_code"].startswith("LOCAL-")
 
 
+def test_validation_error_detail_is_surfaced() -> None:
+    """团队服务的 422 校验错误是列表，必须把具体字段讲出来而不是只说「返回 422」。"""
+    import io
+    import json
+    import urllib.error
+
+    from wh_local.modules.team_store import client as client_module
+
+    body = json.dumps(
+        {
+            "detail": [
+                {
+                    "loc": ["body", "batches"],
+                    "msg": "Extra inputs are not permitted",
+                    "type": "extra_forbidden",
+                }
+            ]
+        }
+    ).encode("utf-8")
+    error = urllib.error.HTTPError("http://team.local/rollup/submit", 422, "Unprocessable", {}, io.BytesIO(body))
+    assert client_module._error_detail(error) == "batches: Extra inputs are not permitted"
+
+
 def test_build_preview_lists_every_shop_of_the_account(tmp_path: Path) -> None:
     """提交确认弹窗要能看到本账号全部店铺，而不只是拿到正式码的那几家。"""
     from wh_local.modules.team_store.sync import build_preview
