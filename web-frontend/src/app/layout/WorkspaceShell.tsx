@@ -1274,7 +1274,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
-      <HelpAgentWidget showBalance />
+      <HelpAgentWidget sizeFromPreference />
       {guideBoardPanelOpen && (
         <GuideBoardPanel
           onClose={() => setGuideBoardPanelOpen(false)}

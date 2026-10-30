@@ -65,13 +65,6 @@ if _data_dir.is_dir():
 else:
     print("[workbench.spec] WARNING: 缺失 wh_local/data")
 
-# 操作答疑 FAQ 数据（service.faq_data_path() 按 __file__ / _MEIPASS 相对位置读取）
-_help_agent_data = ROOT / "wh_local/modules/help_agent/data"
-if _help_agent_data.is_dir():
-    datas.append((str(_help_agent_data), "wh_local/modules/help_agent/data"))
-else:
-    print("[workbench.spec] WARNING: 操作答疑 FAQ 数据目录不存在")
-
 # 妙手导入官方模板（妙手导出按 Path(__file__) 相对位置读取）。只打包官方模板本身，
 # generated/ 下的精简缓存由运行期首次导出时自动生成，不随包分发。
 _ms_templates = ROOT / "wh_local/modules/product_processing/templates"

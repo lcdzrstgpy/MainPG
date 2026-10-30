@@ -1,37 +1,65 @@
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 
-import { loadBillingSummary } from "../../personal_center/api/personalCenterApi";
-import { BALANCE_CHANGED_EVENT } from "../../../shared/balanceEvents";
 import { useTheme, type ThemeId } from "../../../shared/hooks/useTheme";
-import {
-  categoryLabel,
-  helpAgentApi,
-  type HelpAgentCandidate,
-} from "../api/helpAgentApi";
+import { getAuthToken } from "../../../transport/http/client";
+import { showToast } from "../../../shared/components/toastStore";
+import { workspacePageModules, type WorkspaceModuleId } from "../../../app/navigation/modules";
+import { helpAgentApi, newSessionId } from "../api/helpAgentApi";
 import {
   clampBallPosition,
   isDrag,
   isValidStoredPosition,
-  toAssistantMessage,
   type ChatMessage,
 } from "../data/chatMessage";
 import { useBallSize, type BallSizeId } from "../../../shared/hooks/useBallSize";
-import { useBallPointsVisible } from "../../../shared/hooks/useBallPointsVisible";
 import "../styles/helpAgent.css";
 
 const DRAG_THRESHOLD_PX = 4;
 const BALL_SIZE = 56;
-/** 合并积分球后的球体直径（偏好设置 → 悬浮球大小）；中档 88 为既有大小。 */
-const BALANCE_BALL_SIZES: Record<BallSizeId, number> = { sm: 68, md: 88, lg: 110 };
+/** 按偏好设置取球体直径（偏好设置 → 悬浮球大小）；中档 88 为工作台既有大小。 */
+const PREF_BALL_SIZES: Record<BallSizeId, number> = { sm: 68, md: 88, lg: 110 };
 const PANEL_WIDTH = 380;
 const PANEL_HEIGHT = 520;
 const PANEL_MARGIN = 16;
 const POSITION_STORAGE_KEY = "help_agent_ball_pos";
-/** 积分面闲置 5 分钟后自动翻到吉祥物面（沿用原积分悬浮球的行为）。 */
-const IDLE_FLIP_INTERVAL_MS = 5 * 60 * 1000;
-const BALANCE_POLL_INTERVAL_MS = 60_000;
+/** 面板收起动效时长；到点才真正卸载，避免关闭时直接消失。与 helpAgent.css 的 out 动画保持一致。 */
+const PANEL_EXIT_MS = 180;
 
-/** 各主题专属 Q 版吉祥物（翻转球背面图）。 */
+/* -- 球旁边的引导气泡 ----------------------------------------------------
+ * 只在工作台实例、登录后出现：登录页那个球是置灰的，弹气泡会点了没反应。
+ * 展示节奏是随机的（见 HINT_FIRST_DELAY 与 HINT_GAP_RANGE），气泡里带「关闭气泡」，
+ * 用户点过之后就永久不再出现（只写 localStorage 的一个开关，不做账号同步）。 */
+const HINT_OFF_STORAGE_KEY = "help_agent_hint_off";
+/** 首次出现的延迟区间（毫秒）：让页面先加载完，别一进来就弹。 */
+const HINT_FIRST_DELAY: readonly [number, number] = [4_000, 12_000];
+/** 每次自动消失后，到下一次出现的随机间隔：2~6 分钟，避免像定时骚扰。 */
+const HINT_GAP_RANGE: readonly [number, number] = [120_000, 360_000];
+/** 每次气泡停留时长。 */
+const HINT_VISIBLE_MS = 15_000;
+const HINT_WIDTH = 208;
+
+/** 气泡文案池：随机取一句，且不会连续两次相同。 */
+const HINT_PHRASES: readonly string[] = [
+  "哪里不会用，我告诉你～",
+  "工作台我太熟啦，点点我问我呀！",
+  "POD、AI处理、积分规则，随便问～",
+  "卡在哪一步了？问我最快",
+  "上新遇到问题？我在这儿",
+  "不会导出店小秘？点我问问",
+  "积分到底怎么扣？一问便知",
+  "新手先问我，少走弯路～",
+];
+
+function randomBetween(range: readonly [number, number]): number {
+  return range[0] + Math.random() * (range[1] - range[0]);
+}
+
+function pickHintPhrase(previous: string): string {
+  const pool = HINT_PHRASES.filter((phrase) => phrase !== previous);
+  return pool[Math.floor(Math.random() * pool.length)] ?? HINT_PHRASES[0];
+}
+
+/** 各主题专属 Q 版吉祥物（球面图）。 */
 const THEME_MASCOT: Record<ThemeId, string> = {
   classic: "/theme/mascots/01-classic.png",
   sunset: "/theme/mascots/02-warm-orange.png",
@@ -44,23 +72,32 @@ const THEME_MASCOT: Record<ThemeId, string> = {
   alpine: "/theme/mascots/10-alpine.png",
 };
 
+/**
+ * 空态推荐问题按「模块 × 用法 / 收费」两条主线生成。
+ *
+ * 模块中文名直接取导航配置（``workspacePageModules``），改模块名不用回来改这里；
+ * 只保留两个主力模块，四个问题刚好铺满一屏，多了一屏放不下反而没人点。
+ */
+const SUGGESTED_MODULE_IDS: WorkspaceModuleId[] = ["product_processing", "pod_customization"];
+
+function moduleLabel(id: WorkspaceModuleId): string {
+  return workspacePageModules.find((module) => module.id === id)?.label ?? id;
+}
+
+const SUGGESTED_QUESTIONS = [
+  ...SUGGESTED_MODULE_IDS.map((id) => `${moduleLabel(id)}模块怎么使用？`),
+  ...SUGGESTED_MODULE_IDS.map((id) => `${moduleLabel(id)}模块积分怎么收费？`),
+];
+
 type BallPosition = { x: number; y: number };
 
 type HelpAgentWidgetProps = {
   /**
-   * 是否提供「去提交问题反馈」入口。
+   * 球体大小是否跟随「偏好设置 → 悬浮球大小」（只在工作台里传 true）。
    *
-   * 反馈面板在「个人中心」里，未登录（注册/登录页）点不到，所以在登录前挂载这个
-   * 组件时要传 ``false``，兜底时改成提示「登录后去哪反馈」，不给一个点了没反应的按钮。
+   * 登录页那个实例没有偏好入口，固定用 56px 小球；工作台里按三档尺寸跟随主题吉祥物。
    */
-  allowFeedback?: boolean;
-  /**
-   * 是否把「积分悬浮球」并进这个球（只在工作台里传 true）。
-   *
-   * 开启后球体换大一号、正面显示可用积分、背面显示主题吉祥物，点击依旧打开答疑面板；
-   * 登录前没有账号读不到积分，所以登录页那个实例不传。
-   */
-  showBalance?: boolean;
+  sizeFromPreference?: boolean;
 };
 
 function readStoredPosition(): BallPosition | null {
@@ -91,14 +128,28 @@ function clampAxis(value: number, max: number, min: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
-export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: HelpAgentWidgetProps = {}) {
+export function HelpAgentWidget({ sizeFromPreference = false }: HelpAgentWidgetProps = {}) {
   const { theme } = useTheme();
   const { size: ballSizePref } = useBallSize();
-  // 积分数字是否可见（个人中心 → 偏好设置）；关掉后球面显示「?」。
-  const { visible: ballPointsVisible } = useBallPointsVisible();
+  // 答疑在服务端，必须登录：未登录时球置灰，点击提示先登录，不发请求。
+  const authenticated = Boolean(getAuthToken());
   const [open, setOpen] = useState(false);
-  // 大小偏好只作用于合并了积分球的实例（登录页那个小 Q 球保持原尺寸）。
-  const ballSize = showBalance ? BALANCE_BALL_SIZES[ballSizePref] : BALL_SIZE;
+  /** 正在播放收起动效：面板仍挂载，但已经缩小淡出，结束后才 ``setOpen(false)``。 */
+  const [closing, setClosing] = useState(false);
+  /** 刚打开面板时让吉祥物点一下头（和面板展开动效呼应），500ms 后摘掉类名恢复待机动画。 */
+  const [greeting, setGreeting] = useState(false);
+  /** 球旁边的引导气泡：是否可见、当前文案、用户是否已永久关闭。 */
+  const [hintVisible, setHintVisible] = useState(false);
+  const [hintPhrase, setHintPhrase] = useState(HINT_PHRASES[0]);
+  const [hintDisabled, setHintDisabled] = useState(() => {
+    try {
+      return window.localStorage.getItem(HINT_OFF_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  // 大小偏好只作用于工作台实例（登录页那个球没有偏好入口，保持 56px）。
+  const ballSize = sizeFromPreference ? PREF_BALL_SIZES[ballSizePref] : BALL_SIZE;
   // 初始化就要夹取：localStorage 里可能是大窗口下拖拽存下的坐标，直接沿用会停在屏幕外，
   // 而 resize 事件只在窗口尺寸变化时才触发，球就再也回不来了。
   const [position, setPosition] = useState<BallPosition>(() => clampBallPosition(
@@ -108,18 +159,83 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
   ));
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
-  const [pending, setPending] = useState(false);
+  /** 正在流式输出的助手消息 id；非空时禁止再发。 */
+  const [streamingId, setStreamingId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  /** 最近一条答不上来的问题，用于预填反馈内容 */
-  const [lastUnanswered, setLastUnanswered] = useState("");
-  /** 合并积分球后：可用积分、鼠标是否停在球上、闲置是否已自动翻到吉祥物面。 */
-  const [points, setPoints] = useState<number | null>(null);
-  const [hovered, setHovered] = useState(false);
-  const [idleFlipped, setIdleFlipped] = useState(false);
 
   const dragState = useRef<{ startX: number; startY: number; originX: number; originY: number; moved: boolean } | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  /** 同步的在飞标记：state 更新要等下一次渲染，连按两次回车会穿过 ``streamingId`` 判断。 */
+  const busyRef = useRef(false);
+  /** 中文输入法组词中：这期间的回车是「选词」，不是发送。 */
+  const composingRef = useRef(false);
+  /** 服务端按 session_id 保留最近 3 轮上下文，所以整个面板生命周期共用一个。 */
+  const sessionIdRef = useRef(newSessionId());
+  const closeTimerRef = useRef<number | null>(null);
+
+  /**
+   * 收起面板：先播放「缩回球里」的动画，``PANEL_EXIT_MS`` 之后再卸载。
+   *
+   * 重复调用直接忽略（动画期间再点球/再按 Esc 不会叠加定时器）。
+   * 在飞请求立刻中止——动画只是视觉残留，没必要继续占着服务端连接。
+   */
+  const requestClose = useCallback(() => {
+    if (closeTimerRef.current != null) return;
+    abortRef.current?.abort();
+    setClosing(true);
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      setClosing(false);
+      setOpen(false);
+    }, PANEL_EXIT_MS);
+  }, []);
+
+  /** 收起当前这条气泡；下一次出现的时机由下面的随机调度继续排。 */
+  const hideHint = useCallback(() => {
+    setHintVisible(false);
+  }, []);
+
+  /** 「关闭气泡」：永久停用，记在 localStorage 里，换页面/重启都不再弹。 */
+  const disableHint = useCallback(() => {
+    setHintVisible(false);
+    setHintDisabled(true);
+    try {
+      window.localStorage.setItem(HINT_OFF_STORAGE_KEY, "1");
+    } catch {
+      /* localStorage 不可用时只在本次会话生效 */
+    }
+  }, []);
+
+  // 不定时随机展示：首次 4~12 秒后出现，之后每 2~6 分钟随机一次；
+  // 每条停留 15 秒自动收起。面板打开期间不弹（用户已经在用了）。
+  useEffect(() => {
+    if (!authenticated || !sizeFromPreference || open || hintDisabled) return;
+    let stopped = false;
+    let showTimer = 0;
+    let hideTimer = 0;
+
+    const schedule = (delay: number) => {
+      showTimer = window.setTimeout(() => {
+        if (stopped) return;
+        setHintPhrase((previous) => pickHintPhrase(previous));
+        setHintVisible(true);
+        hideTimer = window.setTimeout(() => {
+          if (stopped) return;
+          setHintVisible(false);
+          schedule(randomBetween(HINT_GAP_RANGE));
+        }, HINT_VISIBLE_MS);
+      }, delay);
+    };
+
+    schedule(randomBetween(HINT_FIRST_DELAY));
+    return () => {
+      stopped = true;
+      window.clearTimeout(showTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [authenticated, hintDisabled, open, sizeFromPreference]);
 
   // 窗口缩放、或偏好设置里改了球体大小：把悬浮球拉回可视区，
   // 避免缩小窗口 / 换成大球后球有一部分留在屏幕外找不回来。
@@ -137,52 +253,36 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
     return () => window.removeEventListener("resize", keepInView);
   }, [ballSize]);
 
-  // 积分面显示一段时间后自动翻到吉祥物面（和原积分悬浮球一致）。
+  // 打开面板时吉祥物点一下头；播完就摘掉类名，待机动画（呼吸 / 浮动）继续跑。
   useEffect(() => {
-    if (!showBalance || idleFlipped) return;
-    const timer = window.setTimeout(() => setIdleFlipped(true), IDLE_FLIP_INTERVAL_MS);
+    if (!open) return;
+    setGreeting(true);
+    const timer = window.setTimeout(() => setGreeting(false), 500);
     return () => window.clearTimeout(timer);
-  }, [showBalance, idleFlipped]);
-
-  // 积分读取与轮询：只在合并了积分球的工作台实例里跑，登录页没有账号不去请求。
-  useEffect(() => {
-    if (!showBalance) return;
-    let stopped = false;
-    const refresh = async () => {
-      try {
-        const payload = await loadBillingSummary();
-        if (!stopped) setPoints(payload.wallet.available_points);
-      } catch {
-        // 静默失败：保留旧值，等下一轮刷新
-      }
-    };
-    void refresh();
-    const onChanged = () => { void refresh(); };
-    window.addEventListener(BALANCE_CHANGED_EVENT, onChanged);
-    const timer = window.setInterval(() => { void refresh(); }, BALANCE_POLL_INTERVAL_MS);
-    return () => {
-      stopped = true;
-      window.removeEventListener(BALANCE_CHANGED_EVENT, onChanged);
-      window.clearInterval(timer);
-    };
-  }, [showBalance]);
+  }, [open]);
 
   // 新消息到达时滚到底部。
   useEffect(() => {
     const body = bodyRef.current;
     if (body) body.scrollTop = body.scrollHeight;
-  }, [messages, pending, open]);
+  }, [messages, open]);
 
-  // 打开面板时聚焦输入框，Esc 收起。
+  // 组件卸载时中止在飞的流式请求并清掉收起定时器，避免连接挂着 / 卸载后 setState。
+  useEffect(() => () => {
+    if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current);
+    abortRef.current?.abort();
+  }, []);
+
+  // 打开面板时聚焦输入框，Esc 收起（走同一套收起动效）。
   useEffect(() => {
     if (!open) return;
-    inputRef.current?.focus();
+    if (authenticated) inputRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") requestClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, [open, authenticated, requestClose]);
 
   const persistPosition = useCallback((next: BallPosition) => {
     try {
@@ -230,150 +330,212 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
       persistPosition(position);
       return;
     }
-    setOpen((value) => !value);
-  }, [persistPosition, position]);
+    if (!authenticated) {
+      showToast("请先登录后再使用私人助手");
+      return;
+    }
+    if (open) requestClose();
+    else {
+      setOpen(true);
+      hideHint();
+    }
+  }, [authenticated, hideHint, open, persistPosition, position, requestClose]);
 
   // -- 问答 --------------------------------------------------------------
 
-  const pushMessage = useCallback((message: ChatMessage) => {
-    setMessages((current) => [...current, message]);
-  }, []);
+  const ask = useCallback(async (raw: string) => {
+    const question = raw.trim();
+    if (!question || streamingId || busyRef.current || !authenticated) return;
+    busyRef.current = true;
 
-  const runSearch = useCallback(async (question: string) => {
-    setPending(true);
-    setError("");
-    try {
-      const result = await helpAgentApi.search(question);
-      // 兜底时记下原问题，供「去提交问题反馈」预填，省得用户重打一遍。
-      if (result.type === "fallback") setLastUnanswered(question);
-      pushMessage(toAssistantMessage(result, makeId("a"), question, { allowFeedback }));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "查询失败，请稍后重试");
-    } finally {
-      setPending(false);
-    }
-  }, [allowFeedback, pushMessage]);
-
-  const handleSubmit = useCallback(async () => {
-    const question = draft.trim();
-    if (!question || pending) return;
-    pushMessage({ id: makeId("u"), role: "user", text: question });
+    const answerId = makeId("a");
+    setMessages((current) => [
+      ...current,
+      { id: makeId("u"), role: "user", text: question },
+      { id: answerId, role: "assistant", text: "", streaming: true },
+    ]);
     setDraft("");
-    await runSearch(question);
-  }, [draft, pending, pushMessage, runSearch]);
-
-  const handlePickCandidate = useCallback(async (candidate: HelpAgentCandidate) => {
-    pushMessage({ id: makeId("u"), role: "user", text: candidate.question });
-    setPending(true);
     setError("");
-    try {
-      const answer = await helpAgentApi.confirm(candidate.faq_id);
-      pushMessage({
-        id: makeId("a"),
-        role: "assistant",
-        text: answer.answer,
-        category: answer.category,
-      });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "读取答案失败，请稍后重试");
-    } finally {
-      setPending(false);
-    }
-  }, [pushMessage]);
+    setStreamingId(answerId);
 
-  const openFeedback = useCallback((question: string) => {
-    // 跳到个人中心的意见反馈面板，并把答不上来的问题原文带过去预填。
-    window.dispatchEvent(new CustomEvent("mainpg:open-feedback", { detail: { question } }));
-    setOpen(false);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const patch = (next: (message: ChatMessage) => ChatMessage) => {
+      setMessages((current) => current.map((message) => (message.id === answerId ? next(message) : message)));
+    };
+
+    try {
+      await helpAgentApi.chatStream({
+        sessionId: sessionIdRef.current,
+        message: question,
+        signal: controller.signal,
+        onMeta: (meta) => patch((message) => ({ ...message, requestId: meta.request_id })),
+        onDelta: (text) => patch((message) => ({ ...message, text: message.text + text })),
+        onCitation: (citation) =>
+          patch((message) => ({ ...message, citations: [...(message.citations ?? []), citation] })),
+      });
+      patch((message) => ({ ...message, streaming: false }));
+    } catch (cause) {
+      // 用户主动关面板/中止：保留已收到的半截答案，不当成错误提示。
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        patch((message) => ({ ...message, streaming: false }));
+        return;
+      }
+      // 没收到任何正文的空回答不留气泡，有内容则保留并停止闪烁。
+      setMessages((current) => current.filter((message) => message.id !== answerId || message.text.trim().length > 0));
+      setError(cause instanceof Error ? cause.message : "答疑服务暂时不可用，请稍后再试");
+      // 失败时把问题放回输入框，用户手动再点一次发送（服务端要求不自动重试）。
+      setDraft((current) => current || question);
+    } finally {
+      busyRef.current = false;
+      setStreamingId(null);
+      abortRef.current = null;
+    }
+  }, [authenticated, streamingId]);
+
+  const handleSubmit = useCallback(() => {
+    void ask(draft);
+  }, [ask, draft]);
+
+  const rateAnswer = useCallback(async (message: ChatMessage, helpful: boolean) => {
+    if (!message.requestId || message.feedback) return;
+    const mark: "up" | "down" = helpful ? "up" : "down";
+    setMessages((current) => current.map((item) => (item.id === message.id ? { ...item, feedback: mark } : item)));
+    try {
+      await helpAgentApi.feedback(message.requestId, helpful);
+    } catch (cause) {
+      // 反馈失败不能把评价留在界面上假装成功，恢复可点并提示一次。
+      setMessages((current) =>
+        current.map((item) => (item.id === message.id ? { ...item, feedback: undefined } : item)),
+      );
+      showToast(cause instanceof Error ? cause.message : "反馈提交失败，请稍后再试", "error");
+    }
   }, []);
 
   // -- 渲染 --------------------------------------------------------------
 
   // 面板尽量贴在悬浮球旁边；靠边时夹回可视区，避免超出屏幕。
+  const panelLeft = clampAxis(position.x + ballSize - PANEL_WIDTH, window.innerWidth - PANEL_WIDTH - PANEL_MARGIN, PANEL_MARGIN);
+  const panelTop = clampAxis(position.y - PANEL_HEIGHT - 12, window.innerHeight - PANEL_HEIGHT - PANEL_MARGIN, PANEL_MARGIN);
   const panelStyle: CSSProperties = {
-    left: clampAxis(position.x + ballSize - PANEL_WIDTH, window.innerWidth - PANEL_WIDTH - PANEL_MARGIN, PANEL_MARGIN),
-    top: clampAxis(position.y - PANEL_HEIGHT - 12, window.innerHeight - PANEL_HEIGHT - PANEL_MARGIN, PANEL_MARGIN),
+    left: panelLeft,
+    top: panelTop,
+    // 展开动效的缩放原点放在球心：面板看起来是从球里长出来的，而不是凭空弹出。
+    // 球通常贴在面板右下角之外，所以这个点允许落在面板边界外。
+    transformOrigin: `${position.x + ballSize / 2 - panelLeft}px ${position.y + ballSize / 2 - panelTop}px`,
   };
 
-  // 积分数值面：和原积分悬浮球一致，位数多时缩字号避免撑破球体。
-  const displayPoints = points == null ? "…" : String(points);
-  // 关掉「显示积分数字」时球面只留「?」—— 球一直浮在界面上，公共场合会被人一眼看到余额。
-  const ballPointsText = ballPointsVisible ? displayPoints : "?";
+  // 引导气泡：优先贴在球上方，顶部放不下就翻到球下方；右边缘与球右边缘对齐。
+  // 上方用 `bottom` 定位，气泡高度随文案换行变化也始终与球保持 12px 间距。
+  // 110px 是按「两行文案 + 关闭气泡小字」估的最大高度，留出余量避免贴顶被裁。
+  const hintAbove = position.y >= 110;
+  const hintStyle: CSSProperties = {
+    left: clampAxis(position.x + ballSize - HINT_WIDTH, window.innerWidth - HINT_WIDTH - 8, 8),
+    ...(hintAbove
+      ? { bottom: window.innerHeight - position.y + 12 }
+      : { top: position.y + ballSize + 12 }),
+  };
+
+  // 球面固定显示当前主题的 Q 版吉祥物（不再显示积分，也不做翻转）。
   const mascot = THEME_MASCOT[theme] ?? THEME_MASCOT.classic;
-  // 悬停时翻到吉祥物面看一眼，移开回到积分面；闲置久了则停在吉祥物面。
-  const flipped = showBalance && (idleFlipped || hovered);
+  const pending = streamingId !== null;
 
   return (
     <>
       {open && (
-        <section className="help-agent-panel" style={panelStyle} role="dialog" aria-modal="false" aria-label="操作答疑">
+        <section
+          className={`help-agent-panel${closing ? " is-closing" : ""}`}
+          style={panelStyle}
+          role="dialog"
+          aria-modal="false"
+          aria-label="私人助手"
+        >
           <header className="help-agent-panel-head">
             <div>
-              <h2>操作答疑</h2>
-              <p>系统操作、业务流程都能问</p>
+              <h2>私人助手</h2>
             </div>
-            <button type="button" className="help-agent-close" onClick={() => setOpen(false)} aria-label="收起答疑">×</button>
+            <button type="button" className="help-agent-close" onClick={requestClose} aria-label="收起答疑">×</button>
           </header>
 
           <div className="help-agent-body" ref={bodyRef}>
-            {messages.length === 0 && !pending && (
-              <div className="help-agent-empty">
-                <p>你好，遇到操作问题直接问我就行。</p>
-                <div className="help-agent-samples">
-                  {SAMPLE_QUESTIONS.map((sample) => (
-                    <button
-                      key={sample}
-                      type="button"
-                      className="help-agent-sample"
-                      onClick={() => {
-                        pushMessage({ id: makeId("u"), role: "user", text: sample });
-                        void runSearch(sample);
-                      }}
-                    >
-                      {sample}
-                    </button>
-                  ))}
-                </div>
+            {!authenticated ? (
+              <div className="help-agent-notice">
+                <p>私人助手需要登录后使用。</p>
+                <p>登录后可以问我系统操作、业务流程和积分规则。</p>
               </div>
-            )}
-
-            {messages.map((message) => (
-              <div key={message.id} className={`help-agent-msg is-${message.role}`}>
-                <div className="help-agent-bubble">
-                  {message.category && <span className="help-agent-tag">{categoryLabel(message.category)}</span>}
-                  <p className="help-agent-text">{message.text}</p>
-                  {message.candidates && message.candidates.length > 0 && (
-                    <ul className="help-agent-candidates">
-                      {message.candidates.map((candidate) => (
-                        <li key={candidate.faq_id}>
-                          <button type="button" onClick={() => void handlePickCandidate(candidate)} disabled={pending}>
-                            {/* 候选都长得像，带上分类用户才能一眼选出对的那条 */}
-                            {candidate.category && (
-                              <span className="help-agent-candidate-tag">{categoryLabel(candidate.category)}</span>
-                            )}
-                            <span className="help-agent-candidate-text">{candidate.question}</span>
-                          </button>
-                        </li>
+            ) : (
+              <>
+                {messages.length === 0 && !pending && (
+                  <div className="help-agent-empty">
+                    <p>您也有以下困扰？</p>
+                    <div className="help-agent-samples">
+                      {SUGGESTED_QUESTIONS.map((sample) => (
+                        <button
+                          key={sample}
+                          type="button"
+                          className="help-agent-sample"
+                          onClick={() => void ask(sample)}
+                        >
+                          {sample}
+                        </button>
                       ))}
-                    </ul>
-                  )}
-                  {message.fallback && allowFeedback && (
-                    <button
-                      type="button"
-                      className="help-agent-feedback-btn"
-                      onClick={() => openFeedback(message.sourceQuestion ?? lastUnanswered)}
-                    >
-                      去提交问题反馈
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+                    </div>
+                  </div>
+                )}
 
-            {pending && (
-              <div className="help-agent-msg is-assistant">
-                <div className="help-agent-bubble is-typing"><span /><span /><span /></div>
-              </div>
+                {messages.map((message) => (
+                  <div key={message.id} className={`help-agent-msg is-${message.role}`}>
+                    <div className="help-agent-bubble">
+                      {message.streaming && !message.text ? (
+                        <div className="help-agent-typing" aria-label="正在回答"><span /><span /><span /></div>
+                      ) : (
+                        <p className="help-agent-text">
+                          {message.text}
+                          {message.streaming && <span className="help-agent-caret" aria-hidden="true" />}
+                        </p>
+                      )}
+
+                      {message.citations && message.citations.length > 0 && (
+                        <ul className="help-agent-citations">
+                          {message.citations.map((citation, index) => (
+                            <li key={`${citation.url}-${index}`}>
+                              {/* 引用是飞书文档，必须用系统浏览器打开：应用内嵌会因缺登录态白屏。 */}
+                              <button
+                                type="button"
+                                onClick={() => window.open(citation.url, "_blank", "noopener,noreferrer")}
+                              >
+                                {citation.title}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      {message.role === "assistant" && message.requestId && !message.streaming && (
+                        <div className="help-agent-rate">
+                          <span>这个回答有用吗？</span>
+                          <button
+                            type="button"
+                            className={message.feedback === "up" ? "is-active" : ""}
+                            onClick={() => void rateAnswer(message, true)}
+                            disabled={Boolean(message.feedback)}
+                          >
+                            有用
+                          </button>
+                          <button
+                            type="button"
+                            className={message.feedback === "down" ? "is-active" : ""}
+                            onClick={() => void rateAnswer(message, false)}
+                            disabled={Boolean(message.feedback)}
+                          >
+                            没用
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </>
             )}
           </div>
 
@@ -384,70 +546,71 @@ export function HelpAgentWidget({ allowFeedback = true, showBalance = false }: H
                 ref={inputRef}
                 className="help-agent-input"
                 rows={1}
-                maxLength={500}
-                placeholder="描述你的问题，例如「POD定制怎么使用」"
+                maxLength={1000}
+                placeholder={authenticated ? "告诉我你的困扰～" : "请先登录后再提问"}
                 value={draft}
+                disabled={!authenticated}
                 onChange={(event) => setDraft(event.target.value)}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={() => { composingRef.current = false; }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void handleSubmit();
-                  }
+                  if (event.key !== "Enter" || event.shiftKey) return;
+                  // 中文输入法用回车选词时也会先发 keydown：此时回车属于「确认候选」，
+                  // 不能当发送，否则打一个字就被直接发出去。
+                  if (composingRef.current || event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  handleSubmit();
                 }}
               />
               <button
                 type="button"
                 className="help-agent-send"
-                onClick={() => void handleSubmit()}
-                disabled={pending || !draft.trim()}
+                onClick={handleSubmit}
+                disabled={!authenticated || pending || !draft.trim()}
               >
                 发送
               </button>
             </div>
-            <p className="help-agent-hint">答案来自常见问题库，无需联网、不消耗积分</p>
+            {/* 登录后不再挂底部说明行；未登录时保留一句「登录后即可提问」的引导。 */}
+            {!authenticated && <p className="help-agent-hint">登录后即可提问</p>}
           </footer>
         </section>
       )}
 
+      {/* 球旁边的引导气泡：点文案直接打开答疑面板；「关闭气泡」永久停用。 */}
+      {hintVisible && !open && (
+        <div className={`help-agent-hint-bubble${hintAbove ? "" : " is-below"}`} style={hintStyle}>
+          <button
+            type="button"
+            className="help-agent-hint-text"
+            onClick={() => {
+              hideHint();
+              setOpen(true);
+            }}
+          >
+            {hintPhrase}
+          </button>
+          <button type="button" className="help-agent-hint-off" onClick={disableHint}>
+            关闭气泡
+          </button>
+        </div>
+      )}
+
       <button
         type="button"
-        className={`help-agent-ball${showBalance ? " is-balance" : ""}${open ? " is-open" : ""}${flipped ? " is-flipped" : ""}`}
+        className={`help-agent-ball is-mascot${sizeFromPreference ? " is-sized" : ""}${authenticated ? "" : " is-disabled"}${greeting ? " is-greeting" : ""}`}
         style={{ left: position.x, top: position.y }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        aria-label={open ? "收起操作答疑" : "打开操作答疑"}
-        title={showBalance
-          ? ballPointsVisible
-            ? `可用积分 ${points == null ? "加载中" : points}（点击打开操作答疑，可拖动）`
-            : "数字已隐藏（点击打开操作答疑，可拖动）"
-          : "操作答疑（可拖动）"}
+        aria-label={authenticated ? (open ? "收起私人助手" : "打开私人助手") : "登录后才能使用私人助手"}
+        title={!authenticated ? "请先登录后再使用私人助手" : "私人助手（可拖动）"}
       >
-        {showBalance ? (
-          <span className="help-agent-ball-inner">
-            <span className={`help-agent-ball-face is-front${ballPointsVisible ? "" : " is-points-masked"}`}>
-              {/* 关掉「显示积分数字」时球面只留「?」——连「积分」标签一起去掉，不留任何字。 */}
-              {ballPointsVisible && <span className="help-agent-ball-label">积分</span>}
-              <b className={ballPointsText.length >= 6 ? "is-compact" : undefined}>{ballPointsText}</b>
-            </span>
-            <span className="help-agent-ball-face is-back">
-              <img src={mascot} alt="主题伙伴" draggable={false} />
-            </span>
-          </span>
-        ) : (
-          <span className="help-agent-ball-symbol" aria-hidden="true">{open ? "×" : "?"}</span>
-        )}
+        <span className="help-agent-ball-face">
+          <img src={mascot} alt="答疑助手" draggable={false} />
+        </span>
       </button>
     </>
   );
 }
-
-const SAMPLE_QUESTIONS = [
-  "POD定制怎么使用？",
-  "积分是怎么扣的",
-  "怎么采集商品？",
-  "处理完怎么导出到店小秘",
-];

@@ -99,6 +99,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   // 否则勾选后每输入一个字符都会被 matchSavedAccount 判为「未保存账号」而自动取消。
   const rememberTouchedRef = useRef(false);
   const accountFieldRef = useRef<HTMLDivElement | null>(null);
+  // 表单改由 JS 校验（表单加了 noValidate），失败时把焦点送回对应输入框。
+  const identifierInputRef = useRef<HTMLInputElement | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
   const identifierRef = useRef(identifier);
   const pickSequenceRef = useRef(0);
 
@@ -384,6 +387,31 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     setNotice("");
     setBusy(true);
     try {
+      // 原生校验（required / onInvalid）已由表单的 noValidate 关掉：它设的 customValidity
+      // 是粘性的，「点已保存账号」这类程序化回填不触发 input 事件，清不掉，于是会出现
+      // 框里明明有值、浏览器仍弹「请输入账号」的情况。这里统一按表单顺序自己校验。
+      if (!identifier.trim()) {
+        setError(isLogin ? "请输入账号" : "请输入用户名");
+        identifierInputRef.current?.focus();
+        return;
+      }
+      if (!isLogin && !email.trim().includes("@")) {
+        setError("请输入有效的邮箱地址");
+        return;
+      }
+      if (!isLogin && !/^\d{6}$/.test(emailCode.trim())) {
+        setError("请输入 6 位数字验证码");
+        return;
+      }
+      if (!password) {
+        setError("请输入密码");
+        passwordInputRef.current?.focus();
+        return;
+      }
+      if (!isLogin && !confirmPassword) {
+        setError("请再次输入密码");
+        return;
+      }
       if (!agreed) {
         setError("请先阅读并同意《界野隐私政策》");
         return;
@@ -452,10 +480,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           </form>
         ) : (
           <>
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSubmit} noValidate>
               {isLogin ? (
                 <div className="auth-saved-field" ref={accountFieldRef}>
-                  <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => handleIdentifierChange(e.target.value)} onFocus={() => setAccountMenuOpen(true)} onClick={() => setAccountMenuOpen(true)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入账号")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="off" required /></label>
+                  <label>账号（用户名或邮箱）<input ref={identifierInputRef} type="text" value={identifier} onChange={(e) => handleIdentifierChange(e.target.value)} onFocus={() => setAccountMenuOpen(true)} onClick={() => setAccountMenuOpen(true)} placeholder="name@example.com" autoComplete="off" required /></label>
                   {accountMenuOpen && savedAccounts.length > 0 && (
                     <div className="auth-saved-menu" role="listbox" aria-label="已保存的账号">
                       <p className="auth-saved-menu-head">已保存的账号</p>
@@ -473,16 +501,16 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                 </div>
               ) : (
                 <>
-                  <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入用户名")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
-                  <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
-                  <label>邮箱验证码<div className="auth-code-row"><input type="text" value={emailCode} onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendEmailCode} disabled={codeBusy || codeCooldown > 0}>{codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}</button></div></label>
+                  <label>用户名<input ref={identifierInputRef} type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
+                  <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" autoComplete="email" required /></label>
+                  <label>邮箱验证码<div className="auth-code-row"><input type="text" value={emailCode} onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendEmailCode} disabled={codeBusy || codeCooldown > 0}>{codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}</button></div></label>
                 </>
               )}
               {/* 密码框统一 new-password：密码记忆由应用内「账号管理」接管（登录页下拉自动
                   填充），避免浏览器原生密码管理器重复弹窗、且其自动填充不会同步进受控组件。 */}
-              <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete="new-password" required /></label>
+              <label>密码<input ref={passwordInputRef} type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete="new-password" required /></label>
               {isLogin && <label className="auth-agree auth-remember"><input type="checkbox" checked={rememberPassword} onChange={(e) => handleRememberChange(e.target.checked)} /><span>记住密码，下次自动填充</span></label>}
-              {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
+              {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
               {!isLogin && <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="选填" autoComplete="off" /></label>}
               <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
               {!agreed && <p className="auth-agree-hint">勾选后才能{isLogin ? "登录" : "注册"}</p>}

@@ -1,7 +1,8 @@
-/* 操作答疑智能体：右下角悬浮球 + 聊天面板。
+/* 操作答疑智能体：右下角吉祥物球 + 聊天面板。
  * 全部颜色走主题变量，8 套主题自动跟随，不写死色值。
  */
 
+/* 球面固定是当前主题的 Q 版吉祥物，不再显示积分、也不做正反翻转。 */
 .help-agent-ball {
   position: fixed;
   z-index: 90;
@@ -10,129 +11,191 @@
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, .74);
+  border: none;
   border-radius: 50%;
-  color: #fff;
-  background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0));
-  box-shadow: 0 12px 28px var(--theme-brand-shadow, rgba(10, 145, 225, .3));
+  background: transparent;
+  filter: drop-shadow(0 8px 22px rgba(15, 23, 42, .26));
   cursor: grab;
   touch-action: none;
   user-select: none;
-  transition: box-shadow .2s ease, transform .2s ease;
+  transition: filter .2s ease, transform .2s ease;
 }
 .help-agent-ball:hover {
-  transform: translateY(-2px) scale(1.04);
-  box-shadow: 0 16px 34px rgba(8, 119, 181, .38);
+  transform: translateY(-2px) scale(1.03);
+  filter: drop-shadow(0 10px 26px rgba(15, 23, 42, .34));
 }
 .help-agent-ball:active { cursor: grabbing; }
 .help-agent-ball:focus-visible { outline: 3px solid rgba(24, 169, 218, .26); outline-offset: 3px; }
-.help-agent-ball.is-open {
-  background: var(--theme-icon-button-bg, #fff);
-  color: var(--theme-text-secondary, #527089);
-  border-color: var(--theme-card-border, rgba(184, 209, 230, .82));
-  box-shadow: 0 10px 24px var(--theme-card-shadow-lg, rgba(26, 65, 101, .1));
-}
-.help-agent-ball-symbol {
-  font-size: 1.55rem;
-  font-weight: var(--weight-semibold, 600);
-  line-height: 1;
-}
-
-/* -- 合并了积分球的双面球：正面可用积分、背面主题吉祥物 ------------------ */
 
 /* 尺寸随偏好设置（个人中心 → 悬浮球大小：小 / 中 / 大），中＝88px 为既有大小。
-   球面内的字号与积分宽度按球径等比适配（88px 时约 13 / 24 / 17 / 78px），
-   并设下限，避免小档把字缩到看不清。 */
-.help-agent-ball.is-balance {
+   登录页那个实例没有偏好入口，不挂 is-sized，保持 56px。 */
+.help-agent-ball.is-sized {
   --ba-size: 88px;
-  --ba-label: max(11px, calc(var(--ba-size) * 0.148));
-  --ba-points: max(19px, calc(var(--ba-size) * 0.273));
-  --ba-points-compact: max(14px, calc(var(--ba-size) * 0.193));
-  --ba-points-width: max(62px, calc(var(--ba-size) * 0.886));
-  --ba-points-masked: max(22px, calc(var(--ba-size) * 0.36));
   width: var(--ba-size);
   height: var(--ba-size);
-  perspective: 800px;
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  filter: drop-shadow(0 8px 22px rgba(15, 23, 42, .26));
-  transition: filter .2s ease;
 }
-/* 双面球自带翻转，悬停不再整体平移缩放，只加深一点投影 */
-.help-agent-ball.is-balance:hover {
-  transform: none;
-  filter: drop-shadow(0 10px 26px rgba(15, 23, 42, .34));
-}
-.help-agent-ball.is-balance.is-open {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-}
+html[data-ball-size="sm"] .help-agent-ball.is-sized { --ba-size: 68px; }
+html[data-ball-size="lg"] .help-agent-ball.is-sized { --ba-size: 110px; }
 
-html[data-ball-size="sm"] .help-agent-ball.is-balance { --ba-size: 68px; }
-html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
-
-.help-agent-ball-inner {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 100%;
-  transform-style: preserve-3d;
-  transition: transform .5s cubic-bezier(.4, .1, .2, 1);
+/* 未登录：球置灰，点击只提示「请先登录」。 */
+.help-agent-ball.is-disabled {
+  filter: grayscale(.72) drop-shadow(0 8px 22px rgba(15, 23, 42, .2));
+  opacity: .68;
+  cursor: not-allowed;
 }
-.help-agent-ball.is-flipped .help-agent-ball-inner { transform: rotateY(180deg); }
+.help-agent-ball.is-disabled:hover { transform: none; }
 
 .help-agent-ball-face {
   position: absolute;
   inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
+  display: block;
   border: 2px solid rgba(255, 255, 255, .55);
   border-radius: 50%;
   overflow: hidden;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  /* 立绘是整张方图（无透明通道），底色只在该图被动画挪开时露出来，
+     所以用浅色而不是深色主题色，避免露出「黑边」。 */
+  background: var(--theme-card-bg, #fff);
   box-shadow: inset 0 -6px 14px rgba(2, 12, 40, .18), inset 0 6px 14px rgba(255, 255, 255, .35);
+  /* 呼吸：整颗球极轻微的胀缩，配合下面的浮动让静态立绘“活”起来。 */
+  animation: help-agent-mascot-breathe 4.8s ease-in-out infinite;
 }
-.help-agent-ball-face.is-front {
-  color: #fff;
-  background: linear-gradient(160deg, var(--theme-module-primary-soft, #3b82f6), var(--theme-module-primary-strong, #075985));
-}
-.help-agent-ball-label {
-  font-size: var(--ba-label, 13px);
-  font-weight: 750;
-  letter-spacing: .06em;
-  line-height: 1.1;
-  opacity: .92;
-}
-.help-agent-ball-face.is-front b {
-  max-width: var(--ba-points-width, 78px);
-  font-size: var(--ba-points, 24px);
-  font-weight: 800;
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.help-agent-ball-face.is-front b.is-compact { font-size: var(--ba-points-compact, 17px); }
-/* 隐藏积分数时的球面：只剩一个「?」，去掉标签后腾出了空间，符号放大填满球心。 */
-.help-agent-ball-face.is-front.is-points-masked b { font-size: var(--ba-points-masked, 32px); }
-.help-agent-ball-face.is-back {
-  transform: rotateY(180deg);
-  background: var(--theme-hero-glow, #0f172a);
-}
-.help-agent-ball-face.is-back img {
-  width: 100%;
-  height: 100%;
+/* 立绘比球面大一圈（四周各溢出 6%）：浮动/点头时上下各挪几像素也不会把底色露出来。
+   旋转不会露边（圆形容器对正方形是旋转不变的），溢出的余量只为平移服务。 */
+.help-agent-ball-face img {
+  position: absolute;
+  top: -6%;
+  left: -6%;
+  width: 112%;
+  height: 112%;
   object-fit: cover;
   pointer-events: none;
+  /* 浮动 + 歪头：幅度都很小，球贴在屏幕角落时不至于晃眼。 */
+  animation: help-agent-mascot-sway 6.2s ease-in-out infinite;
+  transform-origin: 50% 62%;
 }
+
+/* 悬停时动得欢一点：直接换更快的一组动画，而不是改 duration（改时长会跳一帧）。 */
+.help-agent-ball:hover .help-agent-ball-face { animation-name: help-agent-mascot-breathe-fast; }
+.help-agent-ball:hover .help-agent-ball-face img { animation-name: help-agent-mascot-sway-fast; }
+
+@keyframes help-agent-mascot-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+@keyframes help-agent-mascot-breathe-fast {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+@keyframes help-agent-mascot-sway {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  30% { transform: translateY(-1.2px) rotate(-1.2deg); }
+  68% { transform: translateY(1px) rotate(1deg); }
+}
+@keyframes help-agent-mascot-sway-fast {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  30% { transform: translateY(-1.8px) rotate(-2deg); }
+  68% { transform: translateY(1.2px) rotate(1.8deg); }
+}
+
+/* 面板展开时吉祥物点一下头。位移控制在立绘的溢出余量内（6% ＞ 3px），不露底色。 */
+.help-agent-ball.is-greeting .help-agent-ball-face img {
+  animation: help-agent-mascot-greet .5s cubic-bezier(.3, 1.5, .5, 1);
+}
+@keyframes help-agent-mascot-greet {
+  0% { transform: translateY(0) scale(1); }
+  40% { transform: translateY(-3px) scale(1.04) rotate(-2deg); }
+  100% { transform: translateY(0) scale(1) rotate(0deg); }
+}
+
+/* 系统开启「减少动态效果」时全部静止，只保留静态立绘。 */
 @media (prefers-reduced-motion: reduce) {
-  .help-agent-ball-inner { transition: none; }
+  .help-agent-ball-face,
+  .help-agent-ball-face img,
+  .help-agent-ball:is(:hover) .help-agent-ball-face,
+  .help-agent-ball:is(:hover) .help-agent-ball-face img,
+  .help-agent-ball.is-greeting .help-agent-ball-face img,
+  .help-agent-hint-bubble {
+    animation: none;
+  }
+}
+
+/* -- 球旁边的引导气泡 ---------------------------------------------------- */
+
+.help-agent-hint-bubble {
+  position: fixed;
+  z-index: 92;
+  width: 208px;
+  padding: 9px 12px;
+  border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+  border-radius: 12px;
+  /* 气泡必须自己能看清：不要用 --theme-card-bg —— 部分主题（如桃花源）把它设成
+     rgba(..., .2)，压在花枝背景上几乎透明。--theme-icon-button-bg 在各主题里都是实色。 */
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-text-primary, #13233a);
+  font-size: .78rem;
+  line-height: 1.45;
+  text-align: left;
+  box-shadow: 0 10px 24px var(--theme-card-shadow-lg, rgba(26, 65, 101, .12));
+  animation: help-agent-hint-in .34s cubic-bezier(.2, .9, .3, 1) both;
+}
+.help-agent-hint-bubble:hover {
+  border-color: var(--theme-page-tab-active-border, #a7dafa);
+}
+/* 文案本身就是按钮：点它打开面板。 */
+.help-agent-hint-text {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.help-agent-hint-text:hover { color: var(--theme-page-tab-active-color, #0877d3); }
+/* 右下角的小字：点了永久不再弹。 */
+.help-agent-hint-off {
+  display: block;
+  margin: 7px 0 0 auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--theme-text-muted, #8295aa);
+  font-size: .66rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.help-agent-hint-off:hover {
+  color: var(--theme-text-secondary, #527089);
+  text-decoration: underline;
+}
+/* 小尾巴指向球：默认气泡在球上方，尾巴在底部偏右（与球右边缘对齐）。 */
+.help-agent-hint-bubble::after {
+  content: "";
+  position: absolute;
+  right: 20px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  border-right: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+  border-bottom: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+  background: inherit;
+  transform: rotate(45deg);
+}
+/* 球贴着屏幕顶部时气泡翻到下方，尾巴朝上。 */
+.help-agent-hint-bubble.is-below::after {
+  top: -6px;
+  bottom: auto;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+  border-top: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+}
+@keyframes help-agent-hint-in {
+  from { opacity: 0; transform: translateY(6px) scale(.94); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* -- 面板 ---------------------------------------------------------------- */
@@ -152,6 +215,33 @@ html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
   box-shadow: 0 22px 52px var(--theme-card-shadow-lg, rgba(26, 65, 101, .1));
   backdrop-filter: blur(14px);
   overflow: hidden;
+  /* 展开动效：transform-origin 由组件按球心内联设置，面板从球里长出来并轻微上浮。
+     只做 opacity + transform，避免触发布局。 */
+  animation: help-agent-panel-in 260ms cubic-bezier(.16, .84, .24, 1) both;
+  will-change: transform, opacity;
+}
+
+@keyframes help-agent-panel-in {
+  from { opacity: 0; transform: translateY(18px) scale(.34); }
+  70% { opacity: 1; }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 收起：按同一个 transform-origin 缩回球里。时长与组件里的 PANEL_EXIT_MS 对齐，
+   动画播完组件才真正卸载；`both` 保证结束帧保持不变，不会闪一下再消失。 */
+.help-agent-panel.is-closing {
+  pointer-events: none;
+  animation: help-agent-panel-out 180ms cubic-bezier(.45, 0, .8, .4) both;
+}
+
+@keyframes help-agent-panel-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(14px) scale(.4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .help-agent-panel { animation-duration: 1ms; }
+  .help-agent-panel.is-closing { animation-duration: 1ms; }
 }
 
 .help-agent-panel-head {
@@ -167,11 +257,6 @@ html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
   font-size: .98rem;
   font-weight: var(--weight-semibold, 600);
   color: var(--theme-text-primary, #13233a);
-}
-.help-agent-panel-head p {
-  margin: 2px 0 0;
-  font-size: .74rem;
-  color: var(--theme-text-muted, #8295aa);
 }
 .help-agent-close {
   width: 26px;
@@ -239,15 +324,6 @@ html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
   border-color: var(--theme-sidebar-active-border, #8fd3ec);
   color: var(--theme-sidebar-active-color, #056fc8);
 }
-.help-agent-tag {
-  display: inline-block;
-  margin-bottom: 5px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--theme-avatar-bg, #d9f4ff);
-  color: var(--theme-avatar-color, #075fa7);
-  font-size: .66rem;
-}
 .help-agent-text {
   margin: 0;
   font-size: .82rem;
@@ -256,74 +332,102 @@ html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
   word-break: break-word;
 }
 
-.help-agent-candidates {
-  margin: 9px 0 0;
+/* -- 引用、评价、等待态 -------------------------------------------------- */
+
+.help-agent-citations {
+  margin: 8px 0 0;
   padding: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
-.help-agent-candidates button {
+.help-agent-citations button {
   width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  padding: 7px 10px;
-  border: 1px solid var(--theme-page-tab-active-border, #a7dafa);
-  border-radius: 9px;
+  padding: 5px 9px;
+  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
+  border-radius: 8px;
   background: var(--theme-icon-button-bg, #fff);
   color: var(--theme-page-tab-active-color, #0877d3);
-  font-size: .78rem;
+  font-size: .72rem;
+  line-height: 1.45;
   text-align: left;
   cursor: pointer;
 }
-/* 候选条目上的分类标签：比正文小一号、低对比，只做区分不抢视线 */
-.help-agent-candidate-tag {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--theme-page-tab-bg, #f7fafc);
-  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
-  color: var(--theme-text-muted, #8295aa);
-  font-size: .62rem;
-  line-height: 1.6;
-  /* 分类名长短不一（最短 4 字、最长 20 字），统一按一行显示，别在胶囊里折行 */
-  white-space: nowrap;
-}
-.help-agent-candidate-text { line-height: 1.45; word-break: break-word; }
-.help-agent-candidates button:hover:not(:disabled) { background: var(--theme-page-tab-active-bg, #eaf8ff); }
-.help-agent-candidates button:disabled { opacity: .55; cursor: default; }
+.help-agent-citations button:hover { background: var(--theme-page-tab-active-bg, #eaf8ff); }
 
-.help-agent-feedback-btn {
+.help-agent-rate {
   margin-top: 9px;
-  padding: 7px 13px;
-  border: none;
-  border-radius: 9px;
-  background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0));
-  color: #fff;
-  font-size: .78rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .7rem;
+  color: var(--theme-text-muted, #8295aa);
+}
+.help-agent-rate button {
+  padding: 2px 9px;
+  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
+  border-radius: 999px;
+  background: var(--theme-icon-button-bg, #fff);
+  color: var(--theme-text-secondary, #527089);
+  font-size: .68rem;
   cursor: pointer;
 }
-.help-agent-feedback-btn:hover { filter: brightness(1.06); }
+.help-agent-rate button:hover:not(:disabled) {
+  border-color: var(--theme-page-tab-active-border, #a7dafa);
+  color: var(--theme-page-tab-active-color, #0877d3);
+}
+.help-agent-rate button.is-active {
+  border-color: var(--theme-page-tab-active-border, #a7dafa);
+  background: var(--theme-page-tab-active-bg, #eaf8ff);
+  color: var(--theme-page-tab-active-color, #0877d3);
+}
+.help-agent-rate button:disabled { cursor: default; opacity: .7; }
 
-.help-agent-bubble.is-typing { display: flex; gap: 4px; align-items: center; padding: 12px; }
-.help-agent-bubble.is-typing span {
+/* 流式输出中的光标：只在最后一段文字后面闪，提示还在生成。 */
+.help-agent-caret {
+  display: inline-block;
+  width: 6px;
+  height: .95em;
+  margin-left: 2px;
+  vertical-align: -2px;
+  border-radius: 2px;
+  background: var(--theme-text-secondary, #527089);
+  animation: help-agent-caret 1s steps(2, start) infinite;
+}
+@keyframes help-agent-caret {
+  0%, 100% { opacity: .12; }
+  50% { opacity: .9; }
+}
+
+.help-agent-typing { display: flex; gap: 4px; align-items: center; padding: 3px 0; }
+.help-agent-typing span {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--theme-text-muted, #8295aa);
   animation: help-agent-typing 1.2s infinite ease-in-out;
 }
-.help-agent-bubble.is-typing span:nth-child(2) { animation-delay: .18s; }
-.help-agent-bubble.is-typing span:nth-child(3) { animation-delay: .36s; }
+.help-agent-typing span:nth-child(2) { animation-delay: .18s; }
+.help-agent-typing span:nth-child(3) { animation-delay: .36s; }
 @keyframes help-agent-typing {
   0%, 60%, 100% { opacity: .32; transform: translateY(0); }
   30% { opacity: 1; transform: translateY(-3px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .help-agent-bubble.is-typing span { animation: none; opacity: .6; }
+  .help-agent-typing span { animation: none; opacity: .6; }
+  .help-agent-caret { animation: none; opacity: .6; }
 }
+
+/* 未登录时面板里的说明。 */
+.help-agent-notice { padding: 10px 2px; }
+.help-agent-notice p {
+  margin: 0 0 8px;
+  font-size: .82rem;
+  line-height: 1.6;
+  color: var(--theme-text-secondary, #527089);
+}
+.help-agent-notice p:last-child { margin-bottom: 0; }
 
 /* -- 输入区 -------------------------------------------------------------- */
 
@@ -337,13 +441,14 @@ html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
   color: #c0392b;
 }
 .help-agent-input-row { display: flex; gap: 8px; align-items: flex-end; }
+/* 胶囊输入框：单行时和发送按钮等高（44px），多行时自然长高，两端保持大圆角。 */
 .help-agent-input {
   flex: 1;
-  min-height: 38px;
+  min-height: 44px;
   max-height: 96px;
-  padding: 9px 11px;
+  padding: 11px 16px;
   border: 1px solid var(--theme-icon-button-border, #d7e3ed);
-  border-radius: 10px;
+  border-radius: 999px;
   background: var(--theme-icon-button-bg, #fff);
   color: var(--theme-text-primary, #13233a);
   font: inherit;
@@ -356,16 +461,19 @@ html[data-ball-size="lg"] .help-agent-ball.is-balance { --ba-size: 110px; }
   border-color: var(--theme-page-tab-active-border, #a7dafa);
   box-shadow: 0 0 0 3px rgba(24, 169, 218, .14);
 }
+.help-agent-input:disabled { opacity: .7; cursor: not-allowed; }
 .help-agent-send {
-  padding: 9px 15px;
+  min-height: 44px;
+  padding: 0 20px;
   border: none;
-  border-radius: 10px;
+  border-radius: 999px;
   background: var(--theme-brand-gradient, linear-gradient(145deg, #008bff, #16d7c0));
   color: #fff;
   font-size: .8rem;
   font-weight: var(--weight-semibold, 600);
   cursor: pointer;
 }
+.help-agent-send:hover:not(:disabled) { filter: brightness(1.06); }
 .help-agent-send:disabled { opacity: .5; cursor: default; }
 .help-agent-hint {
   margin: 8px 0 0;

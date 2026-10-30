@@ -1,55 +1,18 @@
-import type { HelpAgentCandidate, HelpAgentSearchResult } from "../api/helpAgentApi";
+import type { QaCitation } from "../api/helpAgentApi";
 
 /** 一条渲染用的聊天消息。 */
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
-  category?: string;
-  candidates?: HelpAgentCandidate[];
-  fallback?: boolean;
-  /** 触发这条回复的原始提问，兜底消息用它来预填反馈内容 */
-  sourceQuestion?: string;
+  /** 流式输出中：文本还在追加（用于渲染打字光标 / 等待态）。 */
+  streaming?: boolean;
+  citations?: QaCitation[];
+  /** 服务端 ``request_id``，反馈接口按它定位回答。 */
+  requestId?: string;
+  /** 用户已提交的评价；提交后按钮不再可点。 */
+  feedback?: "up" | "down";
 };
-
-/**
- * 把 ``/search`` 的三态响应转成一条助手消息。
- *
- * 三态映射是这层唯一的业务逻辑，单独抽出来便于测试：
- * - ``hit``        → 直接给正文答案 + 分类标签
- * - ``candidates`` → 给候选问题列表（**不含答案**，点选后走 confirm）
- * - ``fallback``   → 给兜底文案 + 反馈按钮标记，并带上原问题供预填
- *
- * ``allowFeedback=false`` 用于登录前（注册/登录页）：那里没有反馈面板，
- * 兜底文案不能再说「点下面的按钮」，要改成「登录后去哪反馈」。
- */
-export function toAssistantMessage(
-  result: HelpAgentSearchResult,
-  id: string,
-  question = "",
-  options: { allowFeedback?: boolean } = {},
-): ChatMessage {
-  if (result.type === "hit") {
-    return { id, role: "assistant", text: result.answer, category: result.category };
-  }
-  if (result.type === "candidates") {
-    return {
-      id,
-      role: "assistant",
-      text: "没有找到完全匹配的答案，你是想问下面这几个吗？",
-      candidates: result.candidates,
-    };
-  }
-  return {
-    id,
-    role: "assistant",
-    text: options.allowFeedback === false
-      ? "这个问题我暂时答不上来。登录后可以在「个人中心」的「意见反馈」里提交给我们，我们会补充到常见问题里。"
-      : "这个问题我暂时答不上来。可以点下面的按钮把问题反馈给我们，我们会补充到常见问题里。",
-    fallback: true,
-    sourceQuestion: question,
-  };
-}
 
 /** 把悬浮球位置限制在可视区内，避免拖出屏幕或窗口缩小后找不回来。 */
 export function clampBallPosition(
