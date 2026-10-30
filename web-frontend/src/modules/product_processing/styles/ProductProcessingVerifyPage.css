@@ -5785,11 +5785,29 @@
   .verify-sku-progress-bar { transition: none; }
 }
 
-/* 「开始检测」按钮收成与勾选项同高，避免撑高标题行 */
+/* 「开始检测」按钮：与工作台主题按钮同款（圆角胶囊 + 品牌渐变） */
 .verify-sku-check-head .primary.verify-sku-start {
-  padding: 7px 12px;
+  padding: 7px 14px;
   font-size: .74rem;
   white-space: nowrap;
+  border: 0;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, #0a8fca);
+  color: var(--theme-on-primary, #fff);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--theme-primary, #0a8fca) 22%, transparent);
+  transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+}
+
+.verify-sku-check-head .primary.verify-sku-start:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--theme-primary, #0a8fca) 28%, transparent);
+}
+
+.verify-sku-check-head .primary.verify-sku-start:disabled {
+  background: var(--theme-module-surface-soft, #f5f8fb);
+  color: #9caaba;
+  box-shadow: none;
+  transform: none;
 }
 
 /* 已跳过 / 尚未检测 提示条 */

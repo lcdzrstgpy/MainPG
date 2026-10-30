@@ -60,6 +60,8 @@ type Props = {
   /** 随机模板：开启后本批次每条链接随机分配一个效果模板（四格卡片同步切换）。 */
   randomPreset?: boolean;
   onRandomPresetChange?: (random: boolean) => void;
+  /** V2：隐藏旧的「生图组合」四卡（风格卡在页面顶部）。 */
+  showSimplePresets?: boolean;
   /** 最近使用过的生图组合（本地记忆），点击一键回填。 */
   history?: ComboSnapshot[];
   onApplyHistory?: (snapshot: ComboSnapshot) => void;
@@ -82,6 +84,7 @@ export function ImageComboPicker({
   onApplyPreset,
   panels: panelsProp,
   onPanelsChange,
+  showSimplePresets = true,
   randomPreset = false,
   onRandomPresetChange,
   history = [],
@@ -217,7 +220,7 @@ export function ImageComboPicker({
         </div>
       </header>
 
-      {history.length > 0 && (
+      {showSimplePresets && history.length > 0 && (
         <div className="image-preset-history">
           <span className="image-preset-history-label">最近使用</span>
           {history.map((item) => (
@@ -236,6 +239,7 @@ export function ImageComboPicker({
       )}
 
       {mode === 'simple' ? (
+        showSimplePresets ? (
         <>
           <div className="image-combo-hint">
             <strong>普通用户</strong>
@@ -296,6 +300,11 @@ export function ImageComboPicker({
             </p>
           )}
         </>
+        ) : (
+          <p className="image-combo-note">
+            出图风格已在上方选择；需要逐层微调请切到「导演模式」。
+          </p>
+        )
       ) : (
         <>
           <div className="image-combo-pro-top">

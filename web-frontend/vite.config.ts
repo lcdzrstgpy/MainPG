@@ -49,6 +49,11 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
+    // 编辑器保存文件时会先写临时目录；Windows 上 watcher 去 watch 这些临时目录会
+    // 报 EBUSY 并把 dev server 直接打挂。忽略掉即可。
+    watch: {
+      ignored: ["**/.*.tmpdir/**", "**/*.tmp"],
+    },
     proxy: {
       "/desktop": sameOriginProxy(),
       "/api": sameOriginProxy(),

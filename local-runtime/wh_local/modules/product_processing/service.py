@@ -1216,6 +1216,12 @@ def _relax_hands_free(text: str) -> str:
     return "\n".join(cleaned)
 
 
+def _prompt_v2_enabled() -> bool:
+    """V2 提示词开关（默认关闭，灰度时设 WH_PP_PROMPT_V2=1）。"""
+
+    return str(os.environ.get("WH_PP_PROMPT_V2", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _as_bool(value: Any, *, default: bool = False) -> bool:
     """Coerce form/JSON booleans (including string 'true'/'false') into bool."""
     if isinstance(value, bool):
@@ -3845,7 +3851,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         )
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
-        s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
+        s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D", "E"} else "A"
         # 五点描述模板：A=卖点前置（结果导向），B=场景代入（痛点导向）。
         s["desc_template"] = "B" if str(s.get("desc_template") or "A").strip().upper() == "B" else "A"
         # 用户可选的五层卡片：auto=使用品类默认卡；指定卡 id=整批统一。
@@ -10772,14 +10778,30 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     template=_template_suffix,
                     allow_people=allows_people,
                 )
-                grid_prompt = append_subject_analysis(
-                    f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
-                    vision_identity,
-                ) + "\n\n" + GRID_FINAL_GATE.format(
-                    template_check=GRID_TEMPLATE_GATES.get(
-                        _template_suffix, GRID_TEMPLATE_GATES[""]
+                if _prompt_v2_enabled():
+                    from .prompting.brief import infer_brief  # noqa: PLC0415
+                    from .prompting.builder import build_grid_prompt  # noqa: PLC0415
+
+                    brief = infer_brief(
+                        optimized_title, category, vision_identity,
+                        season_hint=str(raw.get("season") or ""),
                     )
-                )
+                    grid_prompt = build_grid_prompt(
+                        brief,
+                        image_template,
+                        user_additions=batch_image_prompt,
+                        language="zh" if _image_prompt_profile() == "ark" else "en",
+                        seed=scene_seed,
+                    )
+                else:
+                    grid_prompt = append_subject_analysis(
+                        f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
+                        vision_identity,
+                    ) + "\n\n" + GRID_FINAL_GATE.format(
+                        template_check=GRID_TEMPLATE_GATES.get(
+                            _template_suffix, GRID_TEMPLATE_GATES[""]
+                        )
+                    )
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.
                 media = generate_one(

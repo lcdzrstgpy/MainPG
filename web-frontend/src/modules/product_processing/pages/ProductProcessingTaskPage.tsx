@@ -4,6 +4,7 @@ import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
 import { checkDraftSkuAvailability } from '../api/productProcessingApi';
 import { ImageComboPicker } from '../components/ImageComboPicker';
+import { STYLE_PRESETS, findStylePreset } from '../data/stylePresets';
 import {
   DEFAULT_PANEL_SELECTIONS,
   SIMPLE_PRESETS,
@@ -907,6 +908,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     } catch (err) { fail(err); } finally { startInFlightRef.current = false; setLoading(false); }
   };
 
+  const activeStyle = findStylePreset({ imageTemplate: options.imageTemplate });
+
   return (
     <div className="verify-page verify-task-page">
       {/* 顶部「正在处理 x%」横条已移除：进度统一由标签栏右侧的全局进度按钮呈现，
@@ -1009,7 +1012,41 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 生图组合</span>
+              <span className="verify-sub">选一个出图风格，其余交给系统按品类配置</span>
+            </div>
+            <div className="v2-style-head">
+              <span className="verify-group-label">出图风格</span>
+              <span className="verify-sub">五选一 · 尺寸/场景/人物策略由后端自动判断</span>
+            </div>
+            <div className="v2-style-grid" role="group" aria-label="出图风格">
+              {STYLE_PRESETS.map((preset) => {
+                const active = activeStyle?.id === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className={`v2-style-card${active ? ' is-active' : ''}`}
+                    aria-pressed={active}
+                    onClick={() =>
+                      setOptions((p) => ({
+                        ...p,
+                        imageTemplate: preset.options.imageTemplate,
+                        imagePreset: 'auto',
+                        sceneStyle: preset.options.sceneStyle,
+                        mainImageScene: preset.options.mainImageScene === true,
+                        scaleAnchor: preset.options.scaleAnchor === true,
+                      }))
+                    }
+                  >
+                    <span className="v2-style-card-title">
+                      <strong>{preset.label}</strong>
+                      {preset.recommended ? <em>推荐</em> : null}
+                    </span>
+                    <span className="v2-style-card-for">{preset.tagline}</span>
+                    <small>{preset.description}</small>
+                  </button>
+                );
+              })}
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -1024,18 +1061,6 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 <select value={options.targetLanguage} onChange={(e) => setOptions((p) => ({ ...p, targetLanguage: e.target.value as any }))}>
                   <option value="en">英语 · English</option>
                   <option value="es">西班牙语 · Espanol</option>
-                </select>
-              </label>
-              <label title="决定四格的背景风格：智能混合按批次在极简/生活/花哨之间轮换；花哨档适合节庆、潮玩、礼品类，会使用花艺、礼赠、丝绒、金属镜面等背景">
-                场景风格
-                <select
-                  value={options.sceneStyle || 'smart'}
-                  onChange={(e) => setOptions((p) => ({ ...p, sceneStyle: e.target.value as ProductProcessingOptions['sceneStyle'] }))}
-                >
-                  <option value="smart">智能混合（默认）</option>
-                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
-                  <option value="lifestyle">生活 · 桌面/窗影/梳妆台</option>
-                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面</option>
                 </select>
               </label>
               <div className="verify-inline-checks">
@@ -1079,6 +1104,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               }
               history={comboHistory}
               onApplyHistory={applyComboSnapshot}
+              showSimplePresets={false}
             />
             <div className="verify-sku-check">
               <div className="verify-sku-check-head">
