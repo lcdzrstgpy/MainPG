@@ -92,7 +92,7 @@ export function OrderProfitSalesTab({
           </span>
         </div>
         <p className="op-hint">
-          在 Temu「经营分析 → 销量分析」页用插件弹窗「采集销量分析」，会读取数据概览的销量/售罄/库存指标和售罄健康分数。若页面提示「该区暂无权限」，插件会自动切到「全球」再采。
+          在 Temu「经营分析 → 销量分析」页打开着的情况下，用数据采集页的「一键全量采集」或对「销量分析」这一步点「重试这一步」，会读取数据概览的销量/售罄/库存指标和售罄健康分数。若页面提示「该区暂无权限」，插件会自动切到「全球」再采。
         </p>
       </div>
 
@@ -144,7 +144,7 @@ export function OrderProfitSalesTab({
           {!latest && !loading ? (
             <div className="op-empty">
               <strong>还没有销量分析数据</strong>
-              <span>打开 Temu「经营分析 → 销量分析」，用插件弹窗点「采集销量分析」后再查看。</span>
+              <span>打开 Temu「经营分析 → 销量分析」后，用数据采集页重新采集「销量分析」这一步再查看。</span>
             </div>
           ) : null}
         </div>
