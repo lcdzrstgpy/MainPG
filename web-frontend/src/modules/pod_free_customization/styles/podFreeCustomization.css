@@ -19,6 +19,10 @@
 
 .pod-free-customization-page > .pod-page-header {
   margin-bottom: 0;
+  /* 标题、模型胶囊与价格同一行横排，靠内边距留呼吸空间。 */
+  min-height: 140px;
+  padding-top: 28px;
+  padding-bottom: 28px;
 }
 
 /* 左右两栏各套一层底框，与其他 POD 模块一致；栏内分区不再各自成卡。 */
@@ -54,25 +58,36 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 20px;
 }
 
 .pod-free-title-row h1 {
   margin: 3px 0 2px;
 }
 
+/* 模型切换胶囊 + 当前价格：横向并排，避免竖向堆叠挤压标题。 */
+.pod-free-model-stack {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* 模型切换胶囊与「当前价格」同高同字号：不抢标题，竖向更松。 */
 .pod-free-model-switch {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 6px 14px;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 13px;
   border: 1px solid var(--pod-border-strong);
   border-radius: 999px;
   color: var(--pod-text-secondary);
   background: var(--pod-surface);
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   font-weight: 800;
+  line-height: 1.45;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
@@ -81,7 +96,7 @@
   color: var(--pod-primary);
   background: transparent;
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   font-weight: 900;
   outline: none;
 }

@@ -781,18 +781,20 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
             <span>POD CREATIVE STUDIO · USER PROMPT</span>
             <div className="pod-free-title-row">
               <h1>自由创意</h1>
-              <label className="pod-free-model-switch">
-                <span>模型切换</span>
-                <select
-                  value={draft.image_model}
-                  disabled={Boolean(batch) || running}
-                  onChange={(event) => setField("image_model", event.currentTarget.value as FreeImageModel)}
-                >
-                  <option value={FLASH}>Seedream 5.0 Flash</option>
-                  <option value={PRO}>Seedream 5.0 Pro</option>
-                </select>
-              </label>
-              {activePrice && <span className="pod-page-price pod-free-inline-price">{activePrice}</span>}
+              <div className="pod-free-model-stack">
+                <label className="pod-free-model-switch">
+                  <span>模型切换</span>
+                  <select
+                    value={draft.image_model}
+                    disabled={Boolean(batch) || running}
+                    onChange={(event) => setField("image_model", event.currentTarget.value as FreeImageModel)}
+                  >
+                    <option value={FLASH}>Seedream 5.0 Flash</option>
+                    <option value={PRO}>Seedream 5.0 Pro</option>
+                  </select>
+                </label>
+                {activePrice && <span className="pod-page-price pod-free-inline-price">{activePrice}</span>}
+              </div>
             </div>
           </div>
         </div>

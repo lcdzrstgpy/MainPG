@@ -155,9 +155,8 @@ export function App() {
     ) : (
       <>
         <AuthPage onEnter={enterWorkspaceAfterLogin} />
-        {/* 登录前也要能问：新人最容易卡在注册、装插件、连工作台这几步。
-            反馈入口在「个人中心」，未登录点不到，所以这里不提供反馈按钮。 */}
-        <HelpAgentWidget allowFeedback={false} />
+        {/* 登录前也挂一个球：未登录时置灰，点击只提示「请先登录」，不发请求。 */}
+        <HelpAgentWidget />
       </>
     )}
     <RuntimeUpdateNotifier />

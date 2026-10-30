@@ -831,7 +831,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             legacy_pod_enabled=False,
         )
     )
-    app.include_router(create_help_agent_router(db_path))
+    app.include_router(create_help_agent_router(customer_sessions))
     pod_ai_runtime = PodCustomizationAiRuntime(image_workers=8, batch_workers=2)
     pod_title_runtime = PodTitleRuntime(executor_workers=8, provider_concurrency=8)
     pod_brief_runtime = PodBriefRuntime(executor_workers=2, provider_concurrency=2)
