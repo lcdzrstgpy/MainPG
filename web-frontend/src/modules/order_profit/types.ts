@@ -566,3 +566,41 @@ export type TeamLinksPayload = {
   pending_in_count?: number;
   linked_by_count?: number;
 };
+
+/** 提交前确认弹窗用：本账号全部店铺与各自待提交的数据量。 */
+export type TeamRollupPreviewStore = {
+  name: string;
+  store_code: string;
+  code_status: string;
+  day_count: number;
+  first_date: string;
+  last_date: string;
+};
+
+export type TeamRollupPreview = {
+  week_start: string;
+  week_end: string;
+  stores: TeamRollupPreviewStore[];
+  day_count: number;
+  batch_count: number;
+  missing_code_shops: string[];
+  account: { username?: string; staff_no?: string };
+};
+
+/** 提交结果：服务器汇总 + 本次逐店提交的数据量。 */
+export type TeamRollupSubmitResult = {
+  ok: boolean;
+  week_start?: string;
+  created?: number;
+  updated?: number;
+  stale?: number;
+  skipped?: { store_code: string; reason: string }[];
+  status_text?: string;
+  reason?: string;
+  day_count?: number;
+  record_count?: number;
+  batch_count?: number;
+  stores?: { name: string; store_code: string; day_count: number; record_count: number }[];
+  pending_local_shops?: { name: string; store_code: string; reason: string }[];
+  account?: { username?: string; staff_no?: string };
+};
