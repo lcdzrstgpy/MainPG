@@ -165,6 +165,31 @@ function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): Works
 }
 
 /**
+ * 带运行时上下文的页签（采集批次 / 处理任务 / 尺寸条目 / AI 视频）标题是动态文案
+ * （"处理·12项"、"尺寸·SKC123"），恢复时必须沿用持久化值，不能用模块名覆盖。
+ */
+const RUNTIME_TAB_FIELDS = [
+  "directionId",
+  "aiVideoPath",
+  "taskRunId",
+  "activeTaskId",
+  "taskId",
+  "dimensionBatchId",
+  "dimensionItemId",
+  "dimensionChangeSetId",
+  "initialSetId",
+] as const;
+
+function hasRuntimeContext(tab: WorkspaceTab): boolean {
+  if ((tab.draftIds?.length ?? 0) > 0) return true;
+  const record = tab as unknown as Record<string, unknown>;
+  return RUNTIME_TAB_FIELDS.some((field) => {
+    const value = record[field];
+    return value != null && value !== "";
+  });
+}
+
+/**
  * 采集面板与插件会话、进行中的采集批次绑定：恢复出来只会拿到失效会话，还可能误触发重新采集，
  * 因此不参与页签持久化（用户从侧栏或插件重新打开即可）。
  */
@@ -229,9 +254,16 @@ function restoreWorkspaceTabs(isAdmin: boolean): RestoredWorkspaceTabs {
   const tabs = snapshot.tabs
     .filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId))
     .map((tab) => {
-      // 页签标题是动态文案（"处理·12项"）时沿用持久化值，缺失时才回落到模块默认名。
       const base = moduleTab(tab.moduleId, modules);
-      const restored: WorkspaceTab = { ...tab, label: tab.label || base.label, icon: tab.icon || base.icon, iconClass: tab.iconClass ?? base.iconClass };
+      // 静态页签的标题永远跟随模块当前名字：模块改名后（如「全定制」→「全款直出」），
+      // 旧快照里存的是老名字，只靠 tab.label 会一直显示过期标题。
+      // 动态页签（带任务/批次上下文）仍沿用持久化文案。
+      const restored: WorkspaceTab = {
+        ...tab,
+        label: hasRuntimeContext(tab) && tab.label ? tab.label : base.label,
+        icon: tab.icon || base.icon,
+        iconClass: tab.iconClass ?? base.iconClass,
+      };
       // 开工中的处理页签按「任务详情」恢复：它因此继续轮询 /outputs（= 还有人在看），
       // 页面上也没有「开始处理」入口，不会再建出一个重复任务。
       if (restored.taskRunId == null && restored.activeTaskId != null) restored.taskRunId = restored.activeTaskId;
