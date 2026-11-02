@@ -925,6 +925,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const chooseCategory = (item: TemuCategory) =>
     run("category", async () => {
+      // 手动点分类下钻 = 用户自己选的类目。这里必须标记，否则之后改标题时
+      // 「自动按标题匹配类目」会把用户选的类目静默换掉、连属性一起清空
+      // （categoryTouchedRef 只拦自动推荐，不拦手动选择）。
+      categoryTouchedRef.current = true;
       const next = [...categoryPath, item];
       setCategoryPath(next);
       if (item.isLeaf) {
@@ -941,6 +945,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const resetToLevel = (index: number) =>
     run("category", async () => {
+      // 面包屑回退同样是用户操作：回退后类目还没定，但也不该被自动匹配抢走。
+      categoryTouchedRef.current = true;
       if (index < 0) {
         setCategoryPath([]);
         setAttributes(null);
@@ -1146,7 +1152,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   /** 套用产品模板：只补空字段，已经填过的不动。 */
-  const applyProductTemplate = (name: string) => {
+  const applyProductTemplate = async (name: string) => {
     const template = productTemplates.find((item) => item.name === name);
     if (!template) return;
     patch({
@@ -1163,6 +1169,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       isCustom: template.isCustom,
       isSensitive: template.isSensitive,
     });
+    // 必须先切类目、等属性表回来，再填模板里的属性。
+    // applyCategory 切到不同叶子类目时会 setAttrPicks({})（旧类目的属性和新类目对不上），
+    // 这一步发生在 await 之后 —— 如果先填属性再切类目，刚填的会被清空，
+    // 表现就是「套了产品模板但必填属性还是空的」。
+    if (template.categoryPath.length) {
+      await applyCategory(template.categoryPath);
+    }
     setAttrPicks((current) => {
       const next = { ...current };
       Object.entries(template.attrs).forEach(([pid, pick]) => {
@@ -1170,7 +1183,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       });
       return next;
     });
-    if (template.categoryPath.length) void applyCategory(template.categoryPath);
   };
 
   /** 存成变种模板：颜色×尺码 + 第一行的批量值。 */

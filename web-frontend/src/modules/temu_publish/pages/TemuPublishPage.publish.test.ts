@@ -1047,3 +1047,38 @@ test("批量改价触发器/行删除按钮走主题变量，不写死颜色", (
   assert.match(css, /\.is-console \.temu-variant-del:hover:not\(:disabled\)/);
   assert.match(css, /\.is-console \.temu-variant-del:focus-visible/);
 });
+
+test("类目：手动选过就不许自动匹配再改掉，套产品模板时属性不能被清空", () => {
+  // ① 手动点分类下钻 / 面包屑回退都算「用户选过类目」。
+  //    categoryTouchedRef 只拦自动推荐；漏标的话，改标题后自动匹配会把用户选的
+  //    类目静默换掉，连已填属性一起 setAttrPicks({}) 清空。
+  const chooseCategory = page.slice(
+    page.indexOf("const chooseCategory = (item: TemuCategory) =>"),
+    page.indexOf("const resetToLevel = (index: number) =>"),
+  );
+  assert.ok(chooseCategory.length > 0, "expected chooseCategory block");
+  assert.match(chooseCategory, /categoryTouchedRef\.current = true;/);
+
+  const resetToLevel = page.slice(
+    page.indexOf("const resetToLevel = (index: number) =>"),
+    page.indexOf("/** 直接套用一条完整类目路径"),
+  );
+  assert.ok(resetToLevel.length > 0, "expected resetToLevel block");
+  assert.match(resetToLevel, /categoryTouchedRef\.current = true;/);
+
+  // ② 套用产品模板：必须先切类目（会 setAttrPicks({})）再填属性，
+  //    顺序反了就是「套了模板属性还是空的」。
+  assert.match(page, /const applyProductTemplate = async \(name: string\) => \{/);
+  const applyTemplate = page.slice(
+    page.indexOf("const applyProductTemplate = async (name: string) =>"),
+    page.indexOf("/** 存成变种模板"),
+  );
+  const switchCategoryAt = applyTemplate.indexOf("await applyCategory(template.categoryPath)");
+  const fillAttrsAt = applyTemplate.indexOf("Object.entries(template.attrs).forEach");
+  assert.ok(switchCategoryAt > -1, "expected awaited category switch inside applyProductTemplate");
+  assert.ok(fillAttrsAt > -1, "expected attr fill inside applyProductTemplate");
+  assert.ok(
+    switchCategoryAt < fillAttrsAt,
+    "切类目必须在填属性之前，否则 applyCategory 里的 setAttrPicks({}) 会把刚填的清掉",
+  );
+});
