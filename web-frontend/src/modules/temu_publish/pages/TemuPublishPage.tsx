@@ -18,7 +18,6 @@ import {
   type AutoFillHit,
 } from "../data/attrAutofill";
 import {
-  EMPTY_ATTR,
   missingRequiredNames,
   visibleProperties as visibleAttributeProperties,
   type AttrPick,

@@ -2,12 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TemuPropertyForm } from "./TemuPropertyForm";
 import { temuPublishApi } from "../api/temuPublishApi";
-import {
-  EMPTY_ATTR,
-  missingRequiredNames,
-  visibleProperties,
-  type AttrPickMap,
-} from "../data/attributeModel";
+import { missingRequiredNames, visibleProperties, type AttrPickMap } from "../data/attributeModel";
 import type { ProductTemplate } from "../data/localStore";
 import type {
   TemuAttributes,
@@ -303,4 +298,3 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   );
 }
 
-export { EMPTY_ATTR };
