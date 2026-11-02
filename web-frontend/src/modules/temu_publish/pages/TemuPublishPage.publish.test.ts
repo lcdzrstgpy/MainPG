@@ -521,6 +521,30 @@ test("属性联动：父级取值不满足的子属性不显示、也不提交",
   assert.match(page, /filter\(\(\[pid\]\) => visiblePids\.has\(Number\(pid\)\)\)/);
 });
 
+test("属性联动：子属性原地展开在父属性下面，不跳回必填区顶部", () => {
+  const styles = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 子属性按 parentTemplatePid → 父属性 templatePid 归到父名下
+  assert.match(page, /const attrRenderModel = \(\(\) => \{/);
+  assert.match(page, /const parentTemplatePid = Number\(item\.parentTemplatePid \?\? 0\);/);
+  assert.match(page, /const parent = byTemplatePid\.get\(parentTemplatePid\);/);
+  assert.match(page, /const list = children\.get\(parent\.pid\) \?\? \[\];/);
+
+  // 被父属性带出来的项从必填/选填区剔除，否则会同时出现在两处
+  assert.match(page, /nested\.add\(item\.pid\);/);
+  assert.match(page, /required: requiredProps\.filter\(\(item\) => !nested\.has\(item\.pid\)\),/);
+  assert.match(page, /optional: optionalProps\.filter\(\(item\) => !nested\.has\(item\.pid\)\),/);
+
+  // 渲染时递归挂到父下面；叶子项留在原网格，嵌套层才加缩进容器
+  assert.match(page, /const attrGroup = \(item: TemuProperty, required: boolean, depth = 0\): React\.ReactNode => \{/);
+  assert.match(page, /\{kids\.map\(\(child\) => attrGroup\(child, child\.required, depth \+ 1\)\)\}/);
+  assert.match(page, /<div className="temu-attr-children">/);
+
+  // 缩进 + 竖线是「谁带出来的」唯一提示，必须有样式兜住
+  assert.match(styles, /\.temu-attr-children \{[\s\S]*?border-left: 2px solid var\(--theme-module-border-strong/);
+  assert.match(styles, /\.temu-attr-group \{[\s\S]*?grid-column: 1 \/ -1;/);
+});
+
 test("发布超时后反查店铺：确认建成了就显示「已在店铺里查到」", () => {
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
   assert.match(types, /confirmed_by_lookup\?: boolean;/);
@@ -749,8 +773,8 @@ test("属性输入支持「下拉 + 数值」并存（成分比例这类）", ()
   assert.match(page, /\{item\.values\?\.length \? \(/);
   assert.match(page, /\{unit \? \(\n\s*<input/);
   assert.match(page, /item\.numberInputTitle \|\| "请输入数值"/);
-  assert.match(page, /\{requiredProps\.map\(\(item\) => attrField\(item, true\)\)\}/);
-  assert.match(page, /\{optionalProps\.map\(\(item\) => attrField\(item, false\)\)\}/);
+  assert.match(page, /\{attrRenderModel\.required\.map\(\(item\) => attrGroup\(item, true\)\)\}/);
+  assert.match(page, /\{attrRenderModel\.optional\.map\(\(item\) => attrGroup\(item, false\)\)\}/);
 
   // 带单位的必填属性光选下拉不算填好
   assert.match(page, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
@@ -976,4 +1000,50 @@ test("Ctrl/⌘ + Enter 直接提交，且不会重复上架", () => {
   // 用 ref 取最新函数，不是每次 render 重绑监听
   assert.match(page, /const publishRef = useRef\(publishGoods\);/);
   assert.match(page, /void publishRef\.current\(\);/);
+});
+
+test("按钮体系：一套尺寸、层级不互相覆盖、交互反馈齐全", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 尺寸只剩两档：34 / 28（原来 34 / 26 / 26 三套）
+  assert.match(css, /\.is-console \.temu-btn-sm,\s*\n\.is-console \.temu-btn\.is-small \{/);
+  assert.match(css, /min-height: 34px;\s*\n\s*padding: 0 15px;/);
+
+  // 顶部操作区那条"浅底灰字"必须排除主按钮：它选择器比 .temu-btn-primary 具体，
+  // 不排除就会把主按钮的实心底色和白字冲成浅底（之前就是这样，主按钮不够醒目）
+  assert.match(css, /\.is-console \.temu-console-actions \.temu-btn:not\(\.temu-btn-primary\) \{/);
+  assert.doesNotMatch(
+    css,
+    /\.is-console \.temu-console-actions \.temu-btn \{[^}]*background/,
+    "不带 :not 的那条不能设 background，否则会盖掉主按钮",
+  );
+
+  // 交互反馈：hover 换底色 / active 下沉 / 键盘焦点可见
+  assert.match(css, /\.temu-btn:not\(\.temu-btn-primary\):not\(\.is-danger\):not\(\.is-urgent\):hover:not\(:disabled\)/);
+  assert.match(css, /\.temu-btn:active:not\(:disabled\) \{\s*\n\s*transform: translateY\(1px\);/);
+  assert.match(css, /\.temu-btn:focus-visible,\s*\n\.temu-link:focus-visible \{/);
+
+  // 禁用的主按钮不许留投影，否则看着像还能点
+  assert.match(css, /\.temu-btn-primary:disabled \{[^}]*box-shadow: none;/);
+
+  // 圆角跟主题走，不写死
+  assert.match(css, /border-radius: var\(--radius-md, 10px\);/);
+});
+
+test("批量改价触发器/行删除按钮走主题变量，不写死颜色", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 触发器原来写死 #1f6f92 / #f4fbfe：换 peach / alpine 主题会串成一套不协调的蓝
+  const trigger = css.slice(css.indexOf(".temu-bulk-trigger {"), css.indexOf(".temu-bulk-panel {"));
+  // 三个关键属性都必须走主题变量（fallback 里留老颜色是对的，不算硬编码）
+  assert.match(trigger, /border: 1px solid var\(--theme-module-border/);
+  assert.match(trigger, /color: var\(--theme-module-primary-strong/);
+  assert.match(trigger, /background: var\(--theme-module-surface-tint/);
+  // hover 也不能回落到固定色
+  assert.match(trigger, /background: var\(--theme-module-surface-soft/);
+
+  // 行尾 × ：固定 24×24（原来只有字号，hover 时行高会抖），且有反馈
+  assert.match(css, /\.is-console \.temu-variant-del \{[^}]*width: 24px;/);
+  assert.match(css, /\.is-console \.temu-variant-del:hover:not\(:disabled\)/);
+  assert.match(css, /\.is-console \.temu-variant-del:focus-visible/);
 });

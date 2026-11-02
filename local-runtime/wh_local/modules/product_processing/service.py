@@ -2144,6 +2144,26 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         existing = None if allow_duplicate_candidate else self.repository.draft_by_candidate(
             candidate_id or "", workspace_id
         )
+        if existing is None and not allow_duplicate_candidate:
+            # 跨采集路径去重（插件单品采集专属）：
+            # 插件的 candidate_id 是 `plugin:<platform>:<id|url>`，选品入池的是
+            # `1688:<offer_id>`，两边永远不相等 → 同一个商品页会各留一条草稿。
+            # 插件这条路的口径是「幂等抓取」，所以补一次 source_ref 查重：草稿池里
+            # 已有同 URL 的草稿（不管谁建的）就跳过，并把已有草稿返回给插件。
+            #
+            # 只对 web_manual_capture 生效，不动选品/手工/其它入口的既有语义 ——
+            # 选品「每个 run 一条草稿」是刻意设计（test_product_processing_handoff_reentry
+            # 明确锁定），这里不能顺手改。
+            if self._text(raw.get("source_type")) == "web_manual_capture":
+                existing = self.repository.draft_by_source_ref(
+                    self._text(
+                        raw.get("source_ref")
+                        or raw.get("source_url")
+                        or raw.get("product_link")
+                        or candidate_id
+                    ),
+                    workspace_id,
+                )
         if existing and existing["status"] != "deleted":
             # A OneBound candidate may legitimately recur in a later preview.
             # Keep its single draft, but replace the run-scoped provenance with

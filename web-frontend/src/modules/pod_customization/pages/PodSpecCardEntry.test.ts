@@ -90,7 +90,29 @@ test("the drawer edits the table, the style and the corner through the dedicated
   assert.match(appearanceSource, /const CORNER_OPTIONS: SpecCardCorner\[\] = \["top-left", "top-right", "bottom-left", "bottom-right"\];/);
 
   // 用户规格（2026-09-12）：卡片外观里新增「是否印到图上」，关掉后素材图保持干净母版（长/宽/高仍照常导出）。
-  assert.match(appearanceSource, /export function SpecCardAppearanceControls\(\{ style, corner, enabled, displayUnit, onStyleChange, onCornerChange, onEnabledChange, onDisplayUnitChange, disabled = false \}: Props\)/);
+  // 上游 POD-change（2026-10-29）给自由定制加了「印到第几张图」，props 多出 target 系列可选参数；
+  // 这里改为按名字逐个断言，避免以后再增可选 props 就整条挂掉。
+  const appearanceSignature = appearanceSource.match(
+    /export function SpecCardAppearanceControls\(\{([\s\S]*?)\}: Props\) \{/,
+  )?.[1];
+  assert.ok(appearanceSignature, "expected the appearance controls signature");
+  for (const prop of [
+    "style",
+    "corner",
+    "enabled",
+    "displayUnit",
+    "onStyleChange",
+    "onCornerChange",
+    "onEnabledChange",
+    "onDisplayUnitChange",
+    "disabled",
+  ]) {
+    assert.match(appearanceSignature, new RegExp(`\\b${prop}\\b`), `missing prop ${prop}`);
+  }
+  // 自由定制的新能力：可选的图片槽位（不传就维持原来的整批行为）。
+  for (const prop of ["targetVariants", "targetVariant", "onTargetVariantChange"]) {
+    assert.match(appearanceSignature, new RegExp(`\\b${prop}\\b`), `missing free-customization prop ${prop}`);
+  }
   assert.match(appearanceSource, /const PRINT_OPTIONS: Array<\{ value: boolean; label: string; hint: string \}> = \[/);
   assert.match(appearanceSource, /\{ value: true, label: "印到图上", hint: "素材图带尺寸卡片" \}/);
   assert.match(appearanceSource, /\{ value: false, label: "不印", hint: "素材图保持干净" \}/);
