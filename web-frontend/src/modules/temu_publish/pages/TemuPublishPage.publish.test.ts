@@ -521,6 +521,30 @@ test("属性联动：父级取值不满足的子属性不显示、也不提交",
   assert.match(page, /filter\(\(\[pid\]\) => visiblePids\.has\(Number\(pid\)\)\)/);
 });
 
+test("属性联动：子属性原地展开在父属性下面，不跳回必填区顶部", () => {
+  const styles = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 子属性按 parentTemplatePid → 父属性 templatePid 归到父名下
+  assert.match(page, /const attrRenderModel = \(\(\) => \{/);
+  assert.match(page, /const parentTemplatePid = Number\(item\.parentTemplatePid \?\? 0\);/);
+  assert.match(page, /const parent = byTemplatePid\.get\(parentTemplatePid\);/);
+  assert.match(page, /const list = children\.get\(parent\.pid\) \?\? \[\];/);
+
+  // 被父属性带出来的项从必填/选填区剔除，否则会同时出现在两处
+  assert.match(page, /nested\.add\(item\.pid\);/);
+  assert.match(page, /required: requiredProps\.filter\(\(item\) => !nested\.has\(item\.pid\)\),/);
+  assert.match(page, /optional: optionalProps\.filter\(\(item\) => !nested\.has\(item\.pid\)\),/);
+
+  // 渲染时递归挂到父下面；叶子项留在原网格，嵌套层才加缩进容器
+  assert.match(page, /const attrGroup = \(item: TemuProperty, required: boolean, depth = 0\): React\.ReactNode => \{/);
+  assert.match(page, /\{kids\.map\(\(child\) => attrGroup\(child, child\.required, depth \+ 1\)\)\}/);
+  assert.match(page, /<div className="temu-attr-children">/);
+
+  // 缩进 + 竖线是「谁带出来的」唯一提示，必须有样式兜住
+  assert.match(styles, /\.temu-attr-children \{[\s\S]*?border-left: 2px solid var\(--theme-module-border-strong/);
+  assert.match(styles, /\.temu-attr-group \{[\s\S]*?grid-column: 1 \/ -1;/);
+});
+
 test("发布超时后反查店铺：确认建成了就显示「已在店铺里查到」", () => {
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
   assert.match(types, /confirmed_by_lookup\?: boolean;/);
@@ -749,8 +773,8 @@ test("属性输入支持「下拉 + 数值」并存（成分比例这类）", ()
   assert.match(page, /\{item\.values\?\.length \? \(/);
   assert.match(page, /\{unit \? \(\n\s*<input/);
   assert.match(page, /item\.numberInputTitle \|\| "请输入数值"/);
-  assert.match(page, /\{requiredProps\.map\(\(item\) => attrField\(item, true\)\)\}/);
-  assert.match(page, /\{optionalProps\.map\(\(item\) => attrField\(item, false\)\)\}/);
+  assert.match(page, /\{attrRenderModel\.required\.map\(\(item\) => attrGroup\(item, true\)\)\}/);
+  assert.match(page, /\{attrRenderModel\.optional\.map\(\(item\) => attrGroup\(item, false\)\)\}/);
 
   // 带单位的必填属性光选下拉不算填好
   assert.match(page, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);

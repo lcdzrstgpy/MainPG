@@ -1979,6 +1979,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const optionalProps = visibleProperties.filter((item) => !item.required);
 
   /**
+   * 属性依赖分组（2026-11-02）：把「父属性 + 它按联动规则带出来的子属性」绑成一组渲染。
+   *
+   * 之前是子属性直接混进必填区顶部：选了选填项、结果必填项在别处冒出来，位置对不上，
+   * 用户看不出是谁带出来的。现在子属性原地展开在父属性下面（缩进 + 竖线），
+   * 必填区/选填区只放「没有父属性」的根项。
+   *
+   * 子属性什么时候可见仍然由 visibleProperties 决定（父没选就不渲染），这里只管摆放。
+   */
+  const attrRenderModel = (() => {
+    const byTemplatePid = new Map<number, TemuProperty>();
+    for (const item of attributes?.properties ?? []) {
+      const key = Number(item.templatePid ?? 0);
+      if (key) byTemplatePid.set(key, item);
+    }
+    const children = new Map<number, TemuProperty[]>();
+    const nested = new Set<number>();
+    for (const item of visibleProperties) {
+      const parentTemplatePid = Number(item.parentTemplatePid ?? 0);
+      if (!parentTemplatePid) continue;
+      const parent = byTemplatePid.get(parentTemplatePid);
+      if (!parent) continue;
+      const list = children.get(parent.pid) ?? [];
+      list.push(item);
+      children.set(parent.pid, list);
+      nested.add(item.pid);
+    }
+    return {
+      children,
+      required: requiredProps.filter((item) => !nested.has(item.pid)),
+      optional: optionalProps.filter((item) => !nested.has(item.pid)),
+    };
+  })();
+
+  /**
    * 一个类目属性的输入控件。三种形态：
    *  - 只有预设值 → 下拉
    *  - 只有单位 → 数值输入框（厚度 mm 这类）
@@ -2054,6 +2088,34 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       </label>
     );
   };
+
+  /**
+   * 渲染一个属性；有联动子属性时，把子属性缩进挂在它下面（原地展开，不跳区）。
+   * 没子属性且不在嵌套层级里的项直接返回字段本身，保持原来的多列网格排版。
+   */
+  const attrGroup = (item: TemuProperty, required: boolean, depth = 0): React.ReactNode => {
+    const kids = attrRenderModel.children.get(item.pid) ?? [];
+    if (!kids.length) {
+      if (!depth) return attrField(item, required);
+      return (
+        <div className="temu-attr-dependent" key={`attr-dependent-${item.pid}`}>
+          {attrField(item, required)}
+        </div>
+      );
+    }
+    return (
+      <div
+        className={`temu-attr-group${depth ? " is-nested" : ""}`}
+        key={`attr-group-${item.pid}`}
+      >
+        {attrField(item, required)}
+        <div className="temu-attr-children">
+          {kids.map((child) => attrGroup(child, child.required, depth + 1))}
+        </div>
+      </div>
+    );
+  };
+
   const filledRequired = requiredProps.filter((item) => {
     const pick = attrPicks[item.pid];
     return !!pick && (pick.vid > 0 || !!pick.text.trim());
@@ -2667,20 +2729,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
                 <>
-                  {requiredProps.length > 0 && (
+                  {attrRenderModel.required.length > 0 && (
                     <div className="temu-attr-grid">
-                      {requiredProps.map((item) => attrField(item, true))}
+                      {attrRenderModel.required.map((item) => attrGroup(item, true))}
                     </div>
                   )}
-                  {optionalProps.length > 0 && (
+                  {attrRenderModel.optional.length > 0 && (
                     <details className="temu-optional-attrs">
-                      <summary>选填属性 {optionalProps.length} 项（不填也能发布）</summary>
+                      <summary>
+                        选填属性 {attrRenderModel.optional.length} 项（不填也能发布，但可能是下级属性的开关）
+                      </summary>
                       <div className="temu-attr-grid">
-                        {optionalProps.map((item) => attrField(item, false))}
+                        {attrRenderModel.optional.map((item) => attrGroup(item, false))}
                       </div>
                     </details>
                   )}
-                  {requiredProps.length === 0 && optionalProps.length === 0 && (
+                  {attrRenderModel.required.length === 0 && attrRenderModel.optional.length === 0 && (
                     <p className="temu-empty">这个分类没有可填属性。</p>
                   )}
                 </>

@@ -393,6 +393,36 @@ textarea.temu-input {
   gap: 12px;
 }
 
+/* 属性联动分组：带子属性的父项占满一行，子项缩进挂在它下面。
+   子项只在父属性选中且取值命中规则时才渲染（见 visibleProperties），
+   所以这里不需要额外的显示/隐藏逻辑，竖线 + 缩进就是「谁带出来的」提示。 */
+.temu-attr-group {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.temu-attr-group.is-nested {
+  grid-column: auto;
+}
+
+.temu-attr-children {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--theme-module-border-strong, #a7dafa);
+}
+
+/* 嵌套层里没有下级子项的叶子属性：占一格，别撑满整行。 */
+.temu-attr-dependent {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .temu-sku-table {
   display: grid;
   gap: 8px;
