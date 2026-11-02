@@ -580,20 +580,47 @@ class OrderProfitService:
         team_client: Any = None,
         remote_token: str = "",
     ) -> dict[str, Any]:
-        """把一周的店铺汇总提交到团队服务（周六自动跑，也可随时手动补交）。"""
+        """把本账号所有店铺的一周汇总提交到团队服务（周六自动跑，也可随时手动补交）。"""
         from ..team_store.sync import submit_week
 
         if team_client is None or not getattr(team_client, "configured", False):
             raise ValueError("团队服务未配置")
         if not remote_token:
             raise ValueError("请先登录后再提交团队数据")
-        return submit_week(
+        result = submit_week(
             self._repository,
             workspace_id,
             client=team_client,
             token=remote_token,
             week_start=week_start,
         )
+        result["account"] = self._team_account(team_client, remote_token)
+        return result
+
+    def team_rollup_preview(
+        self,
+        workspace_id: str,
+        *,
+        team_client: Any = None,
+        remote_token: str = "",
+    ) -> dict[str, Any]:
+        """提交前预览：账号名 + 本账号所有店铺 + 各自待提交的数据量。"""
+        from ..team_store.sync import build_preview
+
+        if team_client is None or not getattr(team_client, "configured", False):
+            raise ValueError("团队服务未配置")
+        if not remote_token:
+            raise ValueError("请先登录后再提交团队数据")
+        payload = build_preview(self._repository, workspace_id)
+        payload["account"] = self._team_account(team_client, remote_token)
+        return payload
+
+    def _team_account(self, team_client: Any, remote_token: str) -> dict[str, str]:
+        profile = self.team_profile(team_client=team_client, remote_token=remote_token).get("profile") or {}
+        return {
+            "username": _text(profile.get("username")),
+            "staff_no": _text(profile.get("staff_no")),
+        }
 
     def team_submissions(
         self,

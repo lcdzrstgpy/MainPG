@@ -144,6 +144,10 @@ class DraftProcessRequest(BaseModel):
     dimension_card: bool = True
     # 场景风格：决定四格背景族（smart 智能混合 / minimal 极简 / lifestyle 生活 / ornate 花哨）。
     scene_style: str = "smart"
+    # 主图背景：scene=主图也用场景背景（默认，客户反馈纯白单调）；white=主图保持纯白。
+    main_background: str = "scene"
+    # 手选系统底板 id（bg_*）；空=按品类自动选背景片段。
+    background_template: str = ""
     qualification_mode: bool | str = False
     ai_media_opt_in: bool = True
     image_rewrite: bool = True
@@ -403,6 +407,19 @@ class ImagePromptPreviewRequest(BaseModel):
 
 class DailySelectionIntakeRequest(DailySelectionRun):
     pass
+
+
+class BackgroundUploadRequest(BaseModel):
+    """自定义背景上传：前端 FileReader 读成 base64 data URL 后 POST 过来。
+
+    走 JSON 而不是 multipart，避免为此额外依赖 python-multipart 的解析路径；
+    上限 15MB 由 domain 层校验，base64 膨胀约 1.33 倍，仍在 FastAPI 默认请求体范围内。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    data: str = Field(min_length=1, description="base64 或 data URL")
+    name: str = ""
 
 
 class DailySelectionHandoffRequest(BaseModel):

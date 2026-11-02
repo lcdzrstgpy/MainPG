@@ -87,18 +87,130 @@ button { cursor: pointer; }
    z-index 只在 main 内部生效）顶部会被 tab 行盖住头部。降到 0 让位于 main。 */
 .topbar-card > .topbar-lower-row { z-index: 0; }
 
-/* 工作台标签允许自然换行；标签较多时进入第二排，不再生成横向滚动条。 */
+/* 工作台标签单行横向滚动：以前放不下就换行，开了十几个页签会堆成三四排，
+   既占高度又乱。改成一行滚动 + 溢出时「全部页签」入口。 */
 .topbar-lower-row {
   min-width: 0;
   transition: transform .32s var(--topbar-spring), background-color .24s ease, border-color .24s ease, box-shadow .24s ease, border-radius .24s ease;
+  align-items: center;
 }
 
 .tab-strip {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  overflow-x: visible;
-  overflow-y: visible;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
 }
+
+.tab-strip::-webkit-scrollbar { display: none; }
+
+/* ── 页签溢出的「全部页签」入口 ─────────────────────────────── */
+.tab-overflow { position: relative; flex: 0 0 auto; align-self: center; margin-bottom: 12px; }
+
+.tab-overflow-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--theme-page-tab-border, #e0eaf2);
+  border-radius: 9px;
+  background: var(--theme-page-tab-bg, #f7fafc);
+  color: var(--theme-text-muted, #688198);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease;
+}
+
+.tab-overflow-trigger:hover,
+.tab-overflow-trigger.is-open {
+  color: #0877d3;
+  border-color: #a7dafa;
+  background: #eaf8ff;
+  box-shadow: 0 7px 16px rgba(32, 91, 132, .11);
+}
+
+.tab-overflow-count {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--theme-text-muted, #8a9cb0);
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-overflow-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 248px;
+  max-height: 60vh;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--theme-card-border, #d6e4ee);
+  border-radius: 12px;
+  background: var(--theme-card-bg-solid, #fff);
+  box-shadow: 0 16px 36px rgba(21, 59, 92, .14);
+}
+
+.tab-overflow-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 6px;
+  border-bottom: 1px dashed var(--theme-card-border, #e5edf4);
+}
+
+.tab-overflow-head strong { font-size: .84rem; }
+.tab-overflow-head span { font-size: .72rem; color: var(--theme-text-muted, #8a9cb0); }
+.tab-overflow-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.tab-overflow-panel li { display: flex; align-items: center; gap: 2px; }
+
+.tab-overflow-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-secondary, #466079);
+  font-size: .82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tab-overflow-item:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); }
+.tab-overflow-item.is-active { background: var(--theme-page-tab-active-bg, #eaf7ff); color: #0877d3; font-weight: 700; }
+.tab-overflow-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tab-overflow-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--theme-text-muted, #9badbc);
+  font-size: .9rem;
+  cursor: pointer;
+  transition: color .16s ease, background .16s ease;
+}
+
+.tab-overflow-close:hover { color: #e25d65; background: #fff0f1; }
 
 /* ── 全局处理中进度（顶部标签栏右侧）────────────────────────────────
    只在有任务在跑时渲染；环 + 数字本身就是「有东西在进行」的信号，

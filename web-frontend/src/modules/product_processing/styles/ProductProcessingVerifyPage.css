@@ -6826,3 +6826,215 @@
   }
 }
 
+/* 处理设置：站点 / 语言 / 场景风格 / 主图背景 四列等宽；
+   背景模板与两个开关整行铺满，避免「下拉一排放不下、背景块又挤在右边」。 */
+.verify-settings-section .verify-form-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 16px;
+  align-items: end;
+}
+
+.verify-settings-section .verify-form-row > label { min-width: 0; }
+.verify-settings-section .verify-form-row > label select { width: 100%; }
+.verify-settings-section .verify-form-row > .verify-bg-picker,
+.verify-settings-section .verify-form-row > .verify-inline-checks {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .verify-settings-section .verify-form-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .verify-settings-section .verify-form-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 主图背景模板选择：系统底板 20 张 + 用户上传，10 列网格正好两行 */
+.verify-bg-picker {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px dashed var(--theme-border, rgba(15, 23, 42, .14));
+  border-radius: 14px;
+  background: var(--theme-page-bg, #f8fafc);
+}
+
+.verify-bg-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.verify-bg-picker-head strong { font-size: 0.78rem; }
+
+.verify-bg-picker-head small {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--theme-text-secondary, #64748b);
+  font-size: 0.68rem;
+}
+
+/* 右侧操作组：上传 + 恢复自动，始终贴右，不被状态文案挤散 */
+.verify-bg-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.verify-bg-upload {
+  border: 1px solid var(--theme-primary, #2f6fed);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--theme-primary, #2f6fed);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 2px 12px;
+  cursor: pointer;
+}
+
+.verify-bg-upload:disabled { opacity: .55; cursor: progress; }
+
+.verify-bg-reset {
+  border: 0;
+  background: none;
+  color: var(--theme-primary, #2f6fed);
+  font-size: 0.68rem;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.verify-bg-group-label {
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: var(--theme-text-secondary, #64748b);
+}
+
+.verify-bg-grid {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1180px) {
+  .verify-bg-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .verify-bg-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .verify-bg-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+.verify-bg-item {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--theme-border, rgba(15, 23, 42, .14));
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.verify-bg-item img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 7px;
+  display: block;
+}
+
+.verify-bg-item span {
+  font-size: 0.6rem;
+  color: var(--theme-text-secondary, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-bg-item:hover:not(:disabled) { border-color: var(--theme-primary, #2f6fed); }
+
+.verify-bg-item.is-active {
+  border-color: var(--theme-primary, #2f6fed);
+  box-shadow: 0 0 0 2px rgba(47, 111, 237, .18);
+}
+
+/* 选中角标：系统底板直接给个勾，用户底板右上角已有删除按钮，不再叠勾 */
+.verify-bg-item.is-active:not(.verify-bg-item-user)::after {
+  content: "✓";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--theme-primary, #2f6fed);
+  color: #fff;
+  font-size: 0.58rem;
+  line-height: 15px;
+  text-align: center;
+}
+
+.verify-bg-item:disabled { opacity: .38; cursor: not-allowed; }
+
+/* 自定义背景：用户底板列表（支持选中与删除） */
+.verify-bg-user { display: grid; gap: 6px; }
+
+.verify-bg-item-user { padding: 0; border: 0; background: none; }
+
+.verify-bg-thumb {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 4px;
+  border: 1px solid var(--theme-border, rgba(15, 23, 42, .14));
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.verify-bg-item-user.is-active .verify-bg-thumb {
+  border-color: var(--theme-primary, #2f6fed);
+  box-shadow: 0 0 0 2px rgba(47, 111, 237, .18);
+}
+
+.verify-bg-thumb img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 7px;
+  display: block;
+}
+
+.verify-bg-thumb span {
+  font-size: 0.6rem;
+  color: var(--theme-text-secondary, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verify-bg-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, .62);
+  color: #fff;
+  font-size: 0.68rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.verify-bg-remove:hover { background: rgba(220, 38, 38, .9); }
+

@@ -642,6 +642,20 @@ def create_order_profit_router(
         except BaseException as error:
             raise _error(error) from error
 
+    @router.get("/team/rollup-preview")
+    def team_rollup_preview(
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            return service.team_rollup_preview(
+                workspace_id(workspace),
+                team_client=team_client,
+                remote_token=remote_token(authorization),
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
     @router.post("/team/submit")
     def submit_team_rollup(
         request: TeamSubmitRequest,
