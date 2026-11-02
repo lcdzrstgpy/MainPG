@@ -933,12 +933,49 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setCategoryOptions(response.categoryDTOList ?? []);
   };
 
+  /** 手动刷新类目树：清掉后端两层缓存，再重载当前这一级 + 当前叶子属性。 */
+  const refreshCategoryTree = () =>
+    run("category", async () => {
+      await temuPublishApi.refreshCategories();
+      const currentLeaf = categoryPath[categoryPath.length - 1];
+      if (currentLeaf?.isLeaf) {
+        const attrs = await temuPublishApi.attributes(currentLeaf.catId);
+        setAttributes(attrs);
+        setSpecMismatch(findSpecMismatches(attrs, rows));
+        await loadLevel(categoryPath[categoryPath.length - 2]?.catId ?? 0);
+      } else {
+        await loadLevel(currentLeaf?.catId ?? 0);
+      }
+      // 类目树变了，标题匹配的结果也一并重算，别留着旧的推荐
+      setMatchSeq((value) => value + 1);
+    });
+
+  /**
+   * 换类目会清空已填的类目属性（不同类目的属性集不一样，留着会被判不合法），
+   * 所以换之前问一句。同一叶子重套、自动推荐、产品模板套用都不问。
+   */
+  const confirmCategorySwitch = (nextLeaf?: TemuCategory): boolean => {
+    const currentLeaf = categoryPath[categoryPath.length - 1];
+    if (!nextLeaf?.isLeaf) return true;
+    if (!currentLeaf?.isLeaf) return true;
+    if (Number(currentLeaf.catId) === Number(nextLeaf.catId)) return true;
+    const filled = Object.values(attrPicks).filter(
+      (pick) => pick && (pick.vid > 0 || pick.text.trim()),
+    ).length;
+    if (!filled) return true;
+    return window.confirm(
+      `换成「${categoryName(nextLeaf)}」？\n` +
+        `已经填好的 ${filled} 个类目属性会被清空 —— 不同类目要求的属性不一样。`,
+    );
+  };
+
   const chooseCategory = (item: TemuCategory) =>
     run("category", async () => {
       // 手动点分类下钻 = 用户自己选的类目。这里必须标记，否则之后改标题时
       // 「自动按标题匹配类目」会把用户选的类目静默换掉、连属性一起清空
       // （categoryTouchedRef 只拦自动推荐，不拦手动选择）。
       categoryTouchedRef.current = true;
+      if (!confirmCategorySwitch(item)) return;
       const next = [...categoryPath, item];
       setCategoryPath(next);
       if (item.isLeaf) {
@@ -976,8 +1013,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     });
 
   /** 直接套用一条完整类目路径（预设、最近使用都走这里）。 */
-  const applyCategory = (path: TemuCategory[], options?: { auto?: boolean }) =>
-    run("category", async () => {
+  const applyCategory = (
+    path: TemuCategory[],
+    options?: { auto?: boolean; skipConfirm?: boolean },
+  ) => {
+    // 换到别的叶子类目会清空已填属性：先问一句（自动推荐 / 套产品模板不问）
+    if (!options?.auto && !options?.skipConfirm && !confirmCategorySwitch(path[path.length - 1])) {
+      return Promise.resolve();
+    }
+    return run("category", async () => {
       // 自动推荐不算「用户选过」：标题一改还能继续跟着改
       if (!options?.auto) categoryTouchedRef.current = true;
       const leaf = path[path.length - 1];
@@ -1007,6 +1051,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         localStore.rememberDraftCategory(prefillDraftId.current, path);
       }
     });
+  };
 
   // effect 里要用最新的 applyCategory，用 ref 兜住（它的闭包会随状态重建）
   const applyCategoryRef = useRef(applyCategory);
@@ -1195,7 +1240,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 这一步发生在 await 之后 —— 如果先填属性再切类目，刚填的会被清空，
     // 表现就是「套了产品模板但必填属性还是空的」。
     if (template.categoryPath.length) {
-      await applyCategory(template.categoryPath);
+      // 模板自带要填的属性，换类目时不用再问「属性会被清空吗」
+      await applyCategory(template.categoryPath, { skipConfirm: true });
     }
     setAttrPicks((current) => {
       const next = { ...current };
@@ -2712,6 +2758,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   </button>
                 </div>
               )}
+              <div className="temu-cat-refresh">
+                <button
+                  type="button"
+                  className="temu-link"
+                  onClick={() => void refreshCategoryTree()}
+                  disabled={busy !== ""}
+                  title="Temu 后台改过类目（新开/下架）后点这里，不用等缓存过期"
+                >
+                  刷新类目树
+                </button>
+                <em className="temu-muted">
+                  类目缓存 1 小时；改完类目看不到新的就点这个
+                </em>
+              </div>
               {leaf?.isLeaf && attributes && saleValueIndex.size === 0 && (
                 <p className="temu-cat-hint">
                   该类目在 Temu 没有销售属性（建不了颜色/尺码变种），只能按单 SKU 发布；想按颜色卖就换一个带变种的类目。

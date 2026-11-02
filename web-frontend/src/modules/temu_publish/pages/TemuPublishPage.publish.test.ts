@@ -1073,7 +1073,7 @@ test("类目：手动选过就不许自动匹配再改掉，套产品模板时�
     page.indexOf("const applyProductTemplate = async (name: string) =>"),
     page.indexOf("/** 存成变种模板"),
   );
-  const switchCategoryAt = applyTemplate.indexOf("await applyCategory(template.categoryPath)");
+  const switchCategoryAt = applyTemplate.indexOf("await applyCategory(template.categoryPath, { skipConfirm: true })");
   const fillAttrsAt = applyTemplate.indexOf("Object.entries(template.attrs).forEach");
   assert.ok(switchCategoryAt > -1, "expected awaited category switch inside applyProductTemplate");
   assert.ok(fillAttrsAt > -1, "expected attr fill inside applyProductTemplate");
@@ -1105,7 +1105,7 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   assert.match(chooseCategory, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
 
   const applyCategory = page.slice(
-    page.indexOf("const applyCategory = (path: TemuCategory[]"),
+    page.indexOf("const applyCategory = ("),
     page.indexOf("applyCategoryRef.current = applyCategory"),
   );
   assert.match(applyCategory, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
@@ -1117,4 +1117,46 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   assert.match(page, /有 \{specMismatch\.length\} 个颜色\/尺码不在当前类目的预设值里/);
   assert.match(css, /\.temu-spec-mismatch \{/);
   assert.match(css, /\.temu-spec-mismatch ul \{[\s\S]*?max-height: 132px;/);
+});
+
+test("类目：刷新类目树入口 + 换类目二次确认", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  const api = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+
+  // ① 手动刷新：清后端两层缓存 → 重载当前级 + 叶子属性 → 让标题匹配重算
+  assert.match(api, /refreshCategories: \(\) =>/);
+  assert.match(api, /`\$\{BASE\}\/categories\/refresh`/);
+  assert.match(page, /const refreshCategoryTree = \(\) =>/);
+  const refresh = page.slice(
+    page.indexOf("const refreshCategoryTree = () =>"),
+    page.indexOf("/**\n   * 换类目会清空已填的类目属性"),
+  );
+  assert.ok(refresh.length > 0, "expected refreshCategoryTree block");
+  assert.match(refresh, /await temuPublishApi\.refreshCategories\(\);/);
+  assert.match(refresh, /await loadLevel\(/);
+  assert.match(refresh, /setMatchSeq\(\(value\) => value \+ 1\);/);
+
+  // ② 换类目确认：只在「已填属性 + 换成别的叶子」时问
+  assert.match(page, /const confirmCategorySwitch = \(nextLeaf\?: TemuCategory\): boolean =>/);
+  const confirm = page.slice(
+    page.indexOf("const confirmCategorySwitch = (nextLeaf?: TemuCategory): boolean =>"),
+    page.indexOf("const chooseCategory = (item: TemuCategory) =>"),
+  );
+  assert.match(confirm, /if \(Number\(currentLeaf\.catId\) === Number\(nextLeaf\.catId\)\) return true;/);
+  assert.match(confirm, /if \(!filled\) return true;/);
+  assert.match(confirm, /window\.confirm\(/);
+  // 点选下钻也要走确认（会清属性）
+  const chooseCategory = page.slice(
+    page.indexOf("const chooseCategory = (item: TemuCategory) =>"),
+    page.indexOf("const resetToLevel = (index: number) =>"),
+  );
+  assert.match(chooseCategory, /if \(!confirmCategorySwitch\(item\)\) return;/);
+  // 套用整条路径会确认，但自动推荐 / 套产品模板不问
+  assert.match(page, /if \(!options\?\.auto && !options\?\.skipConfirm && !confirmCategorySwitch\(/);
+  assert.match(page, /await applyCategory\(template\.categoryPath, \{ skipConfirm: true \}\);/);
+
+  // ③ 按钮与样式在位
+  assert.match(page, /onClick=\{\(\) => void refreshCategoryTree\(\)\}/);
+  assert.match(page, /刷新类目树/);
+  assert.match(css, /\.temu-cat-refresh \{/);
 });

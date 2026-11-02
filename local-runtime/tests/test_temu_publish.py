@@ -2440,3 +2440,60 @@ def test_category_cache_ttl_stays_short_enough_to_see_temu_category_changes() ->
     assert temu_client.CACHE_TTL_CATEGORIES <= 60 * 60, (
         "类目缓存超过 1 小时：Temu 改类目后用户看不到，可能发到已废弃类目"
     )
+
+
+def test_invalidate_categories_drops_only_category_cache() -> None:
+    """手动刷新类目树：只清 cats:/cat-match:，别把属性、运费模板的缓存一起清掉。"""
+
+    payload = {
+        "success": True,
+        "errorCode": "1000000",
+        "result": {"categoryDTOList": [{"catId": 1}]},
+    }
+    client, session = _client([FakeResponse(payload), FakeResponse(payload)])
+
+    client.categories(0)
+    client.categories(0)
+    assert len(session.calls) == 1, "第二次应命中缓存"
+
+    dropped = client.invalidate_categories()
+    client.categories(0)
+
+    assert dropped == 1
+    assert len(session.calls) == 2, "清缓存后必须重新打网关，否则用户点了刷新还看不到新类目"
+
+
+class _CategoryCacheClient:
+    """只用来验证 service 层缓存的假客户端。"""
+
+    def __init__(self) -> None:
+        self.category_calls = 0
+        self.invalidated = 0
+
+    def categories(self, parent_cat_id: int = 0) -> dict[str, Any]:  # noqa: ARG002
+        self.category_calls += 1
+        return {"categoryDTOList": []}
+
+    def invalidate_categories(self) -> int:
+        self.invalidated += 1
+        return 1
+
+
+def test_refresh_categories_clears_service_and_client_layers(tmp_path: Path) -> None:
+    """service 外面还套了一层 180 秒缓存：刷新入口必须两层都清。"""
+
+    fake = _CategoryCacheClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=fake)
+
+    service.categories(0)
+    service.categories(0)
+    assert fake.category_calls == 1, "service 层缓存应命中"
+
+    result = service.refresh_categories()
+
+    assert result["ok"] is True
+    assert result["dropped"] == 2, "service 1 条 + client 1 条"
+    assert fake.invalidated == 1
+
+    service.categories(0)
+    assert fake.category_calls == 2, "刷新后必须真的重新取类目"

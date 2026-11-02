@@ -259,6 +259,19 @@ class TemuProductClient:
         """新建规格后清掉父规格缓存，否则最长要等一个 TTL 才看得到新规格。"""
         self._cache_drop("parent-specs")
 
+    def invalidate_categories(self) -> int:
+        """清掉类目树与类目匹配的读缓存，返回清掉的条数。
+
+        用途：Temu 后台调整/下架类目后，缓存最长要 1 小时才过期。给用户一个
+        手动刷新入口，不用等 TTL。只清 ``cats:`` / ``cat-match:`` 前缀，
+        不动属性、运费模板这些无关缓存。
+        """
+        with self._cache_lock:
+            keys = [key for key in self._cache if key.startswith(("cats:", "cat-match:"))]
+            for key in keys:
+                self._cache.pop(key, None)
+        return len(keys)
+
     def goods_list(self, **filters: Any) -> dict[str, Any]:
         """商品列表查询（bg.glo.goods.list.get）。
 

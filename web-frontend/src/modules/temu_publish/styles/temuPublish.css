@@ -322,6 +322,22 @@ textarea.temu-input {
   cursor: pointer;
 }
 
+/* 手动刷新类目树：Temu 后台改完类目后不用等 1 小时缓存 */
+.temu-cat-refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.temu-cat-refresh .temu-link {
+  flex: none;
+}
+
+.temu-cat-refresh em {
+  font-style: normal;
+}
+
 .temu-two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
