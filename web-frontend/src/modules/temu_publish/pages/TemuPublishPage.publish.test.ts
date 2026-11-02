@@ -1196,7 +1196,8 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
   // 写：按时间裁剪，别让本地存储无限长
   assert.match(attrStore, /export const ATTR_PICKS_HISTORY_MAX = 20;/);
   assert.match(page, /saveAttrPicksHistory\(storageScope\(\), leafCatId, attrPicks\);/);
-  assert.match(attrStore, /\.slice\(0, ATTR_PICKS_HISTORY_MAX\);/);
+  // 按写入顺序裁（slice(-N)）：同一毫秒连写多个类目时 at 会撞，按 at 排序会丢掉刚写的
+  assert.match(attrStore, /\.slice\(-ATTR_PICKS_HISTORY_MAX\)/);
 
   // ② 刷新后类目恢复出来但属性表没拉过：补拉一次，顺带按该类目预设检查变种行
   const restoreEffect = page.slice(
@@ -1328,8 +1329,13 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   assert.match(effect, /if \(autoFilledCatRef\.current === leafCatId\) return;/);
   // 草稿库带进来的估填值先铺上（只铺空位），再把合并后的 base 交给自动填
   assert.match(effect, /const carried = carriedAttrPicksRef\.current;/);
-  assert.match(effect, /base = \{ \.\.\.carried, \.\.\.attrPicksRef\.current \};/);
+  // 带进来的属性必须跟当前叶子类目对得上才铺：不同类目 pid 完全不同，
+  // 铺错等于给 Temu 塞一堆不存在的属性
+  assert.match(effect, /if \(carried && carried\.catId && carried\.catId === leafCatId\) \{/);
+  assert.match(effect, /base = \{ \.\.\.carried\.picks, \.\.\.attrPicksRef\.current \};/);
   assert.match(effect, /runAttributeAutofill\(base, leafCatId\);/);
+  // 清空自动填时，「草稿库估了 N 项」这条提示也要一起撤
+  assert.match(page, /setCarriedAttrCount\(0\);/);
   // 依赖只跟 attributes：标题变了不能自动重跑（会把用户清空的值填回来）
   assert.match(effect, /\}, \[attributes\]\);/);
 
@@ -1402,18 +1408,29 @@ test("入草稿库就把产品属性估好，带入发布页直接用", () => {
   assert.match(library, /return !saved \|\| Number\(saved\.catId\) !== leaf;/);
 
   // ② attrs 按 catId 缓存在内存：同类目 N 条草稿只打一次网关
-  assert.match(library, /const attrEstimateCacheRef = useRef\(new Map<number, TemuAttributes \| null>\(\)\);/);
-  assert.match(library, /if \(attrs === undefined\) \{/);
-  // 拉不到就不写结果 —— 写了空值等于「这条永远不再试」
+  assert.match(library, /const attrEstimateCacheRef = useRef\(new Map<number, TemuAttributes>\(\)\);/);
+  // 拉不到不写结果（写了空值等于「这条永远不再试」）、也不缓存失败结果，
+  // 但要记进 failedCat，否则「一直失败 + 一直重跑」会把网关打爆
   assert.match(library, /拉不到就不写结果/);
+  assert.match(library, /attrEstimateFailedRef\.current\.add\(leaf\);/);
+  assert.match(library, /if \(attrEstimateFailedRef\.current\.has\(leaf\)\) return false;/);
+  // 缓存只写在 try 里（成功才缓存）；catch 里只记 failedCat，不能顺手把失败的也缓存了
+  assert.match(library, /try \{\s*attrs = await temuPublishApi\.attributes\(leaf\);\s*attrEstimateCacheRef\.current\.set\(leaf, attrs\);/);
+  assert.match(library, /\} catch \{[\s\S]{0,200}?attrEstimateFailedRef\.current\.add\(leaf\);[\s\S]{0,80}?continue;/);
   assert.doesNotMatch(library, /next\[entry\.id\] = \{ catId: leaf, picks: \{\}/);
+
+  // 跑完一轮再触发一轮：自动分类是分批补类目的，错过就永远估不上
+  assert.match(library, /setEstimateTick\(\(value\) => value \+ 1\);/);
+  assert.match(library, /\}, \[entries, categoryMemo, estimateTick\]\);/);
+  // 显示时校验 catId：类目换了但还没重估，不能拿旧类目的数字充数
+  assert.match(library, /if \(leafCatId && Number\(prefill\.catId\) !== Number\(leafCatId\)\) return 0;/);
 
   // ③ 估填本身用的是纯函数，来源可解释
   assert.match(library, /const result = estimateAttributePicks\(\{/);
   assert.match(library, /history: readAttrPicksHistory\(scope, leaf\),/);
   assert.match(library, /saveDraftAttrPrefills\(scope, next\);/);
   // attrPrefills 不能进依赖：写入 → 重跑 → 死循环
-  assert.match(library, /\}, \[entries, categoryMemo\]\);/);
+  assert.match(library, /\}, \[entries, categoryMemo, estimateTick\]\);/);
 
   // ④ 带入发布页 + 界面标出「估的」
   assert.match(library, /attrPicks: attrPrefills\?\.\[entry\.id\]\?\.picks,/);

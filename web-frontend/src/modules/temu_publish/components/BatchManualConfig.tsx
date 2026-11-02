@@ -128,6 +128,10 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   const pickPath = async (dto: TemuCategoryPath) => {
     const next = categoryPathFromDto(dto);
     if (!next.length) return;
+    // 「估好的属性」只消费一次：先取走再请求。放在成功后取的话，这次请求失败
+    // 会把旧类目的值留到下一次手动换类目时误铺。
+    const seeded = seededPicksRef.current;
+    seededPicksRef.current = undefined;
     setPath(next);
     setPaths([]);
     setError("");
@@ -136,12 +140,8 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       const leaf = next[next.length - 1];
       const loaded = await temuPublishApi.attributes(leaf.catId);
       setAttributes(loaded);
-      // 草稿库估好的属性：只铺一次，用户仍可逐项改
-      const seeded = seededPicksRef.current;
-      if (seeded && Object.keys(seeded).length) {
-        seededPicksRef.current = undefined;
-        setPicks(seeded);
-      }
+      // 草稿库估好的属性：铺上，用户仍可逐项改
+      if (seeded && Object.keys(seeded).length) setPicks(seeded);
     } catch (cause) {
       setAttributes(null);
       setError(cause instanceof Error ? cause.message : "属性表没取到");

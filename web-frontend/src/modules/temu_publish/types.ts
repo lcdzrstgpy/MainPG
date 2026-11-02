@@ -343,6 +343,11 @@ export type TemuPublishPrefill = {
    * 发布页会把它们铺上，同时提示「产品属性（自动估）」要核对。
    */
   attrPicks?: Record<number, { vid: number; text: string }>;
+  /**
+   * attrPicks 属于哪个叶子类目。类目对不上就不能铺 —— 不同类目的属性 pid
+   * 完全不同，硬铺等于给 Temu 塞一堆不存在的属性。
+   */
+  attrPicksCatId?: number;
 };
 
 export type TemuImageUploadResult = {

@@ -606,7 +606,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 草稿库估好的属性：先存着，等类目属性表加载完再铺。
    * 不能直接 setAttrPicks —— 紧接着的 applyCategory 会 setAttrPicks({}) 把它清掉。
    */
-  const carriedAttrPicksRef = useRef<Record<number, AttrPick> | null>(null);
+  const carriedAttrPicksRef = useRef<{ catId: number; picks: Record<number, AttrPick> } | null>(
+    null,
+  );
   /** 从草稿库带进来的估填项数（提示「这些是按类目估的」） */
   const [carriedAttrCount, setCarriedAttrCount] = useState(0);
   const [autoFill, setAutoFill] = useState<{ hits: AutoFillHit[]; ambiguous: string[] }>({
@@ -797,10 +799,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const carried = carriedAttrPicksRef.current;
     carriedAttrPicksRef.current = null;
     let base = attrPicksRef.current;
-    if (carried) {
-      base = { ...carried, ...attrPicksRef.current };
+    // 类目对不上就丢掉：不同类目的属性 pid 完全不同，铺进去等于给 Temu 塞无效 pid
+    if (carried && carried.catId && carried.catId === leafCatId) {
+      base = { ...carried.picks, ...attrPicksRef.current };
       setAttrPicks(base);
-      setCarriedAttrCount(Object.keys(carried).length);
+      setCarriedAttrCount(Object.keys(carried.picks).length);
     }
     runAttributeAutofill(base, leafCatId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -830,6 +833,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       return next;
     });
     setAutoFill({ hits: [], ambiguous: [] });
+    // 「草稿库估了 N 项」这条也没意义了：值已经撤掉
+    setCarriedAttrCount(0);
   };
 
   useEffect(() => {
@@ -947,7 +952,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     prefillDraftId.current = prefill.draftId || "";
     // 草稿库按类目估好的属性：留给自动填那一步铺（那时才对得上当前类目）
     carriedAttrPicksRef.current =
-      prefill.attrPicks && Object.keys(prefill.attrPicks).length ? prefill.attrPicks : null;
+      prefill.attrPicks && Object.keys(prefill.attrPicks).length
+        ? { catId: Number(prefill.attrPicksCatId ?? 0), picks: prefill.attrPicks }
+        : null;
     setPrefillInfo({
       source: prefill.sourceKind,
       needsReview: prefill.needsReview,

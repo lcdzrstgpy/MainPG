@@ -79,16 +79,21 @@ export function readAttrPicksHistory(scope: string, catId: number): AttrPickMap 
   return {};
 }
 
-/** 存下某个类目的填写，并按时间裁剪到最多 {@link ATTR_PICKS_HISTORY_MAX} 个类目。 */
+/**
+ * 存下某个类目的填写，只保留最近写入的 {@link ATTR_PICKS_HISTORY_MAX} 个类目。
+ *
+ * **按写入顺序裁，不按 `at` 排序**：同一毫秒内连写多个类目时 at 完全相同，
+ * 按 at 排序会变成「保留最旧的、丢掉刚写的」。先 delete 再赋值，让 key 落到
+ * 对象末尾，`slice(-N)` 拿到的就是最近写入的。
+ */
 export function saveAttrPicksHistory(scope: string, catId: number, picks: AttrPickMap): void {
   if (!catId) return;
   const key = `${ATTR_PICKS_KEY}:${scope}`;
   const all = readJson<AttrPicksHistory>(key, {});
-  all[String(catId)] = { picks, at: Date.now() };
-  const kept = Object.entries(all)
-    .sort((a, b) => Number(b[1]?.at ?? 0) - Number(a[1]?.at ?? 0))
-    .slice(0, ATTR_PICKS_HISTORY_MAX);
-  writeJson(key, Object.fromEntries(kept));
+  const id = String(catId);
+  delete all[id];
+  all[id] = { picks, at: Date.now() };
+  writeJson(key, Object.fromEntries(Object.entries(all).slice(-ATTR_PICKS_HISTORY_MAX)));
 }
 
 /** 读出全部草稿的估填结果（草稿 id → 预填）。 */
@@ -112,9 +117,10 @@ export function saveDraftAttrPrefills(
 ): void {
   const key = `${DRAFT_ATTR_PREFILL_KEY}:${scope}`;
   const all = readJson<Record<string, DraftAttrPrefill>>(key, {});
-  Object.assign(all, entries);
-  const kept = Object.entries(all)
-    .sort((a, b) => Number(b[1]?.at ?? 0) - Number(a[1]?.at ?? 0))
-    .slice(0, DRAFT_ATTR_PREFILL_MAX);
-  writeJson(key, Object.fromEntries(kept));
+  for (const [id, prefill] of Object.entries(entries)) {
+    // 先删再写，让 key 落到末尾：裁剪按写入顺序来，不依赖同一毫秒里会撞的 at
+    delete all[id];
+    all[id] = prefill;
+  }
+  writeJson(key, Object.fromEntries(Object.entries(all).slice(-DRAFT_ATTR_PREFILL_MAX)));
 }

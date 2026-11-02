@@ -320,8 +320,10 @@ function leafCatIdOf(path?: TemuCategory[]): number {
  * 属性预填里「填了几个」：估出来的 picks 里真正有值的项数。
  * 只用于界面显示，不参与任何判定。
  */
-function estimatedPickCount(prefill?: DraftAttrPrefill): number {
+function estimatedPickCount(prefill?: DraftAttrPrefill, leafCatId?: number): number {
   if (!prefill) return 0;
+  // 类目换过了但还没重估：旧数字属于另一个类目，不能拿来显示
+  if (leafCatId && Number(prefill.catId) !== Number(leafCatId)) return 0;
   return Object.values(prefill.picks ?? {}).filter(
     (pick) => Number(pick?.vid ?? 0) > 0 || String(pick?.text ?? "").trim(),
   ).length;
@@ -378,6 +380,7 @@ function entryPrefill(
     categoryPath: memo?.[entry.id]?.path,
     // 入草稿库时按类目估好的属性：带进去直接铺上，发布页只补剩下没估到的
     attrPicks: attrPrefills?.[entry.id]?.picks,
+    attrPicksCatId: attrPrefills?.[entry.id]?.catId,
     // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的，
     // 产品属性则是按类目「估」的（第一个可用选项），更要人看
     needsReview: [...(buildNeedsReview(entry) ?? []), ...(attrPrefills?.[entry.id] ? ["产品属性（自动估）"] : [])],
@@ -573,8 +576,18 @@ export function TemuDraftLibraryPage({
    * 限流：attrs 按 catId 缓存在内存里（同类目 N 条草稿只打一次网关），
    * 一次最多 ATTR_ESTIMATE_LIMIT 条，剩下的下次进页面继续。
    */
-  const attrEstimateCacheRef = useRef(new Map<number, TemuAttributes | null>());
+  const attrEstimateCacheRef = useRef(new Map<number, TemuAttributes>());
+  /** 本次会话里拉失败的类目：不再重试（否则「一直失败 + 一直重跑」会把网关打爆） */
+  const attrEstimateFailedRef = useRef(new Set<number>());
   const attrEstimatingRef = useRef(false);
+  /**
+   * 跑完一轮后自增，触发下一轮。
+   *
+   * 必须有这一下：自动分类是异步分批补类目的，估填启动时 memo 里可能只有一部分；
+   * 若那一轮还在跑，新的 memo 进来会被 `attrEstimatingRef` 挡掉，之后再也没有
+   * 触发点 —— 剩下的草稿就永远估不上。
+   */
+  const [estimateTick, setEstimateTick] = useState(0);
   useEffect(() => {
     if (attrEstimatingRef.current || !entries.length) return;
     const scope = storageScope();
@@ -583,6 +596,8 @@ export function TemuDraftLibraryPage({
       .filter(({ entry, leaf }) => {
         // 没有叶子类目就没法知道有哪些属性 —— 等自动分类把类目补上再估
         if (!leaf) return false;
+        // 这个类目刚拉失败过：本次会话不再试，别把网关打爆
+        if (attrEstimateFailedRef.current.has(leaf)) return false;
         const saved = attrPrefills[entry.id];
         return !saved || Number(saved.catId) !== leaf;
       })
@@ -596,39 +611,49 @@ export function TemuDraftLibraryPage({
       for (const { entry, leaf } of pending) {
         if (!alive) break;
         let attrs = attrEstimateCacheRef.current.get(leaf);
-        if (attrs === undefined) {
+        if (!attrs) {
           try {
             attrs = await temuPublishApi.attributes(leaf);
+            attrEstimateCacheRef.current.set(leaf, attrs);
           } catch {
-            // 拉不到就不写结果：写了空值等于「这条永远不再试」
-            attrs = null;
+            // 拉不到就不写结果（写了空值等于「这条永远不再试」），
+            // 但本次会话先别重复打网关
+            attrEstimateFailedRef.current.add(leaf);
+            continue;
           }
-          attrEstimateCacheRef.current.set(leaf, attrs);
         }
-        if (!attrs) continue;
-        const result = estimateAttributePicks({
-          attributes: attrs,
-          texts: autoFillSourceTexts({
-            // subtitle 是任务名（"AI 视频"这类），不是商品描述，不进匹配文本
-            title: entry.title || entry.subtitle,
-            description: entry.description,
-            categoryNames: [entry.category_name ?? ""],
-          }),
-          history: readAttrPicksHistory(scope, leaf),
-        });
-        next[entry.id] = {
-          catId: leaf,
-          picks: result.picks,
-          at: Date.now(),
-          guessed: result.guessed,
-        };
+        try {
+          const result = estimateAttributePicks({
+            attributes: attrs,
+            texts: autoFillSourceTexts({
+              // subtitle 是任务名（"AI 视频"这类），不是商品描述，不进匹配文本
+              title: entry.title || entry.subtitle,
+              description: entry.description,
+              categoryNames: [entry.category_name ?? ""],
+            }),
+            history: readAttrPicksHistory(scope, leaf),
+          });
+          next[entry.id] = {
+            catId: leaf,
+            picks: result.picks,
+            at: Date.now(),
+            guessed: result.guessed,
+          };
+        } catch {
+          // 单条估挂不能让整批停：这条下次进页面再试。
+          // 也不能往外抛 —— 抛了会让 finally 的 tick 再跑一轮，异常再抛 → 死循环。
+        }
       }
       if (alive && Object.keys(next).length) {
         saveDraftAttrPrefills(scope, next);
         setAttrPrefills((current) => ({ ...current, ...next }));
       }
     })().finally(() => {
-      if (alive) attrEstimatingRef.current = false;
+      if (!alive) return;
+      attrEstimatingRef.current = false;
+      // 再跑一轮：这期间可能又有草稿被自动分类补上了类目。
+      // 没有 pending 时下一轮会直接 return，不会自激。
+      setEstimateTick((value) => value + 1);
     });
     return () => {
       alive = false;
@@ -636,7 +661,7 @@ export function TemuDraftLibraryPage({
     };
     // attrPrefills 故意不进依赖：写入后会触发自己，加进去会无限循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, categoryMemo]);
+  }, [entries, categoryMemo, estimateTick]);
 
   const totalCount = data?.total ?? 0;
   const totalPages = Math.max(1, data?.pages ?? 1);
@@ -1310,7 +1335,10 @@ export function TemuDraftLibraryPage({
                     <td className="col-ready">
                       {(() => {
                         const missing = draftMissingFields(entry, categoryMemo);
-                        const estimated = estimatedPickCount(attrPrefills[entry.id]);
+                        const estimated = estimatedPickCount(
+                          attrPrefills[entry.id],
+                          leafCatIdOf(categoryMemo[entry.id]?.path),
+                        );
                         if (!missing.length) {
                           return (
                             <span
