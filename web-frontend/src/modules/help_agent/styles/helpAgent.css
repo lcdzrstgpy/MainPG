@@ -211,7 +211,11 @@ html[data-ball-size="lg"] .help-agent-ball.is-sized { --ba-size: 110px; }
   flex-direction: column;
   border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
   border-radius: 18px;
-  background: var(--theme-card-bg, rgba(255, 255, 255, .92));
+  /* 部分主题（桃花源/高山草原）的 --theme-card-bg 只有 20% 不透明度，压在深色图上正文会糊。
+     改为用主题实色卡面压到 92%：保留 blur 的玻璃观感，同时保证文字对比度。
+     不支持 color-mix 的环境回退到实色卡面。 */
+  background: var(--theme-card-bg-solid, #fff);
+  background: color-mix(in srgb, var(--theme-card-bg-solid, #fff) 92%, transparent);
   box-shadow: 0 22px 52px var(--theme-card-shadow-lg, rgba(26, 65, 101, .1));
   backdrop-filter: blur(14px);
   overflow: hidden;
