@@ -991,6 +991,10 @@ textarea.temu-input {
 }
 .temu-edit-dialog {
   width: min(640px, 94vw);
+  /* 硬上限：内容里有不折行的长标题时，grid/flex 子项的 min-width:auto 会顶宽，
+     光靠 width 兜不住（曾把批量发布弹窗顶出视口，右侧内容被切）。 */
+  min-width: 0;
+  max-width: calc(100vw - 48px);
   max-height: 88vh;
   display: grid;
   gap: 14px;
@@ -999,6 +1003,7 @@ textarea.temu-input {
   background: #fff;
   box-shadow: 0 28px 70px rgba(4, 18, 30, 0.42);
   overflow: auto;
+  overscroll-behavior: contain;
 }
 .temu-edit-head {
   display: flex;
@@ -2865,6 +2870,10 @@ textarea.temu-input {
 }
 
 .temu-batch-list li span {
+  /* flex 子项默认 min-width:auto（= 内容宽度），标题 white-space:nowrap 时
+     整行撑到最长标题那么宽，把弹窗顶出视口（截图里右侧被切掉就是这个原因）。
+     必须显式 min-width:0，ellipsis 才真正生效。 */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

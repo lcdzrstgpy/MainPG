@@ -1200,3 +1200,21 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
   assert.ok(uploadAt > -1, "expected image upload inside composeDraft");
   assert.ok(attrCheckAt < uploadAt, "必填属性校验必须在图片上传之前，否则白传一遍图才报错");
 });
+
+test("批量发布弹窗不能被长标题顶宽（右侧被切掉）", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 弹窗有硬上限：内容里的 nowrap 长标题不能把它撑出视口
+  assert.match(css, /\.temu-edit-dialog \{[\s\S]*?max-width: calc\(100vw - 48px\);/);
+
+  // 列表项是 flex，标题是 nowrap：没有 min-width:0 时 flex 子项按内容宽度撑开，
+  // ellipsis 根本不生效，整个弹窗跟着变宽 —— 就是「只显示一半」的根因。
+  const listItem = css.slice(
+    css.indexOf(".temu-batch-list li span {"),
+    css.indexOf(".temu-batch-list li em {"),
+  );
+  assert.ok(listItem.length > 0, "expected batch list item style");
+  assert.match(listItem, /min-width: 0;/);
+  assert.match(listItem, /text-overflow: ellipsis;/);
+  assert.match(listItem, /white-space: nowrap;/);
+});
