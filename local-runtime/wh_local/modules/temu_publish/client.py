@@ -228,16 +228,21 @@ class TemuProductClient:
 
         发布前用它确认这个叶子类目还缺哪些必填属性 —— 文档 §7.4 的取数顺序里明确要求。
         传当前已组装的 productPropertyReqs，网关会告诉你缺什么。
+
+        `productPropertyReqs` 为空时**不要**带这个键：网关对顶层空数组的签名口径和
+        Temu 不一致，带 `[]` 会被判 `7000015 sign is invalid`（2026-11-02 实测：
+        带空数组 → 7000015；带一条属性 → 正常返回 Temu 的业务错误/结果）。
+        之前记的「网关不支持 catsmandatory.get」就是被这个空数组误导的。
         """
-        return self.call(
-            "bg.glo.goods.catsmandatory.get",
-            {
-                "leafCatId": int(leaf_cat_id),
-                "bindSiteIds": sorted({int(value) for value in bind_site_ids if int(value) > 0}),
-                "configItems": [1, 2, 3],
-                "productPropertyReqs": list(product_property_reqs or []),
-            },
-        )
+        request: dict[str, Any] = {
+            "leafCatId": int(leaf_cat_id),
+            "bindSiteIds": sorted({int(value) for value in bind_site_ids if int(value) > 0}),
+            "configItems": [1, 2, 3],
+        }
+        properties = list(product_property_reqs or [])
+        if properties:
+            request["productPropertyReqs"] = properties
+        return self.call("bg.glo.goods.catsmandatory.get", request)
 
     def parent_specs(self) -> dict[str, Any]:
         return self.call(

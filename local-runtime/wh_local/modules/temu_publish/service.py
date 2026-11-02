@@ -802,10 +802,15 @@ class TemuPublishService:
     def check_mandatory(self, draft: GoodsDraftInput) -> dict[str, Any]:
         """发布前校验这个叶子类目还缺什么。
 
-        优先走文档里的 `bg.glo.goods.catsmandatory.get`；但**网关实测不支持它**
-        （2026-10-26 真调，PARTNER / CN 两个网关都返回 `sign is invalid`），
-        所以失败时退回本地 `attrs.get` 的必填标记做校验 —— 结论一样能用，只是少了
-        网关侧的额外规则。
+        优先走文档里的 `bg.glo.goods.catsmandatory.get`。这个方法之前一直「调不通」，
+        2026-11-02 查清原因：不是网关不支持，而是我们带了**顶层空数组**
+        `productPropertyReqs: []`，网关算签名时会忽略它、转发时又带上，Temu 重算签名
+        就回 `7000015 sign is invalid`（带一条属性再调，同参数能正常返回 Temu 的业务结果）。
+        空数组已由 `client.mandatory_config` 去掉。
+
+        但 Temu 自己还会拒一部分类目（实测 `10498` 回 `1000001 Does not currently support
+        querying other category configurations`），所以失败时仍退回本地 `attrs.get` 的必填标记，
+        结论一样能用，只是少了网关侧的额外规则。
 
         只做校验，不会提交商品。
         """
@@ -827,7 +832,7 @@ class TemuPublishService:
             catalog = self.attributes(leaf)
             missing = _missing_required_properties(draft, catalog)
             return {
-                "source": "attrs.get（网关不支持 catsmandatory，已回退）",
+                "source": "attrs.get（catsmandatory 不可用，已回退）",
                 "result": {
                     "unsupported": "bg.glo.goods.catsmandatory.get",
                     "reason": str(exc),
@@ -1328,6 +1333,15 @@ def _assemble_payload(
         payload["showSizeTemplateIds"] = [int(value) for value in draft.show_size_template_ids]
     if draft.goods_label_name.strip():
         payload["productCustomReq"] = {"goodsLabelName": draft.goods_label_name.strip()}
+
+    # 顶层空数组一律不发：网关算签名时会把它当成「没有这个字段」，转发给 Temu 时又原样带上，
+    # Temu 重算签名对不上，直接回 `7000015 sign is invalid`（2026-11-02 实测：
+    # `{"productName": "x"}` → 3000000 参数错误；`{"productName": "x", "productSpecPropertyReqs": []}`
+    # → 7000015；把空数组去掉 → 又回到 3000000）。这和参数内容无关，纯粹是签名口径不一致，
+    # 所以只能从请求体这一侧避开：空数组不发，等价于「这个字段没有值」。
+    for _key in ("productSpecPropertyReqs", "productPropertyReqs"):
+        if isinstance(payload.get(_key), list) and not payload[_key]:
+            payload.pop(_key, None)
 
     return payload
 
