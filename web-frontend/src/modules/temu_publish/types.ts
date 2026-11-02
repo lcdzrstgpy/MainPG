@@ -348,6 +348,11 @@ export type TemuPublishPrefill = {
    * 完全不同，硬铺等于给 Temu 塞一堆不存在的属性。
    */
   attrPicksCatId?: number;
+  /**
+   * attrPicks 里哪些 pid 是「猜的」（没有任何依据、取的是第一个可用选项）。
+   * 发布页会在这些属性旁边标出来，让人先核对这几项。
+   */
+  attrGuessedPids?: number[];
 };
 
 export type TemuImageUploadResult = {

@@ -14,6 +14,7 @@ import { autoFillSourceTexts } from "../data/attrAutofill";
 import { estimateAttributePicks } from "../data/attrEstimate";
 import {
   readAttrPicksHistory,
+  readAttrPicksHistoryAt,
   readDraftAttrPrefills,
   saveDraftAttrPrefills,
   storageScope,
@@ -381,6 +382,7 @@ function entryPrefill(
     // 入草稿库时按类目估好的属性：带进去直接铺上，发布页只补剩下没估到的
     attrPicks: attrPrefills?.[entry.id]?.picks,
     attrPicksCatId: attrPrefills?.[entry.id]?.catId,
+    attrGuessedPids: attrPrefills?.[entry.id]?.guessedPids,
     // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的，
     // 产品属性则是按类目「估」的（第一个可用选项），更要人看
     needsReview: [...(buildNeedsReview(entry) ?? []), ...(attrPrefills?.[entry.id] ? ["产品属性（自动估）"] : [])],
@@ -599,7 +601,10 @@ export function TemuDraftLibraryPage({
         // 这个类目刚拉失败过：本次会话不再试，别把网关打爆
         if (attrEstimateFailedRef.current.has(leaf)) return false;
         const saved = attrPrefills[entry.id];
-        return !saved || Number(saved.catId) !== leaf;
+        if (!saved || Number(saved.catId) !== leaf) return true;
+        // 同类目历史变新了（用户在发布页把属性改对了）→ 重估，
+        // 否则其他草稿还留着上一次猜出来的值，用户会以为「改一次都跟着变」
+        return Number(saved.historyAt ?? 0) !== readAttrPicksHistoryAt(scope, leaf);
       })
       .slice(0, ATTR_ESTIMATE_LIMIT);
     if (!pending.length) return;
@@ -638,6 +643,11 @@ export function TemuDraftLibraryPage({
             picks: result.picks,
             at: Date.now(),
             guessed: result.guessed,
+            guessedPids: result.items
+              .filter((item) => item.source === "guess" || item.source === "number-guess")
+              .map((item) => item.pid),
+            // 记下这次用的是哪一版历史：历史变新了就说明该重估
+            historyAt: readAttrPicksHistoryAt(scope, leaf),
           };
         } catch {
           // 单条估挂不能让整批停：这条下次进页面再试。
@@ -1494,6 +1504,12 @@ export function TemuDraftLibraryPage({
                   </select>
                 </label>
 
+                {batchCommonPicks && (
+                  <p className="temu-confirm-warn">
+                    下面的产品属性取自本批第一条草稿的自动估值，<strong>整批共用</strong> ——
+                    发布前请核对，尤其是标着「估」的项。
+                  </p>
+                )}
                 <BatchManualConfig
                   onChange={setManualTemplate}
                   initialPath={batchCommonCategory}

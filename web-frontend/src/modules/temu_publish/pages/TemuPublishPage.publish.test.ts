@@ -1189,13 +1189,21 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
   assert.match(attrStore, /export const ATTR_PICKS_KEY = "temu_publish_attr_picks_v2";/);
   assert.match(attrStore, /export const ATTR_PICKS_KEY_V1 = "temu_publish_attr_picks_v1";/);
   assert.match(page, /const \[attrPicks, setAttrPicks\] = useState<Record<number, AttrPick>>\(\(\) => \{/);
-  assert.match(page, /return readAttrPicksHistory\(storageScope\(\), currentLeaf\);/);
+  // 先读「当前这一条」（刷新恢复），没有再退回同类目历史（老版本只有这个）
+  assert.match(page, /const current = readCurrentAttrPicks\(scope, currentLeaf\);/);
+  assert.match(page, /return Object\.keys\(current\)\.length \? current : readAttrPicksHistory\(scope, currentLeaf\);/);
   // 读：先按 catId 取 v2，没有再退 v1（且只认 catId 对得上的）
   assert.match(attrStore, /const hit = all\?\.\[String\(catId\)\]\?\.picks;/);
   assert.match(attrStore, /if \(Number\(legacy\?\.catId \?\? 0\) === catId && legacy\?\.picks && typeof legacy\.picks === "object"\) \{/);
   // 写：按时间裁剪，别让本地存储无限长
   assert.match(attrStore, /export const ATTR_PICKS_HISTORY_MAX = 20;/);
-  assert.match(page, /saveAttrPicksHistory\(storageScope\(\), leafCatId, attrPicks\);/);
+  // 历史只在「用户自己动过属性下拉」时才写：自动填/草稿估填铺的值写进历史，
+  // 等于教同类目以后都这么填 —— 一条没改过的草稿就能污染整个类目
+  assert.match(page, /const picksTouchedRef = useRef\(false\);/);
+  assert.match(page, /if \(picksTouchedRef\.current\) \{\s*\n\s*saveAttrPicksHistory\(scope, leafCatId, attrPicks\);/);
+  assert.match(page, /const handleAttributePicksChange = \(next: Record<number, AttrPick>\) => \{\s*\n\s*picksTouchedRef\.current = true;/);
+  // 刷新恢复照样写（任何来源都写），两者分工明确
+  assert.match(page, /saveCurrentAttrPicks\(scope, leafCatId, attrPicks\);/);
   // 按写入顺序裁（slice(-N)）：同一毫秒连写多个类目时 at 会撞，按 at 排序会丢掉刚写的
   assert.match(attrStore, /\.slice\(-ATTR_PICKS_HISTORY_MAX\)/);
 
@@ -1404,8 +1412,11 @@ test("入草稿库就把产品属性估好，带入发布页直接用", () => {
   // ① 只有拿到叶子类目才估：属性是按类目定义的，没有 catId 无从谈起
   assert.match(library, /const ATTR_ESTIMATE_LIMIT = 60;/);
   assert.match(library, /if \(!leaf\) return false;/);
-  // 类目变了要重估，没变就跳过（不然每次进页面都重打网关）
-  assert.match(library, /return !saved \|\| Number\(saved\.catId\) !== leaf;/);
+  // 类目变了要重估；同类目「历史」变新了也要重估 —— 否则用户在发布页把属性改对了，
+  // 其他草稿还留着上次猜出来的值，用户会以为改一次全都跟着变
+  assert.match(library, /if \(!saved \|\| Number\(saved\.catId\) !== leaf\) return true;/);
+  assert.match(library, /return Number\(saved\.historyAt \?\? 0\) !== readAttrPicksHistoryAt\(scope, leaf\);/);
+  assert.match(library, /historyAt: readAttrPicksHistoryAt\(scope, leaf\),/);
 
   // ② attrs 按 catId 缓存在内存：同类目 N 条草稿只打一次网关
   assert.match(library, /const attrEstimateCacheRef = useRef\(new Map<number, TemuAttributes>\(\)\);/);
@@ -1436,4 +1447,9 @@ test("入草稿库就把产品属性估好，带入发布页直接用", () => {
   assert.match(library, /attrPicks: attrPrefills\?\.\[entry\.id\]\?\.picks,/);
   assert.match(library, /产品属性（自动估）/);
   assert.match(library, /属性已估 \{estimated\}/);
+  // 「猜的」要标到具体属性上：8 项都填了但没说哪些是猜的，用户会以为全对
+  assert.match(library, /guessedPids: result\.items/);
+  assert.match(library, /attrGuessedPids: attrPrefills\?\.\[entry\.id\]\?\.guessedPids,/);
+  assert.match(page, /setGuessedPids\(carried\.guessedPids\);/);
+  assert.match(page, /guessedPids=\{guessedPids\}/);
 });

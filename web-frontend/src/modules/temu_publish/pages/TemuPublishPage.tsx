@@ -27,7 +27,9 @@ import { localStore, parsePublishError } from "../data/localStore";
 import {
   ATTR_PICKS_KEY,
   readAttrPicksHistory,
+  readCurrentAttrPicks,
   saveAttrPicksHistory,
+  saveCurrentAttrPicks,
   storageScope,
 } from "../data/attrPicksStore";
 import { categorySearchTexts, dedupeCategoryPaths } from "../utils/categoryMatch";
@@ -594,7 +596,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 只在「存档里的叶子类目 == 当前恢复出来的叶子类目」时恢复：
     // 不同类目的属性 pid 完全不一样，盲恢复等于给新类目塞一堆不存在的 pid。
     const currentLeaf = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
-    return readAttrPicksHistory(storageScope(), currentLeaf);
+    const scope = storageScope();
+    // 先读「当前这一条」（任何来源都写过），没有再退回同类目历史（老版本只有这个）
+    const current = readCurrentAttrPicks(scope, currentLeaf);
+    return Object.keys(current).length ? current : readAttrPicksHistory(scope, currentLeaf);
   });
   /** 自动填需要读到「此刻已填了什么」；effect 里不能依赖 attrPicks（会自我触发） */
   const attrPicksRef = useRef(attrPicks);
@@ -605,9 +610,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 草稿库估好的属性：先存着，等类目属性表加载完再铺。
    * 不能直接 setAttrPicks —— 紧接着的 applyCategory 会 setAttrPicks({}) 把它清掉。
    */
-  const carriedAttrPicksRef = useRef<{ catId: number; picks: Record<number, AttrPick> } | null>(
-    null,
-  );
+  const carriedAttrPicksRef = useRef<{
+    catId: number;
+    picks: Record<number, AttrPick>;
+    guessedPids: number[];
+  } | null>(null);
+  /** 铺进来的属性里哪些是「猜的」：表单上标「估」，让人先核对这几项 */
+  const [guessedPids, setGuessedPids] = useState<number[]>([]);
   /** 从草稿库带进来的估填项数（提示「这些是按类目估的」） */
   const [carriedAttrCount, setCarriedAttrCount] = useState(0);
   const [autoFill, setAutoFill] = useState<{ hits: AutoFillHit[]; ambiguous: string[] }>({
@@ -730,14 +739,36 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 对不上就不恢复。属性是下拉选的，不是逐字符输入，不需要防抖窗——但保持和其他
    * 存档一致的节奏。
    */
+  /**
+   * 用户有没有自己动过属性下拉。
+   *
+   * 只有动过才写「同类目历史」：自动填和草稿库估好的值都是程序铺的，
+   * 写进历史等于教它「以后都这么填」—— 一条没改过的草稿就会把整个类目
+   * 的复用值污染成猜出来的第一个选项，甚至清空后历史跟着变空。
+   */
+  const picksTouchedRef = useRef(false);
   useEffect(() => {
     const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
     if (!leafCatId) return;
+    const scope = storageScope();
     const timer = setTimeout(() => {
-      saveAttrPicksHistory(storageScope(), leafCatId, attrPicks);
+      // 刷新恢复用：什么来源都写
+      saveCurrentAttrPicks(scope, leafCatId, attrPicks);
+      // 同类目复用用：只认用户自己改过的
+      if (picksTouchedRef.current) {
+        saveAttrPicksHistory(scope, leafCatId, attrPicks);
+        // 只把这批改动记一次；之后程序再铺（换类目重新估）不会跟着写进历史
+        picksTouchedRef.current = false;
+      }
     }, 300);
     return () => clearTimeout(timer);
   }, [attrPicks, categoryPath, attrPicksKey]);
+
+  /** 表单 onChange 走这里：标记「用户动过」，才允许写同类目历史。 */
+  const handleAttributePicksChange = (next: Record<number, AttrPick>) => {
+    picksTouchedRef.current = true;
+    setAttrPicks(next);
+  };
 
   /**
    * 刷新页面 / HMR 后类目是从本机存档恢复出来的（最近用过的类目、或草稿带入），
@@ -803,6 +834,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       base = { ...carried.picks, ...attrPicksRef.current };
       setAttrPicks(base);
       setCarriedAttrCount(Object.keys(carried.picks).length);
+      setGuessedPids(carried.guessedPids);
     }
     runAttributeAutofill(base, leafCatId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -834,6 +866,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setAutoFill({ hits: [], ambiguous: [] });
     // 「草稿库估了 N 项」这条也没意义了：值已经撤掉
     setCarriedAttrCount(0);
+    setGuessedPids([]);
   };
 
   useEffect(() => {
@@ -952,7 +985,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 草稿库按类目估好的属性：留给自动填那一步铺（那时才对得上当前类目）
     carriedAttrPicksRef.current =
       prefill.attrPicks && Object.keys(prefill.attrPicks).length
-        ? { catId: Number(prefill.attrPicksCatId ?? 0), picks: prefill.attrPicks }
+        ? {
+            catId: Number(prefill.attrPicksCatId ?? 0),
+            picks: prefill.attrPicks,
+            guessedPids: prefill.attrGuessedPids ?? [],
+          }
         : null;
     setPrefillInfo({
       source: prefill.sourceKind,
@@ -2888,9 +2925,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <TemuPropertyForm
                     attributes={attributes}
                     picks={attrPicks}
-                    onChange={setAttrPicks}
+                    onChange={handleAttributePicksChange}
                     showErrors={showFieldErrors}
                     optionalHint="不填也能发布，但可能是下级属性的开关"
+                    guessedPids={guessedPids}
                   />
                 </>
               )}

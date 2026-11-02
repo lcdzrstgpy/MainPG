@@ -192,7 +192,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
     <div className="temu-batch-manual">
       <div className="temu-batch-manual-head">
         <strong>或：现场配置一个类目（不用产品模板）</strong>
-        <em className="temu-muted">填完这批就按它发，以后想复用可存成产品模板</em>
+        <em className="temu-muted">整批共用这一套类目和属性，填完就按它发；以后想复用可存成产品模板</em>
       </div>
 
       {loading ? <p className="temu-muted">正在取父规格 / 运费模板 / 仓库…</p> : null}

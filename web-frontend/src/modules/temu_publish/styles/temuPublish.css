@@ -3625,3 +3625,16 @@ textarea.temu-input {
   align-items: center;
   gap: 10px;
 }
+
+/* 属性值是按类目「估」的：小橙标，优先核对这几项 */
+.temu-attr-guessed {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #fff3e0;
+  color: #a35a00;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 800;
+  vertical-align: middle;
+}

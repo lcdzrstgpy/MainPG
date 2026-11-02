@@ -19,6 +19,11 @@ type Props = {
   emptyHint?: string;
   /** 选填区标题里的一句话，发布页和批量弹窗的措辞不一样 */
   optionalHint?: string;
+  /**
+   * 哪些 pid 的值是「猜的」（草稿库按类目估填时没有依据、取了第一个可用选项）。
+   * 这些项旁边标一个「估」，让人优先核对 —— 不标的话用户会以为 8 项都填对了。
+   */
+  guessedPids?: number[];
 };
 
 /**
@@ -34,7 +39,9 @@ export function TemuPropertyForm({
   showErrors = false,
   emptyHint = "选到叶子分类后自动加载属性。",
   optionalHint = "不填也能发布",
+  guessedPids,
 }: Props) {
+  const guessed = new Set(guessedPids ?? []);
   const visible = visibleProperties(attributes, picks);
   const groups = buildAttributeGroups(attributes, visible);
 
@@ -66,6 +73,11 @@ export function TemuPropertyForm({
         <span>
           {label}
           {required && <em className="temu-required">*</em>}
+          {guessed.has(item.pid) && (
+            <em className="temu-attr-guessed" title="这个值是按类目估的（没有依据时取第一个可用选项），发布前请核对">
+              估
+            </em>
+          )}
         </span>
         {item.values?.length ? (
           <div className={unit ? "temu-spec-row" : undefined}>

@@ -19,8 +19,11 @@ const {
   DRAFT_ATTR_PREFILL_MAX,
   DRAFT_ATTR_PREFILL_KEY,
   readAttrPicksHistory,
+  readAttrPicksHistoryAt,
+  readCurrentAttrPicks,
   readDraftAttrPrefills,
   saveAttrPicksHistory,
+  saveCurrentAttrPicks,
   saveDraftAttrPrefills,
   storageScope,
 } = store;
@@ -98,4 +101,35 @@ test("草稿预填按时间裁剪，且新写入的不会被裁掉", () => {
   assert.equal(Object.keys(all).length, DRAFT_ATTR_PREFILL_MAX);
   assert.equal(all.latest?.catId, 9, "刚写进去的必须留下");
   assert.equal(all["ai:0"], undefined, "最早写的应被裁掉");
+});
+
+test("刷新恢复用「当前这一条」：按类目隔离，类目对不上就丢弃", () => {
+  saveCurrentAttrPicks("u1", 900, { 1: { vid: 5, text: "" } });
+  assert.equal(readCurrentAttrPicks("u1", 900)[1]?.vid, 5);
+  // 换了类目不能把上一个类目的选择搬过来（pid 完全不同）
+  assert.deepEqual(readCurrentAttrPicks("u1", 901), {});
+  assert.deepEqual(readCurrentAttrPicks("u2", 900), {});
+});
+
+test("当前选择与同类目历史是两套东西：写当前不污染历史", () => {
+  saveAttrPicksHistory("u1", 900, { 1: { vid: 7, text: "" } });
+  const historyAt = readAttrPicksHistoryAt("u1", 900);
+  assert.ok(historyAt > 0);
+
+  // 自动填/草稿估填铺的值只写「当前」，历史必须原样
+  saveCurrentAttrPicks("u1", 900, { 1: { vid: 9, text: "" } });
+
+  assert.equal(readCurrentAttrPicks("u1", 900)[1]?.vid, 9, "刷新恢复用新铺的值");
+  assert.equal(readAttrPicksHistory("u1", 900)[1]?.vid, 7, "同类目复用的历史不能被改掉");
+  assert.equal(readAttrPicksHistoryAt("u1", 900), historyAt, "历史版本不变 → 别的草稿不用重估");
+});
+
+test("历史版本时间戳：没有记录是 0，写过就变大", () => {
+  assert.equal(readAttrPicksHistoryAt("u1", 1234), 0);
+  saveAttrPicksHistory("u1", 1234, { 1: { vid: 1, text: "" } });
+  const first = readAttrPicksHistoryAt("u1", 1234);
+  assert.ok(first > 0);
+  // 再写一次版本必须变（否则草稿库判断不出「历史更新了，要重估」）
+  saveAttrPicksHistory("u1", 1234, { 1: { vid: 2, text: "" } });
+  assert.ok(readAttrPicksHistoryAt("u1", 1234) >= first);
 });

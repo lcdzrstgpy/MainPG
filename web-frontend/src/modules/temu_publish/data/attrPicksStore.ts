@@ -10,6 +10,15 @@ import type { AttrPickMap } from "./attributeModel";
  * 都按账号隔离：同一台电脑换账号登录，不能把上一个人选的属性带出来。
  */
 
+/**
+ * 「当前这一条」的属性选择：**只用于刷新页面后恢复**，任何来源都写
+ * （包括自动填和草稿库估好铺进来的值）。
+ *
+ * 和历史分开的原因：历史是「同类目下次沿用」的依据，写进历史等于教它
+ * 「以后都这么填」。自动铺的值不是用户的决定，混进去会污染整个类目。
+ */
+export const ATTR_PICKS_CURRENT_KEY = "temu_publish_attr_picks_current_v1";
+
 export const ATTR_PICKS_KEY = "temu_publish_attr_picks_v2";
 /** 旧版单条存档 {catId, picks}：只留最后一次。升级时还要读它，否则用户刚填的会丢。 */
 export const ATTR_PICKS_KEY_V1 = "temu_publish_attr_picks_v1";
@@ -23,6 +32,8 @@ export const DRAFT_ATTR_PREFILL_MAX = 200;
 
 export type AttrPicksHistory = Record<string, { picks?: AttrPickMap; at?: number }>;
 
+export type CurrentAttrPicks = { catId: number; picks: AttrPickMap; at: number };
+
 export type DraftAttrPrefill = {
   /** 估填时用的叶子类目：类目变了这份就作废 */
   catId: number;
@@ -30,6 +41,14 @@ export type DraftAttrPrefill = {
   at: number;
   /** 有几个值是「猜的」（没有历史、标题里也没有），界面要能区分 */
   guessed?: number;
+  /** 哪些 pid 是猜的（没有依据、取的是第一个可用选项） */
+  guessedPids?: number[];
+  /**
+   * 估这一份时「同类目历史」的版本（时间戳）。
+   * 之后用户在发布页把属性改对了，历史会变新 —— 这里对不上就说明该重估，
+   * 否则其他草稿还留着旧的猜测值。
+   */
+  historyAt?: number;
 };
 
 /** 本机存储按账号分开，见各调用点。 */
@@ -94,6 +113,36 @@ export function saveAttrPicksHistory(scope: string, catId: number, picks: AttrPi
   delete all[id];
   all[id] = { picks, at: Date.now() };
   writeJson(key, Object.fromEntries(Object.entries(all).slice(-ATTR_PICKS_HISTORY_MAX)));
+}
+
+/** 当前这一条的选择（刷新恢复用）。 */
+export function readCurrentAttrPicks(scope: string, catId: number): AttrPickMap {
+  if (!catId) return {};
+  const saved = readJson<CurrentAttrPicks>(`${ATTR_PICKS_CURRENT_KEY}:${scope}`, {
+    catId: 0,
+    picks: {},
+    at: 0,
+  });
+  // 类目对不上就丢弃：不同类目的 pid 完全不同，盲恢复等于塞一堆不存在的属性
+  if (Number(saved?.catId ?? 0) !== catId) return {};
+  const picks = saved?.picks;
+  return picks && typeof picks === "object" ? picks : {};
+}
+
+/** 写「当前这一条」：任何来源都写（自动填/估填铺的也算），只用于刷新恢复。 */
+export function saveCurrentAttrPicks(scope: string, catId: number, picks: AttrPickMap): void {
+  if (!catId) return;
+  writeJson(`${ATTR_PICKS_CURRENT_KEY}:${scope}`, { catId, picks, at: Date.now() });
+}
+
+/** 某个类目的历史版本时间戳（没有记录时 0）。 */
+export function readAttrPicksHistoryAt(scope: string, catId: number): number {
+  if (!catId) return 0;
+  const all = readJson<AttrPicksHistory>(`${ATTR_PICKS_KEY}:${scope}`, {});
+  const hit = all?.[String(catId)];
+  if (hit?.picks && typeof hit.picks === "object") return Number(hit.at ?? 0);
+  const legacy = readJson<{ catId?: number; at?: number }>(`${ATTR_PICKS_KEY_V1}:${scope}`, {});
+  return Number(legacy?.catId ?? 0) === catId ? Number(legacy?.at ?? 0) : 0;
 }
 
 /** 读出全部草稿的估填结果（草稿 id → 预填）。 */
