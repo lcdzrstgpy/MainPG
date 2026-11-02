@@ -3108,6 +3108,20 @@ textarea.temu-input {
   text-align: left;
 }
 
+/* 「字段齐 · 属性待填」并排两个小标：草稿数据齐了，但属性只能在发布页填 */
+.temu-ready-stack {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.temu-ready.is-pending {
+  color: #4a6379;
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.05));
+}
+
 /* 翻页请求进行中：保留上一页内容并压暗，比闪成空白稳 */
 .temu-draft-table-wrap.is-loading {
   opacity: 0.45;

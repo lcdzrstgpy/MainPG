@@ -1350,3 +1350,28 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   assert.match(autofill, /else if \(matched\.length > 1\) \{/);
   assert.match(autofill, /const PLACEHOLDER_VALUE = /);
 });
+
+test("草稿库不能标「可发」：产品属性草稿库不存，只能在发布页填", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 属性是 Temu 必填项，而草稿库根本没有属性数据（要选完叶子类目才知道要填哪些），
+  // 所以任何草稿都不可能「可直接发布」。原来那个「可发」是纯误导。
+  assert.doesNotMatch(library, /is-ok">可发</);
+  assert.match(library, /<span className="temu-ready is-ok">字段齐<\/span>/);
+  assert.match(library, /<span className="temu-ready is-pending">属性待填<\/span>/);
+  assert.match(library, /产品属性是 Temu 的必填项，草稿库不存属性数据/);
+
+  // 表头也别再说「完整度」——那个词会被读成「填完了就能发」
+  assert.doesNotMatch(library, />完整度</);
+  assert.match(library, /草稿字段\s*<\/th>/);
+
+  // 有缺项时的 tooltip 同样要提醒属性也要填
+  assert.match(library, /另外产品属性也要在发布页填/);
+
+  // 判定函数本身不掺属性：草稿库拿不到属性数据，掺进去只会让每条都「缺」
+  const fn = library.slice(
+    library.indexOf("function draftMissingFields("),
+    library.indexOf("/** 尺寸/重量摘要"),
+  );
+  assert.doesNotMatch(fn, /属性/);
+});

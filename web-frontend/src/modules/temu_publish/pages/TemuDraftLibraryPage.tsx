@@ -1053,8 +1053,11 @@ export function TemuDraftLibraryPage({
                   <th className="col-spec" title="发布 payload 里的长/宽/高（cm）与重量（g），缺了会被拒">
                     尺寸 · 重量
                   </th>
-                  <th className="col-ready" title="缺什么会在这里列出来，补齐就能直接发">
-                    完整度
+                  <th
+                    className="col-ready"
+                    title="草稿自身字段齐不齐；产品属性跟【能不能发】无关，一律要在发布页填"
+                  >
+                    草稿字段
                   </th>
                   <th className="col-time">更新</th>
                   <th className="col-actions">操作</th>
@@ -1172,10 +1175,25 @@ export function TemuDraftLibraryPage({
                       {(() => {
                         const missing = draftMissingFields(entry, categoryMemo);
                         if (!missing.length) {
-                          return <span className="temu-ready is-ok">可发</span>;
+                          return (
+                            <span
+                              className="temu-ready-stack"
+                              title={
+                                "草稿字段齐了，不用回上游补数据。" +
+                                "但产品属性是 Temu 的必填项，草稿库不存属性数据，" +
+                                "要在发布页选完类目后填（同类目填过一次，后面的可以自动沿用）"
+                              }
+                            >
+                              <span className="temu-ready is-ok">字段齐</span>
+                              <span className="temu-ready is-pending">属性待填</span>
+                            </span>
+                          );
                         }
                         return (
-                          <span className="temu-ready is-warn" title={`缺：${missing.join("、")}`}>
+                          <span
+                            className="temu-ready is-warn"
+                            title={`缺：${missing.join("、")}。另外产品属性也要在发布页填`}
+                          >
                             缺 {missing.join(" / ")}
                           </span>
                         );
