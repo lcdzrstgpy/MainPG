@@ -4,12 +4,15 @@ import { showToast } from "../../../shared/components/toastStore";
 import { getAuthAccount } from "../../../transport/http/client";
 import { orderProfitApi } from "../api/orderProfitApi";
 import { ShopConfirmDialog } from "../components/ShopConfirmDialog";
+import { TeamRollupDialog } from "../components/TeamRollupDialog";
 import { money, numberText } from "../format";
 import type {
   OrderProfitCaptureStatus,
   OrderProfitSettings,
   PluginSession,
   ProfitShop,
+  TeamRollupPreview,
+  TeamRollupSubmitResult,
 } from "../types";
 
 export function OrderProfitCaptureTab({
@@ -53,6 +56,8 @@ export function OrderProfitCaptureTab({
   } | null>(null);
   const [submitBusy, setSubmitBusy] = useState(false);
   const [submitText, setSubmitText] = useState("");
+  const [rollupPreview, setRollupPreview] = useState<TeamRollupPreview | null>(null);
+  const [rollupResult, setRollupResult] = useState<TeamRollupSubmitResult | null>(null);
   const pollTimer = useRef<number | null>(null);
   // 记住当前指令号：刚下发时 status 还没回来，终止按钮也要能停。
   const activeCommandIdRef = useRef(0);
@@ -291,14 +296,30 @@ export function OrderProfitCaptureTab({
     }
   };
 
-  const submitTeamRollup = async () => {
+  /** 先拉一次预览，弹窗里确认「哪些店铺 → 哪个服务器账号」后再真正提交。 */
+  const openRollupDialog = async () => {
+    if (submitBusy) return;
     setSubmitBusy(true);
     try {
-      const payload = await orderProfitApi.submitTeamRollup();
+      const preview = await orderProfitApi.teamRollupPreview();
+      setRollupPreview(preview);
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setSubmitBusy(false);
+    }
+  };
+
+  const submitTeamRollup = async (weekStart: string) => {
+    setSubmitBusy(true);
+    try {
+      const payload = await orderProfitApi.submitTeamRollup(weekStart);
+      setRollupPreview(null);
+      setRollupResult(payload);
       const pending = payload.pending_local_shops?.length || 0;
       const text = payload.ok
-        ? `已提交 ${payload.week_start} 的本周汇总：新增 ${payload.created ?? 0} 天、更新 ${payload.updated ?? 0} 天、跳过 ${payload.stale ?? 0} 天`
-          + (pending ? `；还有 ${pending} 家店铺是本地临时码，未提交` : "")
+        ? `已提交 ${payload.week_start} 的本周汇总：${payload.stores?.length ?? 0} 家店铺、新增 ${payload.created ?? 0} 天、更新 ${payload.updated ?? 0} 天、跳过 ${payload.stale ?? 0} 天`
+          + (pending ? `；还有 ${pending} 家店铺没有店铺码，未提交` : "")
         : payload.status_text || "没有可提交的数据";
       setSubmitText(text);
       showToast(text, payload.ok ? "success" : "info");
@@ -567,19 +588,45 @@ export function OrderProfitCaptureTab({
               <span className="op-chip">每周六自动提交</span>
             </div>
             <p className="op-hint">
-              按「店铺 × 日期」汇总本机数据提交团队服务，每周六自动跑一次。
+              按「店铺 × 日期」汇总本账号全部店铺的数据提交团队服务，每周六自动跑一次。
             </p>
             <div className="op-capture-actions">
               <button
                 type="button"
                 className="op-btn op-btn-primary"
                 disabled={submitBusy}
-                onClick={() => void submitTeamRollup()}
+                onClick={() => void openRollupDialog()}
               >
-                {submitBusy ? "提交中…" : "提交本周汇总"}
+                {submitBusy ? "读取中…" : "提交本机汇总"}
               </button>
             </div>
             {submitText ? <p className="op-capture-text">{submitText}</p> : null}
+            {rollupResult?.stores?.length ? (
+              <div className="op-rollup-result">
+                <div className="op-rollup-result-head">
+                  <strong>本次提交明细</strong>
+                  <span>
+                    {rollupResult.week_start} · 服务器新增 {rollupResult.created ?? 0} 天 / 更新{" "}
+                    {rollupResult.updated ?? 0} 天 / 跳过 {rollupResult.stale ?? 0} 天
+                  </span>
+                </div>
+                {rollupResult.stores.map((store) => (
+                  <div className="op-rollup-shop" key={store.store_code || store.name}>
+                    <strong>{store.name}</strong>
+                    <span>{store.store_code}</span>
+                    <em>
+                      {store.day_count} 天 / {store.record_count} 条明细
+                    </em>
+                  </div>
+                ))}
+                {rollupResult.pending_local_shops?.length ? (
+                  <p className="op-hint">
+                    未提交：
+                    {rollupResult.pending_local_shops.map((shop) => shop.name).join("、")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="op-card op-capture-result">
@@ -684,6 +731,14 @@ export function OrderProfitCaptureTab({
           setConfirmState(null);
           if (pending) void pending.run();
         }}
+      />
+
+      <TeamRollupDialog
+        open={rollupPreview !== null}
+        preview={rollupPreview}
+        busy={submitBusy}
+        onCancel={() => setRollupPreview(null)}
+        onConfirm={() => void submitTeamRollup(rollupPreview?.week_start || "")}
       />
     </section>
   );

@@ -623,6 +623,39 @@
 }
 .op-modal-warn { margin: 0; color: var(--op-warning); font-size: var(--text-xs, 12px); line-height: 1.6; }
 .op-modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.op-modal.op-modal-lg { width: min(540px, 100%); }
+/* ---- 团队汇总：提交确认弹窗与提交结果 ---- */
+.op-rollup-shops {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 2px;
+}
+.op-rollup-shop {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--op-border);
+  border-radius: 6px;
+  background: var(--theme-page-bg, #f8fafc);
+  font-size: var(--text-xs, 12px);
+}
+.op-rollup-shop strong { font-size: var(--text-sm, 13px); overflow-wrap: anywhere; }
+.op-rollup-shop span { color: var(--op-muted); font-family: var(--font-number, monospace); overflow-wrap: anywhere; }
+.op-rollup-shop em { font-style: normal; color: var(--op-muted); white-space: nowrap; }
+.op-rollup-result {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--op-border);
+}
+.op-rollup-result-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.op-rollup-result-head strong { font-size: var(--text-sm, 13px); }
+.op-rollup-result-head span { font-size: var(--text-xs, 12px); color: var(--op-muted); }
 @keyframes op-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---- 采集结果：步骤卡片 ---- */

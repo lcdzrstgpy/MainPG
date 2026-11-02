@@ -64,26 +64,24 @@ def build_payload(
 ) -> dict[str, Any]:
     """把本地数据打包成团队服务的提交载荷。
 
-    只有拿到正式店铺码的店铺才会上报；本地临时码的店铺会单独列出来，
-    提醒用户先联网同步店铺码。
+    提交范围是「本账号名下的所有店铺」：只要店铺已经有店铺码（正式码或本地
+    临时码）就一起上报；完全没有店铺码的店铺单独列出来提醒先同步。
     """
     monday, sunday = week_bounds(week_start)
     start, end = monday.isoformat(), sunday.isoformat()
 
     shops = repository.list_shops(workspace_id)
-    official = [
-        shop
-        for shop in shops
-        if str(shop.get("store_code") or "").strip() and shop.get("code_status") == "official"
+    submittable = [
+        shop for shop in shops if str(shop.get("store_code") or "").strip()
     ]
     pending = [
         {
             "name": str(shop.get("name") or ""),
             "store_code": str(shop.get("store_code") or ""),
-            "reason": "店铺码还是本地临时码，先同步后再提交",
+            "reason": "店铺还没有店铺码，先联网同步后再提交",
         }
         for shop in shops
-        if shop not in official
+        if not str(shop.get("store_code") or "").strip()
     ]
 
     # 日汇总也传全量历史：团队看板的趋势图要能看到以前的日期，
@@ -99,7 +97,7 @@ def build_payload(
     stamp = _now()
     stores: list[dict[str, Any]] = []
     export_records = getattr(repository, "export_shop_records", None)
-    for shop in official:
+    for shop in submittable:
         name = str(shop.get("name") or "")
         rows = sorted(by_shop.get(name, []), key=lambda item: item["stat_date"])
         # 明细一起上传：团队看板的订单/财务/流量等页面直接读这些记录。
@@ -107,6 +105,7 @@ def build_payload(
         stores.append(
             {
                 "store_code": str(shop["store_code"]),
+                "store_name": name,
                 "days": [
                     {**row, "source_updated_at": row.get("source_updated_at") or stamp}
                     for row in rows
@@ -145,6 +144,81 @@ def build_payload(
     }
 
 
+def build_preview(
+    repository: Any,
+    workspace_id: str,
+    *,
+    week_start: object = "",
+) -> dict[str, Any]:
+    """提交弹窗用的预览：本账号所有店铺 + 各自能提交多少数据。"""
+    monday, sunday = week_bounds(week_start)
+    shops = repository.list_shops(workspace_id)
+    days = repository.rollup_days(
+        workspace_id, start="2000-01-01", end="2099-12-31"
+    )
+    by_shop: dict[str, list[dict[str, Any]]] = {}
+    for row in days:
+        by_shop.setdefault(str(row.get("shop_name") or ""), []).append(row)
+
+    export_records = getattr(repository, "export_shop_records", None)
+    stores: list[dict[str, Any]] = []
+    for shop in shops:
+        name = str(shop.get("name") or "")
+        code = str(shop.get("store_code") or "")
+        rows = sorted(by_shop.get(name, []), key=lambda item: item["stat_date"])
+        stores.append(
+            {
+                "name": name,
+                "store_code": code,
+                "code_status": str(shop.get("code_status") or ("official" if code else "local")),
+                "day_count": len(rows),
+                "first_date": str(rows[0]["stat_date"]) if rows else "",
+                "last_date": str(rows[-1]["stat_date"]) if rows else "",
+            }
+        )
+    del export_records  # 预览只算天数，明细在真正提交时再导出，避免弹窗卡顿
+
+    batch_lister = getattr(repository, "list_batches", None)
+    raw_batches = batch_lister(workspace_id, 50) if callable(batch_lister) else []
+    return {
+        "week_start": monday.isoformat(),
+        "week_end": sunday.isoformat(),
+        "stores": stores,
+        "day_count": sum(store["day_count"] for store in stores),
+        "batch_count": len(raw_batches),
+        "missing_code_shops": [store["name"] for store in stores if not store["store_code"]],
+    }
+
+
+def ensure_shop_codes(
+    repository: Any, workspace_id: str, *, client: TeamApiClient, token: str
+) -> None:
+    """给还没拿到正式店铺码的店铺补登记，保证本账号所有店铺都能提交。
+
+    单店失败只跳过这家店：团队服务会按店铺码判断归属，没有码的店铺
+    提交上去也会被当成「未绑定」丢掉，所以先补码再打包。
+    """
+    setter = getattr(repository, "set_shop_code", None)
+    if not callable(setter):
+        return
+    for shop in repository.list_shops(workspace_id):
+        code = str(shop.get("store_code") or "").strip()
+        if code and str(shop.get("code_status") or "") == "official":
+            continue
+        try:
+            registered = client.register_store(
+                token,
+                name=str(shop.get("name") or ""),
+                platform=str(shop.get("platform") or "temu"),
+            )
+            new_code = str((registered.get("store") or {}).get("store_code") or "").strip()
+            if not new_code:
+                continue
+            setter(workspace_id, str(shop.get("id") or ""), store_code=new_code)
+        except Exception as error:  # noqa: BLE001 - 单店失败不阻断整批
+            logger.warning("store code sync failed for %s: %s", shop.get("name"), error)
+
+
 def submit_week(
     repository: Any,
     workspace_id: str,
@@ -153,14 +227,15 @@ def submit_week(
     token: str,
     week_start: object = "",
 ) -> dict[str, Any]:
-    payload = build_payload(repository, workspace_id, week_start=week_start)
     if not token:
         raise ValueError("请先登录后再提交")
+    ensure_shop_codes(repository, workspace_id, client=client, token=token)
+    payload = build_payload(repository, workspace_id, week_start=week_start)
     if not payload["stores"]:
         return {
             "ok": False,
-            "reason": "no_official_store",
-            "status_text": "还没有拿到正式店铺码的店铺，先联网同步店铺码再提交",
+            "reason": "no_store_code",
+            "status_text": "本账号的店铺都还没有店铺码，先联网同步店铺码再提交",
             "pending_local_shops": payload["pending_local_shops"],
         }
     result = client.submit_rollup(token, {
@@ -173,7 +248,17 @@ def submit_week(
         **result,
         "week_start": payload["week_start"],
         "day_count": payload["day_count"],
+        "record_count": payload["record_count"],
         "batch_count": payload["batch_count"],
+        "stores": [
+            {
+                "name": store["store_name"],
+                "store_code": store["store_code"],
+                "day_count": len(store["days"]),
+                "record_count": len(store["records"]),
+            }
+            for store in payload["stores"]
+        ],
         "pending_local_shops": payload["pending_local_shops"],
     }
 
