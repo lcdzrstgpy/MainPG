@@ -60,7 +60,8 @@ export function TemuPropertyForm({
   const attrField = (item: TemuProperty, required: boolean) => {
     const label = item.name || item.propertyName || `属性 ${item.pid}`;
     const pick = picks[item.pid] ?? EMPTY_ATTR;
-    const unit = item.valueUnit?.[0] ?? "";
+    // 空串也是「没有单位」：Temu 会给无单位属性返回 [""]，不能当数值框渲染
+    const unit = String(item.valueUnit?.[0] ?? "").trim();
     const unitHint = unit
       ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
       : item.numberInputTitle || "请输入";

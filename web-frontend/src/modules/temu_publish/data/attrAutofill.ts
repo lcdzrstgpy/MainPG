@@ -1,5 +1,5 @@
 import type { TemuAttributes, TemuProperty } from "../types";
-import type { AttrPickMap } from "./attributeModel";
+import { dedupeProperties, type AttrPickMap } from "./attributeModel.ts";
 
 /**
  * 产品属性的「自动填」。
@@ -99,7 +99,7 @@ export function autoFillAttributePicks(options: {
   const ambiguous: string[] = [];
   const haystack = options.texts.filter(Boolean).join("\n").toLowerCase();
 
-  for (const item of options.attributes?.properties ?? []) {
+  for (const item of dedupeProperties(options.attributes?.properties ?? [])) {
     const pid = Number(item.pid ?? 0);
     if (!pid) continue;
     // 销售属性（颜色/尺码）由「销售规格」承载，属性区再填一遍会被 Temu 判不合法

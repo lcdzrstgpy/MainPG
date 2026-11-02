@@ -12,6 +12,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import socket
 import time
@@ -32,6 +33,8 @@ from .client import (
 )
 from .schemas import DetailImageInput, GoodsDraftInput
 from . import submissions as submission_ledger
+
+logger = logging.getLogger("wh_local.temu_publish")
 
 SECRET_SCOPE = "temu_publish"
 # 每个账号一份凭证：scope 形如 temu_publish:cust_xxx。
@@ -649,7 +652,18 @@ class TemuPublishService:
         return self.client().match_category(search_text, site_id)
 
     def attributes(self, cat_id: int) -> dict[str, Any]:
-        return self._read_cached(f"attrs:{cat_id}", lambda: self.client().attributes(cat_id))
+        """类目属性表。
+
+        Temu 偶尔会在同一个类目里返回 **两个 pid 相同、但 templatePid / 名称不同** 的
+        属性（真实案例：pid=1「材质」required + pid=1「主体材质」optional）。
+        前端选择、payload 组装、必填校验都以 pid 为键，留着两个会互相覆盖：
+        选一个另一个跟着变，payload 里 `propName/templatePid` 还会被后者顶掉。
+        所以在唯一入口按 pid 去重，保留更「该填」的那个（required 优先，其次 isSale）。
+        """
+        return self._read_cached(
+            f"attrs:{cat_id}",
+            lambda: _dedupe_catalog_properties(self.client().attributes(cat_id)),
+        )
 
     def parent_specs(self) -> dict[str, Any]:
         return self._read_cached("parent_specs", lambda: self.client().parent_specs())
@@ -749,7 +763,7 @@ class TemuPublishService:
         # 之前只在 validate_catalog=True 时取，导致「跳过校验直接发」必然踩这个坑。
         catalog: dict[str, Any] | None = None
         try:
-            catalog = self.client().attributes(int(draft.category_ids[-1]))
+            catalog = self.attributes(int(draft.category_ids[-1]))
         except Exception as exc:  # noqa: BLE001 - 取不到不阻断组装，但要告警
             warnings.append(f"类目属性获取失败（规格声明只能退回父规格 id）：{exc}")
         if draft.validate_catalog and catalog is not None:
@@ -810,7 +824,7 @@ class TemuPublishService:
                 "warnings": built["warnings"],
             }
         except TemuGatewayError as exc:
-            catalog = self.client().attributes(leaf)
+            catalog = self.attributes(leaf)
             missing = _missing_required_properties(draft, catalog)
             return {
                 "source": "attrs.get（网关不支持 catsmandatory，已回退）",
@@ -1394,6 +1408,69 @@ def _catalog_property_map(catalog: dict[str, Any] | None) -> dict[int, dict[str,
         for item in properties
         if isinstance(item, dict) and item.get("pid")
     }
+
+
+def _dedupe_catalog_properties(catalog: dict[str, Any]) -> dict[str, Any]:
+    """同一个 pid 出现多次时只保留一个，避免前端/组装/校验三处互相覆盖。
+
+    真实案例（类目 1004 桌垫）：Temu 同时返回
+      - pid=1「材质」required=True, templatePid=919952
+      - pid=1「主体材质」required=False, templatePid=1585830
+    发布页按 pid 存选择，两个下拉会共用同一个值；payload 的 ``propName`` /
+    ``refPid`` / ``templatePid`` 又会被后一个覆盖，最终可能把「材质」发成
+    「主体材质」。这里按 required 优先、其次 isSale 保留一个，顺序沿用第一次出现的位置。
+    """
+    properties = catalog.get("properties")
+    if not isinstance(properties, list) or not properties:
+        return catalog
+
+    kept: dict[int, dict[str, Any]] = {}
+    order: list[int] = []
+    dropped: list[str] = []
+    changed = False
+    for item in properties:
+        if not isinstance(item, dict):
+            changed = True
+            continue
+        pid = int(item.get("pid") or 0)
+        if pid <= 0:
+            changed = True
+            continue
+        current = kept.get(pid)
+        if current is None:
+            kept[pid] = item
+            order.append(pid)
+            continue
+        changed = True
+        if _property_priority(item) > _property_priority(current):
+            dropped.append(_describe_property(current))
+            kept[pid] = item
+        else:
+            dropped.append(_describe_property(item))
+
+    if not changed:
+        return catalog
+    if dropped:
+        logger.warning(
+            "类目属性存在重复 pid，已按 required/isSale 优先保留一个：%s",
+            "；".join(dropped),
+        )
+    result = dict(catalog)
+    result["properties"] = [kept[pid] for pid in order]
+    return result
+
+
+def _property_priority(item: dict[str, Any]) -> tuple[int, int]:
+    """重复 pid 的取舍顺序：必填优先，其次销售属性（变种靠它）。"""
+    return (1 if item.get("required") else 0, 1 if item.get("isSale") else 0)
+
+
+def _describe_property(item: dict[str, Any]) -> str:
+    return (
+        f"{_property_label(item)}"
+        f"(pid={item.get('pid')}, templatePid={item.get('templatePid')}, "
+        f"required={bool(item.get('required'))}, isSale={bool(item.get('isSale'))})"
+    )
 
 
 def _property_payload(item: Any, catalog_item: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -13,6 +13,44 @@ export type AttrPickMap = Record<number, AttrPick>;
 export const EMPTY_ATTR: AttrPick = { vid: 0, text: "" };
 
 /**
+ * 按 pid 去重：Temu 偶尔会给同一个类目返回两个 pid 相同、templatePid/名称不同的属性
+ * （真实案例：pid=1「材质」required + pid=1「主体材质」optional）。
+ *
+ * 前端选择、payload、必填校验都以 pid 为键，留着两个会互相覆盖。保留更该填的那个：
+ * required 优先，其次 isSale（变种靠销售属性）；顺序沿用第一次出现的位置。
+ */
+export function dedupeProperties(properties: TemuProperty[]): TemuProperty[] {
+  const kept = new Map<number, TemuProperty>();
+  const order: number[] = [];
+  let changed = false;
+  for (const item of properties) {
+    const pid = Number(item.pid ?? 0);
+    if (!pid) {
+      changed = true;
+      continue;
+    }
+    const current = kept.get(pid);
+    if (!current) {
+      kept.set(pid, item);
+      order.push(pid);
+      continue;
+    }
+    changed = true;
+    const next = propertyPriority(item);
+    const prev = propertyPriority(current);
+    if (next[0] > prev[0] || (next[0] === prev[0] && next[1] > prev[1])) {
+      kept.set(pid, item);
+    }
+  }
+  if (!changed) return properties;
+  return order.map((pid) => kept.get(pid) as TemuProperty);
+}
+
+function propertyPriority(item: TemuProperty): [number, number] {
+  return [item.required ? 1 : 0, item.isSale ? 1 : 0];
+}
+
+/**
  * 当前选择下「适用」的属性（Temu 属性联动）。
  *
  * 子属性带 `templatePropertyValueParentList`，`parentTemplatePid` 指向父属性的 `templatePid`：
@@ -24,7 +62,7 @@ export function visibleProperties(
   attributes: TemuAttributes | null,
   picks: AttrPickMap,
 ): TemuProperty[] {
-  const props = attributes?.properties ?? [];
+  const props = dedupeProperties(attributes?.properties ?? []);
   const byTemplatePid = new Map<number, TemuProperty>();
   props.forEach((item) => {
     const key = Number(item.templatePid ?? 0);
@@ -80,7 +118,7 @@ export function buildAttributeGroups(
   visible: TemuProperty[],
 ): AttributeGroups {
   const byTemplatePid = new Map<number, TemuProperty>();
-  for (const item of attributes?.properties ?? []) {
+  for (const item of dedupeProperties(attributes?.properties ?? [])) {
     const key = Number(item.templatePid ?? 0);
     if (key) byTemplatePid.set(key, item);
   }
@@ -113,8 +151,12 @@ export function missingRequiredNames(
     .filter((item) => {
       const pick = picks[item.pid];
       if (!pick || (pick.vid <= 0 && !pick.text.trim())) return true;
-      // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够
-      if (item.valueUnit?.length && !pick.text.trim()) return true;
+      // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够。
+      // ⚠️ 不能只看 valueUnit.length：Temu 的 attrs.get 会给很多无单位属性返回 [""]
+      // （材质、风格这类），数组长度是 1 但单位是空串。只看 length 会把
+      // 「下拉已经选了、本来就不需要数值」的必填属性永远判成缺。
+      const unit = String(item.valueUnit?.[0] ?? "").trim();
+      if (unit && !pick.text.trim()) return true;
       return false;
     })
     .map((item) => item.name || item.propertyName || `pid=${item.pid}`);

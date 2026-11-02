@@ -2548,3 +2548,46 @@ def test_refresh_categories_clears_attribute_cache_in_both_layers(tmp_path: Path
     service.attributes(9)
     assert fake.category_calls == 2, "刷新后必须真的重新取类目"
     assert fake.attribute_calls == 2, "刷新后必须真的重新取属性，否则必填判断还是旧的"
+
+
+def _duplicate_pid_catalog() -> dict[str, Any]:
+    return {
+        "properties": [
+            {"pid": 1, "name": "材质", "required": True, "templatePid": 919952, "values": [{"vid": 417, "value": "橡胶"}]},
+            {"pid": 3, "name": "风格", "required": False, "templatePid": 500, "values": []},
+            {"pid": 1, "name": "主体材质", "required": False, "templatePid": 1585830, "values": [{"vid": 417, "value": "橡胶"}]},
+        ]
+    }
+
+
+def test_catalog_dedupe_keeps_required_property_for_duplicate_pid() -> None:
+    """真实案例（桌垫 1004）：Temu 同时返回 pid=1 的「材质」和「主体材质」。
+
+    前端按 pid 存选择、payload 按 pid 组装，留着两个会互相覆盖；
+    去重必须保留 required 的那个（材质），否则必填项会被 optional 的顶掉。
+    """
+    from wh_local.modules.temu_publish.service import _dedupe_catalog_properties
+
+    result = _dedupe_catalog_properties(_duplicate_pid_catalog())
+
+    assert [item["pid"] for item in result["properties"]] == [1, 3]
+    assert result["properties"][0]["name"] == "材质"
+    assert result["properties"][0]["templatePid"] == 919952
+    assert result["properties"][0]["required"] is True
+
+
+def test_service_attributes_dedupes_duplicate_pid_before_caching(tmp_path: Path) -> None:
+    """去重必须在 service.attributes() 这个唯一入口做：前端、组装、校验都读它。"""
+
+    class DuplicateClient:
+        def attributes(self, cat_id: int) -> dict[str, Any]:  # noqa: ARG002
+            return _duplicate_pid_catalog()
+
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=DuplicateClient())
+
+    first = service.attributes(1004)
+    second = service.attributes(1004)
+
+    for catalog in (first, second):
+        assert [item["pid"] for item in catalog["properties"]] == [1, 3]
+        assert catalog["properties"][0]["name"] == "材质"
