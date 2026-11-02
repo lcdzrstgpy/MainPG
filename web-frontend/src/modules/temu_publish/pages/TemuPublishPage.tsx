@@ -10,9 +10,17 @@ import {
   withFreshRowKeys,
 } from "../components/PublishSkuPanel";
 import type { VariantRow } from "../components/PublishSkuPanel";
+import { TemuPropertyForm } from "../components/TemuPropertyForm";
+import {
+  EMPTY_ATTR,
+  missingRequiredNames,
+  visibleProperties as visibleAttributeProperties,
+  type AttrPick,
+} from "../data/attributeModel";
 import { TemuImageStrip, TemuThumb } from "../components/TemuImageStrip";
 import { localStore, parsePublishError } from "../data/localStore";
 import { categorySearchTexts, dedupeCategoryPaths } from "../utils/categoryMatch";
+import { categoryName, categoryPathFromDto } from "../utils/categoryPath";
 import { matchPresetValue } from "../utils/specMatch";
 import { centsToYuanText, formatYuan, yuanToCents } from "../utils/price";
 import type { ProductTemplate, VariantTemplate } from "../data/localStore";
@@ -50,7 +58,6 @@ const SITE_ID = 100;
  * 需要的可以自己改大。
  */
 const DEFAULT_SHIPMENT_DAYS = "7";
-const EMPTY_ATTR = { vid: 0, text: "" };
 
 /** 换类目后变种行里不合法的颜色/尺码值（只提示，不自动改）。 */
 type SpecMismatch = {
@@ -104,7 +111,6 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-type AttrPick = { vid: number; text: string };
 type ImageSlot = "carousel" | "outer" | "detail";
 
 const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hint: string }> = [
@@ -295,20 +301,6 @@ function splitLines(text: string): string[] {
 /** 变种值可能是「30cm,40cm,50cm」这种列表，取第一个当这行的规格值。 */
 function firstSpecValue(text?: string): string {
   return (text || "").split(/[,，、;；]/)[0]?.trim() ?? "";
-}
-
-function categoryPathFromDto(dto: TemuCategoryPath): TemuCategory[] {
-  const result: TemuCategory[] = [];
-  for (let index = 1; index <= 10; index += 1) {
-    const key = `cat${index}DTO` as keyof TemuCategoryPath;
-    const item = dto[key];
-    if (item) result.push(item);
-  }
-  return result;
-}
-
-function categoryName(item: TemuCategory): string {
-  return item.catName || String(item.catId);
 }
 
 /**
@@ -1753,16 +1745,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 必填属性先校验，再传图 —— 图片上传要打 Temu 图床（慢且占配额），
     // 属性没填完就传完图再报错，等于白等一遍。
     if (attributes) {
-      const missing = visibleProperties
-        .filter((item) => item.required)
-        .filter((item) => {
-          const pick = attrPicks[item.pid];
-          if (!pick || (pick.vid <= 0 && !pick.text.trim())) return true;
-          // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够
-          if (item.valueUnit?.length && !pick.text.trim()) return true;
-          return false;
-        })
-        .map((item) => item.name || item.propertyName || `pid=${item.pid}`);
+      const missing = missingRequiredNames(visibleProperties, attrPicks);
       if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
     }
 
@@ -2139,180 +2122,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * （实测「电池属性=不带电池」时，「可充电电池/太阳能电池/不可充电电池」都是 required，
    *  但填了反而被判不合法）。选中的父值时，子属性只保留 vidList 里的值。
    */
-  const visibleProperties = useMemo<TemuProperty[]>(() => {
-    const props = attributes?.properties ?? [];
-    const byTemplatePid = new Map<number, TemuProperty>();
-    props.forEach((item) => {
-      const key = Number(item.templatePid ?? 0);
-      if (key) byTemplatePid.set(key, item);
-    });
-    const pickedVid = (pid: number) => Number(attrPicks[pid]?.vid ?? 0);
-    const list: TemuProperty[] = [];
-    for (const prop of props) {
-      const rules = prop.templatePropertyValueParentList ?? [];
-      if (!rules.length) {
-        list.push(prop);
-        continue;
-      }
-      const parent = byTemplatePid.get(Number(prop.parentTemplatePid ?? 0));
-      if (!parent) {
-        // 拿不到父属性：宁可显示也不误杀
-        list.push(prop);
-        continue;
-      }
-      const parentVid = pickedVid(parent.pid);
-      if (!parentVid) continue;
-      const matched = rules.filter((rule) => (rule.parentVidList ?? []).includes(parentVid));
-      if (!matched.length) continue;
-      const allowed = new Set(matched.flatMap((rule) => rule.vidList ?? []));
-      list.push({
-        ...prop,
-        values: (prop.values ?? []).filter((value) => !allowed.size || allowed.has(value.vid)),
-      });
-    }
-    return list;
-  }, [attributes, attrPicks]);
+  const visibleProperties = useMemo<TemuProperty[]>(
+    () => visibleAttributeProperties(attributes, attrPicks),
+    [attributes, attrPicks],
+  );
 
   const requiredProps = visibleProperties.filter((item) => item.required);
   const optionalProps = visibleProperties.filter((item) => !item.required);
-
-  /**
-   * 属性依赖分组（2026-11-02）：把「父属性 + 它按联动规则带出来的子属性」绑成一组渲染。
-   *
-   * 之前是子属性直接混进必填区顶部：选了选填项、结果必填项在别处冒出来，位置对不上，
-   * 用户看不出是谁带出来的。现在子属性原地展开在父属性下面（缩进 + 竖线），
-   * 必填区/选填区只放「没有父属性」的根项。
-   *
-   * 子属性什么时候可见仍然由 visibleProperties 决定（父没选就不渲染），这里只管摆放。
-   */
-  const attrRenderModel = (() => {
-    const byTemplatePid = new Map<number, TemuProperty>();
-    for (const item of attributes?.properties ?? []) {
-      const key = Number(item.templatePid ?? 0);
-      if (key) byTemplatePid.set(key, item);
-    }
-    const children = new Map<number, TemuProperty[]>();
-    const nested = new Set<number>();
-    for (const item of visibleProperties) {
-      const parentTemplatePid = Number(item.parentTemplatePid ?? 0);
-      if (!parentTemplatePid) continue;
-      const parent = byTemplatePid.get(parentTemplatePid);
-      if (!parent) continue;
-      const list = children.get(parent.pid) ?? [];
-      list.push(item);
-      children.set(parent.pid, list);
-      nested.add(item.pid);
-    }
-    return {
-      children,
-      required: requiredProps.filter((item) => !nested.has(item.pid)),
-      optional: optionalProps.filter((item) => !nested.has(item.pid)),
-    };
-  })();
-
-  /**
-   * 一个类目属性的输入控件。三种形态：
-   *  - 只有预设值 → 下拉
-   *  - 只有单位 → 数值输入框（厚度 mm 这类）
-   *  - 两者都有 → 下拉 + 数值输入框（「封面材质」选成分 + 填成分比例 %）
-   * 之前只渲染下拉，导致「下拉+比例」的属性永远填不进数值，Temu 回「请输入数值」。
-   */
-  const attrField = (item: TemuProperty, required: boolean) => {
-    const label = item.name || item.propertyName || `属性 ${item.pid}`;
-    const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
-    const unit = item.valueUnit?.[0] ?? "";
-    const unitHint = unit
-      ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
-      : item.numberInputTitle || "请输入";
-    // 必填没填：只在「点过发布被拦」之后标红，不然一进页面满屏红框
-    const emptyRequired = required && !pick.vid && !pick.text.trim();
-    return (
-      <label
-        className={`temu-field${showFieldErrors && emptyRequired ? " is-required-empty" : ""}`}
-        key={item.pid}
-      >
-        <span>
-          {label}
-          {required && <em className="temu-required">*</em>}
-        </span>
-        {item.values?.length ? (
-          <div className={unit ? "temu-spec-row" : undefined}>
-            <select
-              className="temu-input"
-              value={pick.vid || ""}
-              onChange={(event) =>
-                setAttrPicks((current) => ({
-                  ...current,
-                  [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
-                }))
-              }
-            >
-              <option value="">请选择</option>
-              {item.values.map((value) => (
-                <option key={value.vid} value={value.vid}>
-                  {value.value}
-                </option>
-              ))}
-            </select>
-            {unit ? (
-              <input
-                className="temu-input"
-                value={pick.text}
-                title={unitHint}
-                placeholder={unitHint}
-                onChange={(event) =>
-                  setAttrPicks((current) => ({
-                    ...current,
-                    [item.pid]: { ...pick, text: event.target.value },
-                  }))
-                }
-              />
-            ) : null}
-          </div>
-        ) : (
-          <input
-            className="temu-input"
-            value={pick.text}
-            title={unitHint}
-            placeholder={unitHint}
-            onChange={(event) =>
-              setAttrPicks((current) => ({
-                ...current,
-                [item.pid]: { ...pick, text: event.target.value },
-              }))
-            }
-          />
-        )}
-      </label>
-    );
-  };
-
-  /**
-   * 渲染一个属性；有联动子属性时，把子属性缩进挂在它下面（原地展开，不跳区）。
-   * 没子属性且不在嵌套层级里的项直接返回字段本身，保持原来的多列网格排版。
-   */
-  const attrGroup = (item: TemuProperty, required: boolean, depth = 0): React.ReactNode => {
-    const kids = attrRenderModel.children.get(item.pid) ?? [];
-    if (!kids.length) {
-      if (!depth) return attrField(item, required);
-      return (
-        <div className="temu-attr-dependent" key={`attr-dependent-${item.pid}`}>
-          {attrField(item, required)}
-        </div>
-      );
-    }
-    return (
-      <div
-        className={`temu-attr-group${depth ? " is-nested" : ""}`}
-        key={`attr-group-${item.pid}`}
-      >
-        {attrField(item, required)}
-        <div className="temu-attr-children">
-          {kids.map((child) => attrGroup(child, child.required, depth + 1))}
-        </div>
-      </div>
-    );
-  };
 
   const filledRequired = requiredProps.filter((item) => {
     const pick = attrPicks[item.pid];
@@ -2940,26 +2756,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
-                <>
-                  {attrRenderModel.required.length > 0 && (
-                    <div className="temu-attr-grid">
-                      {attrRenderModel.required.map((item) => attrGroup(item, true))}
-                    </div>
-                  )}
-                  {attrRenderModel.optional.length > 0 && (
-                    <details className="temu-optional-attrs">
-                      <summary>
-                        选填属性 {attrRenderModel.optional.length} 项（不填也能发布，但可能是下级属性的开关）
-                      </summary>
-                      <div className="temu-attr-grid">
-                        {attrRenderModel.optional.map((item) => attrGroup(item, false))}
-                      </div>
-                    </details>
-                  )}
-                  {attrRenderModel.required.length === 0 && attrRenderModel.optional.length === 0 && (
-                    <p className="temu-empty">这个分类没有可填属性。</p>
-                  )}
-                </>
+                <TemuPropertyForm
+                  attributes={attributes}
+                  picks={attrPicks}
+                  onChange={setAttrPicks}
+                  showErrors={showFieldErrors}
+                  optionalHint="不填也能发布，但可能是下级属性的开关"
+                />
               )}
             </div>
           </section>

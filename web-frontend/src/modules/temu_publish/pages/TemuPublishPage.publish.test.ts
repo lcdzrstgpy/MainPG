@@ -4,6 +4,9 @@ import test from "node:test";
 
 const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+// 属性表单与可见性规则已抽成共享实现（发布页和批量发布弹窗共用）
+const propertyForm = readFileSync(new URL("../components/TemuPropertyForm.tsx", import.meta.url), "utf8");
+const attrModel = readFileSync(new URL("../data/attributeModel.ts", import.meta.url), "utf8");
 
 test("发布商品：提交前必须人工确认（外部副作用，不允许自动触发）", () => {
   // 真提交会在这个店铺里创建商品，必须先 confirm 再发请求
@@ -510,10 +513,12 @@ test("属性联动：父级取值不满足的子属性不显示、也不提交",
   assert.match(types, /parentTemplatePid\?: number \| null;/);
 
   // 用 attrs.get 返回的联动规则算「当前适用属性」：父级没选/取值不匹配 → 整项隐藏
-  assert.match(page, /const visibleProperties = useMemo<TemuProperty\[\]>\(\(\) => \{/);
-  assert.match(page, /const rules = prop\.templatePropertyValueParentList \?\? \[\];/);
-  assert.match(page, /const matched = rules\.filter\(\(rule\) => \(rule\.parentVidList \?\? \[\]\)\.includes\(parentVid\)\);/);
-  assert.match(page, /values: \(prop\.values \?\? \[\]\)\.filter\(\(value\) => !allowed\.size \|\| allowed\.has\(value\.vid\)\)/);
+  assert.match(attrModel, /export function visibleProperties\(/);
+  assert.match(attrModel, /const rules = prop\.templatePropertyValueParentList \?\? \[\];/);
+  assert.match(attrModel, /const matched = rules\.filter\(\(rule\) => \(rule\.parentVidList \?\? \[\]\)\.includes\(parentVid\)\);/);
+  assert.match(attrModel, /values: \(prop\.values \?\? \[\]\)\.filter\(\(value\) => !allowed\.size \|\| allowed\.has\(value\.vid\)\)/);
+  // 页面只负责调用共享实现，不再自带一份规则
+  assert.match(page, /const visibleProperties = useMemo<TemuProperty\[\]>\(\s*\n\s*\(\) => visibleAttributeProperties\(attributes, attrPicks\),/);
 
   // 必填/渲染都用可见属性；提交时过滤掉隐藏项（留着旧值会被判属性不合法）
   assert.match(page, /const requiredProps = visibleProperties\.filter\(\(item\) => item\.required\);/);
@@ -524,21 +529,23 @@ test("属性联动：父级取值不满足的子属性不显示、也不提交",
 test("属性联动：子属性原地展开在父属性下面，不跳回必填区顶部", () => {
   const styles = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
-  // 子属性按 parentTemplatePid → 父属性 templatePid 归到父名下
-  assert.match(page, /const attrRenderModel = \(\(\) => \{/);
-  assert.match(page, /const parentTemplatePid = Number\(item\.parentTemplatePid \?\? 0\);/);
-  assert.match(page, /const parent = byTemplatePid\.get\(parentTemplatePid\);/);
-  assert.match(page, /const list = children\.get\(parent\.pid\) \?\? \[\];/);
+  // 子属性按 parentTemplatePid → 父属性 templatePid 归到父名下（规则在共享模型里）
+  assert.match(attrModel, /export function buildAttributeGroups\(/);
+  assert.match(attrModel, /const parentTemplatePid = Number\(item\.parentTemplatePid \?\? 0\);/);
+  assert.match(attrModel, /const parent = byTemplatePid\.get\(parentTemplatePid\);/);
+  assert.match(attrModel, /const list = children\.get\(parent\.pid\) \?\? \[\];/);
 
   // 被父属性带出来的项从必填/选填区剔除，否则会同时出现在两处
-  assert.match(page, /nested\.add\(item\.pid\);/);
-  assert.match(page, /required: requiredProps\.filter\(\(item\) => !nested\.has\(item\.pid\)\),/);
-  assert.match(page, /optional: optionalProps\.filter\(\(item\) => !nested\.has\(item\.pid\)\),/);
+  assert.match(attrModel, /nested\.add\(item\.pid\);/);
+  assert.match(attrModel, /required: visible\.filter\(\(item\) => item\.required && !nested\.has\(item\.pid\)\),/);
+  assert.match(attrModel, /optional: visible\.filter\(\(item\) => !item\.required && !nested\.has\(item\.pid\)\),/);
 
   // 渲染时递归挂到父下面；叶子项留在原网格，嵌套层才加缩进容器
-  assert.match(page, /const attrGroup = \(item: TemuProperty, required: boolean, depth = 0\): React\.ReactNode => \{/);
-  assert.match(page, /\{kids\.map\(\(child\) => attrGroup\(child, child\.required, depth \+ 1\)\)\}/);
-  assert.match(page, /<div className="temu-attr-children">/);
+  assert.match(propertyForm, /const attrGroup = \(item: TemuProperty, required: boolean, depth = 0\): ReactNode => \{/);
+  assert.match(propertyForm, /\{kids\.map\(\(child\) => attrGroup\(child, child\.required, depth \+ 1\)\)\}/);
+  assert.match(propertyForm, /<div className="temu-attr-children">/);
+  // 发布页和批量弹窗用同一个组件，别再各写一份
+  assert.match(page, /<TemuPropertyForm/);
 
   // 缩进 + 竖线是「谁带出来的」唯一提示，必须有样式兜住
   assert.match(styles, /\.temu-attr-children \{[\s\S]*?border-left: 2px solid var\(--theme-module-border-strong/);
@@ -769,15 +776,15 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
 
 test("属性输入支持「下拉 + 数值」并存（成分比例这类）", () => {
   // 封面材质这类属性既有预设值又有单位 %：只渲染下拉就永远填不进比例
-  assert.match(page, /const attrField = \(item: TemuProperty, required: boolean\) => \{/);
-  assert.match(page, /\{item\.values\?\.length \? \(/);
-  assert.match(page, /\{unit \? \(\n\s*<input/);
-  assert.match(page, /item\.numberInputTitle \|\| "请输入数值"/);
-  assert.match(page, /\{attrRenderModel\.required\.map\(\(item\) => attrGroup\(item, true\)\)\}/);
-  assert.match(page, /\{attrRenderModel\.optional\.map\(\(item\) => attrGroup\(item, false\)\)\}/);
+  assert.match(propertyForm, /const attrField = \(item: TemuProperty, required: boolean\) => \{/);
+  assert.match(propertyForm, /\{item\.values\?\.length \? \(/);
+  assert.match(propertyForm, /\{unit \? \(\n\s*<input/);
+  assert.match(propertyForm, /item\.numberInputTitle \|\| "请输入数值"/);
+  assert.match(propertyForm, /\{groups\.required\.map\(\(item\) => attrGroup\(item, true\)\)\}/);
+  assert.match(propertyForm, /\{groups\.optional\.map\(\(item\) => attrGroup\(item, false\)\)\}/);
 
   // 带单位的必填属性光选下拉不算填好
-  assert.match(page, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
+  assert.match(attrModel, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
 });
 
 test("图片张数上限在上传时就挡（外包装 6 张、轮播 10 张）", () => {
@@ -941,7 +948,9 @@ test("发布检查：每一项都说清「还差什么」，被拦时自动定�
 
   // 必填项只在「被拦过之后」标红，且属性/标题都覆盖
   assert.match(page, /const \[showFieldErrors, setShowFieldErrors\] = useState\(false\);/);
-  assert.match(page, /showFieldErrors && emptyRequired \? " is-required-empty"/);
+  // 属性标红在共享组件里（发布页只传 showErrors）
+  assert.match(propertyForm, /showErrors && emptyRequired \? " is-required-empty"/);
+  assert.match(page, /showErrors=\{showFieldErrors\}/);
   assert.match(page, /showFieldErrors && !form\.title\.trim\(\) \? " is-bad"/);
 
   // 错误摘要放固定侧栏（滚下去也看得到），并带操作按钮
@@ -1225,4 +1234,36 @@ test("批量发布弹窗不能被长标题顶宽（右侧被切掉）", () => {
   assert.match(css, /\.temu-batch-dialog \.temu-input \{[\s\S]*?min-width: 0;/);
   assert.match(listItem, /text-overflow: ellipsis;/);
   assert.match(listItem, /white-space: nowrap;/);
+});
+
+test("批量发布：没有产品模板也能现场配类目+全量属性，直接发", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const manual = readFileSync(
+    new URL("../components/BatchManualConfig.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // 弹窗里挂上现场配置
+  assert.match(library, /<BatchManualConfig onChange=\{setManualTemplate\} \/>/);
+  // 产品模板和现场配置二选一：模板优先，没有就用现场配出来的临时模板
+  assert.match(
+    library,
+    /const template = productTemplates\.find\(\(item\) => item\.name === productTpl\) \?\? manualTemplate;/,
+  );
+  // 原来「没有模板就没法发」的劝退文案必须改掉
+  assert.doesNotMatch(library, /先去看「发布商品」页填好一款再点「存为产品模板」/);
+
+  // 现场配置：搜类目 → 选一条 → 拉该类目属性 → 用共享属性表单
+  assert.match(manual, /const search = async \(\) => \{/);
+  assert.match(manual, /temuPublishApi\.matchCategory\(text, SITE_ID\)/);
+  assert.match(manual, /setAttributes\(await temuPublishApi\.attributes\(leaf\.catId\)\);/);
+  assert.match(manual, /<TemuPropertyForm/);
+  // 全量属性：必填没填完要提示（不是静默发）
+  assert.match(manual, /missingRequiredNames\(visibleProperties\(attributes, picks\), picks\)/);
+  // 定价之外的三件事也必须能在这里配齐，否则还是得回发布页
+  assert.match(manual, /temuPublishApi\.freightTemplates\(\[SITE_ID\]\)/);
+  assert.match(manual, /temuPublishApi\.warehouses\(\[SITE_ID\]\)/);
+  assert.match(manual, /temuPublishApi\.parentSpecs\(\)/);
+  // 配不齐就回传 null，别让父组件以为能发
+  assert.match(manual, /if \(!path\.length \|\| !freightId \|\| !warehouseId\) \{\s*\n\s*onChange\(null\);/);
 });

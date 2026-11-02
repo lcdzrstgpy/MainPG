@@ -6,6 +6,7 @@ import { temuPublishApi } from "../api/temuPublishApi";
 import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar";
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
+import { BatchManualConfig } from "../components/BatchManualConfig";
 import { buildDraftForPublish } from "../data/batchPublish";
 import type { TemuDraftEdit, TemuDraftEntry, TemuDraftLibrary, TemuPublishPrefill } from "../types";
 import "../styles/temuPublish.css";
@@ -378,6 +379,8 @@ export function TemuDraftLibraryPage({
   });
   // 批量发布弹窗：勾完直接发，模板在弹窗里选（不再要求先去菜单里「引用产品模板」）
   const [batchOpen, setBatchOpen] = useState(false);
+  // 批量发布「现场配置」出来的临时产品模板（不落盘）：没选产品模板时用它
+  const [manualTemplate, setManualTemplate] = useState<ProductTemplate | null>(null);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
   const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
 
@@ -489,6 +492,8 @@ export function TemuDraftLibraryPage({
     }
     // 只有一个模板就直接选中，省一次点击；有多个则让用户自己挑
     if (!productTpl && productTemplates.length) setProductTpl(productTemplates[0].name);
+    // 每次打开都重配：上一批的类目/属性留着，换一批货时很容易发错类目
+    setManualTemplate(null);
     setBatchOpen(true);
   };
 
@@ -496,9 +501,10 @@ export function TemuDraftLibraryPage({
   const runBatchPublish = async () => {
     // 上一批还在跑（接口非幂等）：不允许再开一批并行提交
     if (batchState.running) return;
-    const template = productTemplates.find((item) => item.name === productTpl);
+    // 产品模板和「现场配置」二选一：现场配置出来的等价于一份临时模板
+    const template = productTemplates.find((item) => item.name === productTpl) ?? manualTemplate;
     if (!template) {
-      setError("先选一个产品模板（没有就去「发布商品」页存一个）");
+      setError("先选一个产品模板，或在下面「现场配置」里把类目/属性/运费模板/仓库填完");
       return;
     }
     const targets = entries.filter((entry) => selected.has(entry.id));
@@ -1208,6 +1214,8 @@ export function TemuDraftLibraryPage({
                   </select>
                 </label>
 
+                <BatchManualConfig onChange={setManualTemplate} />
+
                 <ul className="temu-batch-list">
                   {batchTargets.slice(0, 6).map((entry) => (
                     <li key={entry.id}>
@@ -1218,9 +1226,9 @@ export function TemuDraftLibraryPage({
                   {batchTargets.length > 6 ? <li className="is-more">… 还有 {batchTargets.length - 6} 条</li> : null}
                 </ul>
 
-                {productTemplates.length === 0 ? (
+                {productTemplates.length === 0 && !manualTemplate ? (
                   <p className="temu-confirm-warn">
-                    还没有产品模板：批量发布要用模板里的类目和属性，先去「发布商品」页填好一款再点「存为产品模板」。
+                    还没有产品模板：在上面「现场配置」里选一个类目、填完必填属性、选好运费模板和仓库，就能直接发这批。
                   </p>
                 ) : (
                   <p className="temu-edit-note">

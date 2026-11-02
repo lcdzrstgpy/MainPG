@@ -3477,3 +3477,97 @@ textarea.temu-input {
 .temu-publish-actions {
   gap: 8px;
 }
+
+/* ---------- 批量发布：现场配置（不用产品模板） ---------- */
+
+.temu-batch-manual {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  min-width: 0;
+}
+
+.temu-batch-manual-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.temu-batch-manual-head strong {
+  font-size: 0.82rem;
+  color: var(--theme-text-primary, #20364d);
+}
+
+.temu-batch-manual-head em,
+.temu-batch-manual em {
+  font-style: normal;
+}
+
+.temu-batch-search {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-batch-search .temu-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.temu-batch-paths {
+  margin: 0;
+  padding: 6px 8px;
+  list-style: none;
+  max-height: 132px;
+  overflow: auto;
+  border-radius: var(--radius-sm, 6px);
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.temu-batch-paths button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-batch-paths button:hover {
+  text-decoration: underline;
+}
+
+.temu-batch-picked {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--theme-text-primary, #20364d);
+  overflow-wrap: anywhere;
+}
+
+.temu-batch-attrs {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 现场配置里的属性表单撑满，别跟弹窗网格抢宽度 */
+.temu-batch-attrs .temu-attr-grid,
+.temu-batch-attrs .temu-attr-children {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
+.temu-batch-manual-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
