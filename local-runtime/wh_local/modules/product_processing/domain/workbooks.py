@@ -29,11 +29,16 @@ DECLARED_PRICE_MULTIPLIER = 4
 DECLARED_PRICE_MIN_CNY = 150.0
 DXM_STOCK_MIN = 0
 DXM_STOCK_MAX = 999999
-# 外包装形状/类型（对齐原型 _build_dxm_row：soft → 软包装软物/气泡袋，rigid → 硬包装硬物/纸箱）
+# 外包装形状/类型：店小秘 POP Temu 模板（51 列）限定可选值
+#   外包装形状：不规则 / 长方体 / 圆柱体
+#   外包装类型：硬包装 / 软包装+硬物 / 软包装+软物
+# 按包裹画像推断：刚性容器（箱/盒/瓶/杯/罐）→ 长方体 + 硬包装；
+# 工具类硬物 → 不规则 + 软包装+硬物；其余软物/服饰/饰品 → 不规则 + 软包装+软物。
 _PACKAGE_EXPORT_BY_PROFILE = {
-    "rigid_container": ("硬包装硬物", "纸箱"),
+    "rigid_container": ("长方体", "硬包装"),
+    "compact_tool": ("不规则", "软包装+硬物"),
 }
-_PACKAGE_EXPORT_DEFAULT = ("软包装软物", "气泡袋")
+_PACKAGE_EXPORT_DEFAULT = ("不规则", "软包装+软物")
 
 # 变种规格轴名称本地映射（对齐原型 §8.2：映射为 Color/Size/Pack/Style/Capacity 等店小秘规格轴）
 _VARIANT_AXIS_NAMES = {
@@ -933,7 +938,7 @@ def _dxm_single_export_row(row: dict[str, Any], variant: dict[str, Any] | None) 
         "",  # 刀具长度
         "",  # 刀刃角度
         "",  # 液体容量
-        "",  # 来源URL
+        source_url,  # 来源URL（新模板列，店小秘仅记录）
         "",  # 产地
     ]
 

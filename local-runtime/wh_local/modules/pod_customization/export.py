@@ -406,9 +406,10 @@ def _cell_number(value: Any) -> Any:
     if not text:
         return text
     try:
-        return float(text)
+        number = float(text)
     except ValueError:
         return text
+    return int(number) if number.is_integer() else number
 
 
 def _skus_rows_cells(listing_fields: dict[str, Any]) -> list[tuple[Any, ...]]:
@@ -488,12 +489,12 @@ def _build_row(
         4: "尺寸",
         5: sku["name"],
         8: images["lifestyle"],
-        9: declared_price,
+        9: _cell_number(declared_price),
         10: sku_code,
-        11: length_cm,
-        12: width_cm,
-        13: height_cm,
-        14: sku["weight_g"],
+        11: _cell_number(length_cm),
+        12: _cell_number(width_cm),
+        13: _cell_number(height_cm),
+        14: _cell_number(sku["weight_g"]),
         18: "\n".join(image_urls),
         19: images["hero"],
         # 第 23 列（建议售价）店小秘不要求，统一留空；申报价走每个 SKU 的第 9 列。

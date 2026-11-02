@@ -7,7 +7,10 @@ build_dianxiaomi_workbook），但把 combo_kit_sets 的字段映射到对应列
 """
 from __future__ import annotations
 
+import ipaddress
+import math
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..pod_customization.dianxiaomi import DXM_COLUMNS, build_dianxiaomi_workbook
 
@@ -79,9 +82,63 @@ def _public_images(set_data: dict[str, Any]) -> dict[str, str]:
             continue
         role = str(entry.get("role") or "")
         public_url = str(entry.get("public_url") or "").strip()
-        if role and public_url:
+        if role and public_url and _is_public_image_url(public_url):
             images[role] = public_url
     return images
+
+
+def _is_public_image_url(value: str) -> bool:
+    """店小秘图片列只接受公网可匿名访问的 http(s) 地址。"""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        return False
+    hostname = parsed.hostname.strip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return "." in hostname
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
+
+
+def _number(value: Any) -> Any:
+    """店小秘数值列写成数字单元格；无法解析时留空，交给必填校验拦截。"""
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(number):
+        return ""
+    return int(number) if number.is_integer() else number
+
+
+def _safe_id_type(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    return text if text in {"UPC", "EAN", "ISBN"} else ""
+
+
+def _safe_id_code(value: Any) -> str:
+    """识别码最长 13 位（UPC 12 / EAN、ISBN 13）；超长直接留空避免整行被拒。"""
+    text = str(value or "").strip()
+    return text if 0 < len(text) <= 13 else ""
 
 
 def _build_row(set_data: dict[str, Any], images: dict[str, str]) -> list[Any]:
@@ -131,18 +188,18 @@ def _build_row(set_data: dict[str, Any], images: dict[str, str]) -> list[Any]:
         4: "套装",
         5: sku_display or title,
         8: main,
-        9: str(set_data.get("declared_price") or ""),
+        9: _number(set_data.get("declared_price")),
         10: sku,
-        11: set_data.get("length_cm") or 0,
-        12: set_data.get("width_cm") or 0,
-        13: set_data.get("height_cm") or 0,
-        14: set_data.get("weight_g") or 0,
-        15: str(set_data.get("id_type") or ""),
-        16: str(set_data.get("id_code") or ""),
+        11: _number(set_data.get("length_cm")),
+        12: _number(set_data.get("width_cm")),
+        13: _number(set_data.get("height_cm")),
+        14: _number(set_data.get("weight_g")),
+        15: _safe_id_type(set_data.get("id_type")),
+        16: _safe_id_code(set_data.get("id_code")),
         18: carousel,
         19: main,
-        23: set_data.get("suggested_price_usd") or 0,
-        24: set_data.get("stock") or 0,
+        23: _number(set_data.get("suggested_price_usd")) or 0,
+        24: _number(set_data.get("stock")) or 0,
         31: "单品",
         32: 1,
         33: "件",
