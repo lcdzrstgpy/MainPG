@@ -1191,7 +1191,9 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
   assert.match(page, /const \[attrPicks, setAttrPicks\] = useState<Record<number, AttrPick>>\(\(\) => \{/);
   // 先读「当前这一条」（刷新恢复），没有再退回同类目历史（老版本只有这个）
   assert.match(page, /const current = readCurrentAttrPicks\(scope, currentLeaf\);/);
-  assert.match(page, /return Object\.keys\(current\)\.length \? current : readAttrPicksHistory\(scope, currentLeaf\);/);
+  // 必须用 ?? 而不是判空对象：用户清空后存的是 {}，那种情况要保持空，
+  // 判 length 的话一刷新又从历史里把值填回来了
+  assert.match(page, /return current \?\? readAttrPicksHistory\(scope, currentLeaf\);/);
   // 读：先按 catId 取 v2，没有再退 v1（且只认 catId 对得上的）
   assert.match(attrStore, /const hit = all\?\.\[String\(catId\)\]\?\.picks;/);
   assert.match(attrStore, /if \(Number\(legacy\?\.catId \?\? 0\) === catId && legacy\?\.picks && typeof legacy\.picks === "object"\) \{/);
@@ -1297,6 +1299,11 @@ test("批量发布：没有产品模板也能现场配类目+全量属性，直�
   assert.match(manual, /temuPublishApi\.freightTemplates\(\[SITE_ID\]\)/);
   assert.match(manual, /temuPublishApi\.warehouses\(\[SITE_ID\]\)/);
   assert.match(manual, /temuPublishApi\.parentSpecs\(\)/);
+  // 用户在批量配置里改的属性要写「同类目历史」：批量发布是主场景，
+  // 他在这儿把 8 项改对，下次同类目估填就该按这版来
+  assert.match(manual, /const handlePicksChange = \(next: AttrPickMap\) => \{/);
+  assert.match(manual, /saveAttrPicksHistory\(storageScope\(\), catIdRef\.current, next\);/);
+  assert.match(manual, /onChange=\{handlePicksChange\}/);
   // 配不齐就回传 null，别让父组件以为能发
   assert.match(manual, /if \(!path\.length \|\| !freightId \|\| !warehouseId\) \{\s*\n\s*onChange\(null\);/);
 });

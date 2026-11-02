@@ -2,7 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TemuPropertyForm } from "./TemuPropertyForm";
 import { temuPublishApi } from "../api/temuPublishApi";
-import { missingRequiredNames, visibleProperties, type AttrPickMap } from "../data/attributeModel";
+import {
+  missingRequiredNames,
+  visibleProperties,
+  type AttrPickMap,
+} from "../data/attributeModel";
+import { saveAttrPicksHistory, storageScope } from "../data/attrPicksStore";
 import type { ProductTemplate } from "../data/localStore";
 import type {
   TemuAttributes,
@@ -75,6 +80,8 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
    * 再铺就是往新类目里塞一堆不存在的 pid。
    */
   const seededPicksRef = useRef<AttrPickMap | undefined>(initialPicks);
+  /** 当前选中的叶子类目：用户改属性时按它写「同类目历史」 */
+  const catIdRef = useRef(0);
   const [freightId, setFreightId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [shipmentDays, setShipmentDays] = useState("7");
@@ -135,12 +142,25 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       const leaf = next[next.length - 1];
       const loaded = await temuPublishApi.attributes(leaf.catId);
       setAttributes(loaded);
+      catIdRef.current = Number(leaf.catId) || 0;
       // 草稿库估好的属性：铺上，用户仍可逐项改
       if (seeded && Object.keys(seeded).length) setPicks(seeded);
     } catch (cause) {
       setAttributes(null);
       setError(cause instanceof Error ? cause.message : "属性表没取到");
     }
+  };
+
+  /**
+   * 用户改属性：写「同类目历史」。
+   *
+   * 批量发布是主场景 —— 用户在这儿把 8 项改对，下次同类目估填就该按这版来；
+   * 不写的话他每次批量发都得重改一遍。
+   * 程序铺的值（seeded）不走这里，所以不会污染历史。
+   */
+  const handlePicksChange = (next: AttrPickMap) => {
+    setPicks(next);
+    if (catIdRef.current) saveAttrPicksHistory(storageScope(), catIdRef.current, next);
   };
 
   // 整批草稿自动匹配到同一类目时直接预填，省一次搜索（用户仍可改）
@@ -239,7 +259,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
           <TemuPropertyForm
             attributes={attributes}
             picks={picks}
-            onChange={setPicks}
+            onChange={handlePicksChange}
             emptyHint="正在取这个类目的属性…"
             optionalHint="不填也能发布"
           />

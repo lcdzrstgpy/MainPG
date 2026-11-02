@@ -105,10 +105,12 @@ test("草稿预填按时间裁剪，且新写入的不会被裁掉", () => {
 
 test("刷新恢复用「当前这一条」：按类目隔离，类目对不上就丢弃", () => {
   saveCurrentAttrPicks("u1", 900, { 1: { vid: 5, text: "" } });
-  assert.equal(readCurrentAttrPicks("u1", 900)[1]?.vid, 5);
-  // 换了类目不能把上一个类目的选择搬过来（pid 完全不同）
-  assert.deepEqual(readCurrentAttrPicks("u1", 901), {});
-  assert.deepEqual(readCurrentAttrPicks("u2", 900), {});
+  assert.equal(readCurrentAttrPicks("u1", 900)?.[1]?.vid, 5);
+  // 换了类目不能把上一个类目的选择搬过来（pid 完全不同），返回 null 表示「没有记录」
+  assert.equal(readCurrentAttrPicks("u1", 901), null);
+  assert.equal(readCurrentAttrPicks("u2", 900), null);
+  // 完全没写过也是 null：调用方据此决定要不要退回同类目历史
+  assert.equal(readCurrentAttrPicks("u3", 900), null);
 });
 
 test("当前选择与同类目历史是两套东西：写当前不污染历史", () => {
@@ -132,4 +134,15 @@ test("历史版本时间戳：没有记录是 0，写过就变大", () => {
   // 再写一次版本必须变（否则草稿库判断不出「历史更新了，要重估」）
   saveAttrPicksHistory("u1", 1234, { 1: { vid: 2, text: "" } });
   assert.ok(readAttrPicksHistoryAt("u1", 1234) >= first);
+});
+
+test("清空后刷新不能被历史填回来：空选择返回 {} 而不是 null", () => {
+  saveAttrPicksHistory("u1", 900, { 1: { vid: 7, text: "" } });
+  // 用户点「清空自动填」→ 写进去的就是空选择
+  saveCurrentAttrPicks("u1", 900, {});
+
+  const current = readCurrentAttrPicks("u1", 900);
+  assert.deepEqual(current, {}, "有记录但内容是空 —— 必须保持空");
+  // 页面用 `current ?? history` 才分得清：{} 不会触发回退，null 才会
+  assert.notEqual(current, null);
 });

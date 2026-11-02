@@ -597,9 +597,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 不同类目的属性 pid 完全不一样，盲恢复等于给新类目塞一堆不存在的 pid。
     const currentLeaf = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
     const scope = storageScope();
-    // 先读「当前这一条」（任何来源都写过），没有再退回同类目历史（老版本只有这个）
+    // 先读「当前这一条」（任何来源都写过），没有再退回同类目历史（老版本只有这个）。
+    // 注意用 ?? 而不是判空对象：用户清空后存的就是空对象，那种情况必须保持空，
+    // 否则一刷新又从历史里把值填回来了。
     const current = readCurrentAttrPicks(scope, currentLeaf);
-    return Object.keys(current).length ? current : readAttrPicksHistory(scope, currentLeaf);
+    return current ?? readAttrPicksHistory(scope, currentLeaf);
   });
   /** 自动填需要读到「此刻已填了什么」；effect 里不能依赖 attrPicks（会自我触发） */
   const attrPicksRef = useRef(attrPicks);

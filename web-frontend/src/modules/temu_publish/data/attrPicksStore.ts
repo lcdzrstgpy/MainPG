@@ -115,17 +115,21 @@ export function saveAttrPicksHistory(scope: string, catId: number, picks: AttrPi
   writeJson(key, Object.fromEntries(Object.entries(all).slice(-ATTR_PICKS_HISTORY_MAX)));
 }
 
-/** 当前这一条的选择（刷新恢复用）。 */
-export function readCurrentAttrPicks(scope: string, catId: number): AttrPickMap {
-  if (!catId) return {};
-  const saved = readJson<CurrentAttrPicks>(`${ATTR_PICKS_CURRENT_KEY}:${scope}`, {
-    catId: 0,
-    picks: {},
-    at: 0,
-  });
+/**
+ * 当前这一条的选择（刷新恢复用）。
+ *
+ * 返回值有两种「空」，调用方必须分得清：
+ * - `null`：**根本没有记录**（或记录属于别的类目）→ 可以退回同类目历史
+ * - `{}`：记录本身就是「用户清空了」→ 必须保持空，不能回退历史，
+ *   否则用户点「清空自动填」后一刷新又被填回来了
+ */
+export function readCurrentAttrPicks(scope: string, catId: number): AttrPickMap | null {
+  if (!catId) return null;
+  const saved = readJson<CurrentAttrPicks | null>(`${ATTR_PICKS_CURRENT_KEY}:${scope}`, null);
   // 类目对不上就丢弃：不同类目的 pid 完全不同，盲恢复等于塞一堆不存在的属性
-  if (Number(saved?.catId ?? 0) !== catId) return {};
-  const picks = saved?.picks;
+  if (!saved || typeof saved !== "object") return null;
+  if (Number(saved.catId ?? 0) !== catId) return null;
+  const picks = saved.picks;
   return picks && typeof picks === "object" ? picks : {};
 }
 
