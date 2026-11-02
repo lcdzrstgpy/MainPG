@@ -170,6 +170,13 @@ function storageScope(): string {
 const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
+/**
+ * 类目属性选择也要落盘。
+ *
+ * 之前只存 form / rows，attrPicks 是纯内存 state：刷新或 HMR 一下，7 个必填属性
+ * 全空，用户得一个个重选。存档带 leafCatId —— 类目一换属性 pid 全变，不能盲恢复。
+ */
+const ATTR_PICKS_KEY = "temu_publish_attr_picks_v1";
 // 变种模板存在 data/localStore.ts（VARIANT_KEY），key 必须保持一致
 const VARIANT_TEMPLATE_KEY = "temu_publish_variant_templates";
 /** 价格单位迁移标记：写过一次就不再动，否则会把用户新填的「元」又除一遍 */
@@ -598,7 +605,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // 用户手动选过类目后，标题再变也不覆盖
   const categoryTouchedRef = useRef(false);
   const [attributes, setAttributes] = useState<TemuAttributes | null>(null);
-  const [attrPicks, setAttrPicks] = useState<Record<number, AttrPick>>({});
+  const [attrPicks, setAttrPicks] = useState<Record<number, AttrPick>>(() => {
+    // 只在「存档里的叶子类目 == 当前恢复出来的叶子类目」时恢复：
+    // 不同类目的属性 pid 完全不一样，盲恢复等于给新类目塞一堆不存在的 pid。
+    const saved = loadJsonLocal<{ catId?: number; picks?: Record<number, AttrPick> }>(
+      `${ATTR_PICKS_KEY}:${storageScope()}`,
+      {},
+    );
+    const savedCat = Number(saved?.catId ?? 0);
+    const currentLeaf = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!savedCat || !currentLeaf || savedCat !== currentLeaf) return {};
+    return saved?.picks && typeof saved.picks === "object" ? saved.picks : {};
+  });
 
   const [freightTemplates, setFreightTemplates] = useState<TemuFreightTemplate[]>([]);
   const [warehouseGroups, setWarehouseGroups] = useState<TemuWarehouseGroup[]>([]);
@@ -706,6 +724,45 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const timer = setTimeout(() => saveJsonLocal(rowsKey, rows), 300);
     return () => clearTimeout(timer);
   }, [rows, rowsKey]);
+
+  const attrPicksKey = `${ATTR_PICKS_KEY}:${storageScope()}`;
+  /**
+   * 类目属性选择落盘（带叶子类目 ID）。
+   *
+   * 落盘的是「某个类目下选了什么」，所以必须连 catId 一起存；恢复时对不上就丢弃。
+   * 属性是下拉选的，不是逐字符输入，不需要防抖窗——但保持和其他存档一致的节奏。
+   */
+  useEffect(() => {
+    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!leafCatId) return;
+    const timer = setTimeout(() => {
+      saveJsonLocal(attrPicksKey, { catId: leafCatId, picks: attrPicks });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [attrPicks, categoryPath, attrPicksKey]);
+
+  /**
+   * 刷新页面 / HMR 后类目是从本机存档恢复出来的（最近用过的类目、或草稿带入），
+   * 但属性表还没拉过 —— 不补拉的话属性区一片空，连恢复出来的选择都没处显示。
+   * 只跑一次；拉回来顺手按该类目的预设值检查变种行（带入的草稿可能是别的类目存的）。
+   */
+  const restoredAttrsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (restoredAttrsLoadedRef.current) return;
+    const currentLeaf = categoryPath[categoryPath.length - 1];
+    if (!currentLeaf?.isLeaf) return;
+    restoredAttrsLoadedRef.current = true;
+    if (attributes) return;
+    void temuPublishApi
+      .attributes(currentLeaf.catId)
+      .then((attrs) => {
+        setAttributes(attrs);
+        setSpecMismatch(findSpecMismatches(attrs, rows));
+      })
+      .catch(() => {
+        // 拉不到就维持空白：用户点一下类目还能重试
+      });
+  }, [categoryPath, attributes, rows]);
 
   useEffect(() => {
     let alive = true;
@@ -1530,6 +1587,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return out;
   };
 
+  /** 按最接近的预设值把不合法的颜色/尺码批量改掉；对不上的保持原样并继续留在清单里。 */
+  const fixSpecMismatches = () => {
+    if (!specMismatch.length) return;
+    const colorNames = specOptions(colorParentId);
+    const sizeNames = specOptions(sizeParentId);
+    const next = rows.map((row) => {
+      const badColor = specMismatch.some((item) => item.rowKey === row.key && item.field === "颜色");
+      const badSize = specMismatch.some((item) => item.rowKey === row.key && item.field === "尺码");
+      const colorFixed = badColor ? matchPresetValue(row.colorName, colorNames) : null;
+      const sizeFixed = badSize ? matchPresetValue(row.sizeName, sizeNames) : null;
+      return {
+        ...row,
+        colorName: colorFixed ?? row.colorName,
+        sizeName: sizeFixed ?? row.sizeName,
+      };
+    });
+    setRows(next);
+    setSpecMismatch(findSpecMismatches(attributes, next));
+  };
+
   const ensureSpec = async (
     parentSpec: TemuParentSpec | null,
     specName: string,
@@ -1673,12 +1750,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       throw new Error("站外产品链接必须是 https:// 开头的地址");
     }
 
-    // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
-    const carousel = await resolveImages(carouselSource, leaf.catId);
-    const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId);
-    const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
-    const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
-
+    // 必填属性先校验，再传图 —— 图片上传要打 Temu 图床（慢且占配额），
+    // 属性没填完就传完图再报错，等于白等一遍。
     if (attributes) {
       const missing = visibleProperties
         .filter((item) => item.required)
@@ -1692,6 +1765,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         .map((item) => item.name || item.propertyName || `pid=${item.pid}`);
       if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
     }
+
+    // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
+    const carousel = await resolveImages(carouselSource, leaf.catId);
+    const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId);
+    const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
+    const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
 
     const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
     // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
@@ -3099,13 +3178,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
                   <strong>有 {specMismatch.length} 个颜色/尺码不在当前类目的预设值里</strong>
-                  <button
-                    type="button"
-                    className="temu-link-button"
-                    onClick={() => setSpecMismatch([])}
-                  >
-                    知道了
-                  </button>
+                  <div className="temu-spec-mismatch-actions">
+                    <button
+                      type="button"
+                      className="temu-link-button"
+                      onClick={fixSpecMismatches}
+                    >
+                      按最接近的预设值修正
+                    </button>
+                    <button
+                      type="button"
+                      className="temu-link-button"
+                      onClick={() => setSpecMismatch([])}
+                    >
+                      知道了
+                    </button>
+                  </div>
                 </div>
                 <p className="temu-muted">
                   换类目后规格值必须重选：Temu 只认类目预设值，自己填的提交会被判「不合法的规格属性」。

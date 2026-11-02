@@ -1091,9 +1091,10 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   assert.match(page, /if \(!prop\.isSale\) continue;/);
   assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "颜色", value: color \}\);/);
   assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "尺码", value: size \}\);/);
-  // 清行会丢价格/重量，所以这里不许出现任何 setRows([])
+  // 检查函数本身只产出清单，不许顺手改行（清行会丢价格/重量）；
+  // 真正改行的是用户主动点的 fixSpecMismatches，单独一个函数。
   assert.doesNotMatch(
-    page.slice(page.indexOf("const findSpecMismatches = ("), page.indexOf("const ensureSpec = async")),
+    page.slice(page.indexOf("const findSpecMismatches = ("), page.indexOf("/** 按最接近的预设值")),
     /setRows\(/,
   );
 
@@ -1159,4 +1160,43 @@ test("类目：刷新类目树入口 + 换类目二次确认", () => {
   assert.match(page, /onClick=\{\(\) => void refreshCategoryTree\(\)\}/);
   assert.match(page, /刷新类目树/);
   assert.match(css, /\.temu-cat-refresh \{/);
+});
+
+test("同事反馈的三点：属性落盘、带入即检查并一键修正、校验在上传之前", () => {
+  // ① attrPicks 落盘：带叶子类目 ID 存，恢复时类目对不上就丢弃
+  assert.match(page, /const ATTR_PICKS_KEY = "temu_publish_attr_picks_v1";/);
+  assert.match(page, /const \[attrPicks, setAttrPicks\] = useState<Record<number, AttrPick>>\(\(\) => \{/);
+  const restoreBlock = page.slice(
+    page.indexOf("const [attrPicks, setAttrPicks] = useState"),
+    page.indexOf("[freightTemplates, setFreightTemplates]"),
+  );
+  assert.match(restoreBlock, /if \(!savedCat \|\| !currentLeaf \|\| savedCat !== currentLeaf\) return \{\};/);
+  assert.match(page, /saveJsonLocal\(attrPicksKey, \{ catId: leafCatId, picks: attrPicks \}\);/);
+
+  // ② 刷新后类目恢复出来但属性表没拉过：补拉一次，顺带按该类目预设检查变种行
+  const restoreEffect = page.slice(
+    page.indexOf("const restoredAttrsLoadedRef = useRef(false);"),
+    // 切到「刷新类目树」之前，否则会把后面的 setSpecMismatch 也算进来，断言变空气
+    page.indexOf("/** 手动刷新类目树"),
+  );
+  assert.ok(restoreEffect.length > 0, "expected restored attributes effect");
+  assert.match(restoreEffect, /temuPublishApi\s*\n?\s*\.attributes\(currentLeaf\.catId\)/);
+  assert.match(restoreEffect, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
+
+  // ③ 一键按最接近的预设值修正（对不上的保持原样）
+  assert.match(page, /const fixSpecMismatches = \(\) => \{/);
+  assert.match(page, /const colorFixed = badColor \? matchPresetValue\(row\.colorName, colorNames\) : null;/);
+  assert.match(page, /setSpecMismatch\(findSpecMismatches\(attributes, next\)\);/);
+  assert.match(page, /按最接近的预设值修正/);
+
+  // ④ 必填属性校验必须排在图片上传之前（上传要打图床，慢且占配额）
+  const compose = page.slice(
+    page.indexOf("const composeDraft = async (): Promise<TemuGoodsDraft> =>"),
+    page.indexOf("const attrByPid = new Map("),
+  );
+  const attrCheckAt = compose.indexOf("缺少必填属性");
+  const uploadAt = compose.indexOf("const carousel = await resolveImages(");
+  assert.ok(attrCheckAt > -1, "expected required-attribute check inside composeDraft");
+  assert.ok(uploadAt > -1, "expected image upload inside composeDraft");
+  assert.ok(attrCheckAt < uploadAt, "必填属性校验必须在图片上传之前，否则白传一遍图才报错");
 });

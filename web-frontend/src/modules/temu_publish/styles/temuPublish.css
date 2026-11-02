@@ -298,6 +298,13 @@ textarea.temu-input {
   gap: 12px;
 }
 
+.temu-spec-mismatch-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
 .temu-spec-mismatch p {
   margin: 0;
   color: inherit;
