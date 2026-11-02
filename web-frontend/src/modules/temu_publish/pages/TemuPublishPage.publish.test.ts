@@ -1215,6 +1215,14 @@ test("批量发布弹窗不能被长标题顶宽（右侧被切掉）", () => {
   );
   assert.ok(listItem.length > 0, "expected batch list item style");
   assert.match(listItem, /min-width: 0;/);
+
+  // 中间任何一层漏掉 min-width:0，长标题就会从弹窗边框里溢出去（文字被切一半）
+  assert.match(css, /\.temu-edit-dialog > \* \{\s*min-width: 0;/);
+  assert.match(css, /\.temu-batch-body \{[\s\S]*?min-width: 0;/);
+  assert.match(css, /\.temu-batch-list \{[\s\S]*?min-width: 0;/);
+  assert.match(css, /\.temu-batch-list li \{[\s\S]*?min-width: 0;/);
+  // 原生 select 按最长 option 撑宽度，也要允许收缩
+  assert.match(css, /\.temu-batch-dialog \.temu-input \{[\s\S]*?min-width: 0;/);
   assert.match(listItem, /text-overflow: ellipsis;/);
   assert.match(listItem, /white-space: nowrap;/);
 });

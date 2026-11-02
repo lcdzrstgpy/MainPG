@@ -1005,6 +1005,12 @@ textarea.temu-input {
   overflow: auto;
   overscroll-behavior: contain;
 }
+
+/* 弹窗里的每一块都不许被内容顶宽：min-width:auto 默认按 min-content 算，
+   中间任何一层漏掉，长标题就会从弹窗边框里溢出去（表现为文字被切一半）。 */
+.temu-edit-dialog > * {
+  min-width: 0;
+}
 .temu-edit-head {
   display: flex;
   align-items: center;
@@ -2849,6 +2855,9 @@ textarea.temu-input {
   flex-direction: column;
   gap: 12px;
   padding: 4px 2px 0;
+  /* 中间这层也得能收缩：否则里面 nowrap 的长标题会把它撑宽，
+     弹窗本身虽然被 max-width 卡住了，内容还是会溢出到边框外被切。 */
+  min-width: 0;
 }
 
 .temu-batch-list {
@@ -2861,12 +2870,14 @@ textarea.temu-input {
   overflow: auto;
   font-size: 12px;
   line-height: 1.8;
+  min-width: 0;
 }
 
 .temu-batch-list li {
   display: flex;
   gap: 8px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .temu-batch-list li span {
@@ -2894,6 +2905,13 @@ textarea.temu-input {
 .temu-batch-dialog .temu-field > span > em {
   font-style: normal;
   font-weight: 400;
+}
+
+/* 原生 select 的固有宽度按最长 option 算，模板名长（「名字（一级 > 二级 > 三级）」）
+   时同样会把弹窗顶宽；这里允许它收缩到容器宽度。 */
+.temu-batch-dialog .temu-input {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ---------- 发布后核对：店铺里的商品 ---------- */
