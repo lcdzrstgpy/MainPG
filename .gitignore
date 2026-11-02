@@ -126,3 +126,5 @@ local-runtime/updates/
 
 # 服务商凭据的本机覆盖（打包机放真值，不进仓库）
 local-runtime/wh_local/data/temu_gateway.local.json
+# 产品处理 AI 密钥的本机覆盖（平台下发密钥欠费/不可用时临时换自己的 key）
+local-runtime/wh_local/modules/product_processing/ai_keys.local.json

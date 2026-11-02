@@ -14,7 +14,7 @@ import threading
 import unicodedata
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -70,6 +70,9 @@ from .doubao_text import (
 )
 from .domain.category_classifier import classify_titles
 from .domain.category_image_presets import CATEGORY_IMAGE_PROMPTS
+from .domain.background_presets import select_backdrop_fragment
+from .domain.custom_backgrounds import CustomBackgroundStore, user_background_id
+from .domain.usage_rooms import resolve_usage_place
 from .domain.photo_card_library import (
     CARD_LIBRARIES,
     LAYER_KEYS,
@@ -669,11 +672,230 @@ _RETRY_MARKERS = re.compile(
     r"slot_1k_repair|chinese_repaired|chinese_unresolved|chinese_repair_failed|quality_override|ai-failed"
 )
 
-# 商品自定义组合：主图默认提示词（底层提示词防护之外的兜底视觉方向）
+# 「商品自定义组合」主图默认提示词（底层提示词防护之外的兜底视觉方向）
 MAIN_IMAGE_PROMPT_DEFAULT = (
     "premium e-commerce hero composition, complete product visible, "
     "grounded contact shadow, category-matched premium background, no added text"
 )
+
+# 主图背景档位：scene=主图也用场景背景（默认，客户反馈纯白太空洞）；white=沿用纯白平台主图。
+# 平台本身没有白底硬性要求，白底只是其中一种风格，所以做成批次可选而不是写死。
+MAIN_BACKGROUND_MODES = frozenset({"scene", "white"})
+
+# 走 scene 档时，覆盖模板里写死的「主图纯白」规则（只改第 1 格，其余契约不变）。
+MAIN_PANEL_SCENE_OVERRIDE = """MAIN IMAGE BACKGROUND OVERRIDE (batch setting main_background=scene):
+- Panel 1 (the main / first carousel image) is NOT a pure-white studio shot in this batch. Give it a real, category-matched backdrop belonging to this exact product (surface + background + depth), consistent with the other panels of the same batch.
+- Panel 1 keeps the template camera logic (front view unless the template says otherwise), the complete product and 100% product fidelity. No added companion props on Panel 1: background and surface only, so the product stays the single subject.
+- No text, logos, watermarks, price tags, hands, faces, pets or unrelated clutter anywhere in frame.
+- If any other instruction in this prompt demands a pure white seamless main panel, THIS OVERRIDE WINS for Panel 1 only."""
+
+# scene 档下必须定点改写的「主图纯白」写法。
+# 四宫格提示词是多层拼装的（模板逐格矩阵 → 区域规划 → 运行时契约 → 场景计划 →
+# 预设改写 → 收尾闸门），每一层都写死了「第 1 格纯白」。只在末尾追加 override 压不住
+# 它们（实测主图仍然出成白底、和轮播格差得很远），所以这里对最终提示词做定点替换，
+# 只改主图相关的那几处，其余契约原样保留。替换是幂等的，可以重复调用。
+_SCENE_PANEL1_REWRITES: tuple[tuple[str, str], ...] = (
+    # 方舟紧凑模板：A/B/C/D 四套共用同一段「第①格」区域规划与逐格矩阵
+    ("【第①格 · 左上 · 平台主图（纯白合规）】", "【第①格 · 左上 · 平台主图（真实场景背景）】"),
+    (
+        "一眼识别：纯白或色纸无缝背景 + 硬光投影，没有房间、没有地平线、没有家具。",
+        "一眼识别：真实场景背景或色纸无缝背景 + 硬光投影；主图带台面与背景纵深，轮播格不堆砌房间家具。",
+    ),
+    (
+        "｜纯白无缝｜道具=SCENE PLAN 第①格（4 件极简道具）｜",
+        "｜真实场景背景（可见台面+背景纵深）｜主图不放道具｜",
+    ),
+    (
+        "- 背景：纯白无缝影棚（#FFFFFF 到 #FAFAFA，不得偏灰偏黄偏蓝，除极轻微渐变外无纹理）；"
+        "只允许 SCENE PLAN 第①格的 4 件极简中性道具，不得出现台面、布景、地平线、房间元素。",
+        "- 背景：一块真实的、与商品品类匹配的场景背景（可见台面 + 背景纵深或墙面，由一个自然光源照亮）；"
+        "主图不放任何陪衬道具，商品是画面唯一主体；不得出现纯白无缝棚、地平线断层或堆砌的房间元素。",
+    ),
+    # 运行时契约 + 收尾闸门（英文，权重最高的两处）
+    (
+        "Panel 1 is pure white seamless (marketplace hero) with only the four neutral props named in the scene plan.",
+        "Panel 1 is the marketplace hero on one real, category-matched backdrop (visible surface plus background "
+        "depth) with NO added companion props: the product stays the single subject.",
+    ),
+    (
+        "2 Panel 1: pure white seamless, 78%-85%, no text, no room.",
+        "2 Panel 1: one real category-matched backdrop with visible surface and depth, no companion props, "
+        "74%-82%, no text.",
+    ),
+    (
+        "The white hero fills 78%-85% with a 7% inner safe margin",
+        "The hero panel fills 74%-82% with a 7% inner safe margin",
+    ),
+    # 逐格角色文案（单格重绘 / 精品模式的预设主图）
+    (
+        "Composition - White-background hero",
+        "Composition - Hero shot on one real backdrop",
+    ),
+    (
+        "on a pure white seamless background",
+        "on one real, category-matched backdrop with visible surface and depth",
+    ),
+    (
+        "on a pure white seamless sweep",
+        "on one real, category-matched backdrop with visible surface and depth",
+    ),
+    (
+        "complete product on pure white seamless",
+        "complete product on one real, category-matched backdrop",
+    ),
+    # 精品模板里的影棚主图句（保留前视机位，只换背景）
+    (
+        "Complete product centered on a seamless studio sweep at about 78%-85% with balanced, even negative space "
+        "and a crisp grounded contact shadow.",
+        "Complete product centered on a real, category-matched backdrop with visible surface and depth at about "
+        "74%-82%, balanced negative space and a crisp grounded contact shadow.",
+    ),
+    # 导演模式逐格卡片的兜底句
+    (
+        "- Panel 1 stays the pure-white marketplace hero.",
+        "- Panel 1 uses one real, category-matched backdrop with visible surface and depth and no companion props.",
+    ),
+    # 场景计划（正常由 _scene_family_plan 直接生成，这里兜底旧文案）
+    (
+        "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product "
+        "(riser block, folded linen, ceramic dish, dried stem).",
+        "- Panel 1: real category-matched backdrop with surface and depth, no added props.",
+    ),
+    (
+        "- Every panel shows at least four separate props; zero, one or two is a failure, "
+        "and no prop set repeats across panels.",
+        "- Panels 2-4 each show at least four separate props; zero, one or two is a failure, "
+        "and no prop set repeats across panels. Panel 1 has no added props.",
+    ),
+    # A 档（影棚）模板闸门：只约束 2-4 格，主图允许真实背景
+    (
+        "studio only - seamless or plinth backdrop, no room, no horizon, no furniture; product fills 55%-80%.",
+        "Panels 2-4: studio set - seamless or plinth backdrop, no room, no horizon, no furniture. "
+        "Panel 1: one real category-matched surface plus backdrop with depth, no props. Product fills 55%-80%.",
+    ),
+)
+
+# 预设改写块里的「- Panel 1 (top-left): ...」（四套模板各写了一份，措辞不同）整行替换。
+_PRESET_PANEL1_LINE_RE = re.compile(r"^- Panel 1 \(top-left\):.*$", re.MULTILINE)
+_PANEL1_SCENE_LINE = (
+    "- Panel 1 (top-left): the marketplace hero on one real, category-matched backdrop (visible surface plus "
+    "background depth) with no companion props; keep the template camera logic, the complete product and 100% "
+    "product fidelity."
+)
+
+
+def _apply_scene_main_background(text: str) -> str:
+    """把提示词里「主图纯白」的写法定点改成真实背景；white 档不会调用。"""
+
+    result = str(text or "")
+    for old, new in _SCENE_PANEL1_REWRITES:
+        result = result.replace(old, new)
+    return _PRESET_PANEL1_LINE_RE.sub(_PANEL1_SCENE_LINE, result)
+
+
+# 知道这个 SKU 的真实使用位置后，还要把「每格至少四件道具 / 2-4 格三个不同地点」
+# 一起改掉：这两条会把真实场景换成摄影棚式的摆拍堆道具（浴室地垫被摆到厨房台面、
+# 窗台就是这么来的）。只在 usage_place 有值时应用。
+_REAL_USAGE_REWRITES: tuple[tuple[str, str], ...] = (
+    (
+        "- PROP BUDGET: at least four separate props per panel, source-compatible and subordinate to the product; "
+        "never zero, one or two, and never the same prop set twice.",
+        "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with only 1-2 large simple everyday "
+        "objects that really belong there; Panels 1 and 4 have no added props. Decorative prop clusters are a "
+        "failure.",
+    ),
+    (
+        "Panels 2-4 use three DIFFERENT places (wood or textile, stone or marble, wall with real light, outdoor or "
+        "architectural); a re-used backdrop with another crop or prop is a failure.",
+        "Panels 2-3 show the SAME real place of use from two different framings; Panel 4 is a clean calm surface. "
+        "A generic tabletop, an empty studio or a room this product is never used in is a failure.",
+    ),
+    (
+        "3 Panels 2-4: three different places, at least four props each - FAIL on a repeated set, an empty table or "
+        "two crops of one room.",
+        "3 Panels 2-3: the product's real place of use from two framings; Panel 4: clean orthographic surface - "
+        "FAIL on a generic tabletop, an empty studio or an unrelated room.",
+    ),
+    (
+        "- Panels 2-4 are three different places: never two crops of one set and never the same room twice.",
+        "- Panels 2-3 are the SAME real place of use; only camera angle and shot scale change, never the room.",
+    ),
+    (
+        "- Every panel shows at least four separate props; zero, one or two is a failure, and no prop set repeats "
+        "across panels.",
+        "- Panels 2-3 use only 1-2 large simple objects that really exist in that place; Panels 1 and 4 have no "
+        "added props.",
+    ),
+    # 方舟紧凑模板：把逐格的「≥4 件道具」改成真实场景里的 1-2 件日用品
+    ("（≥4 件，不要手部）", "（1-2 件日用品）"),
+    ("（≥4 件）", "（1-2 件日用品）"),
+    ("配饰物铺足（≥4 件）", "只放 1-2 件这个场景里真实存在的大件日用品"),
+    ("配饰物 ≥4 件作陪衬与景深", "只保留 1-2 件真实日用品作陪衬"),
+    ("配饰物 ≥4 件但不侵占留白", "不放道具，保持留白干净"),
+    (
+        "道具只做配角：体积明显小于商品、低饱和、同色系",
+        "道具只做配角：只允许该真实场景里本来就有的 1-2 件日用品，体积可接近商品、不抢戏",
+    ),
+)
+
+
+def _apply_real_usage_rules(text: str) -> str:
+    """真实使用场景模式：去掉「四件道具 / 三个不同地点」这类摆拍规则。"""
+
+    result = str(text or "")
+    for old, new in _REAL_USAGE_REWRITES:
+        result = result.replace(old, new)
+    # 方舟四套模板里「≥4 件」的写法有十几种（家具软装 / 真实环境元素 / 该格配饰物…），
+    # 逐条列举容易漏，这里统一降成真实场景里会出现的 1-2 件。
+    return re.sub(r"≥\s*4\s*件", "1-2 件", result)
+
+
+# 「花哨」档还要把运行时契约里的道具预算一起改掉，否则真实场景改写后的
+# 「只放 1-2 件日用品」会把花艺/丝带/烛台这些装饰压掉，界面选花哨也看不出差别。
+_ORNATE_REWRITES: tuple[tuple[str, str], ...] = (
+    (
+        "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with only 1-2 large simple everyday "
+        "objects that really belong there; Panels 1 and 4 have no added props. Decorative prop clusters are a "
+        "failure.",
+        "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with 1-3 objects, including at least "
+        "one decorative flourish that suits an ornate styling (dried flowers, a silk ribbon, a brass tray or a "
+        "lit candle); Panels 1 and 4 have no added props; nothing may touch, cover or outshine the product.",
+    ),
+    (
+        "Panels 2-3 use only 1-2 large simple objects that really exist in that place; decorative prop clusters "
+        "are a failure.",
+        "Panels 2-3 use 1-3 objects including one clearly visible decorative flourish; decorative clusters that "
+        "cover or crowd the product are still a failure.",
+    ),
+)
+
+
+def _apply_ornate_rules(text: str) -> str:
+    """花哨档：允许并鼓励 2-3 格出现明确的装饰陈设。"""
+
+    result = str(text or "")
+    for old, new in _ORNATE_REWRITES:
+        result = result.replace(old, new)
+    return result
+
+
+def _apply_background_rules(
+    text: str,
+    *,
+    main_background: str = "scene",
+    usage_place: str = "",
+    scene_style: str = "",
+) -> str:
+    """scene 档 + 真实场景 + 场景风格的统一改写入口。"""
+
+    result = str(text or "")
+    if str(main_background or "scene").strip().lower() != "white":
+        result = _apply_scene_main_background(result)
+    if str(usage_place or "").strip():
+        result = _apply_real_usage_rules(result)
+    if str(scene_style or "").strip().lower() == "ornate":
+        result = _apply_ornate_rules(result)
+    return result
 
 # 商品自定义组合直连计费的子项 scope（对齐 auth-api billing_pricing_items.feature_key）。
 # 组合本质是图片生成：主图为单张 hero，处理阶段生成 3 张轮播 + 详情合成。
@@ -1096,35 +1318,170 @@ _TEMPLATE_PLACEMENTS = {
 }
 
 
+def _resolve_scene_style(scene_style: str, seed: int) -> str:
+    """把「智能混合」按批次 seed 落成具体的 minimal/lifestyle/ornate。
+
+    场景计划与运行时契约的改写必须用同一个结果，否则会出现「计划里说要花艺、
+    契约里还写着只要 1-2 件日用品」的自相矛盾。
+    """
+    style = _SCENE_STYLE_ALIASES.get(str(scene_style or "").strip().lower(), "smart")
+    if style == "smart":
+        style = ("minimal", "lifestyle", "ornate")[seed % 3]
+    return style
+
+
+def _scene_style_seed(task_id: int, draft_id: int) -> int:
+    return int(hashlib.sha256(f"{task_id}:{draft_id}:scene".encode("utf-8")).hexdigest()[:8], 16)
+
+
 def _scene_family_plan(
-    scene_style: str, seed: int, *, template: str = "a", allow_people: bool = False
+    scene_style: str,
+    seed: int,
+    *,
+    template: str = "a",
+    allow_people: bool = False,
+    main_background: str = "scene",
+    usage_place: str = "",
+    hero_backdrop: str = "",
 ) -> str:
     """按「模板 + 场景风格」生成本批次的地点、配饰物与主体位置。
 
     模板决定场地类型（影棚 / 生活台面 / 平铺台面 / 环境远景），场景风格只调浓淡，
     所以用户切换模板时能立刻看出这是另一种摄影，而不是同一套景换个角度。
+    ``main_background``：scene=主图也带真实背景（默认）；white=主图沿用纯白棚。
+    ``usage_place``：这个 SKU 真实的使用位置（视觉识别或品类兜底）。一旦有值，
+    2-3 格就锁死在这个真实场景里，不再套模板的通用台面/窗户/木地板。
+    ``hero_backdrop``：用户在界面上显式选中的背景底板描述。显式选择优先于
+    ``usage_place``——否则同一批里有的商品按模板出丝绒、有的被真实场景顶掉。
     """
 
     key = _SCENE_TEMPLATE_ALIASES.get(str(template or "").strip().lower(), "a")
-    style = _SCENE_STYLE_ALIASES.get(str(scene_style or "").strip().lower(), "smart")
-    if style == "smart":
-        style = ("minimal", "lifestyle", "ornate")[seed % 3]
+    style = _resolve_scene_style(scene_style, seed)
     pool = _TEMPLATE_SCENES[key]
     offset = seed % len(pool)
-    # Panel 1 固定纯白（平台主图合规），只给 2-4 格分配三个不同地点。
+    # 只给 2-4 格分配三个不同地点；主图在 scene 档不铺道具，白底档固定纯白棚。
     chosen = [pool[(offset + index) % len(pool)] for index in range(3)]
     people_rule = "" if allow_people else " No people, hands or fingers."
+    scene_main = str(main_background or "scene").strip().lower() != "white"
+    usage = str(usage_place or "").strip()
+    hero = str(hero_backdrop or "").strip()
+    # 主图背景优先级：用户选的底板 > 产品真实使用位置 > 品类匹配背景。
+    hero_source = hero or usage
+
+    if usage:
+        panel1_line = (
+            f"- Panel 1: {hero_source}, framed as the hero backdrop - surface and wall only, no added props, "
+            "no corner badge, seal or sticker anywhere in frame."
+            if scene_main
+            else "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product "
+            "(riser block, folded linen, ceramic dish, dried stem)."
+        )
+        # 场景风格必须真的改变 2-3 格的陈设：花哨要有明确的花艺/丝带/金属托盘/烛台，
+        # 极简只留一件甚至不放，否则用户切到「花哨」也看不出差别。
+        if style == "ornate":
+            place_lines = [
+                f"- Panel 2: {usage}. The product sits in its real position there, styled ORNATE: one clearly "
+                "visible decorative flourish (a small dried-flower sprig, a silk ribbon, a brass or ceramic tray, "
+                "or a lit candle) plus 1-2 everyday objects of that place, warmer and richer colour story, real "
+                "three-layer depth, no hand. Camera: 45-degree three-quarter view at eye level, product filling "
+                "55%-70% with the room still readable behind it.",
+                f"- Panel 3: the same real place, framed closer on the product and on how it is used there, with "
+                "one ornate flourish kept in frame and a richer warm palette. Camera: move in and drop the camera "
+                "20-30 degrees below eye level for a tighter in-use angle, product filling 60%-85%; a true macro "
+                "crop of one real construction detail is also acceptable.",
+                "- Panel 4: a clean calm surface for the orthographic view, no props, 12%-18% clear space. Camera: "
+                "true 90-degree orthographic from the side or directly above, zero perspective convergence.",
+            ]
+        elif style == "minimal":
+            place_lines = [
+                f"- Panel 2: {usage}. The product sits alone in its real position there - at most one simple "
+                "everyday object in frame, low-saturation palette, generous empty space, no hand. Camera: "
+                "45-degree three-quarter view at eye level, product filling 50%-65%.",
+                f"- Panel 3: the same real place, framed closer on the product; keep the frame almost bare, no "
+                "decorative props, no hand. Camera: closer and 20-30 degrees below eye level, product filling "
+                "65%-85%.",
+                "- Panel 4: a clean calm surface for the orthographic view, no props, 12%-18% clear space. Camera: "
+                "true 90-degree orthographic from the side or directly above, zero perspective convergence.",
+            ]
+        else:
+            place_lines = [
+                f"- Panel 2: {usage}. The product sits in its real position there with only 1-2 large simple "
+                "everyday objects that truly belong to that place, natural daylight and real three-layer depth. "
+                "Camera: 45-degree three-quarter view at eye level, product filling 55%-70%.",
+                f"- Panel 3: the same real place, framed closer on the product and on how it is used there; keep "
+                "only 1-2 everyday objects of that place in frame. Camera: closer and 20-30 degrees below eye "
+                "level, product filling 60%-85%, or a true macro detail crop.",
+                "- Panel 4: a clean calm surface for the orthographic view, no props, 12%-18% clear space. Camera: "
+                "true 90-degree orthographic from the side or directly above, zero perspective convergence.",
+            ]
+        if style == "ornate":
+            prop_budget_line = (
+                "- Panels 2-3 use 1-3 objects: at least one decorative flourish that suits an ornate styling "
+                "(dried flowers, a silk ribbon, a brass tray or a lit candle) plus everyday items of that place; "
+                "Panels 1 and 4 have no added props."
+            )
+        elif style == "minimal":
+            prop_budget_line = (
+                "- Panels 2-3 keep at most one simple everyday object; Panels 1 and 4 have no added props."
+            )
+        else:
+            prop_budget_line = (
+                "- Panels 2-3 use only 1-2 large simple objects that really exist in that place; decorative prop "
+                "clusters are a failure. Panels 1 and 4 have no added props."
+            )
+        place_rule_line = (
+            "- Panels 2-3 are the SAME real place of use, only camera angle, shot scale and light direction "
+            "change; never replace it with a generic tabletop or an unrelated room."
+        )
+        decor_line = (
+            "- ORNATE STYLING: every panel 2-3 must show one clearly visible decorative flourish (dried-flower "
+            "sprig, silk ribbon, brass or ceramic tray, or a lit candle) beside the product, never on it, plus a "
+            "richer warm colour story; no text, logos or badges."
+            if style == "ornate"
+            else "- No decorative stickers, kraft tags or props on the product: the real place must stay "
+            "believable."
+        )
+    else:
+        panel1_line = (
+            f"- Panel 1: {hero or 'real category-matched backdrop with surface and background depth'}, framed "
+            "as the hero backdrop - surface and wall only, no added props, no corner badge, seal or sticker "
+            "anywhere in frame."
+            if scene_main
+            else "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product "
+            "(riser block, folded linen, ceramic dish, dried stem)."
+        )
+        place_lines = [
+            f"- Panel {index + 2}: {place}. At least four props go around the product - {props} - behind or "
+            "beside it, never covering it."
+            for index, (place, props) in enumerate(chosen)
+        ]
+        prop_budget_line = (
+            "- Panels 2-4 each show at least four separate props; zero, one or two is a failure, and no prop set "
+            "repeats across panels. Panel 1 has no added props."
+            if scene_main
+            else "- Every panel shows at least four separate props; zero, one or two is a failure, and no prop set "
+            "repeats across panels."
+        )
+        place_rule_line = (
+            "- Panels 2-4 are three different places: never two crops of one set and never the same room twice."
+        )
+        decor_line = (
+            "- Decor: one small kraft tag or paper sticker per panel 2-4, one short English word (NEW, HANDMADE, "
+            "SAMPLE), never on the product, no brand or claim. Panel 1 has no text."
+        )
+
     lines = [
         "SCENE PLAN (non-overridable; outranks every prop count written above):",
-        "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product (riser block, folded linen, ceramic dish, dried stem).",
-        *(
-            f"- Panel {index + 2}: {place}. At least four props go around the product - {props} - behind or beside it, never covering it."
-            for index, (place, props) in enumerate(chosen)
-        ),
-        "- Every panel shows at least four separate props; zero, one or two is a failure, and no prop set repeats across panels.",
-        "- Panels 2-4 are three different places: never two crops of one set and never the same room twice.",
+        panel1_line,
+        *place_lines,
+        prop_budget_line,
+        place_rule_line,
+        "- CAMERA VARIETY (hard rule): Panel 1 is the ONLY straight-on 0-degree view. Panel 2 is a 45-degree "
+        "three-quarter view; Panel 3 is closer and 20-30 degrees below eye level (or a true macro detail); "
+        "Panel 4 is a true 90-degree orthographic. No two panels may share the same camera height, angle or "
+        "shot scale, and the key-light direction must change between panels.",
         "- Never copy a backdrop, surface, prop arrangement or camera position from the references - they define the product only; build every set from this plan.",
-        "- Decor: one small kraft tag or paper sticker per panel 2-4, one short English word (NEW, HANDMADE, SAMPLE), never on the product, no brand or claim. Panel 1 has no text.",
+        decor_line,
         "- Golden ratio: Panels 2-3 sit on the 38% or 62% lines, never the centre lines; only Panel 1 and Panel 4 may be centred.",
         *(f"- {placement}" for placement in _TEMPLATE_PLACEMENTS[key]),
         f"- {_SCENE_STYLE_OVERLAY[style]}",
@@ -1415,6 +1772,7 @@ class ProductProcessingService:
             max_publish_workers=4,
             media_assets=self.media_assets,
         )
+        self.custom_backgrounds = CustomBackgroundStore(assets.output_root)
         self._doubao_subject_cache: dict[str, SubjectAnalysis] = {}
         self._doubao_subject_cache_lock = threading.Lock()
         self._source_data_url_cache: dict[str, str] = {}
@@ -2093,19 +2451,33 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
         return result
 
     def _apply_batch_image_guidelines(
-        self, template: str, batch_prompt: str, *, allow_people: bool = False
+        self,
+        template: str,
+        batch_prompt: str,
+        *,
+        allow_people: bool = False,
+        main_background: str = "scene",
+        background_fragment: str = "",
     ) -> str:
         """把「本批次 AI 专项提示词」包裹进固定约束声明后拼接到图片提示词末尾。
 
         batch_prompt 为品类级内容/场景/质量建议（日常场景与配套道具方向 + 定点爆破规避
         异形），与用户附加同理，可以改变非主图格子的背景、台面、场景、光影与道具，但
         绝不能覆盖四宫格结构、分界、面板角色、产品保真、文字与安全等固定运行时契约。
-        主图格（平台主图 / 正面白底英雄格）豁免：始终纯白无缝、不带道具与场景。
+        ``main_background``：scene=主图格也用场景背景（默认）；white=主图格保持纯白。
         ``allow_people``：用户选了「真实使用」模板时才放开手部/局部人物（不露正脸），
         其余模板一律保持无人。
         """
+        mode = str(main_background or "scene").strip().lower()
+        if mode not in MAIN_BACKGROUND_MODES:
+            mode = "scene"
+        override = MAIN_PANEL_SCENE_OVERRIDE
+        fragment = str(background_fragment or "").strip()
+        if fragment:
+            override = f"{override}\n- Panel 1 backdrop direction: {fragment}."
+        base = f"{template}\n\n{override}" if mode == "scene" else template
         if not batch_prompt or not str(batch_prompt).strip():
-            return template
+            return base
         prompt = str(batch_prompt).strip()
         people_rule = (
             "Hands or a partial person are allowed ONLY where the panel plan below explicitly asks "
@@ -2120,12 +2492,23 @@ USER-REQUESTED PANEL PLANNING ADDITIONS (user extra requirements only; they MUST
             if allow_people
             else "no hands, fingers, arms or people, no faces"
         )
-        return f"""{template}
+        scene_rule = (
+            "- You MAY change the background, surface, everyday scene, lighting and companion props of "
+            "EVERY panel, including the MAIN image panel (the first carousel image): give the main panel "
+            "a real, category-matched backdrop instead of a bare seamless white studio, while keeping "
+            "Panel 1 free of added props."
+            if mode == "scene"
+            else "- You MAY change the background, surface, everyday scene, lighting and companion props of "
+            "the NON-MAIN panels to follow these guidelines. The MAIN image panel (the front-view "
+            "pure-white hero panel / first carousel image) is EXEMPT and stays pure white seamless with "
+            "no props, surface or scene."
+        )
+        return f"""{base}
 
 BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MUST NOT override the fixed runtime contracts above):
 - The four-grid/single-image structure, exact dividers, split logic, panel roles, product fidelity, typography and safety rules defined above are FIXED and always take precedence.
 - Follow these guidelines for depiction quality inside the shown panels (proportions, printed text/logo legibility, material realism, product identity consistency); never for layout structure or generated text. {people_rule}
-- You MAY change the background, surface, everyday scene, lighting and companion props of the NON-MAIN panels to follow these guidelines. The marketplace MAIN image panel (the front-view pure-white hero panel / first carousel image) is EXEMPT and stays pure white seamless with no props, surface or scene.
+- {scene_rule}
 - PROP AND SCENE SAFETY (always wins over the guidelines below): props stay strictly subordinate - visibly smaller than the product, low-saturation, same colour family, never covering, cropping, pressing on or outshining the product; no other brands, trademarks, packaging text, price tags or slogans; {prop_people_rule}, no pets, no unrelated clutter; never rulers, pens, cutlery, brushes or other thin detailed props; keep clean breathing space and a visible contact shadow around the product; nothing may cross or touch the panel dividers; the product stays 100% identical to the reference image.
 - {prompt}"""
 
@@ -9423,6 +9806,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     "batch_image_prompt": batch_image_prompt,
                     # 导演模式逐格卡片的高优先级改写（放在运行时契约之后生效）。
                     "panel_plan_override": panel_plan_override,
+                    # 主图背景档位：默认 scene，主图也走场景背景而不是死白。
+                    "main_background": str(settings.get("main_background") or "scene"),
+                    # 用户手选的系统底板（空=按品类自动选片段）
+                    "background_template": str(settings.get("background_template") or ""),
                 }
                 if premium_mode:
                     # 预设决定四格角色（例如「真实使用」的生活格必须有人手），
@@ -9785,7 +10172,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         batch_image_prompt=batch_image_prompt,
                         image_preset=str(settings.get("image_preset") or "auto"),
                         panel_plan_override=panel_plan_override,
-                        scene_style=str(settings.get("scene_style") or "smart"),
+                        main_background=str(settings.get("main_background") or "scene"),
+                        background_template=str(settings.get("background_template") or ""),
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -9921,6 +10309,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     image_preset=str(settings.get("image_preset") or "auto"),
                     panel_plan_override=panel_plan_override,
                     scene_style=str(settings.get("scene_style") or "smart"),
+                    main_background=str(settings.get("main_background") or "scene"),
+                    background_template=str(settings.get("background_template") or ""),
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -10623,6 +11013,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         image_preset: str = "",
         panel_plan_override: str = "",
         scene_style: str = "smart",
+        main_background: str = "scene",
+        background_template: str = "",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -10664,10 +11056,22 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     _template_suffix, ARK_GRID_IMAGE_PROMPT
                 )
             allows_people = str(image_preset or "").strip().lower() == "lifestyle_use"
+            # 用户手选的系统底板（bg_*）：主图必须按它出，用户上传底板（user:）走后置合成。
+            system_backdrop_selected = bool(str(background_template or "").strip()) and not str(
+                background_template
+            ).strip().lower().startswith("user:")
+            backdrop_fragment = select_backdrop_fragment(
+                category,
+                optimized_title,
+                seed=f"{task_id}:{draft_id}",
+                template_id=background_template,
+            )
             template = self._apply_batch_image_guidelines(
                 self._apply_user_image_additions(base_template, prompt_key),
                 batch_image_prompt,
                 allow_people=allows_people,
+                main_background=main_background,
+                background_fragment=backdrop_fragment,
             )
             contracted = apply_language_contract_to_prompt(template, "grid_image", target_language, target_site)
             context = listing_prompt_context(raw, title=optimized_title, category=category)
@@ -10680,8 +11084,40 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             reference = select_image_reference(raw, title=optimized_title, category=category)
             prompt = append_content_reference(prompt, reference, kind="image")
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
+            scene_main = str(main_background or "scene").strip().lower() != "white"
+            # 这个 SKU 真实的使用位置：优先视觉识别，其次品类关键词兜底。
+            usage_place = resolve_usage_place(
+                str((vision_identity or {}).get("usage_scene", {}).get("place") or "")
+                if isinstance(vision_identity, dict)
+                else "",
+                category_text=category,
+                title=optimized_title,
+            )
+            # 场景风格先落成具体档位：场景计划与运行时契约共用同一个结果。
+            resolved_scene_style = _resolve_scene_style(
+                scene_style, _scene_style_seed(task_id, draft_id)
+            )
+            if scene_main or usage_place:
+                # 模板逐格矩阵里写死的「主图纯白 / 四件道具 / 三个不同地点」在这里先改掉：
+                # 后续单格重绘、两格重绘都从 prompt 派生，改一次就都生效。
+                prompt = _apply_background_rules(
+                    prompt,
+                    main_background=main_background,
+                    usage_place=usage_place,
+                    scene_style=resolved_scene_style,
+                )
 
             panel_roles = _grid_panel_roles(image_preset)
+            if scene_main or usage_place:
+                panel_roles = tuple(
+                    _apply_background_rules(
+                        role,
+                        main_background=main_background,
+                        usage_place=usage_place,
+                        scene_style=resolved_scene_style,
+                    )
+                    for role in panel_roles
+                )
             # 小白模板的逐格改写必须排在运行时契约之后：契约是“不可覆盖”的硬规则，
             # 只有放在它后面并显式声明优先级，才能压住模板里写死的第 2/3 格规划。
             preset_panel_plan = _grid_preset_panel_plan(image_preset)
@@ -10700,6 +11136,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     self._apply_user_image_additions(DEFAULT_PROMPTS.get(standalone_key, ""), standalone_key),
                     batch_image_prompt,
                     allow_people=allows_people,
+                    main_background=main_background,
+                    background_fragment=backdrop_fragment,
                 )
                 standalone_contracted = apply_language_contract_to_prompt(
                     standalone_template,
@@ -10714,6 +11152,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 )
                 if allows_people:
                     standalone_prompt = _relax_hands_free(standalone_prompt)
+                if scene_main or usage_place:
+                    standalone_prompt = _apply_background_rules(
+                        standalone_prompt,
+                        main_background=main_background,
+                        usage_place=usage_place,
+                        scene_style=resolved_scene_style,
+                    )
 
             def single_prompt(role: str) -> str:
                 return append_subject_analysis(
@@ -10763,23 +11208,48 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # three usable quadrants.
                 # 场景计划按 (task, draft) 稳定取样：同一链接重跑得到同一套背景族，
                 # 避免「重试后四格全换一遍」；不同链接之间保持档位/背景轮换。
-                scene_seed = int(
-                    hashlib.sha256(f"{task_id}:{draft_id}:scene".encode("utf-8")).hexdigest()[:8], 16
-                )
+                scene_seed = _scene_style_seed(task_id, draft_id)
                 scene_block = _scene_family_plan(
-                    scene_style,
+                    resolved_scene_style,
                     scene_seed,
                     template=_template_suffix,
                     allow_people=allows_people,
+                    main_background=main_background,
+                    usage_place=usage_place,
+                    # 用户在界面上显式选过的系统底板优先于「真实使用位置」推断，
+                    # 否则同一批里会出现有的主图是丝绒、有的是普通卧室墙。
+                    hero_backdrop=backdrop_fragment if system_backdrop_selected else "",
                 )
-                grid_prompt = append_subject_analysis(
-                    f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
-                    vision_identity,
-                ) + "\n\n" + GRID_FINAL_GATE.format(
+                final_gate = GRID_FINAL_GATE.format(
                     template_check=GRID_TEMPLATE_GATES.get(
                         _template_suffix, GRID_TEMPLATE_GATES[""]
                     )
                 )
+                if system_backdrop_selected and scene_main:
+                    # 闸门是最末尾、权重最高的一层：主图要按用户选的底板，这里也必须点名。
+                    selected_gate = (
+                        f"2 Panel 1: the selected backdrop ({backdrop_fragment}), no companion props, "
+                        "74%-82%, no text, no badge or sticker."
+                    )
+                    for candidate in (
+                        "2 Panel 1: pure white seamless, 78%-85%, no text, no room.",
+                        "2 Panel 1: one real category-matched backdrop with visible surface and depth, "
+                        "no companion props, 74%-82%, no text.",
+                    ):
+                        final_gate = final_gate.replace(candidate, selected_gate)
+                grid_prompt = append_subject_analysis(
+                    f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
+                    vision_identity,
+                ) + "\n\n" + final_gate
+                if scene_main or usage_place:
+                    # 运行时契约 / 场景计划 / 预设块 / 收尾闸门在 prompt 之外单独拼装，
+                    # 这里对整段再改一次，保证「主图纯白 / 四件道具 / 三个地点」不残留。
+                    grid_prompt = _apply_background_rules(
+                        grid_prompt,
+                        main_background=main_background,
+                        usage_place=usage_place,
+                        scene_style=resolved_scene_style,
+                    )
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.
                 media = generate_one(
@@ -11077,6 +11547,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         carousel: list[str] = []
         carousel_media: list[Any] = []
         summary_path = ""
+        parts = self._apply_user_main_background(parts, background_template, workspace_id, ai_notes)
         persist_started = time.perf_counter()
         published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
         grid_timings_ms["persist_ms"] = max(
@@ -11098,6 +11569,55 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             stage_timings_ms=grid_timings_ms,
             provider_original_image_paths=provider_original_paths,
         )
+
+    def _apply_user_main_background(
+        self,
+        parts: list[Any],
+        background_template: str,
+        workspace_id: str,
+        ai_notes: list[str] | None,
+    ) -> list[Any]:
+        """用户上传背景：把第 1 格的商品抠出来合成到那张底板上。
+
+        生图提示词只描述背景方向，真正的像素级背景靠这一步落地（``user:<id>``）。
+        合成失败时保留 AI 原图并把原因写进 ai_notes，绝不静默降级成别的背景。
+        """
+        background_id = user_background_id(background_template)
+        if not background_id or not parts:
+            return parts
+        from .domain.background_composite import compose_on_background
+
+        index = next(
+            (
+                position
+                for position, part in enumerate(parts)
+                if str(getattr(part, "stage", "")) in {"grid_image_1", "premium_image_1"}
+            ),
+            None,
+        )
+        if index is None:
+            return parts
+        try:
+            path = self.custom_backgrounds.file_path(background_id, workspace_id=workspace_id)
+        except FileNotFoundError:
+            if ai_notes is not None:
+                ai_notes.append(f"main_background:user_missing:{background_id}")
+            return parts
+        composed = compose_on_background(bytes(getattr(parts[index], "content", b"")), path)
+        if not composed:
+            if ai_notes is not None:
+                ai_notes.append(f"main_background:composite_failed:{background_id}")
+            return parts
+        updated = list(parts)
+        updated[index] = replace(
+            parts[index],
+            content=composed,
+            suffix=".jpg",
+            content_type="image/jpeg",
+        )
+        if ai_notes is not None:
+            ai_notes.append(f"main_background:user:{background_id}")
+        return updated
 
     def _persist_provider_grid_originals(
         self,
@@ -11146,6 +11666,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         batch_image_prompt: str = "",
         image_preset: str = "",
         panel_plan_override: str = "",
+        main_background: str = "scene",
+        background_template: str = "",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
@@ -11164,10 +11686,21 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except Exception:
             pass
         allows_people = str(image_preset or "").strip().lower() == "lifestyle_use"
+        system_backdrop_selected = bool(str(background_template or "").strip()) and not str(
+            background_template
+        ).strip().lower().startswith("user:")
+        backdrop_fragment = select_backdrop_fragment(
+            category,
+            optimized_title,
+            seed=f"{task_id}:{draft_id}",
+            template_id=background_template,
+        )
         template = self._apply_batch_image_guidelines(
             self._effective_prompt("premium_image"),
             batch_image_prompt,
             allow_people=allows_people,
+            main_background=main_background,
+            background_fragment=backdrop_fragment,
         )
         contracted = apply_language_contract_to_prompt(template, "premium_image", target_language, target_site)
         context = listing_prompt_context(raw, title=optimized_title, category=category)
@@ -11192,6 +11725,35 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             base_prompt = f"{base_prompt.rstrip()}\n\n{panel_plan_override}"
         base_prompt = append_content_reference(base_prompt, reference, kind="image")
         base_prompt = append_subject_analysis(base_prompt, vision_identity)
+        usage_place = resolve_usage_place(
+            str((vision_identity or {}).get("usage_scene", {}).get("place") or "")
+            if isinstance(vision_identity, dict)
+            else "",
+            category_text=category,
+            title=optimized_title,
+        )
+        if usage_place:
+            # 真实使用位置是硬约束：否则四格会退回通用木台面/窗台/厨房台面。
+            # 但用户显式选了背景底板时，主图必须按底板走，不再被真实场景顶掉。
+            hero_rule = (
+                f"Panel 1 must use the selected backdrop ({backdrop_fragment}); the other panels sit in "
+                f"the product's real place of use: {usage_place}."
+                if system_backdrop_selected
+                else f"Every non-orthographic panel shows the product in or immediately beside that place, "
+                "with only 1-2 large everyday objects that really belong there; never substitute a generic "
+                "tabletop, a kitchen counter, a windowsill or an empty studio."
+            )
+            base_prompt = (
+                f"{base_prompt.rstrip()}\n\nREAL PLACE OF USE (this exact product): {usage_place}. "
+                f"{hero_rule}"
+            )
+        if str(main_background or "scene").strip().lower() != "white" or usage_place:
+            # 精品链路同样是「主图白底 / 四件道具 / 三个不同地点」写死在模板与逐格角色里。
+            base_prompt = _apply_background_rules(
+                base_prompt,
+                main_background=main_background,
+                usage_place=usage_place,
+            )
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
         attempt_count = 0
         provider_status_class = "success"
@@ -11350,6 +11912,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 provider_status_class="failed",
                 stage_timings_ms=timings_ms,
             )
+        parts = self._apply_user_main_background(parts, background_template, workspace_id, ai_notes)
         persist_started = time.perf_counter()
         published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
         timings_ms["persist_ms"] = max(0, round((time.perf_counter() - persist_started) * 1000))

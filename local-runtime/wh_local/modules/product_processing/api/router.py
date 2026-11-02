@@ -45,6 +45,7 @@ from ..service import (
     ProductProcessingValidationError,
 )
 from .schemas import (
+    BackgroundUploadRequest,
     BatchImagePromptRequest,
     ComboProcessRequest,
     ComboSourceAddRequest,
@@ -1442,6 +1443,65 @@ def create_product_processing_router(
             older_than_hours=older_than_hours,
             categories=selected,
         )
+
+    # ---- 自定义背景底板：用户上传实拍背景，主图出图后按像素合成 ----
+    @router.get("/backgrounds")
+    def list_backgrounds(
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        items = service.custom_backgrounds.list(workspace_id=_workspace(workspace_id))
+        return {"items": items}
+
+    @router.post("/backgrounds")
+    def upload_background(
+        body: BackgroundUploadRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        # JSON base64 上传：避免为背景图单独引入 multipart 解析路径。
+        return _call(
+            service.custom_backgrounds.save,
+            body.data,
+            name=body.name,
+            workspace_id=_workspace(workspace_id),
+        )
+
+    @router.get("/backgrounds/{background_id}/file", response_model=None)
+    def background_file(
+        background_id: str,
+        variant: str = Query(default="main"),
+        workspace_id: str | None = Header(default=None, alias="X-Workspace-ID"),
+        workspace: str = Query(default="", alias="workspace"),
+    ) -> FileResponse:
+        # <img> 带不了自定义请求头，所以同时接受 ?workspace= 兜底（与尺寸画布预览一致）。
+        try:
+            path = service.custom_backgrounds.file_path(
+                background_id,
+                workspace_id=_workspace(workspace_id or workspace or "local"),
+                thumb=str(variant or "").strip().lower() == "thumb",
+            )
+        except FileNotFoundError:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "背景图不存在") from None
+        return FileResponse(
+            path,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.delete("/backgrounds/{background_id}")
+    def delete_background(
+        background_id: str,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            service.custom_backgrounds.delete(
+                background_id, workspace_id=_workspace(workspace_id)
+            )
+        except FileNotFoundError:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "背景图不存在") from None
+        return {"id": background_id, "status": "deleted"}
 
     return router
 
