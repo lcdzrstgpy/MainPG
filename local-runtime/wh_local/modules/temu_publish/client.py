@@ -260,14 +260,25 @@ class TemuProductClient:
         self._cache_drop("parent-specs")
 
     def invalidate_categories(self) -> int:
-        """清掉类目树与类目匹配的读缓存，返回清掉的条数。
+        """清掉类目树、类目匹配、类目属性的读缓存，返回清掉的条数。
 
         用途：Temu 后台调整/下架类目后，缓存最长要 1 小时才过期。给用户一个
-        手动刷新入口，不用等 TTL。只清 ``cats:`` / ``cat-match:`` 前缀，
-        不动属性、运费模板这些无关缓存。
+        手动刷新入口，不用等 TTL。
+
+        **包含 ``attrs:``**：属性表是按 catId 定义的，Temu 给某个类目加/改必填
+        属性时，只清类目树的话用户点完刷新拿到的还是旧属性表（连必填判断一起
+        是旧的），得等 1 小时或重启才有变化。类目和它的属性是同一条链路，
+        一起失效才符合「我点了刷新」的预期。
+
+        特意不碰 ``freight:`` / ``parent-specs`` / ``warehouse`` 这些：它们跟
+        类目改动无关，一起清等于每次刷新都白打几轮网关。
         """
         with self._cache_lock:
-            keys = [key for key in self._cache if key.startswith(("cats:", "cat-match:"))]
+            keys = [
+                key
+                for key in self._cache
+                if key.startswith(("cats:", "cat-match:", "attrs:"))
+            ]
             for key in keys:
                 self._cache.pop(key, None)
         return len(keys)

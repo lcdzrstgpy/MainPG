@@ -2442,25 +2442,61 @@ def test_category_cache_ttl_stays_short_enough_to_see_temu_category_changes() ->
     )
 
 
-def test_invalidate_categories_drops_only_category_cache() -> None:
-    """手动刷新类目树：只清 cats:/cat-match:，别把属性、运费模板的缓存一起清掉。"""
+def test_invalidate_categories_also_drops_attribute_cache_but_keeps_logistics() -> None:
+    """手动刷新类目树：类目 + 类目属性一起清，但别碰运费模板。
 
-    payload = {
+    属性表是按 catId 定义的，Temu 给某个类目加/改必填属性时，只清类目树的话
+    用户点完刷新拿到的还是旧属性表（连必填判断一起是旧的），得等 1 小时或重启。
+    运费模板跟类目改动无关，一起清等于每次刷新都白打几轮网关。
+    """
+
+    cats = {
         "success": True,
         "errorCode": "1000000",
         "result": {"categoryDTOList": [{"catId": 1}]},
     }
-    client, session = _client([FakeResponse(payload), FakeResponse(payload)])
+    attrs = {
+        "success": True,
+        "errorCode": "1000000",
+        "result": {"properties": [{"pid": 11, "required": True}]},
+    }
+    freight = {
+        "success": True,
+        "errorCode": "1000000",
+        "result": {"freightTemplateDTOList": []},
+    }
+    # 前 3 个响应给首次取数，第 4/5 个给清缓存后的重取（运费模板不该重取）
+    client, session = _client(
+        [
+            FakeResponse(cats),
+            FakeResponse(attrs),
+            FakeResponse(freight),
+            FakeResponse(cats),
+            FakeResponse(attrs),
+        ]
+    )
 
     client.categories(0)
+    client.attributes(9)
+    client.freight_templates([100])
+    assert len(session.calls) == 3, "首次三个接口都该打网关"
+
     client.categories(0)
-    assert len(session.calls) == 1, "第二次应命中缓存"
+    client.attributes(9)
+    client.freight_templates([100])
+    assert len(session.calls) == 3, "第二次全命中缓存"
 
     dropped = client.invalidate_categories()
-    client.categories(0)
+    assert dropped == 2, "cats: + attrs: 各一条"
 
-    assert dropped == 1
-    assert len(session.calls) == 2, "清缓存后必须重新打网关，否则用户点了刷新还看不到新类目"
+    client.categories(0)
+    client.attributes(9)
+    client.freight_templates([100])
+
+    assert len(session.calls) == 5, "类目和属性必须重取；运费模板仍应命中缓存"
+    # 第 3 次之后没有第 6 次调用 = 运费模板确实还在缓存里（重取的话会变 6）
+    assert session.calls[-2]["json"]["type"] == "bg.glo.goods.cats.get"
+    assert session.calls[-1]["json"]["type"] == "bg.glo.goods.attrs.get"
 
 
 class _CategoryCacheClient:
@@ -2468,32 +2504,47 @@ class _CategoryCacheClient:
 
     def __init__(self) -> None:
         self.category_calls = 0
+        self.attribute_calls = 0
         self.invalidated = 0
 
     def categories(self, parent_cat_id: int = 0) -> dict[str, Any]:  # noqa: ARG002
         self.category_calls += 1
         return {"categoryDTOList": []}
 
+    def attributes(self, cat_id: int) -> dict[str, Any]:  # noqa: ARG002
+        self.attribute_calls += 1
+        return {"properties": []}
+
     def invalidate_categories(self) -> int:
         self.invalidated += 1
         return 1
 
 
-def test_refresh_categories_clears_service_and_client_layers(tmp_path: Path) -> None:
-    """service 外面还套了一层 180 秒缓存：刷新入口必须两层都清。"""
+def test_refresh_categories_clears_attribute_cache_in_both_layers(tmp_path: Path) -> None:
+    """service 外面还套了一层 180 秒缓存：类目和属性都必须两层一起清。
+
+    只清 client 层时，service 缓存的 ``attrs:{catId}`` 还活着 —— 用户点完
+    「刷新类目树」，前端重拉属性拿到的仍是旧表。
+    """
 
     fake = _CategoryCacheClient()
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=fake)
 
     service.categories(0)
+    service.attributes(9)
     service.categories(0)
-    assert fake.category_calls == 1, "service 层缓存应命中"
+    service.attributes(9)
+    assert fake.category_calls == 1, "service 层类目缓存应命中"
+    assert fake.attribute_calls == 1, "service 层属性缓存应命中"
 
     result = service.refresh_categories()
 
     assert result["ok"] is True
-    assert result["dropped"] == 2, "service 1 条 + client 1 条"
+    # service 2 条（categories:0 + attrs:9）+ 假客户端报的 1 条
+    assert result["dropped"] == 3
     assert fake.invalidated == 1
 
     service.categories(0)
+    service.attributes(9)
     assert fake.category_calls == 2, "刷新后必须真的重新取类目"
+    assert fake.attribute_calls == 2, "刷新后必须真的重新取属性，否则必填判断还是旧的"

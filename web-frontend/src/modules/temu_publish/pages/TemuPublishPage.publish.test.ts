@@ -1149,6 +1149,9 @@ test("类目：刷新类目树入口 + 换类目二次确认", () => {
   assert.match(refresh, /await temuPublishApi\.refreshCategories\(\);/);
   assert.match(refresh, /await loadLevel\(/);
   assert.match(refresh, /setMatchSeq\(\(value\) => value \+ 1\);/);
+  // 刷新接口会连属性缓存一起清，前端必须真的重拉 —— 只清不拉的话页面还是旧属性表
+  assert.match(refresh, /const attrs = await temuPublishApi\.attributes\(currentLeaf\.catId\);/);
+  assert.match(refresh, /setAttributes\(attrs\);/);
 
   // ② 换类目确认：只在「已填属性 + 换成别的叶子」时问
   assert.match(page, /const confirmCategorySwitch = \(nextLeaf\?: TemuCategory\): boolean =>/);

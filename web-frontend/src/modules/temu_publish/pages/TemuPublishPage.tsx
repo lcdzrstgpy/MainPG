@@ -2659,12 +2659,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-link"
                   onClick={() => void refreshCategoryTree()}
                   disabled={busy !== ""}
-                  title="Temu 后台改过类目（新开/下架）后点这里，不用等缓存过期"
+                  title="Temu 后台改过类目或该类目的必填属性后点这里，不用等缓存过期"
                 >
                   刷新类目树
                 </button>
                 <em className="temu-muted">
-                  类目缓存 1 小时；改完类目看不到新的就点这个
+                  类目和属性缓存 1 小时；改完看不到新的就点这个
                 </em>
               </div>
               {leaf?.isLeaf && attributes && saleValueIndex.size === 0 && (
