@@ -278,6 +278,73 @@ textarea.temu-input {
   font-size: 13px;
 }
 
+/* 换类目后行里残留的非法规格值：只提示，不动用户填的价格/重量 */
+.temu-spec-mismatch {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #edc4c1;
+  border-radius: var(--radius-md, 10px);
+  background: #fff4f3;
+  color: #a84c48;
+  font-size: 12.5px;
+}
+
+.temu-spec-mismatch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.temu-spec-mismatch-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.temu-spec-mismatch p {
+  margin: 0;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.temu-spec-mismatch ul {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 132px;
+  overflow: auto;
+}
+
+.temu-link-button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 手动刷新类目树：Temu 后台改完类目后不用等 1 小时缓存 */
+.temu-cat-refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.temu-cat-refresh .temu-link {
+  flex: none;
+}
+
+.temu-cat-refresh em {
+  font-style: normal;
+}
+
 .temu-two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -924,6 +991,10 @@ textarea.temu-input {
 }
 .temu-edit-dialog {
   width: min(640px, 94vw);
+  /* 硬上限：内容里有不折行的长标题时，grid/flex 子项的 min-width:auto 会顶宽，
+     光靠 width 兜不住（曾把批量发布弹窗顶出视口，右侧内容被切）。 */
+  min-width: 0;
+  max-width: calc(100vw - 48px);
   max-height: 88vh;
   display: grid;
   gap: 14px;
@@ -932,6 +1003,13 @@ textarea.temu-input {
   background: #fff;
   box-shadow: 0 28px 70px rgba(4, 18, 30, 0.42);
   overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* 弹窗里的每一块都不许被内容顶宽：min-width:auto 默认按 min-content 算，
+   中间任何一层漏掉，长标题就会从弹窗边框里溢出去（表现为文字被切一半）。 */
+.temu-edit-dialog > * {
+  min-width: 0;
 }
 .temu-edit-head {
   display: flex;
@@ -2777,6 +2855,9 @@ textarea.temu-input {
   flex-direction: column;
   gap: 12px;
   padding: 4px 2px 0;
+  /* 中间这层也得能收缩：否则里面 nowrap 的长标题会把它撑宽，
+     弹窗本身虽然被 max-width 卡住了，内容还是会溢出到边框外被切。 */
+  min-width: 0;
 }
 
 .temu-batch-list {
@@ -2789,15 +2870,21 @@ textarea.temu-input {
   overflow: auto;
   font-size: 12px;
   line-height: 1.8;
+  min-width: 0;
 }
 
 .temu-batch-list li {
   display: flex;
   gap: 8px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .temu-batch-list li span {
+  /* flex 子项默认 min-width:auto（= 内容宽度），标题 white-space:nowrap 时
+     整行撑到最长标题那么宽，把弹窗顶出视口（截图里右侧被切掉就是这个原因）。
+     必须显式 min-width:0，ellipsis 才真正生效。 */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2818,6 +2905,13 @@ textarea.temu-input {
 .temu-batch-dialog .temu-field > span > em {
   font-style: normal;
   font-weight: 400;
+}
+
+/* 原生 select 的固有宽度按最长 option 算，模板名长（「名字（一级 > 二级 > 三级）」）
+   时同样会把弹窗顶宽；这里允许它收缩到容器宽度。 */
+.temu-batch-dialog .temu-input {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ---------- 发布后核对：店铺里的商品 ---------- */
@@ -3014,6 +3108,26 @@ textarea.temu-input {
   text-align: left;
 }
 
+/* 「字段齐 · 属性待填」并排两个小标：草稿数据齐了，但属性只能在发布页填 */
+.temu-ready-stack {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.temu-ready.is-pending {
+  color: #4a6379;
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.05));
+}
+
+/* 属性是按类目「估」的：蓝标提示，跟「填好了」区分开 */
+.temu-ready.is-estimated {
+  color: #1f5b96;
+  background: #e8f2fc;
+}
+
 /* 翻页请求进行中：保留上一页内容并压暗，比闪成空白稳 */
 .temu-draft-table-wrap.is-loading {
   opacity: 0.45;
@@ -3023,6 +3137,10 @@ textarea.temu-input {
 /* 草稿自带的分类（POD 模板自由文本 / AI 采集路径）：中性色，别当错误 */
 .temu-draft-table .col-cat small.is-draft {
   color: #6b8296;
+}
+/* 按标题自动匹配出来的 Temu 类目：是「有」但不是人工确认过，用橙色提醒看一眼 */
+.temu-draft-table .col-cat small.is-auto {
+  color: #a56a12;
 }
 
 /* ---------- 发布检查：缺项标红（只在点过发布被拦之后生效） ---------- */
@@ -3382,4 +3500,141 @@ textarea.temu-input {
 .is-console .temu-console-actions,
 .temu-publish-actions {
   gap: 8px;
+}
+
+/* ---------- 批量发布：现场配置（不用产品模板） ---------- */
+
+.temu-batch-manual {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  min-width: 0;
+}
+
+.temu-batch-manual-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.temu-batch-manual-head strong {
+  font-size: 0.82rem;
+  color: var(--theme-text-primary, #20364d);
+}
+
+.temu-batch-manual-head em,
+.temu-batch-manual em {
+  font-style: normal;
+}
+
+.temu-batch-search {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-batch-search .temu-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.temu-batch-paths {
+  margin: 0;
+  padding: 6px 8px;
+  list-style: none;
+  max-height: 132px;
+  overflow: auto;
+  border-radius: var(--radius-sm, 6px);
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.temu-batch-paths button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-batch-paths button:hover {
+  text-decoration: underline;
+}
+
+.temu-batch-picked {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--theme-text-primary, #20364d);
+  overflow-wrap: anywhere;
+}
+
+.temu-batch-attrs {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 现场配置里的属性表单撑满，别跟弹窗网格抢宽度 */
+.temu-batch-attrs .temu-attr-grid,
+.temu-batch-attrs .temu-attr-children {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
+.temu-batch-manual-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ---------- 产品属性自动填提示条 ---------- */
+
+.temu-autofill-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  color: var(--theme-text-secondary, #4a6379);
+  font-size: 12px;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+.temu-autofill-bar strong {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-autofill-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 属性值是按类目「估」的：小橙标，优先核对这几项 */
+.temu-attr-guessed {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #fff3e0;
+  color: #a35a00;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 800;
+  vertical-align: middle;
 }

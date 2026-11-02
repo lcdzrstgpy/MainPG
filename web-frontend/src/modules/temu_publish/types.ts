@@ -336,6 +336,23 @@ export type TemuPublishPrefill = {
   draftId?: string;
   /** 这条草稿上次选过的 Temu 类目路径，带入时直接选中，不用重选 */
   categoryPath?: TemuCategory[];
+  /**
+   * 入草稿库时按类目估好的产品属性（pid → vid/text）。
+   *
+   * 是**估**出来的（没有依据时取第一个可用选项），不是人填的：
+   * 发布页会把它们铺上，同时提示「产品属性（自动估）」要核对。
+   */
+  attrPicks?: Record<number, { vid: number; text: string }>;
+  /**
+   * attrPicks 属于哪个叶子类目。类目对不上就不能铺 —— 不同类目的属性 pid
+   * 完全不同，硬铺等于给 Temu 塞一堆不存在的属性。
+   */
+  attrPicksCatId?: number;
+  /**
+   * attrPicks 里哪些 pid 是「猜的」（没有任何依据、取的是第一个可用选项）。
+   * 发布页会在这些属性旁边标出来，让人先核对这几项。
+   */
+  attrGuessedPids?: number[];
 };
 
 export type TemuImageUploadResult = {

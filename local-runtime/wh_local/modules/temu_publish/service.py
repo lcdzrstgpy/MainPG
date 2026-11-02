@@ -626,6 +626,25 @@ class TemuPublishService:
             f"categories:{parent_cat_id}", lambda: self.client().categories(parent_cat_id)
         )
 
+    def refresh_categories(self) -> dict[str, Any]:
+        """手动刷新类目树：清掉 service 与 client 两层的类目 + 属性缓存。
+
+        Temu 后台改完类目（新开/下架类目、给类目加改必填属性）后，读缓存最长要
+        1 小时才过期；这个入口让用户立刻拿到最新数据，不用干等，也不用重启程序。
+
+        service 外面那层 180 秒缓存也要一起清：属性 key 是 ``attrs:{catId}``，
+        只清 client 层的话，用户点完刷新还是拿到 service 缓存的旧属性表。
+        """
+        dropped = [
+            key
+            for key in list(self._read_cache)
+            if key.startswith(("categories:", "attrs:"))
+        ]
+        for key in dropped:
+            self._read_cache.pop(key, None)
+        client_dropped = self.client().invalidate_categories()
+        return {"ok": True, "dropped": len(dropped) + client_dropped}
+
     def match_category(self, search_text: str, site_id: int = 100) -> dict[str, Any]:
         return self.client().match_category(search_text, site_id)
 

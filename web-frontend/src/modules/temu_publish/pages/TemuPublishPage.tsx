@@ -10,9 +10,30 @@ import {
   withFreshRowKeys,
 } from "../components/PublishSkuPanel";
 import type { VariantRow } from "../components/PublishSkuPanel";
+import { TemuPropertyForm } from "../components/TemuPropertyForm";
+import {
+  autoFillAttributePicks,
+  autoFillSourceTexts,
+  describeAutoFill,
+  type AutoFillHit,
+} from "../data/attrAutofill";
+import {
+  missingRequiredNames,
+  visibleProperties as visibleAttributeProperties,
+  type AttrPick,
+} from "../data/attributeModel";
 import { TemuImageStrip, TemuThumb } from "../components/TemuImageStrip";
 import { localStore, parsePublishError } from "../data/localStore";
+import {
+  ATTR_PICKS_KEY,
+  readAttrPicksHistory,
+  readCurrentAttrPicks,
+  saveAttrPicksHistory,
+  saveCurrentAttrPicks,
+  storageScope,
+} from "../data/attrPicksStore";
 import { categorySearchTexts, dedupeCategoryPaths } from "../utils/categoryMatch";
+import { categoryName, categoryPathFromDto } from "../utils/categoryPath";
 import { matchPresetValue } from "../utils/specMatch";
 import { centsToYuanText, formatYuan, yuanToCents } from "../utils/price";
 import type { ProductTemplate, VariantTemplate } from "../data/localStore";
@@ -50,7 +71,14 @@ const SITE_ID = 100;
  * 需要的可以自己改大。
  */
 const DEFAULT_SHIPMENT_DAYS = "7";
-const EMPTY_ATTR = { vid: 0, text: "" };
+
+/** 换类目后变种行里不合法的颜色/尺码值（只提示，不自动改）。 */
+type SpecMismatch = {
+  rowKey: string;
+  rowNo: number;
+  field: "颜色" | "尺码";
+  value: string;
+};
 
 /**
  * 类目匹配带重试。
@@ -96,7 +124,6 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-type AttrPick = { vid: number; text: string };
 type ImageSlot = "carousel" | "outer" | "detail";
 
 const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hint: string }> = [
@@ -148,17 +175,6 @@ type PublishForm = {
 };
 
 const FORM_KEY = "temu_publish_form_v2";
-/** 本机存储也按账号分开：同一台电脑换账号登录，不能把上一个人的草稿带出来。 */
-function storageScope(): string {
-  try {
-    const account = JSON.parse(window.localStorage.getItem("wh_demo_account") ?? "null") as
-      | { user_id?: string }
-      | null;
-    return account?.user_id || "local";
-  } catch {
-    return "local";
-  }
-}
 const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
@@ -280,20 +296,6 @@ function splitLines(text: string): string[] {
 /** 变种值可能是「30cm,40cm,50cm」这种列表，取第一个当这行的规格值。 */
 function firstSpecValue(text?: string): string {
   return (text || "").split(/[,，、;；]/)[0]?.trim() ?? "";
-}
-
-function categoryPathFromDto(dto: TemuCategoryPath): TemuCategory[] {
-  const result: TemuCategory[] = [];
-  for (let index = 1; index <= 10; index += 1) {
-    const key = `cat${index}DTO` as keyof TemuCategoryPath;
-    const item = dto[key];
-    if (item) result.push(item);
-  }
-  return result;
-}
-
-function categoryName(item: TemuCategory): string {
-  return item.catName || String(item.catId);
 }
 
 /**
@@ -590,7 +592,39 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // 用户手动选过类目后，标题再变也不覆盖
   const categoryTouchedRef = useRef(false);
   const [attributes, setAttributes] = useState<TemuAttributes | null>(null);
-  const [attrPicks, setAttrPicks] = useState<Record<number, AttrPick>>({});
+  const [attrPicks, setAttrPicks] = useState<Record<number, AttrPick>>(() => {
+    // 只在「存档里的叶子类目 == 当前恢复出来的叶子类目」时恢复：
+    // 不同类目的属性 pid 完全不一样，盲恢复等于给新类目塞一堆不存在的 pid。
+    const currentLeaf = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    const scope = storageScope();
+    // 先读「当前这一条」（任何来源都写过），没有再退回同类目历史（老版本只有这个）。
+    // 注意用 ?? 而不是判空对象：用户清空后存的就是空对象，那种情况必须保持空，
+    // 否则一刷新又从历史里把值填回来了。
+    const current = readCurrentAttrPicks(scope, currentLeaf);
+    return current ?? readAttrPicksHistory(scope, currentLeaf);
+  });
+  /** 自动填需要读到「此刻已填了什么」；effect 里不能依赖 attrPicks（会自我触发） */
+  const attrPicksRef = useRef(attrPicks);
+  attrPicksRef.current = attrPicks;
+  /** 已经对哪个叶子类目跑过自动填：同一类目只跑一次，用户清空后不会被偷偷填回来。 */
+  const autoFilledCatRef = useRef(0);
+  /**
+   * 草稿库估好的属性：先存着，等类目属性表加载完再铺。
+   * 不能直接 setAttrPicks —— 紧接着的 applyCategory 会 setAttrPicks({}) 把它清掉。
+   */
+  const carriedAttrPicksRef = useRef<{
+    catId: number;
+    picks: Record<number, AttrPick>;
+    guessedPids: number[];
+  } | null>(null);
+  /** 铺进来的属性里哪些是「猜的」：表单上标「估」，让人先核对这几项 */
+  const [guessedPids, setGuessedPids] = useState<number[]>([]);
+  /** 从草稿库带进来的估填项数（提示「这些是按类目估的」） */
+  const [carriedAttrCount, setCarriedAttrCount] = useState(0);
+  const [autoFill, setAutoFill] = useState<{ hits: AutoFillHit[]; ambiguous: string[] }>({
+    hits: [],
+    ambiguous: [],
+  });
 
   const [freightTemplates, setFreightTemplates] = useState<TemuFreightTemplate[]>([]);
   const [warehouseGroups, setWarehouseGroups] = useState<TemuWarehouseGroup[]>([]);
@@ -623,6 +657,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [productTemplates, setProductTemplates] = useState<ProductTemplate[]>(() =>
     localStore.productTemplates(),
   );
+  // 换类目后行里残留的非法规格值：只提示不自动改（清行会丢价格/重量）
+  const [specMismatch, setSpecMismatch] = useState<SpecMismatch[]>([]);
   const [variantTemplates, setVariantTemplates] = useState<VariantTemplate[]>(() =>
     localStore.variantTemplates(),
   );
@@ -696,6 +732,144 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const timer = setTimeout(() => saveJsonLocal(rowsKey, rows), 300);
     return () => clearTimeout(timer);
   }, [rows, rowsKey]);
+
+  const attrPicksKey = `${ATTR_PICKS_KEY}:${storageScope()}`;
+  /**
+   * 类目属性选择落盘（按叶子类目分开存）。
+   *
+   * 落盘的是「某个类目下选了什么」，所以必须连 catId 一起存；恢复时按 catId 取，
+   * 对不上就不恢复。属性是下拉选的，不是逐字符输入，不需要防抖窗——但保持和其他
+   * 存档一致的节奏。
+   */
+  /**
+   * 用户有没有自己动过属性下拉。
+   *
+   * 只有动过才写「同类目历史」：自动填和草稿库估好的值都是程序铺的，
+   * 写进历史等于教它「以后都这么填」—— 一条没改过的草稿就会把整个类目
+   * 的复用值污染成猜出来的第一个选项，甚至清空后历史跟着变空。
+   */
+  const picksTouchedRef = useRef(false);
+  useEffect(() => {
+    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!leafCatId) return;
+    const scope = storageScope();
+    const timer = setTimeout(() => {
+      // 刷新恢复用：什么来源都写
+      saveCurrentAttrPicks(scope, leafCatId, attrPicks);
+      // 同类目复用用：只认用户自己改过的
+      if (picksTouchedRef.current) {
+        saveAttrPicksHistory(scope, leafCatId, attrPicks);
+        // 只把这批改动记一次；之后程序再铺（换类目重新估）不会跟着写进历史
+        picksTouchedRef.current = false;
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [attrPicks, categoryPath, attrPicksKey]);
+
+  /** 表单 onChange 走这里：标记「用户动过」，才允许写同类目历史。 */
+  const handleAttributePicksChange = (next: Record<number, AttrPick>) => {
+    picksTouchedRef.current = true;
+    setAttrPicks(next);
+  };
+
+  /**
+   * 刷新页面 / HMR 后类目是从本机存档恢复出来的（最近用过的类目、或草稿带入），
+   * 但属性表还没拉过 —— 不补拉的话属性区一片空，连恢复出来的选择都没处显示。
+   * 只跑一次；拉回来顺手按该类目的预设值检查变种行（带入的草稿可能是别的类目存的）。
+   */
+  const restoredAttrsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (restoredAttrsLoadedRef.current) return;
+    const currentLeaf = categoryPath[categoryPath.length - 1];
+    if (!currentLeaf?.isLeaf) return;
+    restoredAttrsLoadedRef.current = true;
+    if (attributes) return;
+    void temuPublishApi
+      .attributes(currentLeaf.catId)
+      .then((attrs) => {
+        setAttributes(attrs);
+        setSpecMismatch(findSpecMismatches(attrs, rows));
+      })
+      .catch(() => {
+        // 拉不到就维持空白：用户点一下类目还能重试
+      });
+  }, [categoryPath, attributes, rows]);
+
+  /**
+   * 产品属性自动填。
+   *
+   * 接口给的是「这个类目可以选哪些值」，不是「这批货是哪个值」，所以只能靠两条：
+   * ① 同一个叶子类目上次怎么填的（连发同款时最准；vid 已失效就跳过）；
+   * ② 标题/描述里点名了某个可选值（只认唯一命中，多个值同时出现说明判断不了）。
+   * 纯数值属性（厚度 mm、平方克重 g/㎡）和销售属性一律不填 —— 编一个数比空着更糟。
+   */
+  const runAttributeAutofill = (basePicks: Record<number, AttrPick>, leafCatId: number) => {
+    if (!attributes || !leafCatId) return;
+    const result = autoFillAttributePicks({
+      attributes,
+      picks: basePicks,
+      texts: autoFillSourceTexts({
+        title: form.title,
+        titleEn: form.titleEn,
+        description: form.description,
+        categoryNames: categoryPath.map((item) => categoryName(item)),
+      }),
+      history: readAttrPicksHistory(storageScope(), leafCatId),
+    });
+    if (result.hits.length) setAttrPicks(result.picks);
+    setAutoFill({ hits: result.hits, ambiguous: result.ambiguous });
+    autoFilledCatRef.current = leafCatId;
+  };
+
+  // 属性表一加载就填一次。依赖只跟 attributes：换类目必然换属性表；
+  // 标题是后来才补的话，点「按标题重新识别」再跑 —— 否则用户清空的值会被偷偷填回来。
+  useEffect(() => {
+    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!attributes || !leafCatId) return;
+    if (autoFilledCatRef.current === leafCatId) return;
+    // 草稿库带进来的估填值先铺上（只铺空位，用户已填的不动），再补剩下没估到的
+    const carried = carriedAttrPicksRef.current;
+    carriedAttrPicksRef.current = null;
+    let base = attrPicksRef.current;
+    // 类目对不上就丢掉：不同类目的属性 pid 完全不同，铺进去等于给 Temu 塞无效 pid
+    if (carried && carried.catId && carried.catId === leafCatId) {
+      base = { ...carried.picks, ...attrPicksRef.current };
+      setAttrPicks(base);
+      setCarriedAttrCount(Object.keys(carried.picks).length);
+      setGuessedPids(carried.guessedPids);
+    }
+    runAttributeAutofill(base, leafCatId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attributes]);
+
+  /** 按当前标题重新识别：先撤掉上一轮自动填的值（用户手改过的保留），再跑一遍。 */
+  const reRunAttributeAutofill = () => {
+    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!leafCatId) return;
+    const base = { ...attrPicksRef.current };
+    for (const hit of autoFill.hits) {
+      const pick = base[hit.pid];
+      if (pick && Number(pick.vid) === hit.vid) delete base[hit.pid];
+    }
+    runAttributeAutofill(base, leafCatId);
+  };
+
+  /** 一键撤掉自动填的值：只撤仍然等于自动填的那个值，手改过的不动。 */
+  const clearAttributeAutofill = () => {
+    const hits = autoFill.hits;
+    setAttrPicks((current) => {
+      const next = { ...current };
+      for (const hit of hits) {
+        const pick = next[hit.pid];
+        if (pick && Number(pick.vid) === hit.vid) delete next[hit.pid];
+      }
+      return next;
+    });
+    setAutoFill({ hits: [], ambiguous: [] });
+    // 「草稿库估了 N 项」这条也没意义了：值已经撤掉
+    setCarriedAttrCount(0);
+    setGuessedPids([]);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -810,6 +984,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   function applyPrefillMeta(prefill: TemuPublishPrefill) {
     prefillDraftId.current = prefill.draftId || "";
+    // 草稿库按类目估好的属性：留给自动填那一步铺（那时才对得上当前类目）
+    carriedAttrPicksRef.current =
+      prefill.attrPicks && Object.keys(prefill.attrPicks).length
+        ? {
+            catId: Number(prefill.attrPicksCatId ?? 0),
+            picks: prefill.attrPicks,
+            guessedPids: prefill.attrGuessedPids ?? [],
+          }
+        : null;
     setPrefillInfo({
       source: prefill.sourceKind,
       needsReview: prefill.needsReview,
@@ -923,28 +1106,74 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setCategoryOptions(response.categoryDTOList ?? []);
   };
 
+  /** 手动刷新类目树：清掉后端两层缓存，再重载当前这一级 + 当前叶子属性。 */
+  const refreshCategoryTree = () =>
+    run("category", async () => {
+      await temuPublishApi.refreshCategories();
+      const currentLeaf = categoryPath[categoryPath.length - 1];
+      if (currentLeaf?.isLeaf) {
+        const attrs = await temuPublishApi.attributes(currentLeaf.catId);
+        setAttributes(attrs);
+        setSpecMismatch(findSpecMismatches(attrs, rows));
+        await loadLevel(categoryPath[categoryPath.length - 2]?.catId ?? 0);
+      } else {
+        await loadLevel(currentLeaf?.catId ?? 0);
+      }
+      // 类目树变了，标题匹配的结果也一并重算，别留着旧的推荐
+      setMatchSeq((value) => value + 1);
+    });
+
+  /**
+   * 换类目会清空已填的类目属性（不同类目的属性集不一样，留着会被判不合法），
+   * 所以换之前问一句。同一叶子重套、自动推荐、产品模板套用都不问。
+   */
+  const confirmCategorySwitch = (nextLeaf?: TemuCategory): boolean => {
+    const currentLeaf = categoryPath[categoryPath.length - 1];
+    if (!nextLeaf?.isLeaf) return true;
+    if (!currentLeaf?.isLeaf) return true;
+    if (Number(currentLeaf.catId) === Number(nextLeaf.catId)) return true;
+    const filled = Object.values(attrPicks).filter(
+      (pick) => pick && (pick.vid > 0 || pick.text.trim()),
+    ).length;
+    if (!filled) return true;
+    return window.confirm(
+      `换成「${categoryName(nextLeaf)}」？\n` +
+        `已经填好的 ${filled} 个类目属性会被清空 —— 不同类目要求的属性不一样。`,
+    );
+  };
+
   const chooseCategory = (item: TemuCategory) =>
     run("category", async () => {
+      // 手动点分类下钻 = 用户自己选的类目。这里必须标记，否则之后改标题时
+      // 「自动按标题匹配类目」会把用户选的类目静默换掉、连属性一起清空
+      // （categoryTouchedRef 只拦自动推荐，不拦手动选择）。
+      categoryTouchedRef.current = true;
+      if (!confirmCategorySwitch(item)) return;
       const next = [...categoryPath, item];
       setCategoryPath(next);
       if (item.isLeaf) {
         const attrs = await temuPublishApi.attributes(item.catId);
         setAttributes(attrs);
         setAttrPicks({});
+        setSpecMismatch(findSpecMismatches(attrs, rows));
         saveJsonLocal(recentCategoryKey, next);
       } else {
         setAttributes(null);
         setAttrPicks({});
+        setSpecMismatch([]);
         await loadLevel(item.catId);
       }
     });
 
   const resetToLevel = (index: number) =>
     run("category", async () => {
+      // 面包屑回退同样是用户操作：回退后类目还没定，但也不该被自动匹配抢走。
+      categoryTouchedRef.current = true;
       if (index < 0) {
         setCategoryPath([]);
         setAttributes(null);
         setAttrPicks({});
+        setSpecMismatch([]);
         await loadLevel(0);
         return;
       }
@@ -952,12 +1181,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setCategoryPath(next);
       setAttributes(null);
       setAttrPicks({});
+      setSpecMismatch([]);
       await loadLevel(next[next.length - 1].catId);
     });
 
   /** 直接套用一条完整类目路径（预设、最近使用都走这里）。 */
-  const applyCategory = (path: TemuCategory[], options?: { auto?: boolean }) =>
-    run("category", async () => {
+  const applyCategory = (
+    path: TemuCategory[],
+    options?: { auto?: boolean; skipConfirm?: boolean },
+  ) => {
+    // 换到别的叶子类目会清空已填属性：先问一句（自动推荐 / 套产品模板不问）
+    if (!options?.auto && !options?.skipConfirm && !confirmCategorySwitch(path[path.length - 1])) {
+      return Promise.resolve();
+    }
+    return run("category", async () => {
       // 自动推荐不算「用户选过」：标题一改还能继续跟着改
       if (!options?.auto) categoryTouchedRef.current = true;
       const leaf = path[path.length - 1];
@@ -967,12 +1204,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setMatchPaths([]);
       if (!leaf?.isLeaf) {
         setAttributes(null);
+        // 类目还没定到叶子：旧属性必须一起清，否则会挂着上一级类目的属性值
+        setAttrPicks({});
+        setSpecMismatch([]);
         await loadLevel(leaf?.catId ?? 0);
         return;
       }
       const attrs = await temuPublishApi.attributes(leaf.catId);
       setAttributes(attrs);
-      if (!sameLeaf) setAttrPicks({});
+      if (!sameLeaf) {
+        setAttrPicks({});
+        // 换到别的类目了：行里的颜色/尺码可能不在新类目预设里，一次性列出来
+        setSpecMismatch(findSpecMismatches(attrs, rows));
+      }
       setCategoryOptions([]);
       saveJsonLocal(recentCategoryKey, path);
       // 回写给来源草稿：草稿库那行会显示类目路径，下次带入也直接选中
@@ -980,6 +1224,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         localStore.rememberDraftCategory(prefillDraftId.current, path);
       }
     });
+  };
 
   // effect 里要用最新的 applyCategory，用 ref 兜住（它的闭包会随状态重建）
   const applyCategoryRef = useRef(applyCategory);
@@ -1146,7 +1391,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   /** 套用产品模板：只补空字段，已经填过的不动。 */
-  const applyProductTemplate = (name: string) => {
+  const applyProductTemplate = async (name: string) => {
     const template = productTemplates.find((item) => item.name === name);
     if (!template) return;
     patch({
@@ -1163,6 +1408,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       isCustom: template.isCustom,
       isSensitive: template.isSensitive,
     });
+    // 必须先切类目、等属性表回来，再填模板里的属性。
+    // applyCategory 切到不同叶子类目时会 setAttrPicks({})（旧类目的属性和新类目对不上），
+    // 这一步发生在 await 之后 —— 如果先填属性再切类目，刚填的会被清空，
+    // 表现就是「套了产品模板但必填属性还是空的」。
+    if (template.categoryPath.length) {
+      // 模板自带要填的属性，换类目时不用再问「属性会被清空吗」
+      await applyCategory(template.categoryPath, { skipConfirm: true });
+    }
     setAttrPicks((current) => {
       const next = { ...current };
       Object.entries(template.attrs).forEach(([pid, pick]) => {
@@ -1170,7 +1423,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       });
       return next;
     });
-    if (template.categoryPath.length) void applyCategory(template.categoryPath);
   };
 
   /** 存成变种模板：颜色×尺码 + 第一行的批量值。 */
@@ -1411,6 +1663,66 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const specOptions = (parentSpecId: number): string[] =>
     (saleValueIndex.get(parentSpecId) ?? []).map((item) => item.name);
 
+  /**
+   * 换类目后，变种行里已有的颜色/尺码可能不在新类目的预设值里。
+   *
+   * Temu 的规格值必须来自类目预设（自造值提交报「不合法的规格属性 Color_Black」），
+   * 而换类目时我们**不清空行**（价格/重量都在里面，清 = 丢数据）。所以这里只做检查，
+   * 一次性把全部不合法的值列出来 —— 原来要等到点发布、ensureSpec 逐行抛错，
+   * 而且一次只报第一行第一个值。
+   *
+   * 只在类目确实给了预设值时才判定，避免「类目没有销售属性」被误报。
+   */
+  const findSpecMismatches = (
+    attrs: TemuAttributes | null,
+    list: VariantRow[],
+  ): SpecMismatch[] => {
+    const presets = new Map<number, Set<string>>();
+    for (const prop of attrs?.properties ?? []) {
+      if (!prop.isSale) continue;
+      const parentId = Number(prop.parentSpecId ?? 0);
+      if (!parentId) continue;
+      const names = new Set(
+        (prop.values ?? []).map((item) => String(item.value ?? "").trim()).filter(Boolean),
+      );
+      if (names.size) presets.set(parentId, names);
+    }
+    const colorPresets = presets.get(colorParentId);
+    const sizePresets = presets.get(sizeParentId);
+    const out: SpecMismatch[] = [];
+    list.forEach((row, index) => {
+      const color = row.colorName.trim();
+      if (color && colorPresets && !colorPresets.has(color)) {
+        out.push({ rowKey: row.key, rowNo: index + 1, field: "颜色", value: color });
+      }
+      const size = row.sizeName.trim();
+      if (size && sizePresets && !sizePresets.has(size)) {
+        out.push({ rowKey: row.key, rowNo: index + 1, field: "尺码", value: size });
+      }
+    });
+    return out;
+  };
+
+  /** 按最接近的预设值把不合法的颜色/尺码批量改掉；对不上的保持原样并继续留在清单里。 */
+  const fixSpecMismatches = () => {
+    if (!specMismatch.length) return;
+    const colorNames = specOptions(colorParentId);
+    const sizeNames = specOptions(sizeParentId);
+    const next = rows.map((row) => {
+      const badColor = specMismatch.some((item) => item.rowKey === row.key && item.field === "颜色");
+      const badSize = specMismatch.some((item) => item.rowKey === row.key && item.field === "尺码");
+      const colorFixed = badColor ? matchPresetValue(row.colorName, colorNames) : null;
+      const sizeFixed = badSize ? matchPresetValue(row.sizeName, sizeNames) : null;
+      return {
+        ...row,
+        colorName: colorFixed ?? row.colorName,
+        sizeName: sizeFixed ?? row.sizeName,
+      };
+    });
+    setRows(next);
+    setSpecMismatch(findSpecMismatches(attributes, next));
+  };
+
   const ensureSpec = async (
     parentSpec: TemuParentSpec | null,
     specName: string,
@@ -1554,25 +1866,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       throw new Error("站外产品链接必须是 https:// 开头的地址");
     }
 
+    // 必填属性先校验，再传图 —— 图片上传要打 Temu 图床（慢且占配额），
+    // 属性没填完就传完图再报错，等于白等一遍。
+    if (attributes) {
+      const missing = missingRequiredNames(visibleProperties, attrPicks);
+      if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
+    }
+
     // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
     const carousel = await resolveImages(carouselSource, leaf.catId);
     const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId);
     const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
     const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
-
-    if (attributes) {
-      const missing = visibleProperties
-        .filter((item) => item.required)
-        .filter((item) => {
-          const pick = attrPicks[item.pid];
-          if (!pick || (pick.vid <= 0 && !pick.text.trim())) return true;
-          // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够
-          if (item.valueUnit?.length && !pick.text.trim()) return true;
-          return false;
-        })
-        .map((item) => item.name || item.propertyName || `pid=${item.pid}`);
-      if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
-    }
 
     const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
     // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
@@ -1941,180 +2246,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * （实测「电池属性=不带电池」时，「可充电电池/太阳能电池/不可充电电池」都是 required，
    *  但填了反而被判不合法）。选中的父值时，子属性只保留 vidList 里的值。
    */
-  const visibleProperties = useMemo<TemuProperty[]>(() => {
-    const props = attributes?.properties ?? [];
-    const byTemplatePid = new Map<number, TemuProperty>();
-    props.forEach((item) => {
-      const key = Number(item.templatePid ?? 0);
-      if (key) byTemplatePid.set(key, item);
-    });
-    const pickedVid = (pid: number) => Number(attrPicks[pid]?.vid ?? 0);
-    const list: TemuProperty[] = [];
-    for (const prop of props) {
-      const rules = prop.templatePropertyValueParentList ?? [];
-      if (!rules.length) {
-        list.push(prop);
-        continue;
-      }
-      const parent = byTemplatePid.get(Number(prop.parentTemplatePid ?? 0));
-      if (!parent) {
-        // 拿不到父属性：宁可显示也不误杀
-        list.push(prop);
-        continue;
-      }
-      const parentVid = pickedVid(parent.pid);
-      if (!parentVid) continue;
-      const matched = rules.filter((rule) => (rule.parentVidList ?? []).includes(parentVid));
-      if (!matched.length) continue;
-      const allowed = new Set(matched.flatMap((rule) => rule.vidList ?? []));
-      list.push({
-        ...prop,
-        values: (prop.values ?? []).filter((value) => !allowed.size || allowed.has(value.vid)),
-      });
-    }
-    return list;
-  }, [attributes, attrPicks]);
+  const visibleProperties = useMemo<TemuProperty[]>(
+    () => visibleAttributeProperties(attributes, attrPicks),
+    [attributes, attrPicks],
+  );
 
   const requiredProps = visibleProperties.filter((item) => item.required);
   const optionalProps = visibleProperties.filter((item) => !item.required);
-
-  /**
-   * 属性依赖分组（2026-11-02）：把「父属性 + 它按联动规则带出来的子属性」绑成一组渲染。
-   *
-   * 之前是子属性直接混进必填区顶部：选了选填项、结果必填项在别处冒出来，位置对不上，
-   * 用户看不出是谁带出来的。现在子属性原地展开在父属性下面（缩进 + 竖线），
-   * 必填区/选填区只放「没有父属性」的根项。
-   *
-   * 子属性什么时候可见仍然由 visibleProperties 决定（父没选就不渲染），这里只管摆放。
-   */
-  const attrRenderModel = (() => {
-    const byTemplatePid = new Map<number, TemuProperty>();
-    for (const item of attributes?.properties ?? []) {
-      const key = Number(item.templatePid ?? 0);
-      if (key) byTemplatePid.set(key, item);
-    }
-    const children = new Map<number, TemuProperty[]>();
-    const nested = new Set<number>();
-    for (const item of visibleProperties) {
-      const parentTemplatePid = Number(item.parentTemplatePid ?? 0);
-      if (!parentTemplatePid) continue;
-      const parent = byTemplatePid.get(parentTemplatePid);
-      if (!parent) continue;
-      const list = children.get(parent.pid) ?? [];
-      list.push(item);
-      children.set(parent.pid, list);
-      nested.add(item.pid);
-    }
-    return {
-      children,
-      required: requiredProps.filter((item) => !nested.has(item.pid)),
-      optional: optionalProps.filter((item) => !nested.has(item.pid)),
-    };
-  })();
-
-  /**
-   * 一个类目属性的输入控件。三种形态：
-   *  - 只有预设值 → 下拉
-   *  - 只有单位 → 数值输入框（厚度 mm 这类）
-   *  - 两者都有 → 下拉 + 数值输入框（「封面材质」选成分 + 填成分比例 %）
-   * 之前只渲染下拉，导致「下拉+比例」的属性永远填不进数值，Temu 回「请输入数值」。
-   */
-  const attrField = (item: TemuProperty, required: boolean) => {
-    const label = item.name || item.propertyName || `属性 ${item.pid}`;
-    const pick = attrPicks[item.pid] ?? EMPTY_ATTR;
-    const unit = item.valueUnit?.[0] ?? "";
-    const unitHint = unit
-      ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
-      : item.numberInputTitle || "请输入";
-    // 必填没填：只在「点过发布被拦」之后标红，不然一进页面满屏红框
-    const emptyRequired = required && !pick.vid && !pick.text.trim();
-    return (
-      <label
-        className={`temu-field${showFieldErrors && emptyRequired ? " is-required-empty" : ""}`}
-        key={item.pid}
-      >
-        <span>
-          {label}
-          {required && <em className="temu-required">*</em>}
-        </span>
-        {item.values?.length ? (
-          <div className={unit ? "temu-spec-row" : undefined}>
-            <select
-              className="temu-input"
-              value={pick.vid || ""}
-              onChange={(event) =>
-                setAttrPicks((current) => ({
-                  ...current,
-                  [item.pid]: { ...pick, vid: Number(event.target.value) || 0 },
-                }))
-              }
-            >
-              <option value="">请选择</option>
-              {item.values.map((value) => (
-                <option key={value.vid} value={value.vid}>
-                  {value.value}
-                </option>
-              ))}
-            </select>
-            {unit ? (
-              <input
-                className="temu-input"
-                value={pick.text}
-                title={unitHint}
-                placeholder={unitHint}
-                onChange={(event) =>
-                  setAttrPicks((current) => ({
-                    ...current,
-                    [item.pid]: { ...pick, text: event.target.value },
-                  }))
-                }
-              />
-            ) : null}
-          </div>
-        ) : (
-          <input
-            className="temu-input"
-            value={pick.text}
-            title={unitHint}
-            placeholder={unitHint}
-            onChange={(event) =>
-              setAttrPicks((current) => ({
-                ...current,
-                [item.pid]: { ...pick, text: event.target.value },
-              }))
-            }
-          />
-        )}
-      </label>
-    );
-  };
-
-  /**
-   * 渲染一个属性；有联动子属性时，把子属性缩进挂在它下面（原地展开，不跳区）。
-   * 没子属性且不在嵌套层级里的项直接返回字段本身，保持原来的多列网格排版。
-   */
-  const attrGroup = (item: TemuProperty, required: boolean, depth = 0): React.ReactNode => {
-    const kids = attrRenderModel.children.get(item.pid) ?? [];
-    if (!kids.length) {
-      if (!depth) return attrField(item, required);
-      return (
-        <div className="temu-attr-dependent" key={`attr-dependent-${item.pid}`}>
-          {attrField(item, required)}
-        </div>
-      );
-    }
-    return (
-      <div
-        className={`temu-attr-group${depth ? " is-nested" : ""}`}
-        key={`attr-group-${item.pid}`}
-      >
-        {attrField(item, required)}
-        <div className="temu-attr-children">
-          {kids.map((child) => attrGroup(child, child.required, depth + 1))}
-        </div>
-      </div>
-    );
-  };
 
   const filledRequired = requiredProps.filter((item) => {
     const pick = attrPicks[item.pid];
@@ -2639,6 +2777,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   </button>
                 </div>
               )}
+              <div className="temu-cat-refresh">
+                <button
+                  type="button"
+                  className="temu-link"
+                  onClick={() => void refreshCategoryTree()}
+                  disabled={busy !== ""}
+                  title="Temu 后台改过类目或该类目的必填属性后点这里，不用等缓存过期"
+                >
+                  刷新类目树
+                </button>
+                <em className="temu-muted">
+                  类目和属性缓存 1 小时；改完看不到新的就点这个
+                </em>
+              </div>
               {leaf?.isLeaf && attributes && saleValueIndex.size === 0 && (
                 <p className="temu-cat-hint">
                   该类目在 Temu 没有销售属性（建不了颜色/尺码变种），只能按单 SKU 发布；想按颜色卖就换一个带变种的类目。
@@ -2729,24 +2881,57 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
                 <>
-                  {attrRenderModel.required.length > 0 && (
-                    <div className="temu-attr-grid">
-                      {attrRenderModel.required.map((item) => attrGroup(item, true))}
+                  {(autoFill.hits.length > 0 ||
+                    autoFill.ambiguous.length > 0 ||
+                    carriedAttrCount > 0) && (
+                    <div className="temu-autofill-bar">
+                      <span>
+                        {carriedAttrCount > 0 && (
+                          <>
+                            草稿库已按类目估了 <strong>{carriedAttrCount}</strong> 项属性，
+                            <em className="temu-muted">发布前请核对</em>
+                            {autoFill.hits.length > 0 ? "；" : ""}
+                          </>
+                        )}
+                        {autoFill.hits.length > 0 && (
+                          <>
+                            本次补填 <strong>{autoFill.hits.length}</strong> 项（
+                            {describeAutoFill(autoFill.hits)}）
+                          </>
+                        )}
+                        {autoFill.ambiguous.length > 0
+                          ? `${autoFill.hits.length > 0 ? "；" : ""}${autoFill.ambiguous.join("、")} 命中多个值，需要你自己选`
+                          : ""}
+                      </span>
+                      <span className="temu-autofill-actions">
+                        <button
+                          type="button"
+                          className="temu-link-button"
+                          onClick={reRunAttributeAutofill}
+                          title="标题或描述改过之后点这里，按当前文本重新识别"
+                        >
+                          按标题重新识别
+                        </button>
+                        {autoFill.hits.length > 0 && (
+                          <button
+                            type="button"
+                            className="temu-link-button"
+                            onClick={clearAttributeAutofill}
+                          >
+                            清空自动填
+                          </button>
+                        )}
+                      </span>
                     </div>
                   )}
-                  {attrRenderModel.optional.length > 0 && (
-                    <details className="temu-optional-attrs">
-                      <summary>
-                        选填属性 {attrRenderModel.optional.length} 项（不填也能发布，但可能是下级属性的开关）
-                      </summary>
-                      <div className="temu-attr-grid">
-                        {attrRenderModel.optional.map((item) => attrGroup(item, false))}
-                      </div>
-                    </details>
-                  )}
-                  {attrRenderModel.required.length === 0 && attrRenderModel.optional.length === 0 && (
-                    <p className="temu-empty">这个分类没有可填属性。</p>
-                  )}
+                  <TemuPropertyForm
+                    attributes={attributes}
+                    picks={attrPicks}
+                    onChange={handleAttributePicksChange}
+                    showErrors={showFieldErrors}
+                    optionalHint="不填也能发布，但可能是下级属性的开关"
+                    guessedPids={guessedPids}
+                  />
                 </>
               )}
             </div>
@@ -2962,6 +3147,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 ))}
               </select>
             </div>
+            {specMismatch.length > 0 && (
+              <div className="temu-spec-mismatch" role="status">
+                <div className="temu-spec-mismatch-head">
+                  <strong>有 {specMismatch.length} 个颜色/尺码不在当前类目的预设值里</strong>
+                  <div className="temu-spec-mismatch-actions">
+                    <button
+                      type="button"
+                      className="temu-link-button"
+                      onClick={fixSpecMismatches}
+                    >
+                      按最接近的预设值修正
+                    </button>
+                    <button
+                      type="button"
+                      className="temu-link-button"
+                      onClick={() => setSpecMismatch([])}
+                    >
+                      知道了
+                    </button>
+                  </div>
+                </div>
+                <p className="temu-muted">
+                  换类目后规格值必须重选：Temu 只认类目预设值，自己填的提交会被判「不合法的规格属性」。
+                  价格、重量这些没动，改完规格就行。
+                </p>
+                <ul>
+                  {specMismatch.map((item) => (
+                    <li key={`${item.rowKey}-${item.field}`}>
+                      第 {item.rowNo} 行 {item.field}「{item.value}」
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <PublishSkuPanel
               rows={rows}
               onRowsChange={setRows}

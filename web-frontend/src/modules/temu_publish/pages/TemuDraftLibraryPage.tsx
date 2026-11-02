@@ -6,8 +6,29 @@ import { temuPublishApi } from "../api/temuPublishApi";
 import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar";
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
+import { BatchManualConfig } from "../components/BatchManualConfig";
+import { categorySearchTexts } from "../utils/categoryMatch";
+import { categoryPathFromDto } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
-import type { TemuDraftEdit, TemuDraftEntry, TemuDraftLibrary, TemuPublishPrefill } from "../types";
+import { autoFillSourceTexts } from "../data/attrAutofill";
+import { estimateAttributePicks } from "../data/attrEstimate";
+import {
+  readAttrPicksHistory,
+  readAttrPicksHistoryAt,
+  readDraftAttrPrefills,
+  saveDraftAttrPrefills,
+  storageScope,
+  type DraftAttrPrefill,
+} from "../data/attrPicksStore";
+import type { AttrPickMap } from "../data/attributeModel";
+import type {
+  TemuAttributes,
+  TemuCategory,
+  TemuDraftEdit,
+  TemuDraftEntry,
+  TemuDraftLibrary,
+  TemuPublishPrefill,
+} from "../types";
 import "../styles/temuPublish.css";
 
 type Filter = "all" | "ai" | "pod";
@@ -25,6 +46,19 @@ const DRAFT_REMARKS_KEY = "temu_draft_remarks_v1";
  * 滚动和翻页都在等图。改成服务端分页 30/页：只拉当前页、只解码当前页的图。
  */
 const PAGE_SIZE = 30;
+/**
+ * 入草稿库时自动按标题匹配 Temu 类目：一次最多补这么多条、并发这么多路。
+ * 限流是为了别在打开页面时同时打几十个 category.match（网关有每分钟限流）。
+ */
+const AUTO_LIMIT = 24;
+/**
+ * 入草稿库时就给每条草稿把产品属性估一遍。
+ *
+ * 一次最多处理这么多条：同一类目只打一次 attrs（后端还有 1 小时缓存），
+ * 限流只是防止一次开页面把网关打满；剩下的下次进页面继续。
+ */
+const ATTR_ESTIMATE_LIMIT = 60;
+const AUTO_CONCURRENCY = 3;
 /** 搜索输入的防抖：边打边发请求会打断列表 */
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -265,7 +299,9 @@ function siteCategoryLabel(
   entry: TemuDraftEntry,
   memo: Record<string, DraftCategoryMemo>,
 ): string {
-  return memo[entry.id]?.label || entry.category_name || "发布页选类目";
+  const hit = memo[entry.id];
+  if (hit?.label) return hit.auto ? `自动 · ${hit.label}` : hit.label;
+  return entry.category_name || "发布页选类目";
 }
 
 /**
@@ -275,11 +311,31 @@ function siteCategoryLabel(
  *   它**不是** Temu 类目 ID，发布前还得去发布页选一次
  * - none：两样都没有，必须选
  */
+/** 类目路径里的叶子 catId；还没选到叶子就返回 0。 */
+function leafCatIdOf(path?: TemuCategory[]): number {
+  const leaf = path?.[path.length - 1];
+  return leaf?.isLeaf ? Number(leaf.catId) || 0 : 0;
+}
+
+/**
+ * 属性预填里「填了几个」：估出来的 picks 里真正有值的项数。
+ * 只用于界面显示，不参与任何判定。
+ */
+function estimatedPickCount(prefill?: DraftAttrPrefill, leafCatId?: number): number {
+  if (!prefill) return 0;
+  // 类目换过了但还没重估：旧数字属于另一个类目，不能拿来显示
+  if (leafCatId && Number(prefill.catId) !== Number(leafCatId)) return 0;
+  return Object.values(prefill.picks ?? {}).filter(
+    (pick) => Number(pick?.vid ?? 0) > 0 || String(pick?.text ?? "").trim(),
+  ).length;
+}
+
 function categoryState(
   entry: TemuDraftEntry,
   memo: Record<string, DraftCategoryMemo>,
-): "picked" | "draft" | "none" {
-  if (memo[entry.id]?.label) return "picked";
+): "picked" | "auto" | "draft" | "none" {
+  const hit = memo[entry.id];
+  if (hit?.label) return hit.auto ? "auto" : "picked";
   if (entry.category_name) return "draft";
   return "none";
 }
@@ -292,6 +348,7 @@ function buildNeedsReview(entry: TemuDraftEntry): string[] | undefined {
 function entryPrefill(
   entry: TemuDraftEntry,
   memo?: Record<string, DraftCategoryMemo>,
+  attrPrefills?: Record<string, DraftAttrPrefill>,
 ): TemuPublishPrefill {
   const weightG = numericText(entry.weight_g);
   const length = numericText(entry.length_cm);
@@ -322,8 +379,13 @@ function entryPrefill(
     // 带上 id 和上次选过的类目：发布页选完会回写，下次带入直接选中
     draftId: entry.id,
     categoryPath: memo?.[entry.id]?.path,
-    // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的
-    needsReview: buildNeedsReview(entry),
+    // 入草稿库时按类目估好的属性：带进去直接铺上，发布页只补剩下没估到的
+    attrPicks: attrPrefills?.[entry.id]?.picks,
+    attrPicksCatId: attrPrefills?.[entry.id]?.catId,
+    attrGuessedPids: attrPrefills?.[entry.id]?.guessedPids,
+    // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的，
+    // 产品属性则是按类目「估」的（第一个可用选项），更要人看
+    needsReview: [...(buildNeedsReview(entry) ?? []), ...(attrPrefills?.[entry.id] ? ["产品属性（自动估）"] : [])],
   };
 }
 
@@ -369,6 +431,10 @@ export function TemuDraftLibraryPage({
   const [categoryMemo, setCategoryMemo] = useState<Record<string, DraftCategoryMemo>>(() =>
     localStore.draftCategories(),
   );
+  /** 草稿 → 入草稿库时按叶子类目估出来的产品属性（点「用于发布」直接带进发布页） */
+  const [attrPrefills, setAttrPrefills] = useState<Record<string, DraftAttrPrefill>>(() =>
+    readDraftAttrPrefills(storageScope()),
+  );
   const [showFailures, setShowFailures] = useState(false);
   const [productTpl, setProductTpl] = useState("");
   const [variantTpl, setVariantTpl] = useState("");
@@ -378,6 +444,8 @@ export function TemuDraftLibraryPage({
   });
   // 批量发布弹窗：勾完直接发，模板在弹窗里选（不再要求先去菜单里「引用产品模板」）
   const [batchOpen, setBatchOpen] = useState(false);
+  // 批量发布「现场配置」出来的临时产品模板（不落盘）：没选产品模板时用它
+  const [manualTemplate, setManualTemplate] = useState<ProductTemplate | null>(null);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
   const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
 
@@ -450,6 +518,161 @@ export function TemuDraftLibraryPage({
       .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry)),
     [data, edits, hidden],
   );
+  /**
+   * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
+   *
+   * 只处理「还没有类目记忆」的草稿，一次最多 AUTO_LIMIT 条、并发 3：
+   * - 结果写成 memo 但带 `auto: true`，UI 上标「自动」，人工选过的不会被覆盖
+   * - 匹配失败/没有叶子路径就跳过，下次进页面再试（不记空值，否则永远不重试）
+   * - 只是为了少点一次，**不代替确认**：类目错了发出去要下架重发，界面必须看得出来
+   */
+  const autoCategorizingRef = useRef(false);
+  useEffect(() => {
+    if (autoCategorizingRef.current || !entries.length) return;
+    const pending = entries
+      .filter((entry) => !categoryMemo[entry.id]?.label)
+      .filter((entry) => (entry.title || entry.subtitle || "").trim().length >= 8)
+      .slice(0, AUTO_LIMIT);
+    if (!pending.length) return;
+    autoCategorizingRef.current = true;
+    let alive = true;
+    void (async () => {
+      const queue = [...pending];
+      const worker = async () => {
+        for (;;) {
+          const entry = queue.shift();
+          if (!entry || !alive) return;
+          const text = categorySearchTexts(entry.title || entry.subtitle)[0];
+          if (!text) continue;
+          try {
+            const result = await temuPublishApi.matchCategory(text, 100);
+            const leafPath = (result.categoryPathDTOS ?? [])
+              .map((dto) => categoryPathFromDto(dto))
+              .find((path) => path.length > 0 && path[path.length - 1].isLeaf);
+            if (!leafPath) continue;
+            localStore.rememberDraftCategory(entry.id, leafPath, { auto: true });
+            if (alive) setCategoryMemo(localStore.draftCategories());
+          } catch {
+            // 单条匹配失败不影响其它草稿；下次进页面会再试
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: AUTO_CONCURRENCY }, () => worker()));
+    })().finally(() => {
+      if (alive) autoCategorizingRef.current = false;
+    });
+    return () => {
+      alive = false;
+      autoCategorizingRef.current = false;
+    };
+    // categoryMemo 故意不进依赖：写入后会触发自己，加进去会无限循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
+
+  /**
+   * 入草稿库时把产品属性**估一遍**，点「用于发布」就不用再手点 8 个下拉。
+   *
+   * 估的口径见 `data/attrEstimate.ts`：同类目上次填的 > 标题点名 > 第一个可用选项。
+   * 猜出来的值都会标 `guessed`，发布页会提示「按类目估的，请核对」。
+   *
+   * 限流：attrs 按 catId 缓存在内存里（同类目 N 条草稿只打一次网关），
+   * 一次最多 ATTR_ESTIMATE_LIMIT 条，剩下的下次进页面继续。
+   */
+  const attrEstimateCacheRef = useRef(new Map<number, TemuAttributes>());
+  /** 本次会话里拉失败的类目：不再重试（否则「一直失败 + 一直重跑」会把网关打爆） */
+  const attrEstimateFailedRef = useRef(new Set<number>());
+  const attrEstimatingRef = useRef(false);
+  /**
+   * 跑完一轮后自增，触发下一轮。
+   *
+   * 必须有这一下：自动分类是异步分批补类目的，估填启动时 memo 里可能只有一部分；
+   * 若那一轮还在跑，新的 memo 进来会被 `attrEstimatingRef` 挡掉，之后再也没有
+   * 触发点 —— 剩下的草稿就永远估不上。
+   */
+  const [estimateTick, setEstimateTick] = useState(0);
+  useEffect(() => {
+    if (attrEstimatingRef.current || !entries.length) return;
+    const scope = storageScope();
+    const pending = entries
+      .map((entry) => ({ entry, leaf: leafCatIdOf(categoryMemo[entry.id]?.path) }))
+      .filter(({ entry, leaf }) => {
+        // 没有叶子类目就没法知道有哪些属性 —— 等自动分类把类目补上再估
+        if (!leaf) return false;
+        // 这个类目刚拉失败过：本次会话不再试，别把网关打爆
+        if (attrEstimateFailedRef.current.has(leaf)) return false;
+        const saved = attrPrefills[entry.id];
+        if (!saved || Number(saved.catId) !== leaf) return true;
+        // 同类目历史变新了（用户在发布页把属性改对了）→ 重估，
+        // 否则其他草稿还留着上一次猜出来的值，用户会以为「改一次都跟着变」
+        return Number(saved.historyAt ?? 0) !== readAttrPicksHistoryAt(scope, leaf);
+      })
+      .slice(0, ATTR_ESTIMATE_LIMIT);
+    if (!pending.length) return;
+
+    attrEstimatingRef.current = true;
+    let alive = true;
+    void (async () => {
+      const next: Record<string, DraftAttrPrefill> = {};
+      for (const { entry, leaf } of pending) {
+        if (!alive) break;
+        let attrs = attrEstimateCacheRef.current.get(leaf);
+        if (!attrs) {
+          try {
+            attrs = await temuPublishApi.attributes(leaf);
+            attrEstimateCacheRef.current.set(leaf, attrs);
+          } catch {
+            // 拉不到就不写结果（写了空值等于「这条永远不再试」），
+            // 但本次会话先别重复打网关
+            attrEstimateFailedRef.current.add(leaf);
+            continue;
+          }
+        }
+        try {
+          const result = estimateAttributePicks({
+            attributes: attrs,
+            texts: autoFillSourceTexts({
+              // subtitle 是任务名（"AI 视频"这类），不是商品描述，不进匹配文本
+              title: entry.title || entry.subtitle,
+              description: entry.description,
+              categoryNames: [entry.category_name ?? ""],
+            }),
+            history: readAttrPicksHistory(scope, leaf),
+          });
+          next[entry.id] = {
+            catId: leaf,
+            picks: result.picks,
+            at: Date.now(),
+            guessed: result.guessed,
+            guessedPids: result.items
+              .filter((item) => item.source === "guess" || item.source === "number-guess")
+              .map((item) => item.pid),
+            // 记下这次用的是哪一版历史：历史变新了就说明该重估
+            historyAt: readAttrPicksHistoryAt(scope, leaf),
+          };
+        } catch {
+          // 单条估挂不能让整批停：这条下次进页面再试。
+          // 也不能往外抛 —— 抛了会让 finally 的 tick 再跑一轮，异常再抛 → 死循环。
+        }
+      }
+      if (alive && Object.keys(next).length) {
+        saveDraftAttrPrefills(scope, next);
+        setAttrPrefills((current) => ({ ...current, ...next }));
+      }
+    })().finally(() => {
+      if (!alive) return;
+      attrEstimatingRef.current = false;
+      // 再跑一轮：这期间可能又有草稿被自动分类补上了类目。
+      // 没有 pending 时下一轮会直接 return，不会自激。
+      setEstimateTick((value) => value + 1);
+    });
+    return () => {
+      alive = false;
+      attrEstimatingRef.current = false;
+    };
+    // attrPrefills 故意不进依赖：写入后会触发自己，加进去会无限循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, categoryMemo, estimateTick]);
+
   const totalCount = data?.total ?? 0;
   const totalPages = Math.max(1, data?.pages ?? 1);
   const currentPage = Math.min(page, totalPages);
@@ -465,12 +688,56 @@ export function TemuDraftLibraryPage({
     return () => window.removeEventListener("keydown", onKey);
   }, [preview, confirmEntry, batchOpen]);
 
+  /**
+   * 勾选的草稿如果都被匹配到同一个叶子类目，现场配置就直接预填它：
+   * 用户只需填属性 + 选运费仓库，不用再搜一次类目。
+   */
+  const batchCommonCategory = useMemo(() => {
+    const ids = Array.from(selected);
+    if (!ids.length) return [];
+    const paths = ids.map((id) => categoryMemo[id]?.path);
+    // 必须每一条都匹配到了类目：只要有一条没有，整批套同一个类目就会把那条塞错类目
+    if (paths.some((path) => !path?.length)) return [];
+    const leafId = paths[0]?.[paths[0].length - 1]?.catId;
+    if (!leafId) return [];
+    const same = paths.every((path) => path?.[path.length - 1]?.catId === leafId);
+    const first = paths[0];
+    return same && first ? first : [];
+  }, [selected, categoryMemo]);
+
+  /**
+   * 勾了多条却没法整批共用一套类目/属性时，得说清原因 ——
+   * 否则用户只看到「类目是空的」，以为功能坏了，然后整批套错类目。
+   */
+  const batchCategoryConflict = useMemo(() => {
+    // 勾 1 条也一样要说：没类目时批量发照样发不出去，别只对多选提示
+    if (!selected.size || batchCommonCategory.length) return "";
+    const missing = Array.from(selected).filter((id) => !categoryMemo[id]?.path?.length).length;
+    if (missing) {
+      return `有 ${missing} 条还没匹配到 Temu 类目，整批没法共用一套属性：先单独「用于发布」把它们选好类目，或分批发。`;
+    }
+    return "勾选的草稿不在同一个叶子类目（属性按类目定，不同类目不能共用），请分批发或在下面手动选一个类目。";
+  }, [selected, categoryMemo, batchCommonCategory]);
+
+  /**
+   * 整批同一个叶子类目时，用第一条草稿估好的属性当批量配置的初值。
+   * 类目不一致就不传：不同类目的 pid 完全不同，混着填只会塞错值。
+   */
+  const batchCommonPicks = useMemo(() => {
+    if (!batchCommonCategory.length) return undefined;
+    const leaf = batchCommonCategory[batchCommonCategory.length - 1]?.catId;
+    const first = Array.from(selected)
+      .map((id) => attrPrefills[id])
+      .find((item) => item && Number(item.catId) === Number(leaf));
+    return first?.picks;
+  }, [batchCommonCategory, selected, attrPrefills]);
+
   const selectedIds = () => Array.from(selected);
 
   /** 「用于发布」二次确认：确认后才把这条草稿带进发布页。 */
   const confirmUseDraft = () => {
     if (!confirmEntry) return;
-    onUseDraft(entryPrefill(confirmEntry, categoryMemo));
+    onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills));
     setConfirmEntry(null);
   };
 
@@ -489,6 +756,8 @@ export function TemuDraftLibraryPage({
     }
     // 只有一个模板就直接选中，省一次点击；有多个则让用户自己挑
     if (!productTpl && productTemplates.length) setProductTpl(productTemplates[0].name);
+    // 每次打开都重配：上一批的类目/属性留着，换一批货时很容易发错类目
+    setManualTemplate(null);
     setBatchOpen(true);
   };
 
@@ -496,9 +765,10 @@ export function TemuDraftLibraryPage({
   const runBatchPublish = async () => {
     // 上一批还在跑（接口非幂等）：不允许再开一批并行提交
     if (batchState.running) return;
-    const template = productTemplates.find((item) => item.name === productTpl);
+    // 产品模板和「现场配置」二选一：现场配置出来的等价于一份临时模板
+    const template = productTemplates.find((item) => item.name === productTpl) ?? manualTemplate;
     if (!template) {
-      setError("先选一个产品模板（没有就去「发布商品」页存一个）");
+      setError("先选一个产品模板，或在下面「现场配置」里把类目/属性/运费模板/仓库填完");
       return;
     }
     const targets = entries.filter((entry) => selected.has(entry.id));
@@ -525,7 +795,7 @@ export function TemuDraftLibraryPage({
         text: `${index + 1}/${targets.length} · ${entry.title.slice(0, 16)}`,
       });
       try {
-        const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo), template, variant);
+        const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
         const result = await temuPublishApi.publish(draft);
         const goodsId = String(
           (result.result as Record<string, unknown> | undefined)?.goodsId ??
@@ -567,7 +837,7 @@ export function TemuDraftLibraryPage({
           traceId: parsed.traceId,
           // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
           prefill: {
-            ...entryPrefill(entry, categoryMemo),
+            ...entryPrefill(entry, categoryMemo, attrPrefills),
             categoryPath: categoryMemo?.[entry.id]?.path ?? template.categoryPath,
           },
         });
@@ -971,8 +1241,11 @@ export function TemuDraftLibraryPage({
                   <th className="col-spec" title="发布 payload 里的长/宽/高（cm）与重量（g），缺了会被拒">
                     尺寸 · 重量
                   </th>
-                  <th className="col-ready" title="缺什么会在这里列出来，补齐就能直接发">
-                    完整度
+                  <th
+                    className="col-ready"
+                    title="草稿自身字段齐不齐；产品属性跟【能不能发】无关，一律要在发布页填"
+                  >
+                    草稿字段
                   </th>
                   <th className="col-time">更新</th>
                   <th className="col-actions">操作</th>
@@ -1026,17 +1299,31 @@ export function TemuDraftLibraryPage({
                           <>
                             <small
                               className={
-                                state === "picked" ? "is-picked" : state === "draft" ? "is-draft" : "is-missing"
+                                state === "picked"
+                                  ? "is-picked"
+                                  : state === "auto"
+                                    ? "is-auto"
+                                    : state === "draft"
+                                      ? "is-draft"
+                                      : "is-missing"
                               }
                               title={
                                 state === "picked"
                                   ? label
-                                  : state === "draft"
-                                    ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
-                                    : "还没选 Temu 类目，发布前必须选到叶子类目"
+                                  : state === "auto"
+                                    ? `按标题自动匹配的类目：${label}（只是大概方向，发布前建议确认）`
+                                    : state === "draft"
+                                      ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
+                                      : "还没选 Temu 类目，发布前必须选到叶子类目"
                               }
                             >
-                              {state === "picked" ? label : state === "draft" ? `草稿分类：${label}` : label}
+                              {state === "picked"
+                                ? label
+                                : state === "auto"
+                                  ? label
+                                  : state === "draft"
+                                    ? `草稿分类：${label}`
+                                    : label}
                             </small>
                             <em className="temu-draft-site">美国站</em>
                           </>
@@ -1075,11 +1362,42 @@ export function TemuDraftLibraryPage({
                     <td className="col-ready">
                       {(() => {
                         const missing = draftMissingFields(entry, categoryMemo);
+                        const leafForEntry = leafCatIdOf(categoryMemo[entry.id]?.path);
+                        const prefill = attrPrefills[entry.id];
+                        const estimated = estimatedPickCount(prefill, leafForEntry);
+                        const guessedInPrefill =
+                          estimated && prefill ? Number(prefill.guessed ?? 0) : 0;
+                        const pendingHint = !leafForEntry
+                          ? "还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性"
+                          : "属性正在按类目估（同类目只请求一次），稍等一下或刷新";
                         if (!missing.length) {
-                          return <span className="temu-ready is-ok">可发</span>;
+                          return (
+                            <span
+                              className="temu-ready-stack"
+                              title={
+                                estimated
+                                  ? `产品属性已按类目估了 ${estimated} 项` +
+                                    (guessedInPrefill
+                                      ? `，其中 ${guessedInPrefill} 项是凭类目猜的（没有依据，取了第一个可用选项）`
+                                      : "") +
+                                    "；带入发布页时会直接填好，发布前请核对"
+                                  : `草稿字段齐了，不用回上游补数据。${pendingHint}`
+                              }
+                            >
+                              <span className="temu-ready is-ok">字段齐</span>
+                              {estimated ? (
+                                <span className="temu-ready is-estimated">属性已估 {estimated}</span>
+                              ) : (
+                                <span className="temu-ready is-pending">属性待填</span>
+                              )}
+                            </span>
+                          );
                         }
                         return (
-                          <span className="temu-ready is-warn" title={`缺：${missing.join("、")}`}>
+                          <span
+                            className="temu-ready is-warn"
+                            title={`缺：${missing.join("、")}。另外产品属性也要在发布页填`}
+                          >
                             缺 {missing.join(" / ")}
                           </span>
                         );
@@ -1093,7 +1411,7 @@ export function TemuDraftLibraryPage({
                         type="button"
                         className="temu-btn"
                         title="带这条草稿进发布页，改完所有信息后再提交"
-                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo))}
+                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills))}
                       >
                         编辑
                       </button>
@@ -1208,6 +1526,21 @@ export function TemuDraftLibraryPage({
                   </select>
                 </label>
 
+                {batchCategoryConflict && (
+                  <p className="temu-confirm-warn">{batchCategoryConflict}</p>
+                )}
+                {batchCommonPicks && (
+                  <p className="temu-confirm-warn">
+                    下面的产品属性取自本批第一条草稿的自动估值，<strong>整批共用</strong> ——
+                    发布前请核对，尤其是标着「估」的项。
+                  </p>
+                )}
+                <BatchManualConfig
+                  onChange={setManualTemplate}
+                  initialPath={batchCommonCategory}
+                  initialPicks={batchCommonPicks}
+                />
+
                 <ul className="temu-batch-list">
                   {batchTargets.slice(0, 6).map((entry) => (
                     <li key={entry.id}>
@@ -1218,9 +1551,9 @@ export function TemuDraftLibraryPage({
                   {batchTargets.length > 6 ? <li className="is-more">… 还有 {batchTargets.length - 6} 条</li> : null}
                 </ul>
 
-                {productTemplates.length === 0 ? (
+                {productTemplates.length === 0 && !manualTemplate ? (
                   <p className="temu-confirm-warn">
-                    还没有产品模板：批量发布要用模板里的类目和属性，先去「发布商品」页填好一款再点「存为产品模板」。
+                    还没有产品模板：在上面「现场配置」里选一个类目、填完必填属性、选好运费模板和仓库，就能直接发这批。
                   </p>
                 ) : (
                   <p className="temu-edit-note">
