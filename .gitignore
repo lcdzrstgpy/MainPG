@@ -125,3 +125,6 @@ local-runtime/updates/
 
 # 服务商凭据的本机覆盖（打包机放真值，不进仓库）
 local-runtime/wh_local/data/temu_gateway.local.json
+
+# 拉下来的第三方扩展解包产物（体积大、非本项目源码）
+BrowserSkill-*/
