@@ -710,7 +710,8 @@ export function TemuDraftLibraryPage({
    * 否则用户只看到「类目是空的」，以为功能坏了，然后整批套错类目。
    */
   const batchCategoryConflict = useMemo(() => {
-    if (selected.size < 2 || batchCommonCategory.length) return "";
+    // 勾 1 条也一样要说：没类目时批量发照样发不出去，别只对多选提示
+    if (!selected.size || batchCommonCategory.length) return "";
     const missing = Array.from(selected).filter((id) => !categoryMemo[id]?.path?.length).length;
     if (missing) {
       return `有 ${missing} 条还没匹配到 Temu 类目，整批没法共用一套属性：先单独「用于发布」把它们选好类目，或分批发。`;
