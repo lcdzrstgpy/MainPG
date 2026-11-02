@@ -231,9 +231,21 @@ export function toUserMessage(raw: string): string {
   if (/no eligible products to dispatch/i.test(message)) return "没有可提交的产品，请检查勾选和站点";
   if (/profit_activity_company_write_required/i.test(message)) return "当前账号没有修改公司数据的权限，请联系对接人";
   // 后端把缺失字段用逗号拼在一起返回（如 product_image_required,source_url_required），
-  // 逐字翻译没意义，统一提示去补哪几列。
-  if (/^[a-z_]+_required(,[a-z_]+_required)+$/.test(message)) {
-    return "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
+  // 只有一个缺失字段时也要给出具体提示，不能落回「操作失败」。
+  if (/^[a-z_]+_required(?:,[a-z_]+_required)*$/.test(message)) {
+    const labels: Record<string, string> = {
+      product_image_required: "商品主图",
+      source_url_required: "货源链接",
+      source_image_required: "货源图",
+      note_required: "备注",
+    };
+    const missing = message
+      .split(",")
+      .map((code) => labels[code])
+      .filter(Boolean);
+    return missing.length
+      ? `还缺：${missing.join("、")}，请补齐后再提交`
+      : "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
   }
 
   // ---- 计费授权（产品处理的「继续处理」/重试等在计费服务侧的鉴权失败）----
