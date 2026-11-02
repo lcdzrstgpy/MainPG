@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 import { WorkspaceShell } from "./layout/WorkspaceShell";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
-import { HelpAgentWidget } from "../modules/help_agent/components/HelpAgentWidget";
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
@@ -153,11 +152,8 @@ export function App() {
         onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
       />
     ) : (
-      <>
-        <AuthPage onEnter={enterWorkspaceAfterLogin} />
-        {/* 登录前也挂一个球：未登录时置灰，点击只提示「请先登录」，不发请求。 */}
-        <HelpAgentWidget />
-      </>
+      // 登录页不挂答疑悬浮球：未登录时它只会置灰并弹「请先登录」，反而挡住表单。
+      <AuthPage onEnter={enterWorkspaceAfterLogin} />
     )}
     <RuntimeUpdateNotifier />
     <GlobalToast />
