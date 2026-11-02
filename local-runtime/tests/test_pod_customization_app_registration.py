@@ -34,7 +34,9 @@ def test_replica_openapi_contract_drops_legacy_fields(tmp_path: Path) -> None:
     schemas = app.openapi()["components"]["schemas"]
 
     analyze = schemas["ReplicaAnalyzeRequest"]
-    assert set(analyze["properties"]) == {"source_asset_id", "target_asset_id"}
+    # 上游 POD-change（2026-10-29）新增 force：跳过同 A/B 的方案缓存、重调豆包并覆盖已编辑正文。
+    # extra="forbid" 仍然生效，除下面三个字段外一律拒绝。
+    assert set(analyze["properties"]) == {"source_asset_id", "target_asset_id", "force"}
     assert analyze.get("additionalProperties") is False
 
     target = schemas["ReplicaTargetCreate"]
