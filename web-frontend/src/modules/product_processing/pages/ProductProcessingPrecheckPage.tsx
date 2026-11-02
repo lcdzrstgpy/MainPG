@@ -2309,9 +2309,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   onClick={() => void downloadRun(run, false)}
                 >
                   {downloading
-                    ? <><i className="app-spinner is-sm" aria-hidden="true" />重新下载</>
+                    ? <><i className="app-spinner is-sm" aria-hidden="true" />下载中…</>
                     : run.workbook_ready
-                      ? `重新下载（${EXPORT_FORMAT_LABELS[run.workbook_format] ?? run.workbook_format}）`
+                      ? `下载${EXPORT_FORMAT_LABELS[run.workbook_format] ?? run.workbook_format}表格`
                       : '暂无表格'}
                 </button>
                 {/* 妙手模板按这一条历史导出现场生成：它是结果卡片的兜底入口——从「历史记录」进入
@@ -2332,7 +2332,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     >
                       {msExporting === kind
                         ? <><i className="app-spinner is-sm" aria-hidden="true" />正在处理…</>
-                        : `妙手·${kindLabel}（${generated ? '重新下载' : '生成'}）`}
+                        : `下载妙手·${kindLabel}表格`}
                     </button>
                   );
                 })}
