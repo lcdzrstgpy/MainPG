@@ -619,12 +619,17 @@ def register_daily_selection_routes(
             workspace_id=workspace_id,
         )
         _schedule_source_image_sync(plugin_draft_writer, background_tasks, draft, workspace_id)
-        return {
+        response: dict[str, Any] = {
             "ok": True,
             "skipped": not created,
             "draft": draft,
             "draft_id": draft["id"],
         }
+        if not created:
+            # 扩展会把这个 message 直接显示在采集气泡里（background.js 读 payload.message），
+            # 默认兜底是「已跳过重复入池」，说不清是哪种重复。
+            response["message"] = "这个商品已经在草稿池里了（同款），未重复创建"
+        return response
 
     @router.post("/plugin/product-capture/drafts/status")
     def plugin_product_draft_status(payload: Mapping[str, Any] = Body(...)) -> Mapping[str, Any]:
