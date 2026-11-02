@@ -29,6 +29,11 @@ type Props = {
    * 用户只需要填属性 + 选运费/仓库，不用再搜一次。
    */
   initialPath?: TemuCategory[];
+  /**
+   * 草稿库入池时按类目估好的属性：整批同一个叶子类目时传进来直接铺上，
+   * 用户只需核对 + 选运费模板/仓库，不用再手点一遍下拉。
+   */
+  initialPicks?: AttrPickMap;
 };
 
 function firstWarehouse(groups: TemuWarehouseGroup[]): string {
@@ -57,7 +62,7 @@ function flatWarehouses(groups: TemuWarehouseGroup[]): Array<{ id: string; name:
  *
  * 填完整就回传一份临时 ProductTemplate（不落盘，除非用户点「存成模板」）。
  */
-export function BatchManualConfig({ onChange, initialPath }: Props) {
+export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props) {
   const [specs, setSpecs] = useState<TemuParentSpec[]>([]);
   const [freights, setFreights] = useState<TemuFreightTemplate[]>([]);
   const [warehouseGroups, setWarehouseGroups] = useState<TemuWarehouseGroup[]>([]);
@@ -70,6 +75,11 @@ export function BatchManualConfig({ onChange, initialPath }: Props) {
   const [path, setPath] = useState<TemuCategory[]>([]);
   const [attributes, setAttributes] = useState<TemuAttributes | null>(null);
   const [picks, setPicks] = useState<AttrPickMap>({});
+  /**
+   * 估好的属性只在「预填那一次」铺：之后用户手动换类目时 pid 全变了，
+   * 再铺就是往新类目里塞一堆不存在的 pid。
+   */
+  const seededPicksRef = useRef<AttrPickMap | undefined>(initialPicks);
   const [freightId, setFreightId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
   const [shipmentDays, setShipmentDays] = useState("7");
@@ -124,7 +134,14 @@ export function BatchManualConfig({ onChange, initialPath }: Props) {
     setPicks({});
     try {
       const leaf = next[next.length - 1];
-      setAttributes(await temuPublishApi.attributes(leaf.catId));
+      const loaded = await temuPublishApi.attributes(leaf.catId);
+      setAttributes(loaded);
+      // 草稿库估好的属性：只铺一次，用户仍可逐项改
+      const seeded = seededPicksRef.current;
+      if (seeded && Object.keys(seeded).length) {
+        seededPicksRef.current = undefined;
+        setPicks(seeded);
+      }
     } catch (cause) {
       setAttributes(null);
       setError(cause instanceof Error ? cause.message : "属性表没取到");

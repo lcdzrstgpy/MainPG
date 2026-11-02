@@ -35,7 +35,7 @@ export type AutoFillResult = {
 };
 
 /** 「其他 / 无 / N/A」这类兜底值不能靠文本命中，否则每个属性都会选中它。 */
-const PLACEHOLDER_VALUE = /^(其他|其它|other|others|无|none|n\/a|na|不适用|not applicable|未知|unknown)$/i;
+export const PLACEHOLDER_VALUE = /^(其他|其它|other|others|无|none|n\/a|na|不适用|not applicable|未知|unknown)$/i;
 
 function propertyLabel(item: TemuProperty): string {
   return item.name || item.propertyName || `pid=${item.pid}`;
@@ -51,7 +51,7 @@ function escapeRegExp(text: string): string {
  * 纯 ASCII 的值按词边界匹配：「PU」不能命中「input」，「cot」不能命中「cotton」。
  * 中文没有词边界概念，直接子串。
  */
-function containsText(haystack: string, needle: string): boolean {
+export function containsText(haystack: string, needle: string): boolean {
   const raw = needle.trim();
   if (!raw) return false;
   const value = raw.toLowerCase();
@@ -61,7 +61,7 @@ function containsText(haystack: string, needle: string): boolean {
 }
 
 /** 值名里有没有可用字符：纯符号/纯标点的值匹配了也没意义。 */
-function hasMatchableText(text: string): boolean {
+export function hasMatchableText(text: string): boolean {
   return /[a-z0-9\u4e00-\u9fff]/i.test(text);
 }
 

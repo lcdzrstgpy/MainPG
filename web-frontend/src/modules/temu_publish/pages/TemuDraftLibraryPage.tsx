@@ -10,7 +10,24 @@ import { BatchManualConfig } from "../components/BatchManualConfig";
 import { categorySearchTexts } from "../utils/categoryMatch";
 import { categoryPathFromDto } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
-import type { TemuDraftEdit, TemuDraftEntry, TemuDraftLibrary, TemuPublishPrefill } from "../types";
+import { autoFillSourceTexts } from "../data/attrAutofill";
+import { estimateAttributePicks } from "../data/attrEstimate";
+import {
+  readAttrPicksHistory,
+  readDraftAttrPrefills,
+  saveDraftAttrPrefills,
+  storageScope,
+  type DraftAttrPrefill,
+} from "../data/attrPicksStore";
+import type { AttrPickMap } from "../data/attributeModel";
+import type {
+  TemuAttributes,
+  TemuCategory,
+  TemuDraftEdit,
+  TemuDraftEntry,
+  TemuDraftLibrary,
+  TemuPublishPrefill,
+} from "../types";
 import "../styles/temuPublish.css";
 
 type Filter = "all" | "ai" | "pod";
@@ -33,6 +50,13 @@ const PAGE_SIZE = 30;
  * 限流是为了别在打开页面时同时打几十个 category.match（网关有每分钟限流）。
  */
 const AUTO_LIMIT = 24;
+/**
+ * 入草稿库时就给每条草稿把产品属性估一遍。
+ *
+ * 一次最多处理这么多条：同一类目只打一次 attrs（后端还有 1 小时缓存），
+ * 限流只是防止一次开页面把网关打满；剩下的下次进页面继续。
+ */
+const ATTR_ESTIMATE_LIMIT = 60;
 const AUTO_CONCURRENCY = 3;
 /** 搜索输入的防抖：边打边发请求会打断列表 */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -286,6 +310,23 @@ function siteCategoryLabel(
  *   它**不是** Temu 类目 ID，发布前还得去发布页选一次
  * - none：两样都没有，必须选
  */
+/** 类目路径里的叶子 catId；还没选到叶子就返回 0。 */
+function leafCatIdOf(path?: TemuCategory[]): number {
+  const leaf = path?.[path.length - 1];
+  return leaf?.isLeaf ? Number(leaf.catId) || 0 : 0;
+}
+
+/**
+ * 属性预填里「填了几个」：估出来的 picks 里真正有值的项数。
+ * 只用于界面显示，不参与任何判定。
+ */
+function estimatedPickCount(prefill?: DraftAttrPrefill): number {
+  if (!prefill) return 0;
+  return Object.values(prefill.picks ?? {}).filter(
+    (pick) => Number(pick?.vid ?? 0) > 0 || String(pick?.text ?? "").trim(),
+  ).length;
+}
+
 function categoryState(
   entry: TemuDraftEntry,
   memo: Record<string, DraftCategoryMemo>,
@@ -304,6 +345,7 @@ function buildNeedsReview(entry: TemuDraftEntry): string[] | undefined {
 function entryPrefill(
   entry: TemuDraftEntry,
   memo?: Record<string, DraftCategoryMemo>,
+  attrPrefills?: Record<string, DraftAttrPrefill>,
 ): TemuPublishPrefill {
   const weightG = numericText(entry.weight_g);
   const length = numericText(entry.length_cm);
@@ -334,8 +376,11 @@ function entryPrefill(
     // 带上 id 和上次选过的类目：发布页选完会回写，下次带入直接选中
     draftId: entry.id,
     categoryPath: memo?.[entry.id]?.path,
-    // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的
-    needsReview: buildNeedsReview(entry),
+    // 入草稿库时按类目估好的属性：带进去直接铺上，发布页只补剩下没估到的
+    attrPicks: attrPrefills?.[entry.id]?.picks,
+    // 进发布页要人工核对的字段：POD 导出里是模板占位值，参考价则是「算出来的」不是填的，
+    // 产品属性则是按类目「估」的（第一个可用选项），更要人看
+    needsReview: [...(buildNeedsReview(entry) ?? []), ...(attrPrefills?.[entry.id] ? ["产品属性（自动估）"] : [])],
   };
 }
 
@@ -380,6 +425,10 @@ export function TemuDraftLibraryPage({
   // 草稿 → 上次在发布页选过的 Temu 类目：进页面/切回来都重读，刚选完的能立刻显示
   const [categoryMemo, setCategoryMemo] = useState<Record<string, DraftCategoryMemo>>(() =>
     localStore.draftCategories(),
+  );
+  /** 草稿 → 入草稿库时按叶子类目估出来的产品属性（点「用于发布」直接带进发布页） */
+  const [attrPrefills, setAttrPrefills] = useState<Record<string, DraftAttrPrefill>>(() =>
+    readDraftAttrPrefills(storageScope()),
   );
   const [showFailures, setShowFailures] = useState(false);
   const [productTpl, setProductTpl] = useState("");
@@ -515,6 +564,80 @@ export function TemuDraftLibraryPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries]);
 
+  /**
+   * 入草稿库时把产品属性**估一遍**，点「用于发布」就不用再手点 8 个下拉。
+   *
+   * 估的口径见 `data/attrEstimate.ts`：同类目上次填的 > 标题点名 > 第一个可用选项。
+   * 猜出来的值都会标 `guessed`，发布页会提示「按类目估的，请核对」。
+   *
+   * 限流：attrs 按 catId 缓存在内存里（同类目 N 条草稿只打一次网关），
+   * 一次最多 ATTR_ESTIMATE_LIMIT 条，剩下的下次进页面继续。
+   */
+  const attrEstimateCacheRef = useRef(new Map<number, TemuAttributes | null>());
+  const attrEstimatingRef = useRef(false);
+  useEffect(() => {
+    if (attrEstimatingRef.current || !entries.length) return;
+    const scope = storageScope();
+    const pending = entries
+      .map((entry) => ({ entry, leaf: leafCatIdOf(categoryMemo[entry.id]?.path) }))
+      .filter(({ entry, leaf }) => {
+        // 没有叶子类目就没法知道有哪些属性 —— 等自动分类把类目补上再估
+        if (!leaf) return false;
+        const saved = attrPrefills[entry.id];
+        return !saved || Number(saved.catId) !== leaf;
+      })
+      .slice(0, ATTR_ESTIMATE_LIMIT);
+    if (!pending.length) return;
+
+    attrEstimatingRef.current = true;
+    let alive = true;
+    void (async () => {
+      const next: Record<string, DraftAttrPrefill> = {};
+      for (const { entry, leaf } of pending) {
+        if (!alive) break;
+        let attrs = attrEstimateCacheRef.current.get(leaf);
+        if (attrs === undefined) {
+          try {
+            attrs = await temuPublishApi.attributes(leaf);
+          } catch {
+            // 拉不到就不写结果：写了空值等于「这条永远不再试」
+            attrs = null;
+          }
+          attrEstimateCacheRef.current.set(leaf, attrs);
+        }
+        if (!attrs) continue;
+        const result = estimateAttributePicks({
+          attributes: attrs,
+          texts: autoFillSourceTexts({
+            // subtitle 是任务名（"AI 视频"这类），不是商品描述，不进匹配文本
+            title: entry.title || entry.subtitle,
+            description: entry.description,
+            categoryNames: [entry.category_name ?? ""],
+          }),
+          history: readAttrPicksHistory(scope, leaf),
+        });
+        next[entry.id] = {
+          catId: leaf,
+          picks: result.picks,
+          at: Date.now(),
+          guessed: result.guessed,
+        };
+      }
+      if (alive && Object.keys(next).length) {
+        saveDraftAttrPrefills(scope, next);
+        setAttrPrefills((current) => ({ ...current, ...next }));
+      }
+    })().finally(() => {
+      if (alive) attrEstimatingRef.current = false;
+    });
+    return () => {
+      alive = false;
+      attrEstimatingRef.current = false;
+    };
+    // attrPrefills 故意不进依赖：写入后会触发自己，加进去会无限循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, categoryMemo]);
+
   const totalCount = data?.total ?? 0;
   const totalPages = Math.max(1, data?.pages ?? 1);
   const currentPage = Math.min(page, totalPages);
@@ -544,12 +667,25 @@ export function TemuDraftLibraryPage({
     return same ? paths[0] : [];
   }, [selected, categoryMemo]);
 
+  /**
+   * 整批同一个叶子类目时，用第一条草稿估好的属性当批量配置的初值。
+   * 类目不一致就不传：不同类目的 pid 完全不同，混着填只会塞错值。
+   */
+  const batchCommonPicks = useMemo(() => {
+    if (!batchCommonCategory.length) return undefined;
+    const leaf = batchCommonCategory[batchCommonCategory.length - 1]?.catId;
+    const first = Array.from(selected)
+      .map((id) => attrPrefills[id])
+      .find((item) => item && Number(item.catId) === Number(leaf));
+    return first?.picks;
+  }, [batchCommonCategory, selected, attrPrefills]);
+
   const selectedIds = () => Array.from(selected);
 
   /** 「用于发布」二次确认：确认后才把这条草稿带进发布页。 */
   const confirmUseDraft = () => {
     if (!confirmEntry) return;
-    onUseDraft(entryPrefill(confirmEntry, categoryMemo));
+    onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills));
     setConfirmEntry(null);
   };
 
@@ -607,7 +743,7 @@ export function TemuDraftLibraryPage({
         text: `${index + 1}/${targets.length} · ${entry.title.slice(0, 16)}`,
       });
       try {
-        const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo), template, variant);
+        const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
         const result = await temuPublishApi.publish(draft);
         const goodsId = String(
           (result.result as Record<string, unknown> | undefined)?.goodsId ??
@@ -649,7 +785,7 @@ export function TemuDraftLibraryPage({
           traceId: parsed.traceId,
           // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
           prefill: {
-            ...entryPrefill(entry, categoryMemo),
+            ...entryPrefill(entry, categoryMemo, attrPrefills),
             categoryPath: categoryMemo?.[entry.id]?.path ?? template.categoryPath,
           },
         });
@@ -1174,18 +1310,26 @@ export function TemuDraftLibraryPage({
                     <td className="col-ready">
                       {(() => {
                         const missing = draftMissingFields(entry, categoryMemo);
+                        const estimated = estimatedPickCount(attrPrefills[entry.id]);
                         if (!missing.length) {
                           return (
                             <span
                               className="temu-ready-stack"
                               title={
-                                "草稿字段齐了，不用回上游补数据。" +
-                                "但产品属性是 Temu 的必填项，草稿库不存属性数据，" +
-                                "要在发布页选完类目后填（同类目填过一次，后面的可以自动沿用）"
+                                estimated
+                                  ? `产品属性已按类目估了 ${estimated} 项（没依据时取第一个可用选项）；` +
+                                    "带入发布页时会直接填好，发布前请核对"
+                                  : "草稿字段齐了，不用回上游补数据。" +
+                                    "但产品属性是 Temu 的必填项，草稿库不存属性数据，" +
+                                    "要在发布页选完类目后填（同类目填过一次，后面的可以自动沿用）"
                               }
                             >
                               <span className="temu-ready is-ok">字段齐</span>
-                              <span className="temu-ready is-pending">属性待填</span>
+                              {estimated ? (
+                                <span className="temu-ready is-estimated">属性已估 {estimated}</span>
+                              ) : (
+                                <span className="temu-ready is-pending">属性待填</span>
+                              )}
                             </span>
                           );
                         }
@@ -1207,7 +1351,7 @@ export function TemuDraftLibraryPage({
                         type="button"
                         className="temu-btn"
                         title="带这条草稿进发布页，改完所有信息后再提交"
-                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo))}
+                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills))}
                       >
                         编辑
                       </button>
@@ -1322,7 +1466,11 @@ export function TemuDraftLibraryPage({
                   </select>
                 </label>
 
-                <BatchManualConfig onChange={setManualTemplate} initialPath={batchCommonCategory} />
+                <BatchManualConfig
+                  onChange={setManualTemplate}
+                  initialPath={batchCommonCategory}
+                  initialPicks={batchCommonPicks}
+                />
 
                 <ul className="temu-batch-list">
                   {batchTargets.slice(0, 6).map((entry) => (

@@ -3122,6 +3122,12 @@ textarea.temu-input {
   background: var(--theme-module-soft, rgba(0, 0, 0, 0.05));
 }
 
+/* 属性是按类目「估」的：蓝标提示，跟「填好了」区分开 */
+.temu-ready.is-estimated {
+  color: #1f5b96;
+  background: #e8f2fc;
+}
+
 /* 翻页请求进行中：保留上一页内容并压暗，比闪成空白稳 */
 .temu-draft-table-wrap.is-loading {
   opacity: 0.45;
