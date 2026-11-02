@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from wh_local.modules.pod_customization.billing_contract import (
@@ -452,3 +453,32 @@ def test_free_export_maps_five_or_six_images_to_fixed_roles_plus_extras() -> Non
         "extra_2": "https://cdn.example.com/6.png",
     }
     assert _style_images({"mode": "free"}, items[:3]) is None
+
+
+class _SettleBoomBilling(FreeBilling):
+    """结算阶段必然失败：用来验证收口异常不会盖掉业务异常。"""
+
+    def settle(self, actor: Actor, grant, plan, outcomes) -> None:  # noqa: ARG002
+        raise RuntimeError("settle boom")
+
+
+def test_free_batch_failure_keeps_original_error_when_settle_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """建批失败时结算也失败：抛给上层的必须是「建批失败」，不是「结算失败」。
+
+    冻结在业务动作之前，所以失败要收口（按 no_return 结算 = 不扣费）。
+    但结算自己会抛（执行轮次推进、远端 5xx），裸调会把真正的错因盖掉。
+    """
+
+    runtime = FreeImageRuntime()
+    billing = _SettleBoomBilling()
+    service = _service(tmp_path, runtime, billing)
+
+    def explode(*_args, **_kwargs):
+        raise ValueError("create failed")
+
+    monkeypatch.setattr(service.repository, "create_free_batch", explode)
+
+    with pytest.raises(ValueError, match="create failed"):
+        _create(service)
