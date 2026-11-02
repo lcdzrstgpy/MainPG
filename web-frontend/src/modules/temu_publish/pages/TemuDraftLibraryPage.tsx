@@ -7,6 +7,8 @@ import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
+import { categorySearchTexts } from "../utils/categoryMatch";
+import { categoryPathFromDto } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
 import type { TemuDraftEdit, TemuDraftEntry, TemuDraftLibrary, TemuPublishPrefill } from "../types";
 import "../styles/temuPublish.css";
@@ -26,6 +28,12 @@ const DRAFT_REMARKS_KEY = "temu_draft_remarks_v1";
  * 滚动和翻页都在等图。改成服务端分页 30/页：只拉当前页、只解码当前页的图。
  */
 const PAGE_SIZE = 30;
+/**
+ * 入草稿库时自动按标题匹配 Temu 类目：一次最多补这么多条、并发这么多路。
+ * 限流是为了别在打开页面时同时打几十个 category.match（网关有每分钟限流）。
+ */
+const AUTO_LIMIT = 24;
+const AUTO_CONCURRENCY = 3;
 /** 搜索输入的防抖：边打边发请求会打断列表 */
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -266,7 +274,9 @@ function siteCategoryLabel(
   entry: TemuDraftEntry,
   memo: Record<string, DraftCategoryMemo>,
 ): string {
-  return memo[entry.id]?.label || entry.category_name || "发布页选类目";
+  const hit = memo[entry.id];
+  if (hit?.label) return hit.auto ? `自动 · ${hit.label}` : hit.label;
+  return entry.category_name || "发布页选类目";
 }
 
 /**
@@ -279,8 +289,9 @@ function siteCategoryLabel(
 function categoryState(
   entry: TemuDraftEntry,
   memo: Record<string, DraftCategoryMemo>,
-): "picked" | "draft" | "none" {
-  if (memo[entry.id]?.label) return "picked";
+): "picked" | "auto" | "draft" | "none" {
+  const hit = memo[entry.id];
+  if (hit?.label) return hit.auto ? "auto" : "picked";
   if (entry.category_name) return "draft";
   return "none";
 }
@@ -453,6 +464,57 @@ export function TemuDraftLibraryPage({
       .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry)),
     [data, edits, hidden],
   );
+  /**
+   * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
+   *
+   * 只处理「还没有类目记忆」的草稿，一次最多 AUTO_LIMIT 条、并发 3：
+   * - 结果写成 memo 但带 `auto: true`，UI 上标「自动」，人工选过的不会被覆盖
+   * - 匹配失败/没有叶子路径就跳过，下次进页面再试（不记空值，否则永远不重试）
+   * - 只是为了少点一次，**不代替确认**：类目错了发出去要下架重发，界面必须看得出来
+   */
+  const autoCategorizingRef = useRef(false);
+  useEffect(() => {
+    if (autoCategorizingRef.current || !entries.length) return;
+    const pending = entries
+      .filter((entry) => !categoryMemo[entry.id]?.label)
+      .filter((entry) => (entry.title || entry.subtitle || "").trim().length >= 8)
+      .slice(0, AUTO_LIMIT);
+    if (!pending.length) return;
+    autoCategorizingRef.current = true;
+    let alive = true;
+    void (async () => {
+      const queue = [...pending];
+      const worker = async () => {
+        for (;;) {
+          const entry = queue.shift();
+          if (!entry || !alive) return;
+          const text = categorySearchTexts(entry.title || entry.subtitle)[0];
+          if (!text) continue;
+          try {
+            const result = await temuPublishApi.matchCategory(text, 100);
+            const leafPath = (result.categoryPathDTOS ?? [])
+              .map((dto) => categoryPathFromDto(dto))
+              .find((path) => path.length > 0 && path[path.length - 1].isLeaf);
+            if (!leafPath) continue;
+            localStore.rememberDraftCategory(entry.id, leafPath, { auto: true });
+            if (alive) setCategoryMemo(localStore.draftCategories());
+          } catch {
+            // 单条匹配失败不影响其它草稿；下次进页面会再试
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: AUTO_CONCURRENCY }, () => worker()));
+    })().finally(() => {
+      if (alive) autoCategorizingRef.current = false;
+    });
+    return () => {
+      alive = false;
+      autoCategorizingRef.current = false;
+    };
+    // categoryMemo 故意不进依赖：写入后会触发自己，加进去会无限循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries]);
+
   const totalCount = data?.total ?? 0;
   const totalPages = Math.max(1, data?.pages ?? 1);
   const currentPage = Math.min(page, totalPages);
@@ -467,6 +529,20 @@ export function TemuDraftLibraryPage({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [preview, confirmEntry, batchOpen]);
+
+  /**
+   * 勾选的草稿如果都被匹配到同一个叶子类目，现场配置就直接预填它：
+   * 用户只需填属性 + 选运费仓库，不用再搜一次类目。
+   */
+  const batchCommonCategory = useMemo(() => {
+    const paths = Array.from(selected)
+      .map((id) => categoryMemo[id]?.path)
+      .filter((path): path is NonNullable<typeof path> => !!path?.length);
+    if (!paths.length) return [];
+    const leafId = paths[0][paths[0].length - 1]?.catId;
+    const same = paths.every((path) => path[path.length - 1]?.catId === leafId);
+    return same ? paths[0] : [];
+  }, [selected, categoryMemo]);
 
   const selectedIds = () => Array.from(selected);
 
@@ -1032,17 +1108,31 @@ export function TemuDraftLibraryPage({
                           <>
                             <small
                               className={
-                                state === "picked" ? "is-picked" : state === "draft" ? "is-draft" : "is-missing"
+                                state === "picked"
+                                  ? "is-picked"
+                                  : state === "auto"
+                                    ? "is-auto"
+                                    : state === "draft"
+                                      ? "is-draft"
+                                      : "is-missing"
                               }
                               title={
                                 state === "picked"
                                   ? label
-                                  : state === "draft"
-                                    ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
-                                    : "还没选 Temu 类目，发布前必须选到叶子类目"
+                                  : state === "auto"
+                                    ? `按标题自动匹配的类目：${label}（只是大概方向，发布前建议确认）`
+                                    : state === "draft"
+                                      ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
+                                      : "还没选 Temu 类目，发布前必须选到叶子类目"
                               }
                             >
-                              {state === "picked" ? label : state === "draft" ? `草稿分类：${label}` : label}
+                              {state === "picked"
+                                ? label
+                                : state === "auto"
+                                  ? label
+                                  : state === "draft"
+                                    ? `草稿分类：${label}`
+                                    : label}
                             </small>
                             <em className="temu-draft-site">美国站</em>
                           </>
@@ -1214,7 +1304,7 @@ export function TemuDraftLibraryPage({
                   </select>
                 </label>
 
-                <BatchManualConfig onChange={setManualTemplate} />
+                <BatchManualConfig onChange={setManualTemplate} initialPath={batchCommonCategory} />
 
                 <ul className="temu-batch-list">
                   {batchTargets.slice(0, 6).map((entry) => (

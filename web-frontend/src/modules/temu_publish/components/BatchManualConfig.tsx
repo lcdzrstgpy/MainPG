@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TemuPropertyForm } from "./TemuPropertyForm";
 import { temuPublishApi } from "../api/temuPublishApi";
@@ -24,6 +24,11 @@ const SITE_ID = 100;
 type Props = {
   /** 配置完整时回传一份可直接用于批量发布的产品模板；不完整时回传 null */
   onChange: (template: ProductTemplate | null) => void;
+  /**
+   * 预填类目：整批草稿都被自动匹配到同一个叶子类目时传进来，
+   * 用户只需要填属性 + 选运费/仓库，不用再搜一次。
+   */
+  initialPath?: TemuCategory[];
 };
 
 function firstWarehouse(groups: TemuWarehouseGroup[]): string {
@@ -52,7 +57,7 @@ function flatWarehouses(groups: TemuWarehouseGroup[]): Array<{ id: string; name:
  *
  * 填完整就回传一份临时 ProductTemplate（不落盘，除非用户点「存成模板」）。
  */
-export function BatchManualConfig({ onChange }: Props) {
+export function BatchManualConfig({ onChange, initialPath }: Props) {
   const [specs, setSpecs] = useState<TemuParentSpec[]>([]);
   const [freights, setFreights] = useState<TemuFreightTemplate[]>([]);
   const [warehouseGroups, setWarehouseGroups] = useState<TemuWarehouseGroup[]>([]);
@@ -125,6 +130,16 @@ export function BatchManualConfig({ onChange }: Props) {
       setError(cause instanceof Error ? cause.message : "属性表没取到");
     }
   };
+
+  // 整批草稿自动匹配到同一类目时直接预填，省一次搜索（用户仍可改）
+  const prefilledRef = useRef(false);
+  useEffect(() => {
+    if (prefilledRef.current || !initialPath?.length) return;
+    prefilledRef.current = true;
+    void pickPath({ cat1DTO: initialPath[0], cat2DTO: initialPath[1], cat3DTO: initialPath[2], cat4DTO: initialPath[3], cat5DTO: initialPath[4] } as TemuCategoryPath);
+    // pickPath 在下面定义，闭包引用没问题（effect 在渲染后执行）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPath]);
 
   const warehouses = useMemo(() => flatWarehouses(warehouseGroups), [warehouseGroups]);
   const missing = attributes ? missingRequiredNames(visibleProperties(attributes, picks), picks) : [];

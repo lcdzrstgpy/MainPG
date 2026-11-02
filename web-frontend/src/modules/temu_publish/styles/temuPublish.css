@@ -3118,6 +3118,10 @@ textarea.temu-input {
 .temu-draft-table .col-cat small.is-draft {
   color: #6b8296;
 }
+/* 按标题自动匹配出来的 Temu 类目：是「有」但不是人工确认过，用橙色提醒看一眼 */
+.temu-draft-table .col-cat small.is-auto {
+  color: #a56a12;
+}
 
 /* ---------- 发布检查：缺项标红（只在点过发布被拦之后生效） ---------- */
 

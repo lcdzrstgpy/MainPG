@@ -325,12 +325,11 @@ test("本机老数据（价格存的是分）升级后自动换成元，且只�
 test("草稿库站点列显示类目路径：选过的优先、其次草稿自带、最后提示", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  // 取值顺序：本机记忆 → 草稿自带 category_name → 提示去发布页选
+  // 取值顺序：本机记忆（人工/自动）→ 草稿自带 category_name → 提示去发布页选
   assert.match(library, /function siteCategoryLabel\(/);
-  assert.match(
-    library,
-    /return memo\[entry\.id\]\?\.label \|\| entry\.category_name \|\| "发布页选类目";/,
-  );
+  assert.match(library, /const hit = memo\[entry\.id\];/);
+  assert.match(library, /if \(hit\?\.label\) return hit\.auto \? `自动 · \$\{hit\.label\}` : hit\.label;/);
+  assert.match(library, /return entry\.category_name \|\| "发布页选类目";/);
 
   // 带入发布页时把 id 和已选类目一起带过去
   assert.match(library, /draftId: entry\.id,/);
@@ -902,16 +901,21 @@ test("价格照常带入，但界面文案里不出现「推算」二字", () =>
 test("草稿库区分「草稿自带分类」和「已选 Temu 类目」", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  // 三态：发布页选过的 / 草稿自带（只是自由文本）/ 都没有
+  // 四态：发布页选过的 / 按标题自动匹配的 / 草稿自带（只是自由文本）/ 都没有
   assert.match(library, /function categoryState\(/);
-  assert.match(library, /if \(memo\[entry\.id\]\?\.label\) return "picked";/);
+  assert.match(library, /const hit = memo\[entry\.id\];/);
+  assert.match(library, /if \(hit\?\.label\) return hit\.auto \? "auto" : "picked";/);
   assert.match(library, /if \(entry\.category_name\) return "draft";/);
   assert.match(library, /草稿分类：\$\{label\}/);
-  // 草稿自带分类用中性色，不当成错误
-  assert.match(library, /state === "draft" \? "is-draft"/);
+  // 草稿自带分类用中性色，不当成错误；自动匹配用橙色提醒
+  assert.match(library, /state === "auto"/);
+  assert.match(library, /\? "is-auto"/);
+  assert.match(library, /state === "draft"/);
 
-  // 完整度只认发布页真选过的类目：自由文本不是类目 id，发布时照样得选
+  // 完整度只认「有 Temu 类目路径」：草稿自带的自由文本不是类目 id，发布时照样得选；
+  // 自动匹配出来的算「有」，但界面上标 auto 提醒确认
   assert.match(library, /if \(!categoryMemo\[entry\.id\]\?\.label\) missing\.push\("类目"\);/);
+  assert.match(library, /title=\{\s*state === "picked"/);
 });
 
 test("右侧「发布检查」下滑时固定在视口", () => {
@@ -1244,7 +1248,9 @@ test("批量发布：没有产品模板也能现场配类目+全量属性，直�
   );
 
   // 弹窗里挂上现场配置
-  assert.match(library, /<BatchManualConfig onChange=\{setManualTemplate\} \/>/);
+  assert.match(library, /<BatchManualConfig onChange=\{setManualTemplate\} initialPath=\{batchCommonCategory\} \/>/);
+  // 整批草稿同一个叶子类目时预填，省一次搜索
+  assert.match(library, /const batchCommonCategory = useMemo\(\(\) => \{/);
   // 产品模板和现场配置二选一：模板优先，没有就用现场配出来的临时模板
   assert.match(
     library,
@@ -1266,4 +1272,26 @@ test("批量发布：没有产品模板也能现场配类目+全量属性，直�
   assert.match(manual, /temuPublishApi\.parentSpecs\(\)/);
   // 配不齐就回传 null，别让父组件以为能发
   assert.match(manual, /if \(!path\.length \|\| !freightId \|\| !warehouseId\) \{\s*\n\s*onChange\(null\);/);
+});
+
+test("入草稿库时按标题自动匹配 Temu 类目（标 auto、不覆盖人工选的）", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 限流：一次最多 24 条、并发 3，别把网关打爆
+  assert.match(library, /const AUTO_LIMIT = 24;/);
+  assert.match(library, /const AUTO_CONCURRENCY = 3;/);
+
+  // 只补「还没有类目记忆」的草稿 —— 人工选过的绝不能被自动匹配覆盖
+  assert.match(library, /\.filter\(\(entry\) => !categoryMemo\[entry\.id\]\?\.label\)/);
+  // 标题太短的没意义，跳过
+  assert.match(library, /\.filter\(\(entry\) => \(entry\.title \|\| entry\.subtitle \|\| ""\)\.trim\(\)\.length >= 8\)/);
+  // 用标题派生的搜索词查类目，只认叶子路径
+  assert.match(library, /const text = categorySearchTexts\(entry\.title \|\| entry\.subtitle\)\[0\];/);
+  assert.match(library, /\.find\(\(path\) => path\.length > 0 && path\[path\.length - 1\]\.isLeaf\)/);
+  // 写入时打 auto 标记，UI 才知道要标「自动」
+  assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, leafPath, \{ auto: true \}\);/);
+  // 匹配失败不记空值：否则下次进来永远不会重试
+  assert.doesNotMatch(library, /rememberDraftCategory\(entry\.id, \[\]/);
+  // categoryMemo 不能进依赖：写入 → effect 重跑 → 死循环
+  assert.match(library, /\}, \[entries\]\);/);
 });
