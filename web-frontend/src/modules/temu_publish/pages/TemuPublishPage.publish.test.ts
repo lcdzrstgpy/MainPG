@@ -1396,7 +1396,11 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
   assert.doesNotMatch(library, /is-ok">可发</);
   assert.match(library, /<span className="temu-ready is-ok">字段齐<\/span>/);
   assert.match(library, /<span className="temu-ready is-pending">属性待填<\/span>/);
-  assert.match(library, /产品属性是 Temu 的必填项，草稿库不存属性数据/);
+  // 没估上时要说明「为什么」：没类目就去选一次，正在估就等一下
+  assert.match(library, /还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性/);
+  assert.match(library, /属性正在按类目估（同类目只请求一次），稍等一下或刷新/);
+  // 估上了要说清「其中几项是猜的」，否则「已估 8」会被读成「都填对了」
+  assert.match(library, /其中 \$\{guessedInPrefill\} 项是凭类目猜的/);
 
   // 表头也别再说「完整度」——那个词会被读成「填完了就能发」
   assert.doesNotMatch(library, />完整度</);
@@ -1404,6 +1408,14 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
 
   // 有缺项时的 tooltip 同样要提醒属性也要填
   assert.match(library, /另外产品属性也要在发布页填/);
+
+  // 勾了多条但类目不一致 → 必须说清原因，否则用户只看到类目是空的、以为坏了
+  assert.match(library, /const batchCategoryConflict = useMemo\(\(\) => \{/);
+  assert.match(library, /有 \$\{missing\} 条还没匹配到 Temu 类目，整批没法共用一套属性/);
+  assert.match(library, /勾选的草稿不在同一个叶子类目/);
+  assert.match(library, /\{batchCategoryConflict && \(/);
+  // 只要有一条没类目就不预填：整批套一个类目会把那条塞错
+  assert.match(library, /if \(paths\.some\(\(path\) => !path\?\.length\)\) return \[\];/);
 
   // 判定函数本身不掺属性：草稿库拿不到属性数据，掺进去只会让每条都「缺」
   const fn = library.slice(

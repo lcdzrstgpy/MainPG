@@ -693,14 +693,30 @@ export function TemuDraftLibraryPage({
    * 用户只需填属性 + 选运费仓库，不用再搜一次类目。
    */
   const batchCommonCategory = useMemo(() => {
-    const paths = Array.from(selected)
-      .map((id) => categoryMemo[id]?.path)
-      .filter((path): path is NonNullable<typeof path> => !!path?.length);
-    if (!paths.length) return [];
-    const leafId = paths[0][paths[0].length - 1]?.catId;
-    const same = paths.every((path) => path[path.length - 1]?.catId === leafId);
-    return same ? paths[0] : [];
+    const ids = Array.from(selected);
+    if (!ids.length) return [];
+    const paths = ids.map((id) => categoryMemo[id]?.path);
+    // 必须每一条都匹配到了类目：只要有一条没有，整批套同一个类目就会把那条塞错类目
+    if (paths.some((path) => !path?.length)) return [];
+    const leafId = paths[0]?.[paths[0].length - 1]?.catId;
+    if (!leafId) return [];
+    const same = paths.every((path) => path?.[path.length - 1]?.catId === leafId);
+    const first = paths[0];
+    return same && first ? first : [];
   }, [selected, categoryMemo]);
+
+  /**
+   * 勾了多条却没法整批共用一套类目/属性时，得说清原因 ——
+   * 否则用户只看到「类目是空的」，以为功能坏了，然后整批套错类目。
+   */
+  const batchCategoryConflict = useMemo(() => {
+    if (selected.size < 2 || batchCommonCategory.length) return "";
+    const missing = Array.from(selected).filter((id) => !categoryMemo[id]?.path?.length).length;
+    if (missing) {
+      return `有 ${missing} 条还没匹配到 Temu 类目，整批没法共用一套属性：先单独「用于发布」把它们选好类目，或分批发。`;
+    }
+    return "勾选的草稿不在同一个叶子类目（属性按类目定，不同类目不能共用），请分批发或在下面手动选一个类目。";
+  }, [selected, categoryMemo, batchCommonCategory]);
 
   /**
    * 整批同一个叶子类目时，用第一条草稿估好的属性当批量配置的初值。
@@ -1345,21 +1361,26 @@ export function TemuDraftLibraryPage({
                     <td className="col-ready">
                       {(() => {
                         const missing = draftMissingFields(entry, categoryMemo);
-                        const estimated = estimatedPickCount(
-                          attrPrefills[entry.id],
-                          leafCatIdOf(categoryMemo[entry.id]?.path),
-                        );
+                        const leafForEntry = leafCatIdOf(categoryMemo[entry.id]?.path);
+                        const prefill = attrPrefills[entry.id];
+                        const estimated = estimatedPickCount(prefill, leafForEntry);
+                        const guessedInPrefill =
+                          estimated && prefill ? Number(prefill.guessed ?? 0) : 0;
+                        const pendingHint = !leafForEntry
+                          ? "还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性"
+                          : "属性正在按类目估（同类目只请求一次），稍等一下或刷新";
                         if (!missing.length) {
                           return (
                             <span
                               className="temu-ready-stack"
                               title={
                                 estimated
-                                  ? `产品属性已按类目估了 ${estimated} 项（没依据时取第一个可用选项）；` +
-                                    "带入发布页时会直接填好，发布前请核对"
-                                  : "草稿字段齐了，不用回上游补数据。" +
-                                    "但产品属性是 Temu 的必填项，草稿库不存属性数据，" +
-                                    "要在发布页选完类目后填（同类目填过一次，后面的可以自动沿用）"
+                                  ? `产品属性已按类目估了 ${estimated} 项` +
+                                    (guessedInPrefill
+                                      ? `，其中 ${guessedInPrefill} 项是凭类目猜的（没有依据，取了第一个可用选项）`
+                                      : "") +
+                                    "；带入发布页时会直接填好，发布前请核对"
+                                  : `草稿字段齐了，不用回上游补数据。${pendingHint}`
                               }
                             >
                               <span className="temu-ready is-ok">字段齐</span>
@@ -1504,6 +1525,9 @@ export function TemuDraftLibraryPage({
                   </select>
                 </label>
 
+                {batchCategoryConflict && (
+                  <p className="temu-confirm-warn">{batchCategoryConflict}</p>
+                )}
                 {batchCommonPicks && (
                   <p className="temu-confirm-warn">
                     下面的产品属性取自本批第一条草稿的自动估值，<strong>整批共用</strong> ——
