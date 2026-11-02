@@ -12,6 +12,12 @@ import {
 import type { VariantRow } from "../components/PublishSkuPanel";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import {
+  autoFillAttributePicks,
+  autoFillSourceTexts,
+  describeAutoFill,
+  type AutoFillHit,
+} from "../data/attrAutofill";
+import {
   EMPTY_ATTR,
   missingRequiredNames,
   visibleProperties as visibleAttributeProperties,
@@ -177,12 +183,54 @@ const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
 /**
- * 类目属性选择也要落盘。
+ * 类目属性选择也要落盘，**按叶子类目分开存**。
  *
  * 之前只存 form / rows，attrPicks 是纯内存 state：刷新或 HMR 一下，7 个必填属性
  * 全空，用户得一个个重选。存档带 leafCatId —— 类目一换属性 pid 全变，不能盲恢复。
+ *
+ * 改成按 catId 存多份的原因：连发同款货时，下一个商品能直接沿用上一个的填法
+ * （喂给 autoFillAttributePicks 的 history）。只留最后一次的话，切一次类目回来就没了。
  */
-const ATTR_PICKS_KEY = "temu_publish_attr_picks_v1";
+const ATTR_PICKS_KEY = "temu_publish_attr_picks_v2";
+/** 旧版单条存档 {catId, picks}：只留最后一次。升级时还要读它，否则用户刚填的会丢。 */
+const ATTR_PICKS_KEY_V1 = "temu_publish_attr_picks_v1";
+/** 按类目留多少份历史：够覆盖日常几个类目，又不至于把本地存储撑大 */
+const ATTR_PICKS_HISTORY_MAX = 20;
+
+type AttrPicksHistory = Record<string, { picks?: Record<number, AttrPick>; at?: number }>;
+
+/** 某个叶子类目上次填了什么（先读新版多份存档，没有再退到旧版单条）。 */
+function readAttrPicksHistory(scope: string, catId: number): Record<number, AttrPick> {
+  if (!catId) return {};
+  const all = loadJsonLocal<AttrPicksHistory>(`${ATTR_PICKS_KEY}:${scope}`, {});
+  const hit = all?.[String(catId)]?.picks;
+  if (hit && typeof hit === "object") return hit;
+
+  const legacy = loadJsonLocal<{ catId?: number; picks?: Record<number, AttrPick> }>(
+    `${ATTR_PICKS_KEY_V1}:${scope}`,
+    {},
+  );
+  if (Number(legacy?.catId ?? 0) === catId && legacy?.picks && typeof legacy.picks === "object") {
+    return legacy.picks;
+  }
+  return {};
+}
+
+/** 存下某个类目的填写，并按时间裁剪到最多 {@link ATTR_PICKS_HISTORY_MAX} 个类目。 */
+function saveAttrPicksHistory(
+  scope: string,
+  catId: number,
+  picks: Record<number, AttrPick>,
+): void {
+  if (!catId) return;
+  const key = `${ATTR_PICKS_KEY}:${scope}`;
+  const all = loadJsonLocal<AttrPicksHistory>(key, {});
+  all[String(catId)] = { picks, at: Date.now() };
+  const kept = Object.entries(all)
+    .sort((a, b) => Number(b[1]?.at ?? 0) - Number(a[1]?.at ?? 0))
+    .slice(0, ATTR_PICKS_HISTORY_MAX);
+  saveJsonLocal(key, Object.fromEntries(kept));
+}
 // 变种模板存在 data/localStore.ts（VARIANT_KEY），key 必须保持一致
 const VARIANT_TEMPLATE_KEY = "temu_publish_variant_templates";
 /** 价格单位迁移标记：写过一次就不再动，否则会把用户新填的「元」又除一遍 */
@@ -600,14 +648,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [attrPicks, setAttrPicks] = useState<Record<number, AttrPick>>(() => {
     // 只在「存档里的叶子类目 == 当前恢复出来的叶子类目」时恢复：
     // 不同类目的属性 pid 完全不一样，盲恢复等于给新类目塞一堆不存在的 pid。
-    const saved = loadJsonLocal<{ catId?: number; picks?: Record<number, AttrPick> }>(
-      `${ATTR_PICKS_KEY}:${storageScope()}`,
-      {},
-    );
-    const savedCat = Number(saved?.catId ?? 0);
     const currentLeaf = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
-    if (!savedCat || !currentLeaf || savedCat !== currentLeaf) return {};
-    return saved?.picks && typeof saved.picks === "object" ? saved.picks : {};
+    return readAttrPicksHistory(storageScope(), currentLeaf);
+  });
+  /** 自动填需要读到「此刻已填了什么」；effect 里不能依赖 attrPicks（会自我触发） */
+  const attrPicksRef = useRef(attrPicks);
+  attrPicksRef.current = attrPicks;
+  /** 已经对哪个叶子类目跑过自动填：同一类目只跑一次，用户清空后不会被偷偷填回来。 */
+  const autoFilledCatRef = useRef(0);
+  const [autoFill, setAutoFill] = useState<{ hits: AutoFillHit[]; ambiguous: string[] }>({
+    hits: [],
+    ambiguous: [],
   });
 
   const [freightTemplates, setFreightTemplates] = useState<TemuFreightTemplate[]>([]);
@@ -719,16 +770,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const attrPicksKey = `${ATTR_PICKS_KEY}:${storageScope()}`;
   /**
-   * 类目属性选择落盘（带叶子类目 ID）。
+   * 类目属性选择落盘（按叶子类目分开存）。
    *
-   * 落盘的是「某个类目下选了什么」，所以必须连 catId 一起存；恢复时对不上就丢弃。
-   * 属性是下拉选的，不是逐字符输入，不需要防抖窗——但保持和其他存档一致的节奏。
+   * 落盘的是「某个类目下选了什么」，所以必须连 catId 一起存；恢复时按 catId 取，
+   * 对不上就不恢复。属性是下拉选的，不是逐字符输入，不需要防抖窗——但保持和其他
+   * 存档一致的节奏。
    */
   useEffect(() => {
     const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
     if (!leafCatId) return;
     const timer = setTimeout(() => {
-      saveJsonLocal(attrPicksKey, { catId: leafCatId, picks: attrPicks });
+      saveAttrPicksHistory(storageScope(), leafCatId, attrPicks);
     }, 300);
     return () => clearTimeout(timer);
   }, [attrPicks, categoryPath, attrPicksKey]);
@@ -755,6 +807,68 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 拉不到就维持空白：用户点一下类目还能重试
       });
   }, [categoryPath, attributes, rows]);
+
+  /**
+   * 产品属性自动填。
+   *
+   * 接口给的是「这个类目可以选哪些值」，不是「这批货是哪个值」，所以只能靠两条：
+   * ① 同一个叶子类目上次怎么填的（连发同款时最准；vid 已失效就跳过）；
+   * ② 标题/描述里点名了某个可选值（只认唯一命中，多个值同时出现说明判断不了）。
+   * 纯数值属性（厚度 mm、平方克重 g/㎡）和销售属性一律不填 —— 编一个数比空着更糟。
+   */
+  const runAttributeAutofill = (basePicks: Record<number, AttrPick>, leafCatId: number) => {
+    if (!attributes || !leafCatId) return;
+    const result = autoFillAttributePicks({
+      attributes,
+      picks: basePicks,
+      texts: autoFillSourceTexts({
+        title: form.title,
+        titleEn: form.titleEn,
+        description: form.description,
+        categoryNames: categoryPath.map((item) => categoryName(item)),
+      }),
+      history: readAttrPicksHistory(storageScope(), leafCatId),
+    });
+    if (result.hits.length) setAttrPicks(result.picks);
+    setAutoFill({ hits: result.hits, ambiguous: result.ambiguous });
+    autoFilledCatRef.current = leafCatId;
+  };
+
+  // 属性表一加载就填一次。依赖只跟 attributes：换类目必然换属性表；
+  // 标题是后来才补的话，点「按标题重新识别」再跑 —— 否则用户清空的值会被偷偷填回来。
+  useEffect(() => {
+    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!attributes || !leafCatId) return;
+    if (autoFilledCatRef.current === leafCatId) return;
+    runAttributeAutofill(attrPicksRef.current, leafCatId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attributes]);
+
+  /** 按当前标题重新识别：先撤掉上一轮自动填的值（用户手改过的保留），再跑一遍。 */
+  const reRunAttributeAutofill = () => {
+    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
+    if (!leafCatId) return;
+    const base = { ...attrPicksRef.current };
+    for (const hit of autoFill.hits) {
+      const pick = base[hit.pid];
+      if (pick && Number(pick.vid) === hit.vid) delete base[hit.pid];
+    }
+    runAttributeAutofill(base, leafCatId);
+  };
+
+  /** 一键撤掉自动填的值：只撤仍然等于自动填的那个值，手改过的不动。 */
+  const clearAttributeAutofill = () => {
+    const hits = autoFill.hits;
+    setAttrPicks((current) => {
+      const next = { ...current };
+      for (const hit of hits) {
+        const pick = next[hit.pid];
+        if (pick && Number(pick.vid) === hit.vid) delete next[hit.pid];
+      }
+      return next;
+    });
+    setAutoFill({ hits: [], ambiguous: [] });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -2756,13 +2870,45 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
-                <TemuPropertyForm
-                  attributes={attributes}
-                  picks={attrPicks}
-                  onChange={setAttrPicks}
-                  showErrors={showFieldErrors}
-                  optionalHint="不填也能发布，但可能是下级属性的开关"
-                />
+                <>
+                  {(autoFill.hits.length > 0 || autoFill.ambiguous.length > 0) && (
+                    <div className="temu-autofill-bar">
+                      <span>
+                        已自动填 <strong>{autoFill.hits.length}</strong> 项
+                        {autoFill.hits.length > 0 ? `（${describeAutoFill(autoFill.hits)}）` : ""}
+                        {autoFill.ambiguous.length > 0
+                          ? `；${autoFill.ambiguous.join("、")} 命中多个值，需要你自己选`
+                          : ""}
+                      </span>
+                      <span className="temu-autofill-actions">
+                        <button
+                          type="button"
+                          className="temu-link-button"
+                          onClick={reRunAttributeAutofill}
+                          title="标题或描述改过之后点这里，按当前文本重新识别"
+                        >
+                          按标题重新识别
+                        </button>
+                        {autoFill.hits.length > 0 && (
+                          <button
+                            type="button"
+                            className="temu-link-button"
+                            onClick={clearAttributeAutofill}
+                          >
+                            清空自动填
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  )}
+                  <TemuPropertyForm
+                    attributes={attributes}
+                    picks={attrPicks}
+                    onChange={setAttrPicks}
+                    showErrors={showFieldErrors}
+                    optionalHint="不填也能发布，但可能是下级属性的开关"
+                  />
+                </>
               )}
             </div>
           </section>

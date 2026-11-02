@@ -3575,3 +3575,33 @@ textarea.temu-input {
   gap: 10px;
   min-width: 0;
 }
+
+/* ---------- 产品属性自动填提示条 ---------- */
+
+.temu-autofill-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  color: var(--theme-text-secondary, #4a6379);
+  font-size: 12px;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+.temu-autofill-bar strong {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-autofill-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}

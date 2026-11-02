@@ -1179,15 +1179,19 @@ test("类目：刷新类目树入口 + 换类目二次确认", () => {
 });
 
 test("同事反馈的三点：属性落盘、带入即检查并一键修正、校验在上传之前", () => {
-  // ① attrPicks 落盘：带叶子类目 ID 存，恢复时类目对不上就丢弃
-  assert.match(page, /const ATTR_PICKS_KEY = "temu_publish_attr_picks_v1";/);
+  // ① attrPicks 落盘：**按叶子类目分开存**（连发同款时下一个商品能沿用上一个的填法）。
+  //    旧版单条存档 v1 仍兼容读取，升级那一下不该把用户刚填的清空。
+  assert.match(page, /const ATTR_PICKS_KEY = "temu_publish_attr_picks_v2";/);
+  assert.match(page, /const ATTR_PICKS_KEY_V1 = "temu_publish_attr_picks_v1";/);
   assert.match(page, /const \[attrPicks, setAttrPicks\] = useState<Record<number, AttrPick>>\(\(\) => \{/);
-  const restoreBlock = page.slice(
-    page.indexOf("const [attrPicks, setAttrPicks] = useState"),
-    page.indexOf("[freightTemplates, setFreightTemplates]"),
-  );
-  assert.match(restoreBlock, /if \(!savedCat \|\| !currentLeaf \|\| savedCat !== currentLeaf\) return \{\};/);
-  assert.match(page, /saveJsonLocal\(attrPicksKey, \{ catId: leafCatId, picks: attrPicks \}\);/);
+  assert.match(page, /return readAttrPicksHistory\(storageScope\(\), currentLeaf\);/);
+  // 读：先按 catId 取 v2，没有再退 v1（且只认 catId 对得上的）
+  assert.match(page, /const hit = all\?\.\[String\(catId\)\]\?\.picks;/);
+  assert.match(page, /if \(Number\(legacy\?\.catId \?\? 0\) === catId && legacy\?\.picks && typeof legacy\.picks === "object"\) \{/);
+  // 写：按时间裁剪，别让本地存储无限长
+  assert.match(page, /const ATTR_PICKS_HISTORY_MAX = 20;/);
+  assert.match(page, /saveAttrPicksHistory\(storageScope\(\), leafCatId, attrPicks\);/);
+  assert.match(page, /\.slice\(0, ATTR_PICKS_HISTORY_MAX\);/);
 
   // ② 刷新后类目恢复出来但属性表没拉过：补拉一次，顺带按该类目预设检查变种行
   const restoreEffect = page.slice(
@@ -1297,4 +1301,52 @@ test("入草稿库时按标题自动匹配 Temu 类目（标 auto、不覆盖人
   assert.doesNotMatch(library, /rememberDraftCategory\(entry\.id, \[\]/);
   // categoryMemo 不能进依赖：写入 → effect 重跑 → 死循环
   assert.match(library, /\}, \[entries\]\);/);
+});
+
+test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，标注来源且可撤销", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  const autofill = readFileSync(new URL("../data/attrAutofill.ts", import.meta.url), "utf8");
+
+  // ① 属性表一加载就跑一次；同一类目只跑一次，否则用户清空后会被偷偷填回来
+  assert.match(page, /const runAttributeAutofill = \(basePicks: Record<number, AttrPick>, leafCatId: number\) => \{/);
+  const effect = page.slice(
+    page.indexOf("  useEffect(() => {\n    const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);"),
+    page.indexOf("/** 按当前标题重新识别"),
+  );
+  assert.ok(effect.length > 0, "expected autofill effect");
+  assert.match(effect, /if \(autoFilledCatRef\.current === leafCatId\) return;/);
+  assert.match(effect, /runAttributeAutofill\(attrPicksRef\.current, leafCatId\);/);
+  // 依赖只跟 attributes：标题变了不能自动重跑（会把用户清空的值填回来）
+  assert.match(effect, /\}, \[attributes\]\);/);
+
+  // ② 命中才写回 state；没命中就别无谓触发重渲染 + 落盘
+  assert.match(page, /if \(result\.hits\.length\) setAttrPicks\(result\.picks\);/);
+  // ③ 历史（同类目上次的填写）要喂进去
+  assert.match(page, /history: readAttrPicksHistory\(storageScope\(\), leafCatId\),/);
+  // ③ 文本来源：标题/英文标题/描述/类目名
+  assert.match(page, /texts: autoFillSourceTexts\(\{/);
+  assert.match(page, /title: form\.title,/);
+  assert.match(page, /description: form\.description,/);
+
+  // ④ 撤销与重跑都只动「仍然等于自动填的那个值」，手改过的保留
+  assert.match(page, /const reRunAttributeAutofill = \(\) => \{/);
+  assert.match(page, /if \(pick && Number\(pick\.vid\) === hit\.vid\) delete base\[hit\.pid\];/);
+  assert.match(page, /const clearAttributeAutofill = \(\) => \{/);
+  assert.match(page, /if \(pick && Number\(pick\.vid\) === hit\.vid\) delete next\[hit\.pid\];/);
+
+  // ⑤ 提示条写明来源与需要人工确认的项
+  assert.match(page, /className="temu-autofill-bar"/);
+  assert.match(page, /已自动填 <strong>\{autoFill\.hits\.length\}<\/strong> 项/);
+  assert.match(page, /describeAutoFill\(autoFill\.hits\)/);
+  assert.match(page, /命中多个值，需要你自己选/);
+  assert.match(page, /按标题重新识别/);
+  assert.match(page, /清空自动填/);
+  assert.match(css, /\.temu-autofill-bar \{/);
+
+  // ⑥ 核心规则在纯函数里（行为测试见 data/attrAutofill.test.ts）
+  assert.match(autofill, /if \(item\.isSale\) continue;/);
+  assert.match(autofill, /if \(!values\.length\) continue;/);
+  assert.match(autofill, /if \(matched\.length === 1\) \{/);
+  assert.match(autofill, /else if \(matched\.length > 1\) \{/);
+  assert.match(autofill, /const PLACEHOLDER_VALUE = /);
 });
