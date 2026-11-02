@@ -2426,3 +2426,17 @@ def test_sync_provider_credentials_needs_token(tmp_path: Path, monkeypatch) -> N
         db, "cust_c", base_url="https://x/auth-api", token_resolver=lambda: ""
     )
     assert called == []
+
+
+def test_category_cache_ttl_stays_short_enough_to_see_temu_category_changes() -> None:
+    """类目树缓存不能太长：Temu 调整/下架类目后，用户可能发到已废弃类目。
+
+    原来是 6 小时，实测太保守（改完类目第二天上午还是旧的）。1 小时是折中；
+    真要更长就得配一个手动刷新入口，否则这条会红。
+    """
+
+    from wh_local.modules.temu_publish import client as temu_client
+
+    assert temu_client.CACHE_TTL_CATEGORIES <= 60 * 60, (
+        "类目缓存超过 1 小时：Temu 改类目后用户看不到，可能发到已废弃类目"
+    )

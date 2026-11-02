@@ -19,7 +19,10 @@ import requests
 PRODUCT_ROUTER = "https://yingluan-api.qibang-global.vip/api/temu-product/openapi/router"
 
 # 发布页常用的缓存时长（秒）。
-CACHE_TTL_CATEGORIES = 6 * 60 * 60
+# 类目树 6 小时太长：Temu 调整/下架类目后，最长要 6 小时才能看到，
+# 期间用户可能把商品发到已废弃的类目上。1 小时是「基本不浪费请求」和
+# 「改动当天能看到」的折中。
+CACHE_TTL_CATEGORIES = 60 * 60
 CACHE_TTL_ATTRIBUTES = 60 * 60
 CACHE_TTL_LOGISTICS = 30 * 60
 

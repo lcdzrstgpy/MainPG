@@ -52,6 +52,14 @@ const SITE_ID = 100;
 const DEFAULT_SHIPMENT_DAYS = "7";
 const EMPTY_ATTR = { vid: 0, text: "" };
 
+/** 换类目后变种行里不合法的颜色/尺码值（只提示，不自动改）。 */
+type SpecMismatch = {
+  rowKey: string;
+  rowNo: number;
+  field: "颜色" | "尺码";
+  value: string;
+};
+
 /**
  * 类目匹配带重试。
  *
@@ -623,6 +631,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [productTemplates, setProductTemplates] = useState<ProductTemplate[]>(() =>
     localStore.productTemplates(),
   );
+  // 换类目后行里残留的非法规格值：只提示不自动改（清行会丢价格/重量）
+  const [specMismatch, setSpecMismatch] = useState<SpecMismatch[]>([]);
   const [variantTemplates, setVariantTemplates] = useState<VariantTemplate[]>(() =>
     localStore.variantTemplates(),
   );
@@ -935,10 +945,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         const attrs = await temuPublishApi.attributes(item.catId);
         setAttributes(attrs);
         setAttrPicks({});
+        setSpecMismatch(findSpecMismatches(attrs, rows));
         saveJsonLocal(recentCategoryKey, next);
       } else {
         setAttributes(null);
         setAttrPicks({});
+        setSpecMismatch([]);
         await loadLevel(item.catId);
       }
     });
@@ -951,6 +963,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         setCategoryPath([]);
         setAttributes(null);
         setAttrPicks({});
+        setSpecMismatch([]);
         await loadLevel(0);
         return;
       }
@@ -958,6 +971,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setCategoryPath(next);
       setAttributes(null);
       setAttrPicks({});
+      setSpecMismatch([]);
       await loadLevel(next[next.length - 1].catId);
     });
 
@@ -973,12 +987,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       setMatchPaths([]);
       if (!leaf?.isLeaf) {
         setAttributes(null);
+        // 类目还没定到叶子：旧属性必须一起清，否则会挂着上一级类目的属性值
+        setAttrPicks({});
+        setSpecMismatch([]);
         await loadLevel(leaf?.catId ?? 0);
         return;
       }
       const attrs = await temuPublishApi.attributes(leaf.catId);
       setAttributes(attrs);
-      if (!sameLeaf) setAttrPicks({});
+      if (!sameLeaf) {
+        setAttrPicks({});
+        // 换到别的类目了：行里的颜色/尺码可能不在新类目预设里，一次性列出来
+        setSpecMismatch(findSpecMismatches(attrs, rows));
+      }
       setCategoryOptions([]);
       saveJsonLocal(recentCategoryKey, path);
       // 回写给来源草稿：草稿库那行会显示类目路径，下次带入也直接选中
@@ -1422,6 +1443,46 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /** 取某个父规格下的预设值（给变种表下拉用）。 */
   const specOptions = (parentSpecId: number): string[] =>
     (saleValueIndex.get(parentSpecId) ?? []).map((item) => item.name);
+
+  /**
+   * 换类目后，变种行里已有的颜色/尺码可能不在新类目的预设值里。
+   *
+   * Temu 的规格值必须来自类目预设（自造值提交报「不合法的规格属性 Color_Black」），
+   * 而换类目时我们**不清空行**（价格/重量都在里面，清 = 丢数据）。所以这里只做检查，
+   * 一次性把全部不合法的值列出来 —— 原来要等到点发布、ensureSpec 逐行抛错，
+   * 而且一次只报第一行第一个值。
+   *
+   * 只在类目确实给了预设值时才判定，避免「类目没有销售属性」被误报。
+   */
+  const findSpecMismatches = (
+    attrs: TemuAttributes | null,
+    list: VariantRow[],
+  ): SpecMismatch[] => {
+    const presets = new Map<number, Set<string>>();
+    for (const prop of attrs?.properties ?? []) {
+      if (!prop.isSale) continue;
+      const parentId = Number(prop.parentSpecId ?? 0);
+      if (!parentId) continue;
+      const names = new Set(
+        (prop.values ?? []).map((item) => String(item.value ?? "").trim()).filter(Boolean),
+      );
+      if (names.size) presets.set(parentId, names);
+    }
+    const colorPresets = presets.get(colorParentId);
+    const sizePresets = presets.get(sizeParentId);
+    const out: SpecMismatch[] = [];
+    list.forEach((row, index) => {
+      const color = row.colorName.trim();
+      if (color && colorPresets && !colorPresets.has(color)) {
+        out.push({ rowKey: row.key, rowNo: index + 1, field: "颜色", value: color });
+      }
+      const size = row.sizeName.trim();
+      if (size && sizePresets && !sizePresets.has(size)) {
+        out.push({ rowKey: row.key, rowNo: index + 1, field: "尺码", value: size });
+      }
+    });
+    return out;
+  };
 
   const ensureSpec = async (
     parentSpec: TemuParentSpec | null,
@@ -2974,6 +3035,31 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 ))}
               </select>
             </div>
+            {specMismatch.length > 0 && (
+              <div className="temu-spec-mismatch" role="status">
+                <div className="temu-spec-mismatch-head">
+                  <strong>有 {specMismatch.length} 个颜色/尺码不在当前类目的预设值里</strong>
+                  <button
+                    type="button"
+                    className="temu-link-button"
+                    onClick={() => setSpecMismatch([])}
+                  >
+                    知道了
+                  </button>
+                </div>
+                <p className="temu-muted">
+                  换类目后规格值必须重选：Temu 只认类目预设值，自己填的提交会被判「不合法的规格属性」。
+                  价格、重量这些没动，改完规格就行。
+                </p>
+                <ul>
+                  {specMismatch.map((item) => (
+                    <li key={`${item.rowKey}-${item.field}`}>
+                      第 {item.rowNo} 行 {item.field}「{item.value}」
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <PublishSkuPanel
               rows={rows}
               onRowsChange={setRows}

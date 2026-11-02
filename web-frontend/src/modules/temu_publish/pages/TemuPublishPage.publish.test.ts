@@ -1082,3 +1082,39 @@ test("类目：手动选过就不许自动匹配再改掉，套产品模板时�
     "切类目必须在填属性之前，否则 applyCategory 里的 setAttrPicks({}) 会把刚填的清掉",
   );
 });
+
+test("类目：换类目后行里残留的非法规格值一次性列出来，不自动清行", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 检查函数：只按当前类目的销售属性预设值判定，且只返回清单（不改行）
+  assert.match(page, /const findSpecMismatches = \(/);
+  assert.match(page, /if \(!prop\.isSale\) continue;/);
+  assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "颜色", value: color \}\);/);
+  assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "尺码", value: size \}\);/);
+  // 清行会丢价格/重量，所以这里不许出现任何 setRows([])
+  assert.doesNotMatch(
+    page.slice(page.indexOf("const findSpecMismatches = ("), page.indexOf("const ensureSpec = async")),
+    /setRows\(/,
+  );
+
+  // 三条换类目路径都要触发检查（点选下钻会直接清属性，靠它提示）
+  const chooseCategory = page.slice(
+    page.indexOf("const chooseCategory = (item: TemuCategory) =>"),
+    page.indexOf("const resetToLevel = (index: number) =>"),
+  );
+  assert.match(chooseCategory, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
+
+  const applyCategory = page.slice(
+    page.indexOf("const applyCategory = (path: TemuCategory[]"),
+    page.indexOf("applyCategoryRef.current = applyCategory"),
+  );
+  assert.match(applyCategory, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
+  // 非叶子分支也要清属性（P3：原来只 setAttributes(null)，旧属性会挂着）
+  assert.match(applyCategory, /setAttributes\(null\);[\s\S]*?setAttrPicks\(\{\}\);/);
+
+  // 提示区 + 样式
+  assert.match(page, /className="temu-spec-mismatch"/);
+  assert.match(page, /有 \{specMismatch\.length\} 个颜色\/尺码不在当前类目的预设值里/);
+  assert.match(css, /\.temu-spec-mismatch \{/);
+  assert.match(css, /\.temu-spec-mismatch ul \{[\s\S]*?max-height: 132px;/);
+});

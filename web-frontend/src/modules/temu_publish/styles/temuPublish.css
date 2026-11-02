@@ -278,6 +278,50 @@ textarea.temu-input {
   font-size: 13px;
 }
 
+/* 换类目后行里残留的非法规格值：只提示，不动用户填的价格/重量 */
+.temu-spec-mismatch {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #edc4c1;
+  border-radius: var(--radius-md, 10px);
+  background: #fff4f3;
+  color: #a84c48;
+  font-size: 12.5px;
+}
+
+.temu-spec-mismatch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.temu-spec-mismatch p {
+  margin: 0;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.temu-spec-mismatch ul {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 132px;
+  overflow: auto;
+}
+
+.temu-link-button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .temu-two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
