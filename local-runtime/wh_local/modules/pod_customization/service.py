@@ -680,7 +680,7 @@ class PodCustomizationService:
         filename: str,
         content: bytes,
     ) -> dict[str, Any]:
-        """自由定制参考图上传：一张一传，最多 4 张，只作用于第 1 张。"""
+        """自由定制参考图上传：一张一传，最多 2 张，只作用于第 1 张。"""
         stored = self.assets.save_image(actor.workspace_id, actor.id, content)
         asset = self.repository.create_asset(
             workspace_id=actor.workspace_id,

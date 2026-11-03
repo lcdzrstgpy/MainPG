@@ -17,6 +17,7 @@ from wh_local.modules.pod_customization.contracts import (
     FREE_IMAGE_MODEL_FLASH,
     FREE_IMAGE_MODEL_PRO,
     FREE_PANEL_ROLES,
+    MAX_FREE_REFERENCE_IMAGES,
     FreeBatchCreate,
     FreeListingFieldsUpdate,
     FreePanelReorder,
@@ -185,6 +186,25 @@ def test_free_batch_generates_one_image_with_verbatim_prompt(tmp_path: Path) -> 
     assert stored["items"][0]["variant_index"] == 1
     assert stored["items"][0]["prompt"] == "  a red fox in the snow  "
     assert runtime.publications[0][0] == "hero"
+
+
+def test_free_batch_accepts_at_most_two_reference_images() -> None:
+    """参考图只服务主图：产品口径是两张，第三张在契约层就该被拒。"""
+
+    payload = {
+        "client_request_id": "req-1",
+        "image_model": FREE_IMAGE_MODEL_FLASH,
+        "target_image_count": 4,
+        "prompt": "a red fox",
+        "title_enabled": True,
+        "reference_asset_ids": ["asset-a", "asset-b"],
+    }
+    assert MAX_FREE_REFERENCE_IMAGES == 2
+    FreeBatchCreate.model_validate(payload)
+    with pytest.raises(ValueError):
+        FreeBatchCreate.model_validate(
+            {**payload, "reference_asset_ids": ["asset-a", "asset-b", "asset-c"]}
+        )
 
 
 def test_free_next_slot_uses_first_image_and_supports_out_of_order(tmp_path: Path) -> None:
