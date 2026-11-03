@@ -20,10 +20,12 @@ from wh_local.modules.product_processing.domain.usage_rooms import (
     resolve_usage_place,
 )
 from wh_local.modules.product_processing.service import (
+    PET_PRODUCT_RULE,
     _apply_background_rules,
     _apply_real_usage_rules,
     _apply_scene_main_background,
     _grid_preset_panel_plan,
+    _is_pet_product,
     _resolve_scene_style,
     _scene_family_plan,
 )
@@ -126,6 +128,17 @@ def test_selected_backdrop_wins_over_real_usage_place() -> None:
     # 2-3 格仍按真实使用位置
     assert place in plan
     assert "no corner badge" in panel1
+
+
+def test_pet_products_get_the_no_ghost_garment_rule() -> None:
+    assert _is_pet_product("宠物用品 / 狗狗服饰", "冬季加厚宠物背心")
+    assert not _is_pet_product("厨房电器", "热狗机")
+    assert not _is_pet_product("厨房 / 餐具", "陶瓷碗")
+
+    rule = PET_PRODUCT_RULE
+    assert "ghost mannequin" in rule
+    assert "WHOLE pet" in rule
+    assert "Never render only legs" in rule
 
 
 def test_resolve_scene_style_is_stable() -> None:

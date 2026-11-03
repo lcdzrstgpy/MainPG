@@ -480,6 +480,48 @@ def test_batch_image_prompt_not_injected_when_empty(monkeypatch) -> None:
     assert all(MARKER not in call["prompt"] for call in processor.calls)
 
 
+def test_pet_product_prompt_carries_ghost_garment_rule(monkeypatch) -> None:
+    """宠物用品必须带「空壳衣服/半截宠物」禁令，否则会出缺腿缺头的诡异图。"""
+    svc, processor = _grid_service(monkeypatch)
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "冬季加厚宠物背心",
+        "宠物用品 / 狗狗服饰",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=1,
+    )
+
+    assert processor.calls
+    for call in processor.calls:
+        assert "PET PRODUCT REALISM" in call["prompt"]
+        assert "ghost mannequin" in call["prompt"]
+        assert "WHOLE pet" in call["prompt"]
+
+
+def test_non_pet_prompt_has_no_pet_rule(monkeypatch) -> None:
+    svc, processor = _grid_service(monkeypatch)
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=1,
+    )
+
+    assert processor.calls
+    assert all("PET PRODUCT REALISM" not in call["prompt"] for call in processor.calls)
+
+
 def test_batch_image_prompt_wrapper_defaults_to_scene_main_background(monkeypatch) -> None:
     """默认主图也走场景背景：必须带主图覆盖声明，不再声明纯白豁免。"""
     svc, processor = _grid_service(monkeypatch)

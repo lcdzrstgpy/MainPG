@@ -12,6 +12,7 @@ from typing import Any
 
 from .image_slots import apply_slot_overrides
 from .policy import is_safe_external_url
+from .variant_axes import COLOR_AXIS_NAMES, SPLIT_SIZE_AXIS_NAME, axis_key, split_color_size
 from ....shared.miaoshou_workbook import (
     DEFAULT_SHIP_DAYS,
     MS_KIND_APPAREL,
@@ -194,6 +195,14 @@ def clean_variant_attributes(attributes: Any) -> list[tuple[str, str]]:
             continue
         if _is_variant_value_noise(name_text, value_text):
             continue
+        # 「颜色=蓝色 S」这类把尺码写进颜色选项的采集数据，导出前拆成颜色 + 尺码两轴，
+        # 否则店小秘只得到 Color: 蓝色 S，没有 Size 轴，导入后无法按尺码拆分。
+        if axis_key(name_text) in COLOR_AXIS_NAMES:
+            split = split_color_size(value_text)
+            if split:
+                cleaned.append((_variant_axis_name(name_text), split[0]))
+                cleaned.append((_variant_axis_name(SPLIT_SIZE_AXIS_NAME), split[1]))
+                continue
         cleaned.append((_variant_axis_name(name_text), value_text))
     return cleaned
 
