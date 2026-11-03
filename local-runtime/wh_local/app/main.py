@@ -1213,6 +1213,13 @@ def _register_frontend_shell(app: FastAPI) -> None:
             status_code=503,
         )
 
+    @app.get("/privacy.md", include_in_schema=False)
+    def workbench_privacy_markdown():
+        """服务端页面的「纯文本版本」：本地不存副本，直接跳平台服务器。"""
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(f"{_PRIVACY_PAGE_URL}.md", status_code=307)
+
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def workbench_root():
         if index.is_file():

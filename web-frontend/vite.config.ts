@@ -29,6 +29,7 @@ export default defineConfig({
       "/health": sameOriginProxy(),
       // 隐私政策：开发态把它转给本地后端（与打包版一致），后端再转发平台服务器页面
       "/privacy": sameOriginProxy(),
+      "/privacy.md": sameOriginProxy(),
       "/plugin": sameOriginProxy(),
       "/local": sameOriginProxy(),
       "/product-processing": sameOriginProxy(),
