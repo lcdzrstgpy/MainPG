@@ -541,6 +541,11 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       </header>
 
       <div className="auth-stage">
+        {entered && !isWelcome && (
+          <button type="button" className="auth-link auth-back" onClick={() => goToStep("welcome")}>
+            ← 返回
+          </button>
+        )}
         {isWelcome ? (
           <section className="auth-hero">
             <div className="auth-logo-slot auth-logo-slot-hero" ref={slotRef}>
@@ -563,11 +568,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           </section>
         ) : (
           <section className="auth-panel">
-            {entered && (
-              <button type="button" className="auth-link auth-back" onClick={() => goToStep("welcome")}>
-                ← 返回
-              </button>
-            )}
             <div className="auth-logo-slot auth-logo-slot-form" ref={slotRef}>
               <img ref={logoRef} src={BRAND_LOGO_URL} alt="" width={1070} height={630} decoding="async" />
             </div>

@@ -244,10 +244,13 @@
    面板左缘在 50vw − 列宽/2，导航内容左缘在 max(32px, (100vw − 1080px)/2)，
    两者相减得到相对面板的偏移；+50px 是本次右移量。
    窄屏下面板占满整行，改回 left: 0（见 ≤680 断点）。 */
+/* 「← 返回」挂在 .auth-stage 上（不是面板里）：
+   面板是按内容高度垂直居中的，登录 2 字段 / 注册 6 字段 / 找回 4 字段的高度不同，
+   锚在面板上会让返回键每步上下跳。舞台顶部是固定值，三步位置就一致了。 */
 .auth-back {
   position: absolute;
-  top: -38px;
-  left: calc(max(32px, (100vw - 1080px) / 2) - 50vw + (var(--auth-col, 340px) / 2) + 50px);
+  top: 6px;
+  left: calc(max(0px, (100vw - 1080px) / 2 - 32px) + 50px);
   font-size: 12px;
 }
 
@@ -720,6 +723,8 @@
   .auth-hero .auth-hero-cta { width: 100%; }
   .auth-panel { width: 100%; padding-bottom: 0; }
   .auth-back { left: 0; }
+  /* 窄屏卡片占满整行，返回键固定在舞台顶部，需要给它让出一行高度 */
+  .auth-stage { padding-top: 34px; }
   .auth-panel-body {
     width: 100%;
     margin: 22px 0 0;
@@ -749,8 +754,6 @@
 
 @media (max-height: 780px) and (min-width: 681px) {
   .auth-nav { height: 52px; }
-  /* 面板贴着导航时，别让「← 返回」再往上 38px 顶进导航条 */
-  .auth-back { top: -10px; }
   .auth-submit { height: 42px; }
   .auth-field input { height: 20px; line-height: 20px; font-size: 16px; }
   .auth-logo-slot-hero { width: 160px; }
@@ -782,7 +785,6 @@
    这一档把标题、品牌、行高再压一轮，尽量让 6 个字段的注册页也一屏放下。 */
 @media (max-height: 620px) and (min-width: 681px) {
   .auth-nav { height: 44px; }
-  .auth-back { top: 0; }
   .auth-logo-slot-form { width: 56px; }
   .auth-panel-head h1 { font-size: 20px; }
   .auth-panel-head p { display: none; }
