@@ -25,11 +25,15 @@ type EntryGeometry = {
   fromAuth: boolean;
 };
 
+type EndAnchor = Pick<EntryGeometry, "endX" | "endY" | "endScale">;
+
 type EntryStyle = CSSProperties & Record<`--brand-entry-${string}`, string>;
 
 const ENTRY_DURATION_MS = 2300;
 /** 从登录页 logo 接过来时多一段「长到屏幕中央」，整体拉长 */
 const ENTRY_DURATION_FROM_AUTH_MS = 2600;
+/** 落点重锚的采样间隔：侧栏重排/窗口缩放都靠它跟住 */
+const ANCHOR_POLL_MS = 120;
 
 function elementIsVisible(element: HTMLElement | null) {
   if (!element) return false;
@@ -64,8 +68,6 @@ function drawnImageRect(image: HTMLImageElement) {
     if (token === "right" || token === "bottom") return 1;
     const percent = /^(-?[\d.]+)%$/.exec(token);
     if (percent) return Number(percent[1]) / 100;
-    const pixels = /^(-?[\d.]+)px$/.exec(token);
-    if (pixels) return Number(pixels[1]) / 100; // 极少见：按框宽百分比近似
     return fallback;
   };
   const ratioX = toRatio(parts[0], 0.5);
@@ -77,6 +79,32 @@ function drawnImageRect(image: HTMLImageElement) {
     width,
     height,
   };
+}
+
+/**
+ * 量一次「落点」。不缓存目标元素：每次重新查，侧栏折叠、引导面板展开、
+ * 窗口缩放导致的重排都能跟上，动画终点会平滑地改向新的位置。
+ */
+function measureEndAnchor(width: number): EndAnchor {
+  const centerX = window.innerWidth / 2;
+  const centerY = window.innerHeight / 2;
+  const brandTarget = document.querySelector<HTMLElement>("[data-brand-entry-target]");
+  const fallbackTarget = document.querySelector<HTMLElement>(".sidebar-pin-button");
+  const target = elementIsVisible(brandTarget) ? brandTarget : fallbackTarget;
+  const rect = target?.getBoundingClientRect();
+  const drawn = target instanceof HTMLImageElement ? drawnImageRect(target) : null;
+  const endWidth = drawn ? drawn.width : rect ? (target === brandTarget ? rect.width : Math.min(rect.width, 42)) : 42;
+  const endCenterX = drawn ? drawn.left + drawn.width / 2 : rect ? rect.left + rect.width / 2 : 42;
+  const endCenterY = drawn ? drawn.top + drawn.height / 2 : rect ? rect.top + rect.height / 2 : 38;
+  return {
+    endX: endCenterX - centerX,
+    endY: endCenterY - centerY,
+    endScale: endWidth / width,
+  };
+}
+
+function sameAnchor(a: EndAnchor, b: EndAnchor) {
+  return Math.abs(a.endX - b.endX) < 0.5 && Math.abs(a.endY - b.endY) < 0.5 && Math.abs(a.endScale - b.endScale) < 0.002;
 }
 
 export function BrandEntryAnimation({ active, origin = null, onComplete }: BrandEntryAnimationProps) {
@@ -96,36 +124,43 @@ export function BrandEntryAnimation({ active, origin = null, onComplete }: Brand
       return () => window.cancelAnimationFrame(frame);
     }
 
-    const brandTarget = document.querySelector<HTMLElement>("[data-brand-entry-target]");
-    const fallbackTarget = document.querySelector<HTMLElement>(".sidebar-pin-button");
-    const target = elementIsVisible(brandTarget) ? brandTarget : fallbackTarget;
-    const rect = target?.getBoundingClientRect();
-    const targetIsBrand = target === brandTarget;
-
     const width = Math.min(480, Math.max(260, window.innerWidth * 0.46));
     const centerX = window.innerWidth / 2;
     const centerY = window.innerHeight / 2;
-    // 落点用「图片真正画出来的矩形」而不是 <img> 的盒子
-    const drawn = target instanceof HTMLImageElement ? drawnImageRect(target) : null;
-    const endWidth = drawn ? drawn.width : rect ? (targetIsBrand ? rect.width : Math.min(rect.width, 42)) : 42;
-    const endCenterX = drawn ? drawn.left + drawn.width / 2 : rect ? rect.left + rect.width / 2 : 42;
-    const endCenterY = drawn ? drawn.top + drawn.height / 2 : rect ? rect.top + rect.height / 2 : 38;
     const fromAuth = Boolean(origin && origin.width > 4);
+    const anchor = measureEndAnchor(width);
 
     setGeometry({
       width,
-      endX: endCenterX - centerX,
-      endY: endCenterY - centerY,
-      endScale: endWidth / width,
+      ...anchor,
       fromX: fromAuth ? origin!.x + origin!.width / 2 - centerX : 0,
       fromY: fromAuth ? origin!.y + origin!.height / 2 - centerY : 0,
       fromScale: fromAuth ? origin!.width / width : 0.72,
       fromAuth,
     });
 
+    // 飞行终点是 CSS 变量（--brand-entry-x1/y1/s1），动画跑的过程中重新量、
+    // 重新写这两三个变量，剩余那一段就会拐向新位置——锚是活的，不是开局量一次。
     const duration = fromAuth ? ENTRY_DURATION_FROM_AUTH_MS : ENTRY_DURATION_MS;
+    let lastAnchor = anchor;
+    let lastSample = 0;
+    let raf = 0;
+    const tick = (now: number) => {
+      raf = window.requestAnimationFrame(tick);
+      if (now - lastSample < ANCHOR_POLL_MS) return;
+      lastSample = now;
+      const next = measureEndAnchor(width);
+      if (sameAnchor(next, lastAnchor)) return;
+      lastAnchor = next;
+      setGeometry((prev) => (prev ? { ...prev, ...next } : prev));
+    };
+    raf = window.requestAnimationFrame(tick);
+
     const timer = window.setTimeout(() => onCompleteRef.current(), duration + 240);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      window.cancelAnimationFrame(raf);
+    };
   }, [active, origin]);
 
   if (!active || !geometry) return null;
