@@ -5,7 +5,6 @@ import { Marked } from "marked";
 
 import {
   PRIVACY_POLICY_URL_FALLBACK,
-  readCachedPrivacyPolicy,
   syncPrivacyPolicy,
   type PrivacyPolicyDocument,
 } from "../api/privacyPolicyApi";
@@ -69,9 +68,10 @@ export function PrivacyPolicyDialog({ open, onClose, onDocument }: PrivacyPolicy
   useEffect(() => {
     if (!open) return;
     let alive = true;
-    const cached = readCachedPrivacyPolicy();
-    setPolicyDoc(cached);
-    setStatus(cached ? "ready" : "loading");
+    // 联网时一律先拿服务端最新版，不在打开瞬间展示本地副本；
+    // 只有远端拿不到时才回落到本地留存版本（并标注「离线」）。
+    setPolicyDoc(null);
+    setStatus("loading");
     setFromCache(false);
     void syncPrivacyPolicy().then((result) => {
       if (!alive) return;
@@ -82,7 +82,7 @@ export function PrivacyPolicyDialog({ open, onClose, onDocument }: PrivacyPolicy
         // 每次都通知父组件：它会用「当前远端版本」重判「已同意」是否仍有效，
         // 幂等且不会误伤——只要版本没变就不会改变勾选状态。
         onDocumentRef.current?.(result.document);
-      } else if (!cached) {
+      } else {
         setStatus("empty");
       }
     });
@@ -157,12 +157,13 @@ export function PrivacyPolicyDialog({ open, onClose, onDocument }: PrivacyPolicy
         <div className="privacy-dialog-body">
           {status === "loading" && <p className="privacy-dialog-placeholder">正在加载隐私政策…</p>}
           {status === "empty" && (
-            <p className="privacy-dialog-placeholder">
-              暂时无法加载隐私政策（网络不可用，本地也没有留存副本）。
-              <br />
-              请接入网络后重试，或
-              <a href={publicUrl} target="_blank" rel="noopener noreferrer">在浏览器打开</a>。
-            </p>
+            <div className="privacy-dialog-placeholder">
+              <p>暂时无法加载隐私政策。</p>
+              <p>网络不可用，本地也还没有留存过副本，请接入网络后重试。</p>
+              <a className="privacy-dialog-fallback" href={publicUrl} target="_blank" rel="noopener noreferrer">
+                去浏览器打开
+              </a>
+            </div>
           )}
           {status === "ready" && (
             <article

@@ -31,6 +31,9 @@ type CachedPolicy = { fetchedAt: number; document: PrivacyPolicyDocument };
 export const PRIVACY_POLICY_URL_FALLBACK = "https://workbench.haocoming.top/privacy";
 
 const CACHE_KEY = "mainpg.privacyPolicy.remote";
+/** 服务端公开 JSON：本地后端转发不可用时（老版本运行时、路由未上线）直连兜底。 */
+export const PRIVACY_POLICY_JSON_URL = "https://workbench.haocoming.top/privacy.json";
+
 /** 6 小时：政策不会一天改好几次，但也不能让用户长期看不到新版。 */
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 /** 拉取超时：首屏不因为它变慢，超过就按失败处理。 */
@@ -87,22 +90,54 @@ function isFresh(entry: CachedPolicy): boolean {
   return Date.now() - entry.fetchedAt < CACHE_TTL_MS;
 }
 
-/** 一次拉取（含 3s 超时）；失败返回 null，不抛异常。 */
-async function fetchOnce(): Promise<PrivacyPolicyDocument | null> {
+function accept(doc: unknown): PrivacyPolicyDocument | null {
+  if (!doc || typeof doc !== "object") return null;
+  const parsed = doc as PrivacyPolicyDocument;
+  // 服务端未发布时约定 404；这里再兜一次 published=false。
+  if (parsed.published === false) return null;
+  return parsed;
+}
+
+/** 走本地后端转发（首选：同源、可复用本地缓存的超时与重试）。 */
+async function fetchViaBackend(): Promise<PrivacyPolicyDocument | null> {
   try {
     const data = await httpJson<{ ok?: boolean; document?: PrivacyPolicyDocument }>(
       "/api/customer/privacy-policy",
       { timeoutMs: FETCH_TIMEOUT_MS },
     );
     if (data?.ok === false) return null;
-    const doc = data?.document;
-    if (!doc || typeof doc !== "object") return null;
-    // 服务端未发布时约定 404；这里再兜一次 published=false。
-    if (doc.published === false) return null;
-    return doc;
+    return accept(data?.document);
   } catch {
     return null;
   }
+}
+
+/**
+ * 直连平台服务器（服务端 `/privacy.json` 允许 `Access-Control-Allow-Origin: *`）。
+ * 用途：本地运行时还是老版本、或转发路由没上线时，保证联网状态下仍能拿到最新正文。
+ */
+async function fetchDirect(): Promise<PrivacyPolicyDocument | null> {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = setTimeout(() => controller?.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(PRIVACY_POLICY_JSON_URL, {
+      cache: "no-store",
+      credentials: "omit",
+      headers: { Accept: "application/json" },
+      signal: controller?.signal,
+    });
+    if (!response.ok) return null;
+    return accept(await response.json());
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 一次拉取（含 3s 超时）；先本地后端、失败再直连远端，都不行返回 null。 */
+async function fetchOnce(): Promise<PrivacyPolicyDocument | null> {
+  return (await fetchViaBackend()) ?? (await fetchDirect());
 }
 
 /** 拉取 + 重试一次（退避 1s）。 */

@@ -234,3 +234,21 @@
   .privacy-dialog-layer,
   .privacy-dialog { animation: none !important; }
 }
+
+.privacy-dialog-placeholder p { margin: 0 0 8px; }
+
+.privacy-dialog-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 6px;
+  padding: 9px 20px;
+  border-radius: 999px;
+  color: #fff;
+  background: #0f8f83;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.privacy-dialog-fallback:hover { background: #0c7a70; text-decoration: none; }
