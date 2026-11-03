@@ -27,6 +27,8 @@ export default defineConfig({
       // 失联提示页的重试探活端点：后端 /health 必须在开发态可代理，
       // 否则 vite 会回 SPA 的 index.html(200)，让重试出现「假成功」。
       "/health": sameOriginProxy(),
+      // 隐私政策：开发态把它转给本地后端（与打包版一致），后端再转发平台服务器页面
+      "/privacy": sameOriginProxy(),
       "/plugin": sameOriginProxy(),
       "/local": sameOriginProxy(),
       "/product-processing": sameOriginProxy(),

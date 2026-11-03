@@ -24,7 +24,6 @@ import "./modules/ai_video/styles/aiVideoPage.css";
 import "./shared/styles/apple-workspace.css";
 import "driver.js/dist/driver.css";
 import "./shared/styles/guide-tour.css";
-import "./shared/styles/privacy-dialog.css";
 
 // 偏好设置的启动初始化：这几个模块在被 import 时会把偏好写到 <html> 的 data-* 属性上，
 // 必须早于首帧渲染。尤其是「顶栏滚动收起」——它只被个人中心面板引用，而个人中心是懒加载的，

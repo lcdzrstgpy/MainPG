@@ -16,7 +16,6 @@ import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 import { markPodAgreementPending, clearPodAgreementPending } from "../../../shared/components/PodUsageAgreementModal";
 import { useLogoFlip } from "./authLogoTransition";
-import { PrivacyPolicyDialog } from "../../../shared/components/PrivacyPolicyDialog";
 
 type AuthPageProps = { onEnter: () => void };
 type AuthStep = "welcome" | "login" | "register" | "forgot";
@@ -141,8 +140,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [agreed, setAgreed] = useState(() => readPrivacyConsent());
   // 隐私政策：正文托管在服务端，版本以远端为准、拉不到就用内置常量兜底。
   const [policyVersion, setPolicyVersion] = useState(PRIVACY_POLICY_VERSION_FALLBACK);
-  // 内嵌阅读：点「隐私政策」就地打开，不再跳外链（外链仍在弹窗里保留）
-  const [policyOpen, setPolicyOpen] = useState(false);
+
   // 账号密码记忆交给浏览器密码管理器（autocomplete），应用内不再自建账号库。
   // 表单改由 JS 校验（表单加了 noValidate），失败时把焦点送回对应输入框。
   const fieldRefs = useRef<Partial<Record<FieldKey, HTMLInputElement | null>>>({});
@@ -508,18 +506,18 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       <input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} />
       <span>
         我已阅读并同意{" "}
-        <button
-          type="button"
+        <a
           className="auth-link"
+          href="/privacy"
+          target="_blank"
+          rel="noopener noreferrer"
           onClick={(event) => {
-            // 在 <label> 里：阻止冒泡与默认行为，避免顺带勾选/取消勾选
-            event.preventDefault();
+            // 在 <label> 里：只阻止「顺带勾选」，不拦默认的跳转
             event.stopPropagation();
-            setPolicyOpen(true);
           }}
         >
           《界野隐私政策》
-        </button>
+        </a>
       </span>
     </label>
   );
@@ -531,9 +529,9 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           {BRAND_NAME}
         </button>
         <nav className="auth-nav-links" aria-label="条款">
-          <button type="button" className="auth-link" onClick={() => setPolicyOpen(true)}>
+          <a className="auth-link" href="/privacy" target="_blank" rel="noopener noreferrer">
             隐私政策
-          </button>
+          </a>
         </nav>
       </header>
 
@@ -859,7 +857,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           </section>
         )}
       </div>
-      <PrivacyPolicyDialog open={policyOpen} onClose={() => setPolicyOpen(false)} onDocument={applyPolicyDocument} />
     </main>
   );
 }
