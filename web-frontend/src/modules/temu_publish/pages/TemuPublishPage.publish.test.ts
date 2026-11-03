@@ -786,8 +786,12 @@ test("属性输入支持「下拉 + 数值」并存（成分比例这类）", ()
   assert.match(propertyForm, /\{groups\.required\.map\(\(item\) => attrGroup\(item, true\)\)\}/);
   assert.match(propertyForm, /\{groups\.optional\.map\(\(item\) => attrGroup\(item, false\)\)\}/);
 
-  // 带单位的必填属性光选下拉不算填好
-  assert.match(attrModel, /if \(item\.valueUnit\?\.length && !pick\.text\.trim\(\)\) return true;/);
+  // 带单位的必填属性光选下拉不算填好 —— 但必须按「单位本身非空」判断，
+  // 不能用 valueUnit.length：Temu 对无单位属性返回 [""]，长度是 1、内容是空串，
+  // 用 length 会把这批纯下拉属性判成「必须填数值」，而界面不渲染数值框 → 永远填不完。
+  assert.match(attrModel, /const unit = String\(item\.valueUnit\?\.\[0\] \?\? ""\)\.trim\(\);/);
+  assert.match(attrModel, /if \(unit && !pick\.text\.trim\(\)\) return true;/);
+  assert.doesNotMatch(attrModel, /item\.valueUnit\?\.length/);
 });
 
 test("图片张数上限在上传时就挡（外包装 6 张、轮播 10 张）", () => {

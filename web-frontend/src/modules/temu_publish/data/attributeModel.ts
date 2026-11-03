@@ -113,8 +113,13 @@ export function missingRequiredNames(
     .filter((item) => {
       const pick = picks[item.pid];
       if (!pick || (pick.vid <= 0 && !pick.text.trim())) return true;
-      // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够
-      if (item.valueUnit?.length && !pick.text.trim()) return true;
+      // 带单位的属性（成分比例 %、厚度 mm）Temu 要的是数值：只选下拉不够。
+      // ⚠️ 必须看「单位本身非空」，不能用 valueUnit.length：
+      // Temu 对无单位属性也会返回 `valueUnit: [""]`，长度是 1 但内容是空串。
+      // 用 length 判断会把这批纯下拉属性误判成「必须填数值」，而界面按
+      // `valueUnit[0]` 判断根本不渲染数值框 —— 等于永远填不完、永远发不出去。
+      const unit = String(item.valueUnit?.[0] ?? "").trim();
+      if (unit && !pick.text.trim()) return true;
       return false;
     })
     .map((item) => item.name || item.propertyName || `pid=${item.pid}`);

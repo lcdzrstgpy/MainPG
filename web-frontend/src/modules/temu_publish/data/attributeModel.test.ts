@@ -117,3 +117,41 @@ test("必填判定：带单位的属性只选下拉不算填好", () => {
   // 数值也填了才算完整
   assert.deepEqual(missingRequiredNames(visibleProperties(attrs, {}), { 9: { vid: 91, text: "60" } }), []);
 });
+
+test("必填判定：valueUnit 是空串数组时按「无单位」处理，只选下拉就算填好", () => {
+  // Temu 对无单位属性返回 valueUnit: [""] —— 长度是 1，但那是空串。
+  // 用 valueUnit.length 判断会把它当成「必须填数值」，而界面按 valueUnit[0]
+  // 根本不给数值框，结果就是这 7 个纯下拉属性永远报「缺少必填属性」。
+  const attrs = {
+    properties: [
+      prop({ pid: 11, name: "形状", required: true, valueUnit: [""], values: [{ vid: 110, value: "方形" }] }),
+      prop({ pid: 12, name: "编织类型", required: true, values: [{ vid: 120, value: "机器制作" }] }),
+      prop({ pid: 13, name: "平方克重", required: true, valueUnit: [], values: [{ vid: 130, value: "70-80g" }] }),
+    ],
+  } as TemuAttributes;
+
+  // 三个都只选下拉、不填数值 —— 一个都不该算缺
+  assert.deepEqual(
+    missingRequiredNames(visibleProperties(attrs, {}), {
+      11: { vid: 110, text: "" },
+      12: { vid: 120, text: "" },
+      13: { vid: 130, text: "" },
+    }),
+    [],
+  );
+
+  // 真带单位的仍然要求数值（不能被这次修复放宽）
+  const withUnit = {
+    properties: [
+      prop({ pid: 14, name: "厚度", required: true, valueUnit: ["mm"], values: [{ vid: 140, value: "10" }] }),
+      prop({ pid: 15, name: "成分比例", required: true, valueUnit: ["%"], values: [{ vid: 150, value: "棉" }] }),
+    ],
+  } as TemuAttributes;
+  assert.deepEqual(
+    missingRequiredNames(visibleProperties(withUnit, {}), {
+      14: { vid: 140, text: "" },
+      15: { vid: 150, text: "" },
+    }),
+    ["厚度", "成分比例"],
+  );
+});

@@ -1897,7 +1897,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           template_pid: attr?.templatePid ?? undefined,
           prop_value: text,
           // 数值型属性（带单位）要把数值和单位分开给，否则会被要求「请输入数值」
-          number_input_value: attr?.valueUnit?.length ? text : "",
+          // 同样不能用 valueUnit.length：[""] 是「无单位」，不是「有单位」
+          number_input_value: String(attr?.valueUnit?.[0] ?? "").trim() ? text : "",
           value_unit: attr?.valueUnit?.[0] ?? "",
         };
       });
