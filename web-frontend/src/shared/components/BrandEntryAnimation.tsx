@@ -38,6 +38,47 @@ function elementIsVisible(element: HTMLElement | null) {
   return rect.width > 1 && rect.height > 1 && style.display !== "none" && style.visibility !== "hidden";
 }
 
+/**
+ * 目标 logo 是 <img> + object-fit: contain：图片缩进框里之后，**实际画出来的**
+ * 矩形往往比框小，而且还不一定居中（侧栏 .brand-logo 是 144×56 的框装 1070:630 的图，
+ * 实际只画 95×56，并且 object-position: left center 靠左）。
+ * 入场动画的终点必须落在「实际画出来的矩形」上，否则最后一下会明显变大再跳回去。
+ */
+function drawnImageRect(image: HTMLImageElement) {
+  const rect = image.getBoundingClientRect();
+  const naturalWidth = image.naturalWidth;
+  const naturalHeight = image.naturalHeight;
+  if (!naturalWidth || !naturalHeight || !rect.width || !rect.height) return null;
+
+  const scale = Math.min(rect.width / naturalWidth, rect.height / naturalHeight);
+  const width = naturalWidth * scale;
+  const height = naturalHeight * scale;
+
+  // object-position 计算值形如 "0% 50%"；也兼容 left/center/right 关键字
+  const position = window.getComputedStyle(image).objectPosition || "50% 50%";
+  const parts = position.trim().split(/\s+/);
+  const toRatio = (token: string | undefined, fallback: number) => {
+    if (!token) return fallback;
+    if (token === "left" || token === "top") return 0;
+    if (token === "center") return 0.5;
+    if (token === "right" || token === "bottom") return 1;
+    const percent = /^(-?[\d.]+)%$/.exec(token);
+    if (percent) return Number(percent[1]) / 100;
+    const pixels = /^(-?[\d.]+)px$/.exec(token);
+    if (pixels) return Number(pixels[1]) / 100; // 极少见：按框宽百分比近似
+    return fallback;
+  };
+  const ratioX = toRatio(parts[0], 0.5);
+  const ratioY = toRatio(parts[1], ratioX);
+
+  return {
+    left: rect.left + (rect.width - width) * ratioX,
+    top: rect.top + (rect.height - height) * ratioY,
+    width,
+    height,
+  };
+}
+
 export function BrandEntryAnimation({ active, origin = null, onComplete }: BrandEntryAnimationProps) {
   const [geometry, setGeometry] = useState<EntryGeometry | null>(null);
   const completedRef = useRef(false);
@@ -64,13 +105,17 @@ export function BrandEntryAnimation({ active, origin = null, onComplete }: Brand
     const width = Math.min(480, Math.max(260, window.innerWidth * 0.46));
     const centerX = window.innerWidth / 2;
     const centerY = window.innerHeight / 2;
-    const endWidth = rect ? (targetIsBrand ? rect.width : Math.min(rect.width, 42)) : 42;
+    // 落点用「图片真正画出来的矩形」而不是 <img> 的盒子
+    const drawn = target instanceof HTMLImageElement ? drawnImageRect(target) : null;
+    const endWidth = drawn ? drawn.width : rect ? (targetIsBrand ? rect.width : Math.min(rect.width, 42)) : 42;
+    const endCenterX = drawn ? drawn.left + drawn.width / 2 : rect ? rect.left + rect.width / 2 : 42;
+    const endCenterY = drawn ? drawn.top + drawn.height / 2 : rect ? rect.top + rect.height / 2 : 38;
     const fromAuth = Boolean(origin && origin.width > 4);
 
     setGeometry({
       width,
-      endX: (rect ? rect.left + rect.width / 2 : 42) - centerX,
-      endY: (rect ? rect.top + rect.height / 2 : 38) - centerY,
+      endX: endCenterX - centerX,
+      endY: endCenterY - centerY,
       endScale: endWidth / width,
       fromX: fromAuth ? origin!.x + origin!.width / 2 - centerX : 0,
       fromY: fromAuth ? origin!.y + origin!.height / 2 - centerY : 0,
