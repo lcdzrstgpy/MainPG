@@ -17,7 +17,7 @@
  * 本地也没有留存副本」时使用：断网、服务端未上线、文档未发布。
  * 它是客户端内置的下限值，发版时手动跟进即可（不再有本地 HTML 可比对）。
  */
-export const PRIVACY_POLICY_VERSION_FALLBACK = "v1.2";
+export const PRIVACY_POLICY_VERSION_FALLBACK = "v1.3";
 
 /** 兼容旧引用（测试与既有调用）；语义同 `PRIVACY_POLICY_VERSION_FALLBACK`。 */
 export const PRIVACY_POLICY_VERSION = PRIVACY_POLICY_VERSION_FALLBACK;

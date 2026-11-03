@@ -100,8 +100,15 @@ test("远端版本升版后，旧记录不再视为已同意", () => {
   withFakeStorage(() => {
     savePrivacyConsent("2026-10-14T03:00:00.000Z", "v1.2");
     assert.equal(readPrivacyConsent("v1.2"), true);
-    assert.equal(readPrivacyConsent(resolvePolicyVersion({ version: "v1.3" })), false);
-    // 远端拉不到时仍按兜底常量判定，不会把已同意的用户顶回去
+    // 远端升到 v1.3.1：老记录失效，要求重新勾选
+    assert.equal(readPrivacyConsent(resolvePolicyVersion({ version: "v1.3.1" })), false);
+  });
+});
+
+test("拉不到远端时按兜底常量判定，已同意的用户不会被顶回去", () => {
+  withFakeStorage(() => {
+    savePrivacyConsent("2026-10-14T03:00:00.000Z", PRIVACY_POLICY_VERSION_FALLBACK);
     assert.equal(readPrivacyConsent(resolvePolicyVersion(null)), true);
+    assert.equal(readPrivacyConsent(resolvePolicyVersion({ version: "abc" })), true);
   });
 });

@@ -38,3 +38,12 @@ canonical `release-manifest.json` (uploaded as `manifest.json`) contains `versio
 The signature is base64 Ed25519 over sorted-key, compact UTF-8 JSON containing
 every field except `signature`. Do not hand-author or publish a placeholder
 signature.
+
+## 版本记录
+
+- **1.6.6**（2026-11-03）：隐私政策改为服务端托管页。`/privacy` 实时转发平台服务器
+  页面（5 分钟内存缓存 + 5 秒超时），断网时回退到上一次成功抓取的整页副本，两者都没
+  有才返回 503 提示；正文不再随安装包内置（`dist/privacy.html` 已移除）。响应统一加
+  `Cache-Control: no-cache`，服务端改文案后刷新即见。客户端隐私政策版本兜底常量同步到
+  `v1.3`。
+- 更早版本以发布后台的记录为准。

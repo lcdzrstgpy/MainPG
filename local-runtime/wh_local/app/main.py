@@ -1201,16 +1201,18 @@ def _register_frontend_shell(app: FastAPI) -> None:
         产品约定（2026-11-03）：联网时展示服务端最新正文，断网时用本地留存副本兜底；
         客户端始终以 `/privacy` 新标签页打开，URL 与改造前一致。
         """
+        # no-cache：页面内容随时可能被服务端改掉，浏览器不应自行缓存
         page = _fetch_privacy_page()
         if page is not None:
-            return HTMLResponse(page)
+            return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
         stale = _read_cached_privacy_page()
         if stale is not None:
-            return HTMLResponse(stale)
+            return HTMLResponse(stale, headers={"Cache-Control": "no-cache"})
         return HTMLResponse(
             "<h1>隐私政策暂时不可用</h1>"
             "<p>当前网络不可用，本地也还没有留存过副本，请接入网络后重新打开。</p>",
             status_code=503,
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.get("/privacy.md", include_in_schema=False)
