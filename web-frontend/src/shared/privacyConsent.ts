@@ -13,10 +13,9 @@
 /**
  * 隐私政策版本的**兜底值**。
  *
- * 版本权威已经移到服务端（`/privacy.json` 的 `version`），这里只在「拉不到远端」时
- * 使用：断网、服务端未上线、文档未发布。它必须与内置的
- * `web-frontend/public/privacy.html` 里「版本：vX.Y」保持一致 ——
- * 由 `privacyConsent.test.ts` 读取文档比对，改了文档忘改这里会测试失败。
+ * 版本权威已经移到服务端（`/privacy.json` 的 `version`），这里只在「拉不到远端、
+ * 本地也没有留存副本」时使用：断网、服务端未上线、文档未发布。
+ * 它是客户端内置的下限值，发版时手动跟进即可（不再有本地 HTML 可比对）。
  */
 export const PRIVACY_POLICY_VERSION_FALLBACK = "v1.2";
 

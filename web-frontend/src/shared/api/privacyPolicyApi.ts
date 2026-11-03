@@ -134,6 +134,40 @@ export async function loadPrivacyPolicy(options?: { force?: boolean }): Promise<
   return cached?.document ?? null;
 }
 
+export type PrivacyPolicySyncResult = {
+  /** 当前可用的最全文档：优先远端，其次本地缓存。 */
+  document: PrivacyPolicyDocument | null;
+  /** 打开前本地缓存的版本（没有缓存则为 null）。 */
+  previousVersion: string | null;
+  /** 远端版本与本地缓存不一致（含首次拉取）：调用方据此刷新版本号与同意状态。 */
+  changed: boolean;
+  /** 远端不可用、结果来自本地缓存。 */
+  fromCache: boolean;
+};
+
+/**
+ * 每次「打开隐私政策」时调用：强制拉一次远端，并与本地缓存比对版本。
+ *
+ * - 远端成功：写缓存（最新版留存在本地，作为下次离线兜底），版本不同则 `changed=true`；
+ * - 远端失败：退回本地缓存，`fromCache=true`，不打断阅读。
+ */
+export async function syncPrivacyPolicy(): Promise<PrivacyPolicySyncResult> {
+  const cached = readCachedPrivacyPolicy();
+  const previousVersion = typeof cached?.version === "string" ? cached.version.trim() : null;
+  const fetched = await fetchWithRetry();
+  if (fetched) {
+    writeCache(fetched);
+    const version = typeof fetched.version === "string" ? fetched.version.trim() : null;
+    return {
+      document: fetched,
+      previousVersion,
+      changed: Boolean(version) && version !== previousVersion,
+      fromCache: false,
+    };
+  }
+  return { document: cached, previousVersion, changed: false, fromCache: cached !== null };
+}
+
 /** 正文阅读地址：优先用服务端给的 public_url，缺失回落公网阅读页。 */
 export function resolvePrivacyPolicyUrl(document?: PrivacyPolicyDocument | null): string {
   const url = typeof document?.public_url === "string" ? document.public_url.trim() : "";

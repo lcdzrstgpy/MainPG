@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -81,16 +80,6 @@ test("存储里是脏数据时不抛异常，按未同意处理", () => {
   });
 });
 
-test("隐私政策文档里的版本号与本模块常量一致（单一事实源由测试守住）", () => {
-  const html = readFileSync(new URL("../../public/privacy.html", import.meta.url), "utf8");
-  const matched = /版本：\s*(v[0-9][0-9.]*)/.exec(html);
-  assert.ok(matched, "public/privacy.html 里应能找到「版本：vX.Y」");
-  assert.equal(
-    matched[1],
-    PRIVACY_POLICY_VERSION,
-    "public/privacy.html 的版本号已更新，请同步 shared/privacyConsent.ts 的 PRIVACY_POLICY_VERSION",
-  );
-});
 
 
 test("resolvePolicyVersion 只接受 v<数字> 形式，其余一律回退兜底常量", () => {

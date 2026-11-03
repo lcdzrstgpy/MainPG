@@ -1,0 +1,236 @@
+/* ================================================================
+   隐私政策内嵌阅读（登录页 / 协议勾选处）
+   - 视觉对齐平台公网页 https://workbench.haocoming.top/privacy：
+     青绿主色、左侧竖线小标题、浅绿提示块
+   - 只服务这一个弹窗，保持作用域：全部挂在 .privacy-dialog 下
+   ================================================================ */
+
+.privacy-dialog-layer {
+  position: fixed;
+  z-index: 3000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: clamp(12px, 3vh, 40px) clamp(12px, 4vw, 64px);
+  background: rgba(9, 26, 46, .5);
+  backdrop-filter: blur(3px);
+  animation: privacy-layer-in .18s ease both;
+}
+
+@keyframes privacy-layer-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.privacy-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 100%);
+  max-height: min(88vh, 920px);
+  border: 1px solid rgba(255, 255, 255, .55);
+  border-radius: 18px;
+  background: #fdfdfd;
+  box-shadow: 0 38px 90px -28px rgba(6, 24, 48, .55), 0 2px 0 rgba(255, 255, 255, .7) inset;
+  overflow: hidden;
+  animation: privacy-dialog-in .22s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes privacy-dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+.privacy-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px 14px;
+  border-bottom: 1px solid #e9eef3;
+  background: linear-gradient(180deg, #ffffff, #fbfdfd);
+}
+
+.privacy-dialog-heading { min-width: 0; }
+
+.privacy-dialog-eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: #14a89a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+
+.privacy-dialog-head h2 {
+  margin: 0;
+  color: #13233a;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: .01em;
+}
+
+.privacy-dialog-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+  color: #7c92a9;
+  font-size: 12px;
+}
+
+.privacy-dialog-meta .is-cache {
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #a05a12;
+  background: #fdf3e3;
+}
+
+.privacy-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.privacy-dialog-link {
+  color: #0f8f83;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.privacy-dialog-link:hover { text-decoration: underline; }
+
+.privacy-dialog-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #e2eaf1;
+  border-radius: 50%;
+  color: #55708c;
+  background: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.privacy-dialog-close:hover { color: #13233a; border-color: #c7d8e6; background: #f4f8fb; }
+
+.privacy-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 22px 28px 30px;
+  background: #fff;
+}
+
+.privacy-dialog-placeholder {
+  margin: 24px 0;
+  color: #6b8299;
+  font-size: 14px;
+  line-height: 1.9;
+  text-align: center;
+}
+
+.privacy-dialog-placeholder a { color: #0f8f83; }
+
+/* ── 正文排版（对齐公网页） ───────────────────────────────── */
+
+.privacy-doc {
+  max-width: 760px;
+  margin: 0 auto;
+  color: #3a5570;
+  font-size: 15px;
+  line-height: 1.9;
+}
+
+.privacy-doc h2 {
+  position: relative;
+  margin: 34px 0 12px;
+  padding-left: 14px;
+  color: #13233a;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.5;
+  scroll-margin-top: 12px;
+}
+
+.privacy-doc h2:first-child { margin-top: 6px; }
+
+.privacy-doc h2::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .28em;
+  bottom: .28em;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #14b8a8, #0f8f83);
+}
+
+.privacy-doc h3 { margin: 22px 0 8px; color: #1c3350; font-size: 16px; font-weight: 700; }
+
+.privacy-doc p { margin: 0 0 12px; }
+.privacy-doc p.lead { font-size: 15.5px; }
+
+.privacy-doc a { color: #0f8f83; text-decoration: none; }
+.privacy-doc a:hover { text-decoration: underline; }
+
+.privacy-doc strong { color: #13233a; font-weight: 700; }
+.privacy-doc em { font-style: normal; color: #0f8f83; font-weight: 600; }
+.privacy-doc u { text-decoration-color: #9fc7c2; text-underline-offset: 3px; }
+
+.privacy-doc ul,
+.privacy-doc ol { margin: 0 0 12px; padding-left: 22px; }
+.privacy-doc li { margin: 4px 0; }
+
+.privacy-doc blockquote { margin: 0; }
+
+.privacy-doc p.hl {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border-left: 3px solid #14b8a8;
+  border-radius: 0 10px 10px 0;
+  color: #23554f;
+  background: #eefaf7;
+}
+
+.privacy-doc table {
+  width: 100%;
+  margin: 12px 0 16px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.privacy-doc th,
+.privacy-doc td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e9eef3;
+  text-align: left;
+}
+
+.privacy-doc th { color: #13233a; background: #f6fafc; }
+
+@media (max-width: 680px) {
+  .privacy-dialog-layer { padding: 0; }
+  .privacy-dialog {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    border: 0;
+  }
+  .privacy-dialog-head { padding: 16px 16px 12px; }
+  .privacy-dialog-head h2 { font-size: 18px; }
+  .privacy-dialog-body { padding: 16px 16px 24px; }
+  .privacy-doc { font-size: 15px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .privacy-dialog-layer,
+  .privacy-dialog { animation: none !important; }
+}
