@@ -133,7 +133,7 @@ button { cursor: pointer; }
 
 .tab-overflow-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   padding: 2px 4px 6px;
@@ -142,6 +142,31 @@ button { cursor: pointer; }
 
 .tab-overflow-head strong { font-size: .84rem; }
 .tab-overflow-head span { font-size: .72rem; color: var(--theme-text-muted, #8a9cb0); }
+
+.tab-overflow-head-actions { display: inline-flex; align-items: center; gap: 10px; }
+
+/* 「全部关闭」做成小胶囊，和右边的「13 个」区分开，明确是可点的操作 */
+.tab-overflow-close-all {
+  border: 1px solid var(--theme-card-border, #dbe6ef);
+  border-radius: 6px;
+  padding: 1px 7px;
+  background: var(--theme-card-bg-solid, #fff);
+  color: var(--theme-text-muted, #7d93a8);
+  font-size: .7rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .16s ease, border-color .16s ease, background .16s ease, opacity .16s ease;
+}
+
+.tab-overflow-close-all:hover:not(:disabled) {
+  color: var(--theme-danger, #d1435b);
+  border-color: currentColor;
+  background: color-mix(in srgb, var(--theme-danger, #d1435b) 7%, transparent);
+}
+
+.tab-overflow-close-all:disabled { opacity: .4; cursor: not-allowed; }
 .tab-overflow-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .tab-overflow-panel li { display: flex; align-items: center; gap: 2px; }
 

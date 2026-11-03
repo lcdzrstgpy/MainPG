@@ -168,19 +168,25 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   // 注意：产品处理的任务详情页签 moduleId 是 `product_processing_tasks`（草稿池才是
   // `product_processing`），只按 module 找会跳到草稿池而不是「处理设置与进度」，
   // 所以先用 key 里的任务号按 taskRunId 精确匹配。
-  const jumpToTaskModule = (module: string, key: string) => {
+  // 后端 module 名跟前端页签 moduleId 不是一套；combo/pod 各自有多个子页签。
+  const TASK_MODULE_TABS: Record<string, string[]> = {
+    product_processing: ["product_processing"],
+    pod_customization: ["pod_customization", "pod_semi_customization", "pod_replica", "pod_fission"],
+    combo_kit: ["combo_generate", "combo_history"],
+  };
+  const taskModuleIds = (module: string) => TASK_MODULE_TABS[module] ?? [module];
+
+  const resolveTaskTab = (module: string, key: string) => {
     const taskId = module === "product_processing" ? Number(key.split(":")[1]) : Number.NaN;
     const exact = Number.isFinite(taskId)
       ? tabs.find((tab) => tab.taskRunId === taskId || tab.activeTaskId === taskId)
       : undefined;
-    // 后端的 module 名跟前端页签 moduleId 不是一套；combo/pod 各自有多个子页签。
-    const candidates: Record<string, string[]> = {
-      product_processing: ["product_processing"],
-      pod_customization: ["pod_customization", "pod_semi_customization", "pod_replica", "pod_fission"],
-      combo_kit: ["combo_generate", "combo_history"],
-    };
-    const fallback = tabs.find((tab) => (candidates[module] ?? [module]).includes(tab.moduleId));
-    const target = exact ?? fallback;
+    const fallback = tabs.find((tab) => taskModuleIds(module).includes(tab.moduleId));
+    return exact ?? fallback;
+  };
+
+  const jumpToTaskModule = (module: string, key: string) => {
+    const target = resolveTaskTab(module, key);
     setProgressPanelOpen(false);
     if (target) onSelectTab(target.key);
   };
@@ -334,6 +340,27 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
       onCloseTab(key);
     }, 180);
     closingTimers.current.add(timer);
+  };
+
+  // 「全部关闭」保护名单：正在跑任务的模块整块跳过（后端 module 与页签 moduleId
+  // 不是一一对应，宁可多留几个也不能关掉正在跑的那个），再加上工作台与当前页签。
+  const runningModuleIds = new Set<string>();
+  const runningTabKeys = new Set<string>();
+  activeTasks.forEach((task) => {
+    const exact = resolveTaskTab(task.module, task.key);
+    if (exact) runningTabKeys.add(exact.key);
+    taskModuleIds(task.module).forEach((moduleId) => runningModuleIds.add(moduleId));
+  });
+  const closableTabs = tabs.filter(
+    (tab) =>
+      tab.moduleId !== "dashboard" &&
+      tab.key !== activeKey &&
+      !runningTabKeys.has(tab.key) &&
+      !runningModuleIds.has(tab.moduleId),
+  );
+
+  const closeAllTabs = () => {
+    closableTabs.forEach((tab) => closeTabWithEffect(tab.key));
   };
 
   return (
@@ -595,7 +622,22 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
             <div className="tab-overflow-panel" role="dialog" aria-label="全部页签" data-open={tabMenuOpen ? "true" : "false"} aria-hidden={!tabMenuOpen}>
               <div className="tab-overflow-head">
                 <strong>全部页签</strong>
-                <span>{tabs.length} 个</span>
+                <div className="tab-overflow-head-actions">
+                  <span>{tabs.length} 个</span>
+                  <button
+                    type="button"
+                    className="tab-overflow-close-all"
+                    onClick={closeAllTabs}
+                    disabled={closableTabs.length === 0}
+                    title={
+                      closableTabs.length === 0
+                        ? "没有可关闭的页签（当前页签与处理中的页签会保留）"
+                        : `关闭 ${closableTabs.length} 个页签（当前页签与处理中的页签会保留）`
+                    }
+                  >
+                    全部关闭
+                  </button>
+                </div>
               </div>
               <ul>
                 {tabs.map((tab) => (
