@@ -119,7 +119,7 @@ def test_style_blocks_carry_area_and_relative_size_contract() -> None:
 
 
 def test_derived_rounds_only_render_a2_b2() -> None:
-    for role in ("detail_a", "detail_b", "hero"):
+    for role in ("detail_a", "detail_b"):
         prompt = build_column_round_prompt(
             build_column_base_prompt(_fields(), ""),
             role=role,
@@ -168,13 +168,55 @@ def test_derived_rounds_only_render_a2_b2() -> None:
     assert "another angle from the opposite side" in detail_b_prompt
     assert "EXTREME MACRO" not in detail_b_prompt
 
-    hero_prompt = build_column_round_prompt(
+
+def test_hero_round_is_rewritten_as_white_background_material_image() -> None:
+    """v27：素材图轮只继承产品与图案，场景重置为纯白棚拍；构图模板只提供机位。"""
+    prompt = build_column_round_prompt(
+        build_column_base_prompt(_fields(), ""),
+        role="hero",
+        recipes=_recipes(elements={1: {"hero": "尤加利叶纹样", "narrative": ["蕨类叶脉"]}}),
+        composition=_composition(),
+    )
+
+    assert "MATERIAL IMAGE — clean white-background product shot" in prompt
+    assert "PURE WHITE BACKGROUND LOCK" in prompt
+    assert "#FFFFFF" in prompt
+    assert "No supporting props" in prompt
+    assert "No room, wall, floor line, table surface, window, fireplace" in prompt
+    assert "MATERIAL IDENTITY LOCK" in prompt
+    assert "Do NOT inherit the reference's scene" in prompt
+    # 构图模板 panel_4 原样进入素材图轮，且只控制机位。
+    assert "MATERIAL SHOT DIRECTION (composition): straight-on front view, clean background" in prompt
+    assert "CAMERA-ONLY CLAUSE" in prompt
+    assert "the pure-white background rule wins" in prompt
+    # 不再沿用派生轮的“场景与参考图一致”口径，避免白底与锚点场景互相打架。
+    assert "must stay identical to the four reference images" not in prompt
+    assert "ANCHOR CONTINUITY" not in prompt
+    assert "CAMERA MUST DIFFER" not in prompt
+    # 不带元素轮转与美术指导。
+    assert "PART 3 · ELEMENT ROTATION" not in prompt
+    assert "PART 4 · ART DIRECTION" not in prompt
+    assert "尤加利叶纹样" not in prompt
+
+
+def test_hero_round_falls_back_to_white_default_without_composition() -> None:
+    prompt = build_column_round_prompt(
         build_column_base_prompt(_fields(), ""),
         role="hero",
         recipes=_recipes(),
-        composition=_composition(),
     )
-    assert "MATERIAL PANEL" in hero_prompt
+    assert "Straight-on standard ecommerce product shot" in prompt
+    assert "occupying about 70-80%" in prompt
+    assert "MATERIAL SHOT DIRECTION (composition): Straight-on standard ecommerce product shot" in prompt
+
+    retry = build_column_round_prompt(
+        build_column_base_prompt(_fields(), ""),
+        role="hero",
+        recipes=_recipes(),
+        attempt=2,
+    )
+    assert "RETRY ATTEMPT 2 OF 2" in retry
+    assert "pure-white material setup was not respected" in retry
 
 
 def test_art_direction_is_injected_into_round_one_only() -> None:

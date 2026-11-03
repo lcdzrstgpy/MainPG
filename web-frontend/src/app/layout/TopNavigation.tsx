@@ -8,6 +8,7 @@ import { InboxBell } from "../../shared/components/InboxBell";
 import { getAuthAccount } from "../../transport/http/client";
 import { useActiveTasks } from "../../shared/hooks/useActiveTasks";
 import { slidingIndicatorStyle, useSlidingIndicator } from "../../shared/hooks/useSlidingIndicator";
+import { useFadePresence } from "../../shared/hooks/useFadePresence";
 
 /** 与个人中心共享的头像存储键，右键头像与个人中心头像保持一致。 */
 export const AVATAR_STORAGE_KEY = "jye_workspace_avatar";
@@ -66,7 +67,7 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const [storeActionError, setStoreActionError] = useState<string | null>(null);
   const topbarRef = useRef<HTMLElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
-  const userMenuRef = useRef<HTMLDetailsElement>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const { theme, setTheme, downloadedThemes, isDownloaded, downloadTheme } = useTheme();
   const { uiMode, setUiMode } = useUiMode();
   const activeTabSignature = tabs.map((tab) => tab.key).join("|");
@@ -79,6 +80,12 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   const failedCount = justFinished.length - successCount;
   const hasRunning = activeTasks.length > 0;
   const [progressPanelOpen, setProgressPanelOpen] = useState(false);
+  // 主题浮层 / 任务进度浮层：收起时先播完淡出再卸载
+  const themePanelPresence = useFadePresence(themePanelOpen || themeStoreOpen);
+  const progressPresence = useFadePresence(progressPanelOpen);
+  // 个人中心浮层改成受控状态（原来是 <details>，关闭时浏览器立刻隐藏内容，播不了退场动画）
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuPresence = useFadePresence(userMenuOpen);
   const progressPanelRef = useRef<HTMLDivElement>(null);
   // 页签栏：单行横向滚动，溢出时给一个「全部页签」入口，不再堆成好几排。
   const lowerRowRef = useRef<HTMLDivElement>(null);
@@ -168,19 +175,25 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
   // 注意：产品处理的任务详情页签 moduleId 是 `product_processing_tasks`（草稿池才是
   // `product_processing`），只按 module 找会跳到草稿池而不是「处理设置与进度」，
   // 所以先用 key 里的任务号按 taskRunId 精确匹配。
-  const jumpToTaskModule = (module: string, key: string) => {
+  // 后端 module 名跟前端页签 moduleId 不是一套；combo/pod 各自有多个子页签。
+  const TASK_MODULE_TABS: Record<string, string[]> = {
+    product_processing: ["product_processing"],
+    pod_customization: ["pod_customization", "pod_semi_customization", "pod_replica", "pod_fission"],
+    combo_kit: ["combo_generate", "combo_history"],
+  };
+  const taskModuleIds = (module: string) => TASK_MODULE_TABS[module] ?? [module];
+
+  const resolveTaskTab = (module: string, key: string) => {
     const taskId = module === "product_processing" ? Number(key.split(":")[1]) : Number.NaN;
     const exact = Number.isFinite(taskId)
       ? tabs.find((tab) => tab.taskRunId === taskId || tab.activeTaskId === taskId)
       : undefined;
-    // 后端的 module 名跟前端页签 moduleId 不是一套；combo/pod 各自有多个子页签。
-    const candidates: Record<string, string[]> = {
-      product_processing: ["product_processing"],
-      pod_customization: ["pod_customization", "pod_semi_customization", "pod_replica", "pod_fission"],
-      combo_kit: ["combo_generate", "combo_history"],
-    };
-    const fallback = tabs.find((tab) => (candidates[module] ?? [module]).includes(tab.moduleId));
-    const target = exact ?? fallback;
+    const fallback = tabs.find((tab) => taskModuleIds(module).includes(tab.moduleId));
+    return exact ?? fallback;
+  };
+
+  const jumpToTaskModule = (module: string, key: string) => {
+    const target = resolveTaskTab(module, key);
     setProgressPanelOpen(false);
     if (target) onSelectTab(target.key);
   };
@@ -255,21 +268,26 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [themePanelOpen, themeStoreOpen]);
 
-  // 原生 <details> 点击外部不会自动收起：打开消息中心 / 主题风格等其它顶栏面板时，
-  // 让个人中心同步收起，避免两个弹层叠在一起。
+  // 点击外部收起个人中心：打开消息中心 / 主题风格等其它顶栏面板时也让位，避免两个弹层叠在一起。
   useEffect(() => {
+    if (!userMenuOpen) return;
     const menu = userMenuRef.current;
     if (!menu) return;
     const onDocMouseDown = (event: MouseEvent) => {
-      if (!menu.contains(event.target as Node)) menu.open = false;
+      if (!menu.contains(event.target as Node)) setUserMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setUserMenuOpen(false);
     };
     document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, []);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [userMenuOpen]);
 
-  const closeUserMenu = () => {
-    if (userMenuRef.current) userMenuRef.current.open = false;
-  };
+  const closeUserMenu = () => setUserMenuOpen(false);
 
   // 打开商店时从后端拉取可下载主题列表。
   useEffect(() => {
@@ -336,6 +354,27 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
     closingTimers.current.add(timer);
   };
 
+  // 「全部关闭」保护名单：正在跑任务的模块整块跳过（后端 module 与页签 moduleId
+  // 不是一一对应，宁可多留几个也不能关掉正在跑的那个），再加上工作台与当前页签。
+  const runningModuleIds = new Set<string>();
+  const runningTabKeys = new Set<string>();
+  activeTasks.forEach((task) => {
+    const exact = resolveTaskTab(task.module, task.key);
+    if (exact) runningTabKeys.add(exact.key);
+    taskModuleIds(task.module).forEach((moduleId) => runningModuleIds.add(moduleId));
+  });
+  const closableTabs = tabs.filter(
+    (tab) =>
+      tab.moduleId !== "dashboard" &&
+      tab.key !== activeKey &&
+      !runningTabKeys.has(tab.key) &&
+      !runningModuleIds.has(tab.moduleId),
+  );
+
+  const closeAllTabs = () => {
+    closableTabs.forEach((tab) => closeTabWithEffect(tab.key));
+  };
+
   return (
     <header ref={topbarRef} className={`topbar-card is-pinned ${topbarStuck ? "is-stuck" : ""}`}>
       <span className="topbar-glass" aria-hidden="true" />
@@ -383,8 +422,14 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
             >
               <span className="face-mouth" aria-hidden="true" />
             </button>
-            {(themePanelOpen || themeStoreOpen) && (
-              <div className={`theme-quick-popover ${themeStoreOpen ? "is-store" : ""}`} role="dialog" aria-label="主题风格">
+            {themePanelPresence.mounted && (
+              <div
+                className={`theme-quick-popover ui-popover ${themeStoreOpen ? "is-store" : ""}`}
+                role="dialog"
+                aria-label="主题风格"
+                data-open={themePanelPresence.open ? "true" : "false"}
+                aria-hidden={!themePanelPresence.open}
+              >
                 {themeStoreOpen ? (
                   <div className="theme-store">
                     <header className="theme-quick-header">
@@ -510,8 +555,15 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
             )}
           </div>
           <InboxBell />
-          <details className="user-menu" ref={userMenuRef}>
-            <summary className={avatarSrc ? "has-avatar" : ""}>
+          <div className="user-menu" ref={userMenuRef} data-open={userMenuOpen ? "true" : "false"}>
+            <button
+              type="button"
+              className={`user-menu-trigger ${avatarSrc ? "has-avatar" : ""}`}
+              onClick={() => setUserMenuOpen((open) => !open)}
+              aria-expanded={userMenuOpen}
+              aria-haspopup="dialog"
+              aria-label="个人中心"
+            >
               {avatarSrc ? (
                 <img className="avatar-img" src={avatarSrc} alt="本地用户头像" title="查看大图" onClick={openAvatarPreview} />
               ) : (
@@ -519,8 +571,15 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
               )}
               {displayName ? <span>{displayName}</span> : (!avatarSrc && <span>本地用户</span>)}
               <span className="caret">⌄</span>
-            </summary>
-            <div className="user-popover">
+            </button>
+            {userMenuPresence.mounted && (
+            <div
+              className="user-popover ui-popover"
+              role="dialog"
+              aria-label="个人中心"
+              data-open={userMenuPresence.open ? "true" : "false"}
+              aria-hidden={!userMenuPresence.open}
+            >
               <strong>个人中心</strong>
               <span>管理当前员工账号</span>
               <div className="user-menu-actions">
@@ -552,7 +611,8 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
               </div>
               <button className="user-menu-signout" type="button" onClick={() => { closeUserMenu(); onSignOut(); }}>退出登录</button>
             </div>
-          </details>
+            )}
+          </div>
           <input
             ref={fileInputRef}
             className="avatar-file-input"
@@ -592,42 +652,55 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
               <span aria-hidden="true">⋯</span>
               <span className="tab-overflow-count">{tabs.length}</span>
             </button>
-            {tabMenuOpen && (
-              <div className="tab-overflow-panel" role="dialog" aria-label="全部页签">
-                <div className="tab-overflow-head">
-                  <strong>全部页签</strong>
+            <div className="tab-overflow-panel" role="dialog" aria-label="全部页签" data-open={tabMenuOpen ? "true" : "false"} aria-hidden={!tabMenuOpen}>
+              <div className="tab-overflow-head">
+                <strong>全部页签</strong>
+                <div className="tab-overflow-head-actions">
                   <span>{tabs.length} 个</span>
+                  <button
+                    type="button"
+                    className="tab-overflow-close-all"
+                    onClick={closeAllTabs}
+                    disabled={closableTabs.length === 0}
+                    title={
+                      closableTabs.length === 0
+                        ? "没有可关闭的页签（当前页签与处理中的页签会保留）"
+                        : `关闭 ${closableTabs.length} 个页签（当前页签与处理中的页签会保留）`
+                    }
+                  >
+                    全部关闭
+                  </button>
                 </div>
-                <ul>
-                  {tabs.map((tab) => (
-                    <li key={tab.key}>
+              </div>
+              <ul>
+                {tabs.map((tab) => (
+                  <li key={tab.key}>
+                    <button
+                      type="button"
+                      className={`tab-overflow-item ${activeKey === tab.key ? "is-active" : ""}`}
+                      onClick={() => {
+                        onSelectTab(tab.key);
+                        setTabMenuOpen(false);
+                      }}
+                    >
+                      <span className={tab.iconClass} aria-hidden="true">{tab.icon}</span>
+                      <span className="tab-overflow-label">{tab.label}</span>
+                    </button>
+                    {tab.moduleId !== "dashboard" && (
                       <button
                         type="button"
-                        className={`tab-overflow-item ${activeKey === tab.key ? "is-active" : ""}`}
-                        onClick={() => {
-                          onSelectTab(tab.key);
-                          setTabMenuOpen(false);
-                        }}
+                        className="tab-overflow-close"
+                        onClick={() => closeTabWithEffect(tab.key)}
+                        aria-label={`关闭${tab.label}`}
+                        title="关闭页签"
                       >
-                        <span className={tab.iconClass} aria-hidden="true">{tab.icon}</span>
-                        <span className="tab-overflow-label">{tab.label}</span>
+                        ×
                       </button>
-                      {tab.moduleId !== "dashboard" && (
-                        <button
-                          type="button"
-                          className="tab-overflow-close"
-                          onClick={() => closeTabWithEffect(tab.key)}
-                          aria-label={`关闭${tab.label}`}
-                          title="关闭页签"
-                        >
-                          ×
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
         )}
         {(hasRunning || justFinished.length > 0) && (
@@ -668,8 +741,14 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
                 </>
               )}
             </button>
-            {progressPanelOpen && (
-              <div className="task-progress-panel" role="dialog" aria-label="处理任务进度">
+            {progressPresence.mounted && (
+              <div
+                className="task-progress-panel ui-popover"
+                role="dialog"
+                aria-label="处理任务进度"
+                data-open={progressPresence.open ? "true" : "false"}
+                aria-hidden={!progressPresence.open}
+              >
                 <div className="task-progress-panel-head">
                   <strong>
                     {hasRunning ? `处理中 ${activeTasks.length} 项` : `最近结束 ${justFinished.length} 项`}

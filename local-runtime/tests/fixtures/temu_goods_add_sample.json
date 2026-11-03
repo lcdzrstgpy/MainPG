@@ -1,0 +1,556 @@
+{
+  "_comment": "来自 Temu 发布成功的真实请求体，已脱敏：货号/仓库号/运费模板号/图片地址/站外链接全部替换，数值与结构保持原样。仅用于 payload 形状回归，不要拿去发请求。",
+  "request": {
+    "width": 800,
+    "cat1Id": 9711,
+    "cat2Id": 12015,
+    "cat3Id": 12256,
+    "cat4Id": 12262,
+    "cat5Id": 0,
+    "cat6Id": 0,
+    "cat7Id": 0,
+    "cat8Id": 0,
+    "cat9Id": 0,
+    "height": 800,
+    "cat10Id": 0,
+    "productName": "REDACTED",
+    "materialImgUrl": "https://img.example.com/redacted.jpg",
+    "productSkcReqs": [
+      {
+        "width": 800,
+        "height": 800,
+        "extCode": "REDACTED",
+        "isBasePlate": 0,
+        "colorImageUrl": "https://img.example.com/redacted.jpg",
+        "previewImgUrls": [
+          "https://img.example.com/redacted.jpg"
+        ],
+        "productSkuReqs": [
+          {
+            "width": 800,
+            "height": 800,
+            "extCode": "REDACTED",
+            "thumbUrl": "https://img.example.com/redacted.jpg",
+            "currencyType": "CNY",
+            "productSkuSpecReqs": [
+              {
+                "specId": 18191285,
+                "specName": "4件",
+                "parentSpecId": 15998553,
+                "parentSpecName": "数量"
+              }
+            ],
+            "siteSupplierPrices": [
+              {
+                "siteId": 100,
+                "supplierPrice": 8500
+              }
+            ],
+            "productSkuBarCodeReqs": [],
+            "productSkuMultiPackReq": {
+              "pieceUnitCode": 1,
+              "numberOfPieces": 1,
+              "pieceNewUnitCode": 1,
+              "numberOfPiecesNew": 12,
+              "skuClassification": 1,
+              "productSkuNetContentReq": {}
+            },
+            "productSkuWhExtAttrReq": {
+              "productSkuVolumeReq": {
+                "len": 500,
+                "width": 500,
+                "height": 300
+              },
+              "productSkuWeightReq": {
+                "value": 800000
+              },
+              "productSkuSensitiveAttrReq": {
+                "isSensitive": 0,
+                "sensitiveList": [],
+                "sensitiveTypes": []
+              },
+              "productSkuSensitiveLimitReq": {}
+            },
+            "productSkuStockQuantityReq": {
+              "warehouseStockQuantityReqs": [
+                {
+                  "warehouseId": "REDACTED",
+                  "targetStockAvailable": 100
+                }
+              ]
+            }
+          }
+        ],
+        "mainProductSkuSpecReqs": [
+          {
+            "specId": 0,
+            "specName": "",
+            "parentSpecId": 0,
+            "parentSpecName": ""
+          }
+        ]
+      }
+    ],
+    "productI18nReqs": [
+      {
+        "language": "en",
+        "productName": "REDACTED"
+      }
+    ],
+    "productCustomReq": {
+      "cat10Id": 0,
+      "isRecommendedTag": false
+    },
+    "carouselImageUrls": [
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg",
+      "https://img.example.com/redacted.jpg"
+    ],
+    "productShipmentReq": {
+      "freightTemplateId": "REDACTED",
+      "shipmentLimitSecond": 777600
+    },
+    "productPropertyReqs": [
+      {
+        "pid": 842,
+        "vid": 37864,
+        "refPid": 596,
+        "propName": "植物类型",
+        "propValue": "其他植物",
+        "valueUnit": "",
+        "templatePid": 1701674
+      },
+      {
+        "pid": 26,
+        "vid": 3768,
+        "refPid": 96,
+        "propName": "场合",
+        "propValue": "圣诞节",
+        "valueUnit": "",
+        "templatePid": 1701675
+      },
+      {
+        "pid": 1013,
+        "vid": 25073,
+        "refPid": 423,
+        "propName": "节假日",
+        "propValue": "圣诞节",
+        "valueUnit": "",
+        "templatePid": 1701676
+      },
+      {
+        "pid": 1460,
+        "vid": 37545,
+        "refPid": 1948,
+        "propName": "是否含容器",
+        "propValue": "不含容器",
+        "valueUnit": "",
+        "templatePid": 1701677
+      },
+      {
+        "pid": 1053,
+        "vid": 25595,
+        "refPid": 732,
+        "propName": "放置",
+        "propValue": "悬挂",
+        "valueUnit": "",
+        "templatePid": 1701678
+      },
+      {
+        "pid": 89,
+        "vid": 2148,
+        "refPid": 121,
+        "propName": "材料",
+        "propValue": "塑料",
+        "valueUnit": "",
+        "templatePid": 1701679
+      },
+      {
+        "pid": 90,
+        "vid": 22481,
+        "refPid": 241,
+        "propName": "房型",
+        "propValue": "户外庭院",
+        "valueUnit": "",
+        "templatePid": 1701680
+      },
+      {
+        "pid": 305,
+        "vid": 25601,
+        "refPid": 235,
+        "propName": "具体用途",
+        "propValue": "家居装饰",
+        "valueUnit": "",
+        "templatePid": 1701681
+      },
+      {
+        "pid": 125,
+        "vid": 3473,
+        "refPid": 203,
+        "propName": "四季",
+        "propValue": "冬天",
+        "valueUnit": "",
+        "templatePid": 1701682
+      },
+      {
+        "pid": 1425,
+        "vid": 36627,
+        "refPid": 1561,
+        "propName": "供电方式",
+        "propValue": "无需接电使用",
+        "valueUnit": "",
+        "templatePid": 1701684
+      },
+      {
+        "pid": 1539,
+        "vid": 52032,
+        "refPid": 2153,
+        "propName": "电池属性",
+        "propValue": "不带电池",
+        "valueUnit": "",
+        "templatePid": 1701685
+      },
+      {
+        "pid": 1742,
+        "vid": 401588,
+        "refPid": 7644,
+        "propName": "是否包含真植物",
+        "propValue": "否",
+        "valueUnit": "",
+        "templatePid": 1701693
+      }
+    ],
+    "productWhExtAttrReq": {
+      "outerGoodsUrl": "https://img.example.com/redacted.jpg",
+      "productOrigin": {
+        "region2Id": 43000000000006,
+        "region1ShortName": "CN"
+      }
+    },
+    "productSecondHandReq": {
+      "isSecondHand": false
+    },
+    "personalizationSwitch": 0,
+    "productSemiManagedReq": {
+      "bindSiteIds": [
+        100
+      ],
+      "semiLanguageStrategy": 1
+    },
+    "productSpecPropertyReqs": [
+      {
+        "pid": 15998553,
+        "vid": 0,
+        "refPid": 15998553,
+        "specId": 18191285,
+        "propName": "数量",
+        "specName": "4件",
+        "propValue": "4件",
+        "valueUnit": "",
+        "templatePid": 15998553,
+        "parentSpecId": 15998553,
+        "valueGroupId": 0,
+        "parentSpecName": "数量",
+        "valueGroupName": ""
+      }
+    ],
+    "goodsLayerDecorationReqs": [
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 1,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 2,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 3,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 4,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 5,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 6,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 7,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 8,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 9,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 10,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 11,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 12,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 13,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 14,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 15,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 16,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 17,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 18,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 19,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      },
+      {
+        "key": "DecImage",
+        "lang": "en",
+        "type": "image",
+        "priority": 20,
+        "contentList": [
+          {
+            "key": "DecImage",
+            "width": 800,
+            "height": 800,
+            "imgUrl": "https://img.example.com/redacted.jpg"
+          }
+        ]
+      }
+    ],
+    "productWarehouseRouteReq": {
+      "targetRouteList": [
+        {
+          "siteIdList": [
+            100
+          ],
+          "warehouseId": "REDACTED"
+        }
+      ]
+    }
+  }
+}

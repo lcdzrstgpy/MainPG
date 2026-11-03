@@ -701,6 +701,27 @@ class PodCustomizationService:
             preview_url=f"/api/pod-customization/assets/{asset['asset_id']}",
         ).model_dump()
 
+    def _settle_after_failure(
+        self,
+        billing_run: PodBillingRun | None,
+        context: str,
+    ) -> None:
+        """业务失败后收口冻结，但绝不让收口异常盖掉原始错因。
+
+        冻结会按 no_return 结算（不扣费），所以业务失败时调 ``settle()`` 是对的；
+        问题在于 ``settle()`` 自己也会抛（执行轮次推进、远端 5xx、结算分流异常），
+        在 ``except`` 里裸调会把「建批失败」变成「结算失败」，排查时看错地方。
+        收口失败留 pending，交给既有清扫任务兜底。
+        """
+        if billing_run is None:
+            return
+        try:
+            billing_run.settle()
+        except Exception as exc:  # noqa: BLE001 - 只记日志，原始异常优先
+            business_logger("pod_processing").warning(
+                "POD 自由定制失败收口异常（%s）：%s", context, exc
+            )
+
     def create_free_batch(
         self, actor: Actor, request: FreeBatchCreate, *, enqueue: bool = True
     ) -> dict[str, Any]:
@@ -732,8 +753,7 @@ class PodCustomizationService:
                 actor.workspace_id, actor.id, request, batch_id=batch_id
             )
         except Exception:
-            if billing_run is not None:
-                billing_run.settle()
+            self._settle_after_failure(billing_run, "建批")
             raise
         if billing_run is not None and self.worker is not None:
             self.worker.register_billing_run(batch_id, billing_run)
@@ -845,8 +865,7 @@ class PodCustomizationService:
             if not self.repository.reopen_free_batch(batch_id):
                 raise PodRepositoryError("POD 自由定制批次无法继续", 409)
         except Exception:
-            if billing_run is not None:
-                billing_run.settle()
+            self._settle_after_failure(billing_run, "重新生成")
             raise
         for relative_path in removed_paths:
             try:

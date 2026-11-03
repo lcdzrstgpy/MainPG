@@ -753,6 +753,34 @@ class ProductProcessingRepository:
             row = session.scalar(statement.order_by(ProductDraftRow.id.desc()).limit(1))
             return self._draft(row) if row else None
 
+    def draft_by_source_ref(
+        self,
+        source_ref: str,
+        workspace_id: str = "local",
+    ) -> dict[str, Any] | None:
+        """按规范化来源 URL（source_ref）找同款草稿，用于跨采集路径去重。
+
+        插件的 candidate_id 是 ``plugin:<platform>:<id|url>``，选品入池的是
+        ``1688:<offer_id>``，两者永远对不上；只有同一个商品页的规范化 URL 可以
+        跨路径识别。空 source_ref 一律视为不可比（直接返回 None），否则所有
+        手工草稿（source_ref 为空串）会互相误命中。
+        """
+        text = (source_ref or "").strip()
+        if not text:
+            return None
+        with self.database.sessions() as session:
+            row = session.scalar(
+                select(ProductDraftRow)
+                .where(
+                    ProductDraftRow.workspace_id == workspace_id,
+                    ProductDraftRow.source_ref == text,
+                    ProductDraftRow.status != "deleted",
+                )
+                .order_by(ProductDraftRow.id.desc())
+                .limit(1)
+            )
+            return self._draft(row) if row else None
+
     def get_draft(
         self, draft_id: int, *, include_deleted: bool = False, workspace_id: str = "local"
     ) -> dict[str, Any] | None:

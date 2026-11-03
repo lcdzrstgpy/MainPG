@@ -620,13 +620,14 @@ def test_check_mandatory_passes_leaf_category_and_properties(tmp_path: Path) -> 
 
 
 def test_check_mandatory_falls_back_when_gateway_rejects_catsmandatory(tmp_path: Path) -> None:
-    """网关不支持 catsmandatory.get（实测 sign is invalid）→ 必须退回 attrs 必填校验。"""
+    """Temu 拒 catsmandatory.get（部分类目 1000001，网关抖动也一样）→ 必须退回 attrs 必填校验。"""
 
     class StubClient(StubCatalogClient):
         def mandatory_config(self, leaf_cat_id, bind_site_ids, product_property_reqs=None):
             raise TemuGatewayError(
                 "bg.glo.goods.catsmandatory.get",
-                "sign is invalid, please check your sign calculation",
+                "Does not currently support querying other category configurations",
+                error_code="1000001",
             )
 
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubClient())
@@ -2053,12 +2054,17 @@ def _single_sku_draft() -> GoodsDraftInput:
 
 
 def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path) -> None:
-    """没有销售属性的类目：规格声明与 SKU 规格都发空数组，仍保留全零主规格占位。"""
+    """没有销售属性的类目：规格声明不发（空数组踩签名坑），仍保留全零主规格占位。
+
+    `productSpecPropertyReqs: []` 会让网关算签名时忽略这个字段、转发时又带上，
+    Temu 重算签名对不上 → `7000015 sign is invalid`（2026-11-02 实测：同一个请求
+    只把空数组去掉，错误就从 7000015 变回 3000000 参数错误）。
+    """
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
 
     payload = service.build_goods_payload(_single_sku_draft())["payload"]
 
-    assert payload["productSpecPropertyReqs"] == []
+    assert "productSpecPropertyReqs" not in payload
     skc = payload["productSkcReqs"][0]
     assert skc["mainProductSkuSpecReqs"] == [
         {"specId": 0, "specName": "", "parentSpecId": 0, "parentSpecName": ""}
@@ -2086,6 +2092,36 @@ def test_multi_variant_still_requires_specs(tmp_path: Path) -> None:
 
     assert payload["productSpecPropertyReqs"]
     assert payload["productSkcReqs"][0]["productSkuReqs"][0]["productSkuSpecReqs"]
+
+
+def test_payload_never_has_top_level_empty_arrays(tmp_path: Path) -> None:
+    """顶层空数组一律不发：网关签名口径和 Temu 不一致，会回 7000015 sign is invalid。
+
+    覆盖两条最容易踩的路径：类目没有销售属性（productSpecPropertyReqs 空）、
+    一个属性都没填（productPropertyReqs 空）。
+    """
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
+
+    for draft in (_single_sku_draft(), _draft(properties=[]).model_copy(update={"validate_catalog": False})):
+        payload = service.build_goods_payload(draft)["payload"]
+        empty = [key for key, value in payload.items() if isinstance(value, list) and not value]
+        assert empty == [], f"payload 顶层不该有空数组：{empty}"
+
+
+def test_mandatory_config_omits_empty_property_array() -> None:
+    """catsmandatory 带 `productPropertyReqs: []` 会被判 sign is invalid：空就不发这个键。"""
+    payload = {"success": True, "errorCode": "1000000", "result": {"mandatoryList": []}}
+    client, session = _client([FakeResponse(payload), FakeResponse(payload)])
+
+    client.mandatory_config(10498, [100], [])
+    request = session.calls[-1]["json"]["request"]
+    assert "productPropertyReqs" not in request
+    assert request["leafCatId"] == 10498
+    assert request["configItems"] == [1, 2, 3]
+
+    client.mandatory_config(10498, [100], [{"pid": 1, "vid": 2}])
+    request = session.calls[-1]["json"]["request"]
+    assert request["productPropertyReqs"] == [{"pid": 1, "vid": 2}]
 
 
 class UnitCatalogClient(StubCatalogClient):
@@ -2426,3 +2462,168 @@ def test_sync_provider_credentials_needs_token(tmp_path: Path, monkeypatch) -> N
         db, "cust_c", base_url="https://x/auth-api", token_resolver=lambda: ""
     )
     assert called == []
+
+
+def test_category_cache_ttl_stays_short_enough_to_see_temu_category_changes() -> None:
+    """类目树缓存不能太长：Temu 调整/下架类目后，用户可能发到已废弃类目。
+
+    原来是 6 小时，实测太保守（改完类目第二天上午还是旧的）。1 小时是折中；
+    真要更长就得配一个手动刷新入口，否则这条会红。
+    """
+
+    from wh_local.modules.temu_publish import client as temu_client
+
+    assert temu_client.CACHE_TTL_CATEGORIES <= 60 * 60, (
+        "类目缓存超过 1 小时：Temu 改类目后用户看不到，可能发到已废弃类目"
+    )
+
+
+def test_invalidate_categories_also_drops_attribute_cache_but_keeps_logistics() -> None:
+    """手动刷新类目树：类目 + 类目属性一起清，但别碰运费模板。
+
+    属性表是按 catId 定义的，Temu 给某个类目加/改必填属性时，只清类目树的话
+    用户点完刷新拿到的还是旧属性表（连必填判断一起是旧的），得等 1 小时或重启。
+    运费模板跟类目改动无关，一起清等于每次刷新都白打几轮网关。
+    """
+
+    cats = {
+        "success": True,
+        "errorCode": "1000000",
+        "result": {"categoryDTOList": [{"catId": 1}]},
+    }
+    attrs = {
+        "success": True,
+        "errorCode": "1000000",
+        "result": {"properties": [{"pid": 11, "required": True}]},
+    }
+    freight = {
+        "success": True,
+        "errorCode": "1000000",
+        "result": {"freightTemplateDTOList": []},
+    }
+    # 前 3 个响应给首次取数，第 4/5 个给清缓存后的重取（运费模板不该重取）
+    client, session = _client(
+        [
+            FakeResponse(cats),
+            FakeResponse(attrs),
+            FakeResponse(freight),
+            FakeResponse(cats),
+            FakeResponse(attrs),
+        ]
+    )
+
+    client.categories(0)
+    client.attributes(9)
+    client.freight_templates([100])
+    assert len(session.calls) == 3, "首次三个接口都该打网关"
+
+    client.categories(0)
+    client.attributes(9)
+    client.freight_templates([100])
+    assert len(session.calls) == 3, "第二次全命中缓存"
+
+    dropped = client.invalidate_categories()
+    assert dropped == 2, "cats: + attrs: 各一条"
+
+    client.categories(0)
+    client.attributes(9)
+    client.freight_templates([100])
+
+    assert len(session.calls) == 5, "类目和属性必须重取；运费模板仍应命中缓存"
+    # 第 3 次之后没有第 6 次调用 = 运费模板确实还在缓存里（重取的话会变 6）
+    assert session.calls[-2]["json"]["type"] == "bg.glo.goods.cats.get"
+    assert session.calls[-1]["json"]["type"] == "bg.glo.goods.attrs.get"
+
+
+class _CategoryCacheClient:
+    """只用来验证 service 层缓存的假客户端。"""
+
+    def __init__(self) -> None:
+        self.category_calls = 0
+        self.attribute_calls = 0
+        self.invalidated = 0
+
+    def categories(self, parent_cat_id: int = 0) -> dict[str, Any]:  # noqa: ARG002
+        self.category_calls += 1
+        return {"categoryDTOList": []}
+
+    def attributes(self, cat_id: int) -> dict[str, Any]:  # noqa: ARG002
+        self.attribute_calls += 1
+        return {"properties": []}
+
+    def invalidate_categories(self) -> int:
+        self.invalidated += 1
+        return 1
+
+
+def test_refresh_categories_clears_attribute_cache_in_both_layers(tmp_path: Path) -> None:
+    """service 外面还套了一层 180 秒缓存：类目和属性都必须两层一起清。
+
+    只清 client 层时，service 缓存的 ``attrs:{catId}`` 还活着 —— 用户点完
+    「刷新类目树」，前端重拉属性拿到的仍是旧表。
+    """
+
+    fake = _CategoryCacheClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=fake)
+
+    service.categories(0)
+    service.attributes(9)
+    service.categories(0)
+    service.attributes(9)
+    assert fake.category_calls == 1, "service 层类目缓存应命中"
+    assert fake.attribute_calls == 1, "service 层属性缓存应命中"
+
+    result = service.refresh_categories()
+
+    assert result["ok"] is True
+    # service 2 条（categories:0 + attrs:9）+ 假客户端报的 1 条
+    assert result["dropped"] == 3
+    assert fake.invalidated == 1
+
+    service.categories(0)
+    service.attributes(9)
+    assert fake.category_calls == 2, "刷新后必须真的重新取类目"
+    assert fake.attribute_calls == 2, "刷新后必须真的重新取属性，否则必填判断还是旧的"
+
+
+def _duplicate_pid_catalog() -> dict[str, Any]:
+    return {
+        "properties": [
+            {"pid": 1, "name": "材质", "required": True, "templatePid": 919952, "values": [{"vid": 417, "value": "橡胶"}]},
+            {"pid": 3, "name": "风格", "required": False, "templatePid": 500, "values": []},
+            {"pid": 1, "name": "主体材质", "required": False, "templatePid": 1585830, "values": [{"vid": 417, "value": "橡胶"}]},
+        ]
+    }
+
+
+def test_catalog_dedupe_keeps_required_property_for_duplicate_pid() -> None:
+    """真实案例（桌垫 1004）：Temu 同时返回 pid=1 的「材质」和「主体材质」。
+
+    前端按 pid 存选择、payload 按 pid 组装，留着两个会互相覆盖；
+    去重必须保留 required 的那个（材质），否则必填项会被 optional 的顶掉。
+    """
+    from wh_local.modules.temu_publish.service import _dedupe_catalog_properties
+
+    result = _dedupe_catalog_properties(_duplicate_pid_catalog())
+
+    assert [item["pid"] for item in result["properties"]] == [1, 3]
+    assert result["properties"][0]["name"] == "材质"
+    assert result["properties"][0]["templatePid"] == 919952
+    assert result["properties"][0]["required"] is True
+
+
+def test_service_attributes_dedupes_duplicate_pid_before_caching(tmp_path: Path) -> None:
+    """去重必须在 service.attributes() 这个唯一入口做：前端、组装、校验都读它。"""
+
+    class DuplicateClient:
+        def attributes(self, cat_id: int) -> dict[str, Any]:  # noqa: ARG002
+            return _duplicate_pid_catalog()
+
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=DuplicateClient())
+
+    first = service.attributes(1004)
+    second = service.attributes(1004)
+
+    for catalog in (first, second):
+        assert [item["pid"] for item in catalog["properties"]] == [1, 3]
+        assert catalog["properties"][0]["name"] == "材质"

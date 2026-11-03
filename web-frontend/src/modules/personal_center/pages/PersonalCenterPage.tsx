@@ -2077,7 +2077,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               <div className="pricing-pod">
                 <div className="pricing-pod-head">
                   <b>POD 按模块计价</b>
-                  <small>各模块单价独立，均由服务端下发；调价后点「刷新」即可看到最新价格。</small>
+                  <small>各模块单价独立，均由系统统一调控。</small>
                 </div>
                 <div className="pricing-pod-grid">
                   {podPricingModules.map((item) => {

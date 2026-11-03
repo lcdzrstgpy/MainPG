@@ -60,6 +60,42 @@ test("POD style results present the lifestyle panel as the primary image and her
   assert.deepEqual(rows[0].results.map((item) => item?.id), ["lifestyle", "detail-a", "detail-b", "hero"]);
 });
 
+test("POD style stays generating while its other panels are still pending", () => {
+  const base = {
+    style_grid: true,
+    business_fields: { product_name: "Gaming Mat" },
+    style_titles: [],
+    items: [
+      { id: "lifestyle", style_index: 1, variant_index: 1, role: "lifestyle" as const, status: "completed" as const, public_url: "https://images.example.com/lifestyle.png" },
+      { id: "detail-a", style_index: 1, variant_index: 2, role: "detail_a" as const, status: "queued" as const },
+    ],
+  };
+  const queuedOnly = {
+    ...base,
+    items: [
+      { id: "lifestyle", style_index: 1, variant_index: 1, role: "lifestyle" as const, status: "queued" as const },
+    ],
+  };
+
+  // 批次还在跑：主图先出、其余格子没创建/排队，不能提前报「图片部分生成失败」。
+  assert.equal(groupPodStyleRows({ ...base, status: "compositing" })[0].status, "generating");
+  assert.equal(groupPodStyleRows({ ...base, status: "generating_patterns" })[0].status, "generating");
+  // 一张都没出、批次还在排队时仍是「等待生成」。
+  assert.equal(groupPodStyleRows({ ...queuedOnly, status: "queued" })[0].status, "queued");
+
+  // 批次结束后才允许落成部分失败/失败。
+  assert.equal(groupPodStyleRows({ ...base, status: "partial_failure" })[0].status, "partial_failure");
+  assert.equal(groupPodStyleRows({ ...base, status: "failed" })[0].status, "partial_failure");
+  assert.equal(
+    groupPodStyleRows({
+      ...queuedOnly,
+      status: "failed",
+      items: [{ ...queuedOnly.items[0], status: "failed" as const }],
+    })[0].status,
+    "failed",
+  );
+});
+
 test("POD counts are preset multiples of four", () => {
   assert.deepEqual(POD_BATCH_COUNTS, [4, 8, 20, 40, 60, 100]);
   assert.equal(isPodBatchCount(1), true);

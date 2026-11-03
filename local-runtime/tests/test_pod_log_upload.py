@@ -44,7 +44,9 @@ class _FakeClient:
 
 def _write_log(directory: Path, text: str = "2026-10-12 INFO POD 批次开始\n") -> Path:
     path = directory / LOG_NAME
-    path.write_text(text, encoding="utf-8")
+    # newline="" 关掉换行翻译：Windows 上默认会把 \n 写成 \r\n，让按字节断言的用例必红。
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
     return path
 
 
