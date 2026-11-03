@@ -11,11 +11,31 @@
  */
 
 /**
- * 当前隐私政策版本。
- * ⚠️ 必须与 `web-frontend/public/privacy.html` 里「版本：vX.Y」保持一致 ——
+ * 隐私政策版本的**兜底值**。
+ *
+ * 版本权威已经移到服务端（`/privacy.json` 的 `version`），这里只在「拉不到远端」时
+ * 使用：断网、服务端未上线、文档未发布。它必须与内置的
+ * `web-frontend/public/privacy.html` 里「版本：vX.Y」保持一致 ——
  * 由 `privacyConsent.test.ts` 读取文档比对，改了文档忘改这里会测试失败。
  */
-export const PRIVACY_POLICY_VERSION = "v1.2";
+export const PRIVACY_POLICY_VERSION_FALLBACK = "v1.2";
+
+/** 兼容旧引用（测试与既有调用）；语义同 `PRIVACY_POLICY_VERSION_FALLBACK`。 */
+export const PRIVACY_POLICY_VERSION = PRIVACY_POLICY_VERSION_FALLBACK;
+
+/** 服务端版本号格式：`v1`、`v1.2`、`v1.2.3`…；不符合就按兜底处理。 */
+const POLICY_VERSION_PATTERN = /^v\d+(\.\d+)*$/;
+
+/**
+ * 解析「本次应当校验的隐私政策版本」。
+ *
+ * 远端文档不可用/字段脏/未发布 → 回退兜底常量，**不改变登录流程**。
+ * 注意：版本回滚（v1.3 → v1.2）也会让已同意的用户重新勾选，这是刻意保守的行为。
+ */
+export function resolvePolicyVersion(remote?: { version?: unknown } | null): string {
+  const raw = typeof remote?.version === "string" ? remote.version.trim() : "";
+  return POLICY_VERSION_PATTERN.test(raw) ? raw : PRIVACY_POLICY_VERSION_FALLBACK;
+}
 
 const STORAGE_KEY = "mainpg.privacyAgreed";
 

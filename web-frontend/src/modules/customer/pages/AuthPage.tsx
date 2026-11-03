@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
-import { clearPrivacyConsent, readPrivacyConsent, savePrivacyConsent } from "../../../shared/privacyConsent";
+import {
+  PRIVACY_POLICY_VERSION_FALLBACK,
+  clearPrivacyConsent,
+  readPrivacyConsent,
+  resolvePolicyVersion,
+  savePrivacyConsent,
+} from "../../../shared/privacyConsent";
+import {
+  loadPrivacyPolicy,
+  resolvePrivacyPolicyUrl,
+  PRIVACY_POLICY_URL_FALLBACK,
+} from "../../../shared/api/privacyPolicyApi";
 import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 import { markPodAgreementPending, clearPodAgreementPending } from "../../../shared/components/PodUsageAgreementModal";
@@ -128,10 +139,30 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   // 首次必须由用户**主动**勾选（不默认勾选同意，合规要求，见 shared/privacyConsent.ts）；
   // 勾过之后本地记住、下次直接回填；取消勾选即撤回记录；协议版本变更会自动失效并重新征求。
   const [agreed, setAgreed] = useState(() => readPrivacyConsent());
+  // 隐私政策：正文托管在服务端，版本以远端为准、拉不到就用内置常量兜底。
+  const [policyVersion, setPolicyVersion] = useState(PRIVACY_POLICY_VERSION_FALLBACK);
+  const [policyUrl, setPolicyUrl] = useState(PRIVACY_POLICY_URL_FALLBACK);
   // 账号密码记忆交给浏览器密码管理器（autocomplete），应用内不再自建账号库。
   // 表单改由 JS 校验（表单加了 noValidate），失败时把焦点送回对应输入框。
   const fieldRefs = useRef<Partial<Record<FieldKey, HTMLInputElement | null>>>({});
   const { logoRef, slotRef } = useLogoFlip(step);
+
+  // 启动时静默拉一次隐私政策元信息（不阻塞首屏）：
+  // 版本以远端为准，正文链接也用服务端给的 public_url；
+  // 版本变了就把「已同意」按新版本重新判定，触发重新勾选。
+  useEffect(() => {
+    let alive = true;
+    void loadPrivacyPolicy().then((doc) => {
+      if (!alive || !doc) return;
+      const nextVersion = resolvePolicyVersion(doc);
+      setPolicyVersion(nextVersion);
+      setPolicyUrl(resolvePrivacyPolicyUrl(doc));
+      setAgreed((current) => current && readPrivacyConsent(nextVersion));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (codeCooldown <= 0) return;
@@ -167,7 +198,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   /** 勾选即记录「已同意」；取消勾选同时撤回该记录（合规要求提供便捷的撤回方式）。 */
   function handleAgreeChange(next: boolean) {
     setAgreed(next);
-    if (next) savePrivacyConsent();
+    if (next) savePrivacyConsent(undefined, policyVersion);
     else clearPrivacyConsent();
   }
 
@@ -473,7 +504,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         我已阅读并同意{" "}
         <a
           className="auth-link"
-          href="/privacy"
+          href={policyUrl}
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}
@@ -491,7 +522,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           {BRAND_NAME}
         </button>
         <nav className="auth-nav-links" aria-label="条款">
-          <a className="auth-link" href="/privacy" target="_blank" rel="noopener noreferrer">
+          <a className="auth-link" href={policyUrl} target="_blank" rel="noopener noreferrer">
             隐私政策
           </a>
         </nav>

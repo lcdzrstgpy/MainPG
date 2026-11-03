@@ -4,9 +4,11 @@ import test from "node:test";
 
 import {
   PRIVACY_POLICY_VERSION,
+  PRIVACY_POLICY_VERSION_FALLBACK,
   clearPrivacyConsent,
   isConsentRecordValid,
   readPrivacyConsent,
+  resolvePolicyVersion,
   savePrivacyConsent,
 } from "./privacyConsent.ts";
 
@@ -88,4 +90,29 @@ test("隐私政策文档里的版本号与本模块常量一致（单一事实�
     PRIVACY_POLICY_VERSION,
     "public/privacy.html 的版本号已更新，请同步 shared/privacyConsent.ts 的 PRIVACY_POLICY_VERSION",
   );
+});
+
+
+test("resolvePolicyVersion 只接受 v<数字> 形式，其余一律回退兜底常量", () => {
+  assert.equal(resolvePolicyVersion({ version: "v1.3" }), "v1.3");
+  assert.equal(resolvePolicyVersion({ version: "  v2  " }), "v2");
+  assert.equal(resolvePolicyVersion({ version: "v1.2.3" }), "v1.2.3");
+  // 脏数据 / 缺字段 / 类型不对 / 未发布 → 回退，不改变登录流程
+  assert.equal(resolvePolicyVersion({ version: "abc" }), PRIVACY_POLICY_VERSION_FALLBACK);
+  assert.equal(resolvePolicyVersion({ version: "1.2" }), PRIVACY_POLICY_VERSION_FALLBACK);
+  assert.equal(resolvePolicyVersion({ version: 1.2 }), PRIVACY_POLICY_VERSION_FALLBACK);
+  assert.equal(resolvePolicyVersion({ version: "" }), PRIVACY_POLICY_VERSION_FALLBACK);
+  assert.equal(resolvePolicyVersion({}), PRIVACY_POLICY_VERSION_FALLBACK);
+  assert.equal(resolvePolicyVersion(null), PRIVACY_POLICY_VERSION_FALLBACK);
+  assert.equal(resolvePolicyVersion(undefined), PRIVACY_POLICY_VERSION_FALLBACK);
+});
+
+test("远端版本升版后，旧记录不再视为已同意", () => {
+  withFakeStorage(() => {
+    savePrivacyConsent("2026-10-14T03:00:00.000Z", "v1.2");
+    assert.equal(readPrivacyConsent("v1.2"), true);
+    assert.equal(readPrivacyConsent(resolvePolicyVersion({ version: "v1.3" })), false);
+    // 远端拉不到时仍按兜底常量判定，不会把已同意的用户顶回去
+    assert.equal(readPrivacyConsent(resolvePolicyVersion(null)), true);
+  });
 });
