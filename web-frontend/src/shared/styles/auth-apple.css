@@ -350,29 +350,62 @@
 
 .auth-field-block { display: grid; gap: 8px; position: relative; }
 
-/* 输入组：多字段共用一个外框，中间只有分隔线，圆角只在外侧 */
+/* 输入组：多字段共用一个外框，中间只有分隔线，圆角只在外侧。
+   ── 圆角按 SwiftUI 的 inset-grouped 列表来（2026-11-03）──
+   1) 不描边。Apple 的分组单元格是「面」，靠底色和卡片区分；一旦加 1px 边线，
+      边线会沿着圆弧再画一遍，12px 的小圆角就变成一条被放大的轮廓线，显得发硬。
+   2) 圆角用连续曲率（squircle）。CSS 默认的 border-radius 是正圆弧，圆弧和直边
+      在切点处曲率突变，眼睛会看到「直—突然拐弯」的折点；Apple 的 continuous
+      圆角在切点处曲率从 0 平滑长起来，同样半径看着更软。Chrome/Edge 139+ 支持
+      corner-shape（工作台在系统浏览器里跑，Windows 上就是 Edge）；Safari 和
+      Firefox 还不支持，退回正圆弧，不会更差。
+   3) 分隔线从 16px 起笔（与标签文字左缘对齐），右侧通到边，是 Apple 分隔线的做法；
+      原来通栏到左边，线和圆角在靠近边缘处互相打断。 */
 .auth-field-group {
-  border: 1px solid var(--auth-line);
+  position: relative;
   border-radius: 12px;
   background: var(--auth-field-bg);
   overflow: hidden;
-  transition: border-color .18s ease, box-shadow .18s ease;
+  transition: box-shadow .2s var(--ease-apple, cubic-bezier(.22, 1, .36, 1));
 }
 
+@supports (corner-shape: squircle) {
+  .auth-field-group {
+    corner-shape: squircle;
+  }
+}
+
+/* 焦点/报错只加环，不改描边：环在圆角外侧，跟随同一个连续曲率。
+   环用主色的半透明值而不是实色——实色 1.5px 在浅底上会变成一圈硬描边，
+   比原来的 1px 细边还抢眼。 */
 .auth-field-group:focus-within {
-  border-color: var(--auth-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--auth-focus) 16%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--auth-focus) 26%, transparent),
+    0 0 0 6px color-mix(in srgb, var(--auth-focus) 9%, transparent);
 }
 
 .auth-field-group[data-invalid="true"] {
-  border-color: var(--auth-danger);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--auth-danger) 72%, transparent);
 }
 
 .auth-field-group[data-invalid="true"]:focus-within {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--auth-danger) 15%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--auth-danger) 72%, transparent),
+    0 0 0 5px color-mix(in srgb, var(--auth-danger) 11%, transparent);
 }
 
-.auth-field-group > * + * { border-top: 1px solid var(--auth-line); }
+.auth-field-group > * + * { border-top: 0; }
+
+.auth-field-group > * + *::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 16px;
+  height: 1px;
+  background: var(--auth-line);
+  pointer-events: none;
+}
 
 .auth-field {
   position: relative;
