@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
 import {
@@ -145,6 +145,37 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   // 表单改由 JS 校验（表单加了 noValidate），失败时把焦点送回对应输入框。
   const fieldRefs = useRef<Partial<Record<FieldKey, HTMLInputElement | null>>>({});
   const { logoRef, slotRef } = useLogoFlip(step);
+
+  // 返回键在不同步骤的位置不同（登录/找回跟着卡片，注册对齐到「界野」正下方），
+  // 直接切会「瞬移」；这里用 FLIP：先按旧位置做反向位移，再过渡回 0，看起来是滑过去的。
+  const backRef = useRef<HTMLButtonElement>(null);
+  const backRectRef = useRef<DOMRect | null>(null);
+  useLayoutEffect(() => {
+    const el = backRef.current;
+    if (!el) {
+      backRectRef.current = null;
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const prev = backRectRef.current;
+    backRectRef.current = rect;
+    if (!prev) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const dx = prev.left - rect.left;
+    const dy = prev.top - rect.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    el.style.transition = "none";
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    // 强制一次回流，确保上面的反向位移先生效
+    void el.offsetWidth;
+    window.requestAnimationFrame(() => {
+      el.style.transition = "transform .42s var(--ease-apple, cubic-bezier(.22, 1, .36, 1))";
+      el.style.transform = "";
+      window.setTimeout(() => {
+        el.style.transition = "";
+      }, 440);
+    });
+  }, [step, entered]);
 
   /**
    * 拿到远端隐私政策文档后的统一处理：版本以远端为准，正文地址用 public_url；
@@ -564,7 +595,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         ) : (
           <section className="auth-panel">
             {entered && (
-              <button type="button" className="auth-link auth-back" onClick={() => goToStep("welcome")}>
+              <button
+                ref={backRef}
+                type="button"
+                className="auth-link auth-back"
+                data-step={step}
+                onClick={() => goToStep("welcome")}
+              >
                 ← 返回
               </button>
             )}
