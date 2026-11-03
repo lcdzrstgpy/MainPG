@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
-import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
+import { BRAND_LOGO_URL, BRAND_NAME, type BrandLogoRect } from "../../../shared/brand";
 import {
   PRIVACY_POLICY_VERSION_FALLBACK,
   clearPrivacyConsent,
@@ -17,7 +17,12 @@ import { httpJson, saveAuthSession } from "../../../transport/http/client";
 import { markPodAgreementPending, clearPodAgreementPending } from "../../../shared/components/PodUsageAgreementModal";
 import { useLogoFlip } from "./authLogoTransition";
 
-type AuthPageProps = { onEnter: () => void };
+type AuthPageProps = {
+  /** 登录成功：把当前 logo 的屏幕矩形交出去，入场动画从它开始飞 */
+  onEnter: (origin?: BrandLogoRect | null) => void;
+  /** 登录成功后页面在下层多留 380ms 给入场动画当背景，随后淡出卸载 */
+  exiting?: boolean;
+};
 type AuthStep = "welcome" | "login" | "register" | "forgot";
 
 type FieldKey =
@@ -96,7 +101,7 @@ function EyeOffIcon() {
   );
 }
 
-export function AuthPage({ onEnter }: AuthPageProps) {
+export function AuthPage({ onEnter, exiting = false }: AuthPageProps) {
   // 会话失效原因提示（被顶替/过期）：登录页只消费一次。
   const [sessionHint] = useState(readSessionHintOnce);
   // 每次进入都从首屏开始；welcome = 首屏，其余三态共用同一个表单面板。
@@ -385,7 +390,14 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       // 的公告弹窗/消息中心会复用同一个在飞请求先等它完成再渲染。
       resetMessagesSync();
       void syncMessages();
-      onEnter();
+      // 把登录页 logo 此刻的屏幕矩形交给入场动画：动画的第一帧就摆在同一个
+      // 位置、同一个大小上，视觉上等于「这个 logo 自己飞走了」。
+      const logoRect = logoRef.current?.getBoundingClientRect();
+      onEnter(
+        logoRect
+          ? { x: logoRect.x, y: logoRect.y, width: logoRect.width, height: logoRect.height }
+          : null,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "请求失败，请稍后再试";
       setError(message);
@@ -559,7 +571,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   );
 
   return (
-    <main className="auth-page" data-enter={entered ? "true" : "false"}>
+    <main
+      className={exiting ? "auth-page is-exiting" : "auth-page"}
+      data-enter={entered ? "true" : "false"}
+    >
       <header className="auth-nav">
         <button type="button" className="auth-nav-brand" onClick={() => goToStep("welcome")}>
           {BRAND_NAME}

@@ -47,6 +47,33 @@
   scrollbar-gutter: stable;
 }
 
+/* 登录成功的交接：登录页留在下层，给入场动画第一段（logo 从登录页长到屏幕中央）
+   当背景。z-index 要高过工作台里所有浮层（顶栏 18、弹层 120 等），但仍低于入场
+   覆盖层（1000），所以那段 logo 始终在它上面。
+   节奏分两步：先 0.16s 把表单/导航抹掉，只留底色——白 logo 在深色渐变上才看得见，
+   卡片一旦还在，logo 长大时会糊在白色卡片上；等白色幕布铺到 0.3s 再把整页淡掉。
+   自己的 logo 立刻隐去：上层已经在同一个矩形上摆了同一张图，叠着会出双影。 */
+.auth-page.is-exiting {
+  z-index: 900;
+  pointer-events: none;
+  animation: auth-page-exit .3s ease-out .3s both;
+}
+
+.auth-page.is-exiting .auth-nav,
+.auth-page.is-exiting .auth-stage {
+  opacity: 0;
+  transition: opacity .16s ease-out;
+}
+
+.auth-page.is-exiting .auth-logo-slot {
+  opacity: 0;
+}
+
+@keyframes auth-page-exit {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 /* 两团缓慢漂移的光斑（跟随主题色）。
    用 fixed：绝对定位 + inset:-10% 会把页面滚动高度撑大 10%，
    注册页字段多时看起来像「页面被撑开」。 */

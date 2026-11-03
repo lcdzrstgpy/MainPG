@@ -1205,22 +1205,40 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
   }
 }
 
-/* 登录成功后的品牌入场：中央亮相，再收束到左上角品牌位。 */
+/* 登录成功后的品牌入场：从登录页 logo 的矩形起飞 → 长到屏幕中央 → 收束到左上角品牌位。
+   全程只有一个元素，几何换算成「相对视口中心的位移 + 相对起始宽度的缩放」，
+   只动 transform，不再逐帧改 top/left/width。 */
 .workspace-entry-overlay {
   position: fixed;
   z-index: 1000;
   inset: 0;
   overflow: hidden;
   pointer-events: auto;
+}
+
+/* 幕布是单独一层：透明度只作用在它身上。
+   早先把 opacity 动画挂在覆盖层本身，logo 作为子元素被一起乘掉，
+   起飞那半秒里白 logo 只剩两三成不透明度，看着像没画出来。 */
+.workspace-entry-veil {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
   background:
     radial-gradient(circle at 50% 48%, rgba(255, 255, 255, .98) 0 12%, rgba(235, 247, 255, .92) 34%, rgba(220, 239, 250, .72) 58%, rgba(206, 229, 243, .38) 76%, transparent 100%);
   backdrop-filter: blur(16px) saturate(120%);
-  animation: workspace-entry-backdrop 2.3s cubic-bezier(.22, .78, .24, 1) both;
+  animation: workspace-entry-backdrop var(--brand-entry-duration, 2.3s) cubic-bezier(.22, .78, .24, 1) both;
+}
+
+/* 从登录页接过来：头 8% 幕布几乎透明，登录页在下面淡出的那 0.3s 才看得见；
+   否则第一帧就是一整片白，视觉上等于「点一下白屏」。 */
+.workspace-entry-overlay[data-from-auth="true"] .workspace-entry-veil {
+  animation-name: workspace-entry-backdrop-from-auth;
 }
 
 .workspace-entry-overlay::before,
 .workspace-entry-overlay::after {
   position: absolute;
+  z-index: 1;
   top: 50%;
   left: 50%;
   width: min(68vw, 720px);
@@ -1240,23 +1258,44 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
 
 .workspace-entry-brand {
   position: fixed;
+  z-index: 2;
   top: 50%;
   left: 50%;
-  width: var(--brand-entry-start-width);
-  transform: translate(-50%, -50%) scale(.72);
+  width: var(--brand-entry-w, 320px);
+  aspect-ratio: 1070 / 630;
   transform-origin: center;
   will-change: transform;
-  animation: workspace-brand-flight 2.3s cubic-bezier(.2, .74, .18, 1) both;
+  animation: workspace-brand-flight var(--brand-entry-duration, 2.3s) cubic-bezier(.2, .74, .18, 1) both;
 }
 
-.workspace-entry-brand img {
-  position: relative;
-  z-index: 1;
+/* 从登录页接过来：第一帧必须和登录页那个 logo 完全重合，所以不淡入、不模糊 */
+.workspace-entry-brand[data-from-auth="true"] {
+  animation-name: workspace-brand-flight-from-auth;
+}
+
+.workspace-entry-logo {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
   object-fit: contain;
+}
+
+.workspace-entry-logo-ink {
   filter: drop-shadow(0 18px 30px rgba(18, 51, 70, .2));
+  animation: workspace-entry-logo-ink var(--brand-entry-duration, 2.3s) ease both;
+}
+
+.workspace-entry-brand[data-from-auth="true"] .workspace-entry-logo-ink {
+  animation-name: workspace-entry-logo-ink-from-auth;
+}
+
+/* 登录页的 logo 是反白的（深色渐变底），起飞初期保留这个形态，
+   等白色幕布铺开再换成墨色版本，避免在深底上出现一块灰字。 */
+.workspace-entry-logo-white {
+  filter: brightness(0) invert(1) drop-shadow(0 12px 26px rgba(3, 22, 44, .3));
+  animation: workspace-entry-logo-white var(--brand-entry-duration, 2.3s) ease both;
 }
 
 .workspace-entry-halo {
@@ -1269,6 +1308,11 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
   animation: workspace-entry-halo 1.4s ease-out .16s both;
 }
 
+/* 起飞阶段底下还是登录页的深色渐变：白色光晕会提前把 logo 糊掉，等到了中央再出现 */
+.workspace-entry-brand[data-from-auth="true"] .workspace-entry-halo {
+  animation-delay: .46s;
+}
+
 .workspace-shell.is-brand-entering [data-brand-entry-target],
 [data-ui-mode="apple"] .workspace-shell.is-brand-entering .sidebar-pin-button {
   opacity: 0;
@@ -1277,6 +1321,16 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
 @keyframes workspace-entry-backdrop {
   0% { opacity: 1; }
   54% { opacity: 1; }
+  100% { opacity: 0; backdrop-filter: blur(0) saturate(100%); }
+}
+
+/* 从登录页接过来时，幕布要在 logo 起飞的头几帧保持透明，让登录页透出来 */
+@keyframes workspace-entry-backdrop-from-auth {
+  0% { opacity: 0; }
+  8% { opacity: .16; }
+  20% { opacity: .72; }
+  32% { opacity: 1; }
+  58% { opacity: 1; }
   100% { opacity: 0; backdrop-filter: blur(0) saturate(100%); }
 }
 
@@ -1292,6 +1346,28 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
   100% { opacity: 0; transform: scale(1.2); }
 }
 
+@keyframes workspace-entry-logo-ink {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+/* 白→墨的换色压到「幕布还半透」的那一段：白 logo 在深底上看得见，
+   墨 logo 在正在铺开的浅幕布上也看得见，中间不会有「白字化在白色里」的空档。 */
+@keyframes workspace-entry-logo-ink-from-auth {
+  0% { opacity: 0; }
+  10% { opacity: 0; }
+  19% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+@keyframes workspace-entry-logo-white {
+  0% { opacity: 1; }
+  9% { opacity: 1; }
+  17% { opacity: 0; }
+  100% { opacity: 0; }
+}
+
 @keyframes workspace-brand-flight {
   0% {
     opacity: 0;
@@ -1304,20 +1380,26 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
     filter: blur(0);
   }
   27%, 47% {
-    top: 50%;
-    left: 50%;
-    width: var(--brand-entry-start-width);
-    opacity: 1;
     transform: translate(-50%, -50%) scale(1);
-    filter: blur(0);
   }
-  82%, 100% {
-    top: var(--brand-entry-end-top);
-    left: var(--brand-entry-end-left);
-    width: var(--brand-entry-end-width);
-    opacity: 1;
+  100% {
+    transform: translate(calc(-50% + var(--brand-entry-x1, 0px)), calc(-50% + var(--brand-entry-y1, 0px))) scale(var(--brand-entry-s1, 1));
+  }
+}
+
+/* 无缝接上登录页：0% 落在登录页 logo 的矩形上，16% 长到中央并轻微过冲 */
+@keyframes workspace-brand-flight-from-auth {
+  0% {
+    transform: translate(calc(-50% + var(--brand-entry-x0, 0px)), calc(-50% + var(--brand-entry-y0, 0px))) scale(var(--brand-entry-s0, .2));
+  }
+  16% {
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+  24%, 46% {
     transform: translate(-50%, -50%) scale(1);
-    filter: blur(0);
+  }
+  100% {
+    transform: translate(calc(-50% + var(--brand-entry-x1, 0px)), calc(-50% + var(--brand-entry-y1, 0px))) scale(var(--brand-entry-s1, 1));
   }
 }
 

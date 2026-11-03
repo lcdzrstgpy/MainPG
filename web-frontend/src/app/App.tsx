@@ -7,6 +7,7 @@ import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeU
 import { GlobalToast } from "../shared/components/GlobalToast";
 import { BackendOfflineNotice } from "../shared/components/BackendOfflineNotice";
 import { getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
+import type { BrandLogoRect } from "../shared/brand";
 
 type MeResponse = {
   user_id?: string;
@@ -37,6 +38,10 @@ async function fetchActiveTaskCount(): Promise<number> {
 export function App() {
   const [enteredWorkspace, setEnteredWorkspace] = useState(false);
   const [playEntryAnimation, setPlayEntryAnimation] = useState(false);
+  // 入场动画的起点：登录页 logo 的屏幕矩形（登录成功那一刻量一次）。
+  const [entryOrigin, setEntryOrigin] = useState<BrandLogoRect | null>(null);
+  // 登录页在登录成功后继续挂载 380ms，给入场动画的第一段当背景。
+  const [authExiting, setAuthExiting] = useState(false);
   const [ready, setReady] = useState(false);
   const [accountRole, setAccountRole] = useState("operator");
   // 启动前置更新门：软件打开后先检查/安装新版本，通过后才进入登录或主页。
@@ -128,12 +133,19 @@ export function App() {
   async function signOut() {
     await releaseAuthSession();
     setPlayEntryAnimation(false);
+    setEntryOrigin(null);
+    setAuthExiting(false);
     setEnteredWorkspace(false);
   }
 
-  function enterWorkspaceAfterLogin() {
+  function enterWorkspaceAfterLogin(origin?: BrandLogoRect | null) {
+    setEntryOrigin(origin ?? null);
     setPlayEntryAnimation(true);
     setEnteredWorkspace(true);
+    // 登录页在下层多留一会儿：入场动画第一段是「登录页的 logo 长到屏幕中央」，
+    // 它需要登录页还在下面当背景（白 logo 在深底上才看得见）；0.72s 时它已经淡到 0，再卸载。
+    setAuthExiting(true);
+    window.setTimeout(() => setAuthExiting(false), 720);
   }
 
   // 启动更新门优先于一切页面：软件打开即检查并安装新版本，未通过前不渲染登录/主页。
@@ -144,16 +156,20 @@ export function App() {
   if (!ready) return null;
 
   return <>
-    {enteredWorkspace ? (
+    {/* 登录成功那一刻两棵树同时在：登录页留在下层淡出，工作台在上层挂载，
+        入场动画的 logo 从登录页 logo 的位置起飞。 */}
+    {(!enteredWorkspace || authExiting) && (
+      // 登录页不挂答疑悬浮球：未登录时它只会置灰并弹「请先登录」，反而挡住表单。
+      <AuthPage exiting={authExiting} onEnter={enterWorkspaceAfterLogin} />
+    )}
+    {enteredWorkspace && (
       <WorkspaceShell
         currentRole={accountRole}
         onSignOut={signOut}
         playEntryAnimation={playEntryAnimation}
+        entryOrigin={entryOrigin}
         onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
       />
-    ) : (
-      // 登录页不挂答疑悬浮球：未登录时它只会置灰并弹「请先登录」，反而挡住表单。
-      <AuthPage onEnter={enterWorkspaceAfterLogin} />
     )}
     <RuntimeUpdateNotifier />
     <GlobalToast />
