@@ -347,3 +347,64 @@ def test_v2_product_precheck_has_readonly_sources_and_processed_library(
     )
     after = service.task_preview(task_id, workspace_id="ws")["items"][0]
     assert source["id"] in after["image_manifest"]["library_asset_ids"]
+
+
+def test_media_content_readable_without_signature(tmp_path: Path) -> None:
+    """不带签名也能读：前端 httpBlob 带 Bearer，后端按登录态放行。
+
+    背景（2026-11-03 实测）：`_preview_url()` 签出来的地址只活 ~2 小时
+    （`((now // 3600) + 2) * 3600`）。草稿库/发布页把地址原样存进表单，
+    过几小时再读必然 404 —— 资产记录是 ready、文件也还在磁盘上，
+    纯粹是签名过期，用户却只看到「请求的内容不存在或已被删除」。
+    """
+    database = create_database(f"sqlite:///{(tmp_path / 'nosig.sqlite3').as_posix()}")
+    assets = ProductProcessingAssets(tmp_path / "assets")
+    service = MediaAssetService(MediaAssetRepository(database), assets)
+
+    content = _jpeg("red")
+    asset = service.register_local_asset("ws", "preview_upload", content, "image/jpeg")
+
+    path, media_type = service.media_asset_file(asset["id"], workspace_id="ws")
+    assert path.read_bytes() == content
+    assert media_type == "image/jpeg"
+
+    # 仍然按 workspace 隔离：换个工作区读不到
+    with pytest.raises(LookupError):
+        service.media_asset_file(asset["id"], workspace_id="other-ws")
+
+    # 不存在的 id
+    with pytest.raises(LookupError):
+        service.media_asset_file("0" * 32, workspace_id="ws")
+
+    # 缩略图参数同样生效（预检卡片 w=320 走这条路）
+    thumb_path, thumb_type = service.media_asset_file(
+        asset["id"], workspace_id="ws", width=32
+    )
+    assert thumb_type == "image/jpeg"
+    with Image.open(thumb_path) as thumb:
+        assert max(thumb.size) <= 64
+
+
+def test_media_content_signature_still_enforced_when_present(tmp_path: Path) -> None:
+    """带签名的那条路不能因为新增了免签名通道就放松。"""
+    database = create_database(f"sqlite:///{(tmp_path / 'sig.sqlite3').as_posix()}")
+    assets = ProductProcessingAssets(tmp_path / "assets")
+    service = MediaAssetService(MediaAssetRepository(database), assets)
+
+    asset = service.register_local_asset("ws", "preview_upload", _jpeg("blue"), "image/jpeg")
+    query = parse_qs(urlsplit(asset["preview_url"]).query)
+    expires = int(query["expires"][0])
+
+    # 伪造签名 → 拒绝
+    with pytest.raises(LookupError):
+        service.media_asset_content(
+            asset["id"], workspace_id="ws", expires=expires, signature="0" * 64
+        )
+    # 过期 → 拒绝（签名本身是对的）
+    with pytest.raises(LookupError):
+        service.media_asset_content(
+            asset["id"],
+            workspace_id="ws",
+            expires=int(time.time()) - 60,
+            signature=query["signature"][0],
+        )

@@ -17,8 +17,13 @@ import {
   describeAutoFill,
   type AutoFillHit,
 } from "../data/attrAutofill";
+import { pickSpecPair } from "../data/specPair";
 import {
+  attributeDiffText,
+  describeAttributeDiff,
   missingRequiredNames,
+  pruneStaleAttrPicks,
+  remapAttrPicks,
   visibleProperties as visibleAttributeProperties,
   type AttrPick,
 } from "../data/attributeModel";
@@ -66,17 +71,24 @@ const SITE_ID = 100;
 /**
  * 默认发货时效（天）。
  *
- * 原来默认 1 天：填了就等于向 Temu 承诺 24 小时发货，POD/定制根本做不到，会被判延迟发货。
- * 7 天是 POD 印制的合理生产周期；Temu 允许更长（官方成功案例用的是 90 天），
- * 需要的可以自己改大。
+ * 用 **9 天**，就是 Temu 半托管的预设值（`shipmentLimitSecond = 777600`）。
+ * 依据（2026-11-03 扫店铺 230 件商品）：213 件历史商品全是 777600，服务商文档里的
+ * 发布成功案例也是 777600。之前我们默认 7 天（604800）是自己拍的，跟店里其他商品不一致。
+ *
+ * 别再往下调：1 天等于向 Temu 承诺 24 小时发货，POD/定制做不到，会被判延迟发货。
  */
-const DEFAULT_SHIPMENT_DAYS = "7";
+const DEFAULT_SHIPMENT_DAYS = "9";
 
-/** 换类目后变种行里不合法的颜色/尺码值（只提示，不自动改）。 */
+/**
+ * 换类目后变种行里不合法的规格值（只提示，不自动改）。
+ *
+ * field 用 color/size 这两个**内部键**，不用中文名：不同类目这两列可能叫
+ * 「款式 / 型号 / 容量 / 长度」，拿中文当键会同时把内部判断和界面文案都写死。
+ */
 type SpecMismatch = {
   rowKey: string;
   rowNo: number;
-  field: "颜色" | "尺码";
+  field: "color" | "size";
   value: string;
 };
 
@@ -286,6 +298,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * 侧栏只放一句摘要。
+ *
+ * 完整文案在页面顶部那条横幅里（带「关闭」），侧栏这么窄再重复整段，
+ * 只会被挤成一片密密麻麻的红字，谁都不想读。悬停 title 看全文。
+ */
+function briefError(text: string, limit = 40): string {
+  const first = (text.split(/[。；\n]/)[0] ?? "").trim() || text.trim();
+  return first.length > limit ? `${first.slice(0, limit)}…` : first;
+}
+
 function splitLines(text: string): string[] {
   return text
     .split(/[\n,，]+/)
@@ -318,11 +341,6 @@ function initialCategoryPath(): TemuCategory[] {
 }
 
 /** 价格按「分」存，展示成 ¥。 */
-
-function findParentSpec(specs: TemuParentSpec[], keyword: string, fallbackIndex: number): TemuParentSpec | null {
-  const hit = specs.find((item) => item.parentSpecName.includes(keyword));
-  return hit ?? specs[fallbackIndex] ?? specs[0] ?? null;
-}
 
 function firstWarehouse(groups: TemuWarehouseGroup[]): TemuWarehouse | null {
   const all = groups
@@ -574,7 +592,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [form, setForm] = useState<PublishForm>(() => {
     const saved = loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {});
     // 老版本默认值是 1 天，已存在本机的也纠正过来，否则一进来还是承诺 24 小时发货
-    if (saved.shipmentDays === "1") saved.shipmentDays = DEFAULT_SHIPMENT_DAYS;
+    // 1 天 = 承诺 24 小时发货（更早的坏默认）；7 天是我们上一版的旧默认。
+    // 两个都不是用户主动选的，统一拉回 Temu 预设的 9 天。
+    if (saved.shipmentDays === "1" || saved.shipmentDays === "7") {
+      saved.shipmentDays = DEFAULT_SHIPMENT_DAYS;
+    }
     return { ...EMPTY_FORM, ...saved };
   });
 
@@ -621,6 +643,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [guessedPids, setGuessedPids] = useState<number[]>([]);
   /** 从草稿库带进来的估填项数（提示「这些是按类目估的」） */
   const [carriedAttrCount, setCarriedAttrCount] = useState(0);
+  /** 草稿属性里「Temu 那边已经查不到」的那些名字：清空了，必须让用户知道要重选 */
+  const [staleAttrNames, setStaleAttrNames] = useState<string[]>([]);
   const [autoFill, setAutoFill] = useState<{ hits: AutoFillHit[]; ambiguous: string[] }>({
     hits: [],
     ambiguous: [],
@@ -833,9 +857,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     let base = attrPicksRef.current;
     // 类目对不上就丢掉：不同类目的属性 pid 完全不同，铺进去等于给 Temu 塞无效 pid
     if (carried && carried.catId && carried.catId === leafCatId) {
-      base = { ...carried.picks, ...attrPicksRef.current };
+      // 存的是「估填那一刻」的 pid/vid，Temu 调过类目属性表之后这些值就查不到了。
+      // 原样铺进去 ≡ 下拉框空白、却算「已填」→ 本地校验放行 → goods.add 被拒
+      // 「请求的内容不存在或已被删除」。先按当前属性表过一遍，失效的清掉。
+      const pruned = pruneStaleAttrPicks(carried.picks, attributes);
+      base = { ...pruned.picks, ...attrPicksRef.current };
       setAttrPicks(base);
-      setCarriedAttrCount(Object.keys(carried.picks).length);
+      setCarriedAttrCount(Object.keys(pruned.picks).length);
+      setStaleAttrNames(pruned.dropped);
       setGuessedPids(carried.guessedPids);
     }
     runAttributeAutofill(base, leafCatId);
@@ -868,6 +897,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setAutoFill({ hits: [], ambiguous: [] });
     // 「草稿库估了 N 项」这条也没意义了：值已经撤掉
     setCarriedAttrCount(0);
+    setStaleAttrNames([]);
     setGuessedPids([]);
   };
 
@@ -922,8 +952,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         const specItems = specsR.ok ? specsR.value.parentSpecDTOS ?? [] : [];
         if (specsR.ok) {
           setParentSpecs(specItems);
-          setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
-          setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
+          const pair = pickSpecPair(specItems);
+          setColorParentId(pair.color);
+          setSizeParentId(pair.size);
         } else {
           missed.push("颜色/尺码规格");
         }
@@ -1106,21 +1137,41 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setCategoryOptions(response.categoryDTOList ?? []);
   };
 
+  /**
+   * 清后端类目/属性缓存，再重载当前这一级 + 当前叶子属性。
+   *
+   * 抽成裸函数是为了给「发布被 6000002 拒」那条路复用：那时候不能用 run() 包，
+   * 否则会把已经写好的错误提示盖掉。
+   *
+   * 返回「属性表到底变了什么」。Temu 说属性更新时，光让用户重选是句废话 ——
+   * 他打开属性区一看和原来一样，不知道该动哪一项。有 diff 才能点名。
+   */
+  const reloadCategoryAttributes = async (previous?: TemuAttributes | null) => {
+    await temuPublishApi.refreshCategories();
+    const currentLeaf = categoryPath[categoryPath.length - 1];
+    if (!currentLeaf?.isLeaf) {
+      await loadLevel(currentLeaf?.catId ?? 0);
+      return null;
+    }
+    const attrs = await temuPublishApi.attributes(currentLeaf.catId);
+    const prev = previous ?? attributes;
+    const diff = describeAttributeDiff(prev, attrs, attrPicksRef.current);
+    // 只是 vid 被重建的能自动对上，真正对不上的才清掉 ——
+    // 一律清掉的话，用户会被要求「从头重选一遍」，而大部分值根本没变。
+    const remap = remapAttrPicks(prev, attrs, attrPicksRef.current);
+    if (remap.dropped.length || remap.remapped.length) setAttrPicks(remap.picks);
+    setAttributes(attrs);
+    setSpecMismatch(findSpecMismatches(attrs, rows));
+    await loadLevel(categoryPath[categoryPath.length - 2]?.catId ?? 0);
+    // 类目树变了，标题匹配的结果也一并重算，别留着旧的推荐
+    setMatchSeq((value) => value + 1);
+    return diff;
+  };
+
   /** 手动刷新类目树：清掉后端两层缓存，再重载当前这一级 + 当前叶子属性。 */
   const refreshCategoryTree = () =>
     run("category", async () => {
-      await temuPublishApi.refreshCategories();
-      const currentLeaf = categoryPath[categoryPath.length - 1];
-      if (currentLeaf?.isLeaf) {
-        const attrs = await temuPublishApi.attributes(currentLeaf.catId);
-        setAttributes(attrs);
-        setSpecMismatch(findSpecMismatches(attrs, rows));
-        await loadLevel(categoryPath[categoryPath.length - 2]?.catId ?? 0);
-      } else {
-        await loadLevel(currentLeaf?.catId ?? 0);
-      }
-      // 类目树变了，标题匹配的结果也一并重算，别留着旧的推荐
-      setMatchSeq((value) => value + 1);
+      await reloadCategoryAttributes();
     });
 
   /**
@@ -1513,8 +1564,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (specsR) {
       const specItems = specsR.parentSpecDTOS ?? [];
       setParentSpecs(specItems);
-      setColorParentId(findParentSpec(specItems, "颜色", 0)?.parentSpecId ?? 0);
-      setSizeParentId(findParentSpec(specItems, "尺码", 1)?.parentSpecId ?? 0);
+      const pair = pickSpecPair(specItems);
+      setColorParentId(pair.color);
+      setSizeParentId(pair.size);
     }
     // 旧店的值一律丢掉，换成新店的默认值（没有就让用户自己选，别带着旧 id 发出去）
     const nextFreight = templates[0]?.freightTemplateId ?? "";
@@ -1664,6 +1716,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     (saleValueIndex.get(parentSpecId) ?? []).map((item) => item.name);
 
   /**
+   * 当前这两列在 Temu 那边叫什么（颜色 / 款式 / 型号 / 容量…）。
+   *
+   * 界面文案一律用它，不能再写「尺码」：手机壳是「型号」、收纳盒是「容量」，
+   * 写死的话用户看着标签就填错了列。
+   */
+  const colorSpecName =
+    parentSpecs.find((item) => item.parentSpecId === colorParentId)?.parentSpecName || "属性一";
+  const sizeSpecName =
+    parentSpecs.find((item) => item.parentSpecId === sizeParentId)?.parentSpecName || "属性二";
+
+  /**
    * 换类目后，变种行里已有的颜色/尺码可能不在新类目的预设值里。
    *
    * Temu 的规格值必须来自类目预设（自造值提交报「不合法的规格属性 Color_Black」），
@@ -1693,11 +1756,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     list.forEach((row, index) => {
       const color = row.colorName.trim();
       if (color && colorPresets && !colorPresets.has(color)) {
-        out.push({ rowKey: row.key, rowNo: index + 1, field: "颜色", value: color });
+        out.push({ rowKey: row.key, rowNo: index + 1, field: "color", value: color });
       }
       const size = row.sizeName.trim();
       if (size && sizePresets && !sizePresets.has(size)) {
-        out.push({ rowKey: row.key, rowNo: index + 1, field: "尺码", value: size });
+        out.push({ rowKey: row.key, rowNo: index + 1, field: "size", value: size });
       }
     });
     return out;
@@ -1709,8 +1772,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const colorNames = specOptions(colorParentId);
     const sizeNames = specOptions(sizeParentId);
     const next = rows.map((row) => {
-      const badColor = specMismatch.some((item) => item.rowKey === row.key && item.field === "颜色");
-      const badSize = specMismatch.some((item) => item.rowKey === row.key && item.field === "尺码");
+      const badColor = specMismatch.some((item) => item.rowKey === row.key && item.field === "color");
+      const badSize = specMismatch.some((item) => item.rowKey === row.key && item.field === "size");
       const colorFixed = badColor ? matchPresetValue(row.colorName, colorNames) : null;
       const sizeFixed = badSize ? matchPresetValue(row.sizeName, sizeNames) : null;
       return {
@@ -1749,6 +1812,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     };
   };
 
+  /**
+   * 读本地/素材图；读不到时给出能照着做的提示。
+   *
+   * 直接让 404 冒上去，会被 http 层映射成「请求的内容不存在或已被删除」，
+   * 用户完全猜不到是哪张图、更猜不到该去哪儿补。
+   *
+   * ⚠️ 地址必须**从头**截，不能只留尾巴：本地素材/输出图的路径末尾全是一串
+   * sha256，只露尾巴等于什么都没说（2026-11-03 实测：报错里只剩
+   * `…3d303380…f2f08a`，看不出是 media-assets 还是 pod-customization）。
+   * 也不要断言「被清理了」——素材可能压根没下载成功，怪用户删文件是误判。
+   */
+  const readLocalImage = async (text: string, label: string): Promise<Blob> => {
+    try {
+      return await httpBlob(text);
+    } catch (cause) {
+      const brief = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(`${label}读不到：${brief}（${reason}）。请换一张${label}再试。`);
+    }
+  };
+
   /** 本地媒体路径/外链统一上传到 Temu 图床；已是 Temu 地址则复用。 */
   const resolveImage = async (url: string, cateId?: number): Promise<string> => {
     const text = url.trim();
@@ -1761,15 +1845,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       // 公网外链（如 COS）交给后端代下载，避免浏览器跨域。
       uploaded = await temuPublishApi.uploadImageUrl(text, cateId);
     } else {
-      // 本地草稿图 / 素材图：读不到文件时给出能照着做的提示。
-      // 原来的报错一路冒到页面顶部会变成「请求的内容不存在或已被删除」，
-      // 用户根本猜不到是图片文件丢了（库里还有记录、磁盘上的文件已被清理）。
-      const blob = await httpBlob(text).catch(() => {
-        const brief = text.length > 64 ? `…${text.slice(-60)}` : text;
-        throw new Error(
-          `图片已失效，读不到文件（多半是素材被清理了）：${brief}。请重新上传这张图后再试。`,
-        );
-      });
+      // 本地草稿图 / 素材图
+      const blob = await readLocalImage(text, "图片");
       uploaded = await temuPublishApi.uploadImage(await blobToDataUrl(blob), cateId);
     }
     const resolved = pickUploadedUrl(uploaded);
@@ -1799,7 +1876,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         if (isPublicHttpUrl(text)) {
           widths.push((await measureImage(text)).width);
         } else {
-          const blob = await httpBlob(text);
+          const blob = await readLocalImage(text, "详情图");
           objectUrl = URL.createObjectURL(blob);
           widths.push((await measureImage(objectUrl)).width);
         }
@@ -1818,7 +1895,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         out.push({ url: cached, ...size });
         continue;
       }
-      const image = isPublicHttpUrl(text) ? text : await blobToDataUrl(await httpBlob(text));
+      const image = isPublicHttpUrl(text)
+        ? text
+        : await blobToDataUrl(await readLocalImage(text, "详情图"));
       const uploaded = await temuPublishApi.uploadDetailImage(image, target, cateId);
       const resolved = pickUploadedUrl(uploaded);
       if (!resolved) throw new Error(`详情图上传成功但没有返回地址：${text}`);
@@ -1991,7 +2070,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const grouped = new Map<string, VariantRow[]>();
       rows.forEach((row, index) => {
         const color = row.colorName.trim();
-        if (!color) throw new Error(`第 ${index + 1} 行变种缺少颜色`);
+        if (!color) throw new Error(`第 ${index + 1} 行缺少${colorSpecName}`);
         const list = grouped.get(color) ?? [];
         list.push(row);
         grouped.set(color, list);
@@ -2006,12 +2085,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         const seenSizes = new Set<string>();
         const skus: TemuSkuDraft[] = [];
         for (const [index, row] of colorRows.entries()) {
-          const at = `颜色「${color}」第 ${index + 1} 行`;
-          if (!row.sizeName.trim()) throw new Error(`${at}缺少尺码`);
-          if (seenSizes.has(row.sizeName.trim())) throw new Error(`${at}尺码「${row.sizeName}」重复`);
-          seenSizes.add(row.sizeName.trim());
-          const sizeSpec = await ensureSpec(sizeParent, row.sizeName);
-          skus.push(buildSku(row, at, [colorSpec, sizeSpec], skcImage));
+          const at = `${colorSpecName}「${color}」第 ${index + 1} 行`;
+          const specs: TemuSkuDraft["specs"] = [colorSpec];
+          // 只有一列销售属性的类目（手机壳只有「型号」、毛巾只有「颜色」）：
+          // 第二列压根不存在，不能硬要求填尺码 —— 以前这里会抛「父规格列表为空」。
+          if (sizeParent) {
+            if (!row.sizeName.trim()) throw new Error(`${at}缺少${sizeSpecName}`);
+            if (seenSizes.has(row.sizeName.trim())) {
+              throw new Error(`${at}${sizeSpecName}「${row.sizeName}」重复`);
+            }
+            seenSizes.add(row.sizeName.trim());
+            specs.push(await ensureSpec(sizeParent, row.sizeName));
+          }
+          skus.push(buildSku(row, at, specs, skcImage));
         }
         skcs.push({
           // SKC 货号：产品货号 + 颜色，避免多色撞号
@@ -2126,6 +2212,38 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           const published = await temuPublishApi.publish(draft, true);
           setPublishResult(published);
           return;
+        }
+        // 6000002 = Temu 说「货品类目属性更新」。后端已经把属性缓存清掉了，
+        // 这里把前端这份也重新拉一遍，并把「到底变了什么」点名出来 ——
+        // 只说「重新选一遍」等于让用户盲选，他看完属性区和原来一样，只能再被拒一次。
+        if (/6000002|类目属性更新/.test(text)) {
+          const diff = await reloadCategoryAttributes(attributes).catch(() => null);
+          const detail = diff ? attributeDiffText(diff) : "";
+          const todo = diff ? diff.staleChoices.length + diff.addedRequired.length : 0;
+          if (detail && todo > 0) {
+            throw new Error(
+              `Temu 后台改过这个类目的属性定义：${detail}。`
+                + "请在下方「类目属性」里把这几项重新选好再提交。",
+            );
+          }
+          if (detail) {
+            // 只有 vid 重建、选值文字没变 → 已经自动沿用，不用用户动手
+            throw new Error(
+              `Temu 后台改过这个类目的属性定义：${detail}。原来的选择已经自动沿用，直接再点一次提交即可。`,
+            );
+          }
+          // 重拉后没差异：说明属性表本身没变，问题在别处。
+          // 2026-11-03 实测到的真凶是「规格」而不是属性：没有销售属性的类目
+          // （桌布/桌旗/餐垫）以前补的是 id 全 0 的「款式/默认」占位规格，
+          // Temu 的规格校验能过，但 goods.add 永远回 6000002 —— 把 12 个必填属性
+          // 逐个单发全都能复现，所以清缓存、重选属性怎么弄都没用。
+          // 现在后端改成补真实规格（颜色/默认，真实 specId），这个错应该不会再出现。
+          throw new Error(
+            "已清掉本地的类目/属性缓存，但重新加载后属性定义没有变化 —— "
+              + "说明不是属性表过期。这个类目如果本来就没有销售属性（桌布、桌旗、餐垫这类），"
+              + "请把程序和本地后端都更新到最新版：旧版补的是假规格，会导致一直报这个错。"
+              + "如果已是最新版仍报错，把这个类目 id 发给开发，需要在规格上排查。",
+          );
         }
         // 失败也要留痕：草稿库/发布页的「发布失败」列表靠这条重试
         const parsed = parsePublishError(cause);
@@ -2893,13 +3011,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <>
                   {(autoFill.hits.length > 0 ||
                     autoFill.ambiguous.length > 0 ||
-                    carriedAttrCount > 0) && (
+                    carriedAttrCount > 0 ||
+                    staleAttrNames.length > 0) && (
                     <div className="temu-autofill-bar">
                       <span>
                         {carriedAttrCount > 0 && (
                           <>
                             草稿库已按类目估了 <strong>{carriedAttrCount}</strong> 项属性，
                             <em className="temu-muted">发布前请核对</em>
+                            {autoFill.hits.length > 0 || staleAttrNames.length > 0 ? "；" : ""}
+                          </>
+                        )}
+                        {staleAttrNames.length > 0 && (
+                          <>
+                            <strong>{staleAttrNames.length}</strong> 项草稿属性
+                            在 Temu 那边已经失效（{staleAttrNames.slice(0, 6).join("、")}
+                            {staleAttrNames.length > 6 ? " 等" : ""}），已清空 —— 这几项要重新选，
+                            否则提交会被拒「请求的内容不存在或已被删除」
                             {autoFill.hits.length > 0 ? "；" : ""}
                           </>
                         )}
@@ -3160,7 +3288,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             {specMismatch.length > 0 && (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
-                  <strong>有 {specMismatch.length} 个颜色/尺码不在当前类目的预设值里</strong>
+                  <strong>有 {specMismatch.length} 个规格值不在当前类目的预设里</strong>
                   <div className="temu-spec-mismatch-actions">
                     <button
                       type="button"
@@ -3185,7 +3313,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <ul>
                   {specMismatch.map((item) => (
                     <li key={`${item.rowKey}-${item.field}`}>
-                      第 {item.rowNo} 行 {item.field}「{item.value}」
+                      第 {item.rowNo} 行{" "}
+                      {item.field === "color" ? colorSpecName : sizeSpecName}「{item.value}」
                     </li>
                   ))}
                 </ul>
@@ -3200,6 +3329,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               colorParentId={colorParentId}
               colorOptions={specOptions(colorParentId)}
               sizeOptions={specOptions(sizeParentId)}
+              colorSpecName={colorSpecName}
+              sizeSpecName={sizeSpecName}
               onColorParentChange={setColorParentId}
               sizeParentId={sizeParentId}
               onSizeParentChange={setSizeParentId}
@@ -3284,8 +3415,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <span>
                   发货时效（天）<em className="temu-required">*</em>
                   <em className="temu-muted">
-                    承诺给 Temu 的备货发货时限。默认 7 天（POD 生产周期），填太短会被判延迟发货，
-                    可改大（官方成功案例用的是 90 天）
+                    承诺给 Temu 的备货发货时限。默认 9 天（Temu 半托管预设 777600 秒，
+                    店里历史商品也都是这个值）；填太短会被判延迟发货，可以改大
                   </em>
                 </span>
                 <input
@@ -3532,8 +3663,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </p>
             ) : null}
             {error ? (
-              <p className="temu-rail-error" role="alert">
-                {error}
+              <p className="temu-rail-error" role="alert" title={error}>
+                {briefError(error)}
               </p>
             ) : null}
             <p className="temu-rail-tip">

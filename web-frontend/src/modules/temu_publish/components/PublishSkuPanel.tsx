@@ -133,6 +133,8 @@ export function PublishSkuPanel({
   colorParentId,
   colorOptions = [],
   sizeOptions = [],
+  colorSpecName = "属性一",
+  sizeSpecName = "属性二",
   onColorParentChange,
   sizeParentId,
   onSizeParentChange,
@@ -151,10 +153,13 @@ export function PublishSkuPanel({
   onRemoveRow: (key: string) => void;
   parentSpecs: TemuParentSpec[];
   colorParentId: number;
-  /** 类目预设颜色值（Temu 只认预设，自己造会被判「不合法的规格属性」） */
+  /** 类目预设「第一列」值（Temu 只认预设，自己造会被判「不合法的规格属性」） */
   colorOptions?: string[];
-  /** 类目预设尺码/长度值 */
+  /** 类目预设「第二列」值 */
   sizeOptions?: string[];
+  /** 两列在 Temu 那边实际叫什么（颜色 / 款式 / 型号 / 容量…），界面文案要用它 */
+  colorSpecName?: string;
+  sizeSpecName?: string;
   onColorParentChange: (id: number) => void;
   sizeParentId: number;
   onSizeParentChange: (id: number) => void;
@@ -179,6 +184,66 @@ export function PublishSkuPanel({
 
   const sizeNames = splitSizes(sizesText);
   const colorNames = splitSizes(colorsText);
+
+  /**
+   * 输入里不在类目预设里的值 —— Temu 会直接判「不是合法的规格值」。
+   *
+   * 只给 datalist 是不够的：不点开输入框根本看不到有哪些可选值，用户照样手填
+   * 「苹果4」这种，提交时才被打回。所以预设值要**摆在明面上**让孩子能点。
+   */
+  const unknownSpecValues = (values: string[], options: string[]) => {
+    if (!options.length) return [];
+    const allowed = new Set(options.map((item) => item.trim().toLowerCase()));
+    return values.filter((item) => item.trim() && !allowed.has(item.trim().toLowerCase()));
+  };
+  const unknownColors = unknownSpecValues(colorNames, colorOptions);
+  const unknownSizes = unknownSpecValues(sizeNames, sizeOptions);
+
+  /** 「Temu 只认这些值」：把类目预设直接列出来，点一下追加（不用自己背）。 */
+  const renderSpecChoices = (
+    options: string[],
+    current: string,
+    onPick: (next: string) => void,
+    label: string,
+    limit = 10,
+  ) => {
+    if (!options.length) return null;
+    const picked = new Set(
+      current
+        .split(/[,，]/)
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const pick = (name: string) => {
+      if (picked.has(name.toLowerCase())) return;
+      const head = current
+        .split(/[,，]/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      onPick([...head, name].join(","));
+    };
+    return (
+      <div className="temu-spec-choices">
+        <span className="temu-muted">Temu 只认这些{label}（点一下填入）：</span>
+        {options.slice(0, limit).map((name) => (
+          <button
+            key={name}
+            type="button"
+            className={`temu-spec-chip${picked.has(name.toLowerCase()) ? " is-picked" : ""}`}
+            onClick={() => pick(name)}
+            title={picked.has(name.toLowerCase()) ? "已经加进上面的列表了" : `填入「${name}」`}
+          >
+            {name}
+          </button>
+        ))}
+        {options.length > limit && (
+          <span className="temu-muted">
+            …还有 {options.length - limit} 个，输入框里可以下拉搜
+          </span>
+        )}
+      </div>
+    );
+  };
 
   // 批量编辑默认镜像第一行（草稿带入的价格/尺寸/重量能直接看到并沿用），
   // 一旦手动改过就停止同步，避免把用户填的值又冲掉。
@@ -270,18 +335,19 @@ export function PublishSkuPanel({
         <p className="temu-cat-hint">
           这个类目在 Temu 没有销售属性，不能建颜色/尺码变种：按<strong>单 SKU</strong> 提交，
           只用下表第 1 行的价格、库存、尺寸与重量。
-          {/* Temu 接口要求规格列表非空，但这类目拿不到真实规格 —— 后端会自动补一条
-              「款式 / 默认」占位（Temu 后台自己发也是这么做的）。这里先讲清楚，
-              免得看到发布结果里的 warning 一头雾水。 */}
+          {/* Temu 接口要求规格列表非空，但这类目拿不到真实规格 —— 后端会自动建一条
+              真实的「颜色：默认」规格值来占位。注意：以前这里补的是 id 全 0 的
+              「款式/默认」，规格校验能过、但提交永远回 6000002「货品类目属性更新」。 */}
           <br />
-          发布时会自动补一条「<strong>款式：默认</strong>」的规格占位（Temu 接口要求规格非空），
-          商品里不会真的多出一个款式可选。
+          发布时会自动补一条「<strong>颜色：默认</strong>」的规格占位（Temu 接口要求规格非空），
+          商品里不会真的多出一个颜色可选。
         </p>
       ) : (
         <div className="temu-variant-spec">
         <label className="temu-field">
           <span>
-            变种属性名称一 / 值一<em className="temu-required">*</em>
+            变种属性一：{colorSpecName}
+            <em className="temu-required">*</em>
           </span>
           <div className="temu-spec-row">
             <select
@@ -296,39 +362,61 @@ export function PublishSkuPanel({
               ))}
             </select>
             <input
-              className="temu-input"
+              className={`temu-input${unknownColors.length ? " is-bad" : ""}`}
+              list="temu-color-options"
               value={colorsText}
               onChange={(event) => onColorsTextChange(event.target.value)}
-              placeholder="颜色值，多个用逗号分隔：Black,Brown"
+              placeholder={`${colorSpecName}值，多个用逗号分隔`}
             />
           </div>
+          {renderSpecChoices(colorOptions, colorsText, onColorsTextChange, colorSpecName)}
+          {unknownColors.length > 0 && (
+            <p className="temu-spec-bad">
+              「{unknownColors.join("、")}」不是合法的{colorSpecName}值（Temu 只认类目预设）——
+              点上面任意一个换掉它。
+            </p>
+          )}
         </label>
-        <label className="temu-field">
-          <span>变种属性名称二</span>
-          <select
-            className="temu-input"
-            value={sizeParentId}
-            onChange={(event) => onSizeParentChange(Number(event.target.value))}
-          >
-            {parentSpecs.map((item) => (
-              <option key={item.parentSpecId} value={item.parentSpecId}>
-                {item.parentSpecName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="temu-field">
-          <span>变种属性值二（尺码，逗号分隔）</span>
-          <input
-            className="temu-input"
-            value={sizesText}
-            onChange={(event) => onSizesTextChange(event.target.value)}
-            placeholder="S,M,L 或 30cm,40cm"
-            onKeyDown={(event) => {
-              if (event.key === "Enter") generate();
-            }}
-          />
-        </label>
+        {/* 只有一个销售属性的类目（手机壳只有「型号」、毛巾只有「颜色」）不显示第二列，
+            否则用户会以为必须再填一项，而 Temu 那边根本没这个属性 */}
+        {sizeParentId > 0 && (
+          <>
+            <label className="temu-field">
+              <span>变种属性二：{sizeSpecName}</span>
+              <select
+                className="temu-input"
+                value={sizeParentId}
+                onChange={(event) => onSizeParentChange(Number(event.target.value))}
+              >
+                {parentSpecs.map((item) => (
+                  <option key={item.parentSpecId} value={item.parentSpecId}>
+                    {item.parentSpecName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="temu-field">
+              <span>{sizeSpecName}值（多个用逗号分隔）</span>
+              <input
+                className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
+                list="temu-size-options"
+                value={sizesText}
+                onChange={(event) => onSizesTextChange(event.target.value)}
+                placeholder={`${sizeSpecName}值，多个用逗号分隔`}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") generate();
+                }}
+              />
+              {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName)}
+              {unknownSizes.length > 0 && (
+                <p className="temu-spec-bad">
+                  「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设）——
+                  点上面任意一个换掉它。
+                </p>
+              )}
+            </label>
+          </>
+        )}
         <button type="button" className="temu-btn temu-btn-primary temu-variant-generate" onClick={generate}>
           生成 {(colorNames.length || 1) * (sizeNames.length || 1)} 个变种
         </button>
@@ -428,8 +516,8 @@ export function PublishSkuPanel({
                     list="temu-color-options"
                     value={row.colorName}
                     onChange={(event) => onUpdateRow(row.key, { colorName: event.target.value })}
-                    placeholder="选类目预设颜色"
-                    title="Temu 只认类目预设颜色，自己输入会被拒"
+                    placeholder={`选预设${colorSpecName}`}
+                    title={`Temu 只认类目预设的${colorSpecName}值，自己输入会被拒`}
                   />
                   <input
                     className="temu-input"

@@ -26,13 +26,26 @@ export function visibleProperties(
 ): TemuProperty[] {
   const props = attributes?.properties ?? [];
   const byTemplatePid = new Map<number, TemuProperty>();
+  const byRefPid = new Map<number, TemuProperty>();
   props.forEach((item) => {
     const key = Number(item.templatePid ?? 0);
     if (key) byTemplatePid.set(key, item);
+    const ref = Number(item.refPid ?? 0);
+    if (ref) byRefPid.set(ref, item);
   });
   const pickedVid = (pid: number) => Number(picks[pid]?.vid ?? 0);
   const list: TemuProperty[] = [];
   for (const prop of props) {
+    // ① showCondition：按父属性的 refPid 判断（与下面那条规则是两套，各查各的索引）
+    const conditions = prop.showCondition ?? [];
+    if (conditions.length) {
+      const visible = conditions.some((cond) => {
+        const parent = byRefPid.get(Number(cond.parentRefPid ?? 0));
+        const vid = parent ? pickedVid(parent.pid) : 0;
+        return vid > 0 && (cond.parentVids ?? []).includes(vid);
+      });
+      if (!visible) continue;
+    }
     const rules = prop.templatePropertyValueParentList ?? [];
     if (!rules.length) {
       list.push(prop);
@@ -103,8 +116,192 @@ export function buildAttributeGroups(
   };
 }
 
-/** 必填且没填（带单位的属性只选下拉不算填好）。 */
-export function missingRequiredNames(
+/**
+ * 丢掉「当前类目属性表里已经查不到」的选择。
+ *
+ * 草稿库里的属性是按**估填那一刻**的 pid/vid 存的，Temu 后台会调整类目属性
+ * （选项下线、pid 重建）。这类脏值有两个要命的表现：
+ * 1. 界面上下拉框空白 —— 因为 values 里找不到那个 vid，`<option>` 根本没渲染；
+ * 2. 内部 picks 仍算「有值」→ 本地必填校验放行 → 一路走到 goods.add，
+ *    被 Temu 回一句「请求的内容不存在或已被删除」，用户完全猜不到是属性失效。
+ *
+ * 所以铺值之前先按当前属性表过一遍，查不到的直接丢掉，让它正常报「缺少必填属性」。
+ * 纯输入型属性（values 为空表）不做 vid 校验，只把空值丢掉。
+ */
+export function pruneStaleAttrPicks(
+  picks: AttrPickMap,
+  attributes: TemuAttributes | null,
+): { picks: AttrPickMap; dropped: string[] } {
+  const byPid = new Map<number, TemuProperty>();
+  for (const item of attributes?.properties ?? []) byPid.set(Number(item.pid), item);
+  const next: AttrPickMap = {};
+  const dropped: string[] = [];
+  for (const [key, pick] of Object.entries(picks ?? {})) {
+    const pid = Number(key);
+    const prop = byPid.get(pid);
+    const name = prop ? prop.name || prop.propertyName || `pid=${pid}` : `pid=${pid}`;
+    if (!prop || !pick) {
+      dropped.push(name);
+      continue;
+    }
+    const vid = Number(pick.vid ?? 0);
+    const text = String(pick.text ?? "").trim();
+    if (vid > 0) {
+      const values = prop.values ?? [];
+      if (values.length && !values.some((value) => Number(value.vid) === vid)) {
+        dropped.push(name);
+        continue;
+      }
+      next[pid] = { vid, text };
+      continue;
+    }
+    if (!text) {
+      dropped.push(name);
+      continue;
+    }
+    next[pid] = { vid: 0, text };
+  }
+  return { picks: next, dropped };
+}
+
+/**
+ * 类目属性表变了之后，尽量把用户原来的选择「翻译」到新表上。
+ *
+ * Temu 改类目属性常见两种情况：
+ * 1. **只是重建了 vid**（选项文字没变）→ 拿旧 vid 对应的文字去新表里找，能自动对上，
+ *    用户完全不用动；
+ * 2. 选项真的被删/改名了 → 对不上，只能丢掉让他重选。
+ *
+ * 之前一律丢掉，所以一遇到 6000002 就要求「从头重选一遍」—— 明明大部分值根本没变，
+ * 这种提示只会让人骂「太傻了」。
+ */
+export function remapAttrPicks(
+  previous: TemuAttributes | null,
+  next: TemuAttributes | null,
+  picks: AttrPickMap,
+): { picks: AttrPickMap; remapped: string[]; dropped: string[] } {
+  const before = new Map((previous?.properties ?? []).map((item) => [Number(item.pid), item]));
+  const after = new Map((next?.properties ?? []).map((item) => [Number(item.pid), item]));
+  const out: AttrPickMap = {};
+  const remapped: string[] = [];
+  const dropped: string[] = [];
+
+  for (const [key, pick] of Object.entries(picks ?? {})) {
+    const pid = Number(key);
+    const prop = after.get(pid);
+    const name = prop?.name || prop?.propertyName || `pid=${pid}`;
+    if (!prop || !pick) {
+      dropped.push(name);
+      continue;
+    }
+    const vid = Number(pick.vid ?? 0);
+    const text = String(pick.text ?? "").trim();
+    const values = prop.values ?? [];
+
+    if (vid > 0) {
+      // 还在新表里（或这个属性本来就没有选项表）→ 原样保留
+      if (!values.length || values.some((value) => Number(value.vid) === vid)) {
+        out[pid] = { vid, text };
+        continue;
+      }
+      // vid 失效：拿它原来代表的值去新表里找同名项
+      const oldValue = (before.get(pid)?.values ?? []).find(
+        (value) => Number(value.vid) === vid,
+      )?.value;
+      const byValue = oldValue
+        ? values.find((value) => String(value.value ?? "").trim() === oldValue.trim())
+        : undefined;
+      if (byValue) {
+        out[pid] = { vid: Number(byValue.vid), text };
+        remapped.push(name);
+        continue;
+      }
+      // 没有旧表可比对，但人工填过文字：按文字再找一次
+      const byText = text ? values.find((value) => String(value.value ?? "").trim() === text) : undefined;
+      if (byText) {
+        out[pid] = { vid: Number(byText.vid), text };
+        remapped.push(name);
+        continue;
+      }
+      dropped.push(name);
+      continue;
+    }
+
+    if (!text) {
+      dropped.push(name);
+      continue;
+    }
+    out[pid] = { vid: 0, text };
+  }
+
+  return { picks: out, remapped, dropped };
+}
+
+export type AttributeDiff = {
+  /** 这次才变成必填 / 新加进来的必填属性 */
+  addedRequired: string[];
+  /** 旧表里有、新表里没了的属性（Temu 删了或者重新划分了） */
+  removed: string[];
+  /** 已选的值在新表里查不到了（必须重选） */
+  staleChoices: string[];
+  /** vid 被重建但选值文字没变：已自动对上，用户不用动 */
+  remapped: string[];
+};
+
+/**
+ * 对比「重拉前 / 重拉后」的类目属性表，说清楚到底变了什么。
+ *
+ * 为什么需要：Temu 回 6000002「货品类目属性更新」时，光让用户「重新选一遍」是句废话 ——
+ * 他打开属性区一看跟原来一模一样，不知道该动哪一项，只能盲选，然后又被拒。
+ * 把新增的必填项、被删的属性、失效的已选值点名出来，才是能照着做的提示。
+ */
+export function describeAttributeDiff(
+  previous: TemuAttributes | null,
+  next: TemuAttributes | null,
+  picks: AttrPickMap,
+): AttributeDiff {
+  const before = new Map<number, TemuProperty>();
+  for (const item of previous?.properties ?? []) before.set(Number(item.pid), item);
+  const after = new Map<number, TemuProperty>();
+  for (const item of next?.properties ?? []) after.set(Number(item.pid), item);
+
+  const label = (item: TemuProperty) => item.name || item.propertyName || `pid=${item.pid}`;
+
+  const addedRequired =
+    before.size > 0
+      ? [...after.values()]
+          .filter((item) => item.required && !before.get(Number(item.pid))?.required)
+          .map(label)
+      : [];
+  const removed =
+    after.size > 0
+      ? [...before.values()].filter((item) => !after.has(Number(item.pid))).map(label)
+      : [];
+  // 失效判定走 remap：只是 vid 被重建（文字没变）的能自动对上，不算「要重选」
+  const { remapped, dropped } = remapAttrPicks(previous, next, picks);
+
+  return { addedRequired, removed, staleChoices: dropped, remapped };
+}
+
+/** 把 {@link AttributeDiff} 说成一句话；没有差异时返回空串。 */
+export function attributeDiffText(diff: AttributeDiff, limit = 5): string {
+  const parts: string[] = [];
+  if (diff.remapped.length) {
+    parts.push(`「${diff.remapped.slice(0, limit).join("、")}」已自动对上（选值没变，不用改）`);
+  }
+  if (diff.addedRequired.length) {
+    parts.push(`新增必填「${diff.addedRequired.slice(0, limit).join("、")}」`);
+  }
+  if (diff.staleChoices.length) {
+    parts.push(`「${diff.staleChoices.slice(0, limit).join("、")}」原来的选择已失效（已清空）`);
+  }
+  if (diff.removed.length) {
+    parts.push(`「${diff.removed.slice(0, limit).join("、")}」Temu 已经删掉了`);
+  }
+  return parts.join("；");
+}
+
+/** 必填且没填（带单位的属性只选下拉不算填好）。 */export function missingRequiredNames(
   visible: TemuProperty[],
   picks: AttrPickMap,
 ): string[] {

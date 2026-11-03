@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...session import Actor, actor_from_authorization
-from .client import TemuCredentialMissing, TemuGatewayError
+from .client import TemuCredentialMissing, TemuGatewayError, clear_shared_catalog_cache
 from .submissions import DuplicateSubmission
 from .gateway_sync import sync_provider_credentials
 from .library import collect_all_draft_entries, paginate_draft_library
@@ -44,11 +44,20 @@ _GATEWAY_HINTS = {
         "服务商网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
     ),
     "7000006": "这个 access_token 没和商务应用绑定：回店铺后台重新授权，再把新 token 填进来",
+    # Temu 后台改过这个类目的属性定义（加/删/换选项）。本地属性表是 1 小时缓存，
+    # 过时之后就组出旧的 pid/vid，提交必被拒。缓存已由 _handle 自动清掉。
+    "6000002": (
+        "Temu 后台更新过这个类目的属性定义，本地属性表已过时（缓存已清）。"
+        "点「刷新类目树」重新加载属性，把必填项重新选一遍再提交"
+    ),
     "NETWORK_ERROR": (
         "连不上服务商网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
         "程序默认不走系统代理，确实需要走代理时用环境变量 WH_TEMU_PROXY 指定"
     ),
 }
+
+# 类目属性定义在 Temu 侧变过的错误码（实测 2026-11-03，桌布类目 10498）。
+_CATEGORY_ATTRS_CHANGED = "6000002"
 
 
 def _gateway_message(error_code: str, message: str) -> str:
@@ -137,6 +146,19 @@ def create_temu_publish_router(
                 status = 502
             else:
                 status = 400
+            # 6000002 = Temu 说「货品类目属性更新」。本地类目/属性表缓存有 1 小时 TTL，
+            # 这段时间里组出来的 pid/vid 全是旧的，提交必被拒 —— 而且用户刷新页面也还是
+            # 命中同一份缓存，会一直卡在同一个错上。这里直接清掉，让下一次请求拿到新表。
+            if str(exc.error_code or "") == _CATEGORY_ATTRS_CHANGED:
+                # ⚠️ 不能用 service.client()：_handle 是模块级闭包，拿不到当前 actor，
+                # 那会构造出一个「按默认凭证」的实例，清的是它自己的空缓存 ——
+                # 真正在用的那份纹丝不动，于是「点了刷新、错误照旧」。
+                # 类目/属性缓存已经放到模块级共享，这里直接清那份。
+                try:
+                    dropped = clear_shared_catalog_cache()
+                    logger.warning("类目属性已更新，清掉共享类目/属性缓存 %s 条", dropped)
+                except Exception:  # noqa: BLE001 - 清缓存失败不能盖掉原始错误
+                    logger.warning("清类目缓存失败", exc_info=True)
             # 把上游原话打进日志：access log 只有状态码，出问题时无从下手
             logger.warning(
                 "Temu 拒绝请求 api_type=%s error_code=%s http=%s message=%s",

@@ -241,6 +241,38 @@ class MediaAssetService:
         expected = self._asset_access_signature(asset, int(expires))
         if not hmac.compare_digest(expected, str(signature or "")):
             raise LookupError("media asset not found")
+        return self._serve_asset(asset, workspace_id=workspace_id, width=width)
+
+    def media_asset_file(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        width: int | None = None,
+    ) -> tuple[Path, str]:
+        """按登录会话直接取图，**不校验临时签名**。
+
+        为什么需要这条：`_preview_url()` 签出来的地址只活 ~2 小时
+        （`((now // 3600) + 2) * 3600`）。草稿库/发布页表单把当时的地址存下来，
+        过几小时再拿它读图必然 404 —— 记录是 ready、文件也好端端躺在磁盘上，
+        纯粹是签名过期。用户看到的是「请求的内容不存在或已被删除」，
+        再怎么重传图都没用（换的新图地址同样会在两小时后过期）。
+
+        `<img src>` 那种不能带 Authorization 的场景仍走签名分支；
+        前端走 httpBlob（自带 Bearer）的一律用这条。
+        """
+        asset = self.repository.get_asset(asset_id, workspace_id)
+        if asset is None or asset.get("status") != "ready" or not asset.get("managed_path"):
+            raise LookupError("media asset not found")
+        return self._serve_asset(asset, workspace_id=workspace_id, width=width)
+
+    def _serve_asset(
+        self,
+        asset: Mapping[str, Any],
+        *,
+        workspace_id: str,
+        width: int | None,
+    ) -> tuple[Path, str]:
         path = self.assets.require_workspace_media_asset(
             str(asset["managed_path"]),
             workspace_id=workspace_id,

@@ -649,13 +649,16 @@ test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => 
   // 界面上有输入 + 说明（标题里的 4 Pack / 12Pcs）
   assert.ok(page.includes("每件装数量"));
   assert.ok(page.includes("4 Pack / 12Pcs"));
-  // 发货时效默认 7 天（1 天等于承诺 24 小时发货，做不到）
-  assert.match(page, /const DEFAULT_SHIPMENT_DAYS = "7";/);
+  // 发货时效默认 9 天 = Temu 半托管预设（777600 秒）。
+  // 实测依据：店里 230 件商品中 213 件都是 777600，服务商文档的成功案例也是 777600；
+  // 之前我们默认 7 天是自己拍的，跟店里其他商品不一致。
+  assert.match(page, /const DEFAULT_SHIPMENT_DAYS = "9";/);
   assert.match(page, /shipmentDays: DEFAULT_SHIPMENT_DAYS,/);
   assert.match(page, /placeholder=\{DEFAULT_SHIPMENT_DAYS\}/);
-  // 本机存档里旧的 1 天要纠正，模板里的 1 天也不能沿用
-  assert.match(page, /if \(saved\.shipmentDays === "1"\) saved\.shipmentDays = DEFAULT_SHIPMENT_DAYS;/);
+  // 本机存档里旧的 1 天（承诺 24h 发货）和旧默认 7 天都要拉回预设
+  assert.match(page, /if \(saved\.shipmentDays === "1" \|\| saved\.shipmentDays === "7"\) \{/);
   assert.ok(page.includes("填太短会被判延迟发货"));
+  assert.ok(page.includes("Temu 半托管预设"), "界面要说清 9 天是 Temu 预设，不是我们编的");
 });
 
 test("变种面板：货号清洗特殊字符 + 批量值没应用要提示", () => {
@@ -1110,8 +1113,9 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   // 检查函数：只按当前类目的销售属性预设值判定，且只返回清单（不改行）
   assert.match(page, /const findSpecMismatches = \(/);
   assert.match(page, /if \(!prop\.isSale\) continue;/);
-  assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "颜色", value: color \}\);/);
-  assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "尺码", value: size \}\);/);
+  // field 用 color/size 内部键：不同类目这两列叫「款式/型号/容量」，不能拿中文当键
+  assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "color", value: color \}\);/);
+  assert.match(page, /out\.push\(\{ rowKey: row\.key, rowNo: index \+ 1, field: "size", value: size \}\);/);
   // 检查函数本身只产出清单，不许顺手改行（清行会丢价格/重量）；
   // 真正改行的是用户主动点的 fixSpecMismatches，单独一个函数。
   assert.doesNotMatch(
@@ -1136,7 +1140,8 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
 
   // 提示区 + 样式
   assert.match(page, /className="temu-spec-mismatch"/);
-  assert.match(page, /有 \{specMismatch\.length\} 个颜色\/尺码不在当前类目的预设值里/);
+  // 提示文案不写死「颜色/尺码」：手机壳是「型号」、收纳盒是「容量」
+  assert.match(page, /有 \{specMismatch\.length\} 个规格值不在当前类目的预设里/);
   assert.match(css, /\.temu-spec-mismatch \{/);
   assert.match(css, /\.temu-spec-mismatch ul \{[\s\S]*?max-height: 132px;/);
 });
@@ -1148,12 +1153,14 @@ test("类目：刷新类目树入口 + 换类目二次确认", () => {
   // ① 手动刷新：清后端两层缓存 → 重载当前级 + 叶子属性 → 让标题匹配重算
   assert.match(api, /refreshCategories: \(\) =>/);
   assert.match(api, /`\$\{BASE\}\/categories\/refresh`/);
-  assert.match(page, /const refreshCategoryTree = \(\) =>/);
+  // 重载逻辑抽成裸函数，发布被 6000002 拒时也要能复用（那条路不能用 run() 包）
+  assert.match(page, /const reloadCategoryAttributes = async \(previous\?: TemuAttributes \| null\) => \{/);
+  assert.match(page, /const refreshCategoryTree = \(\) =>\s*run\("category", async \(\) => \{\s*await reloadCategoryAttributes\(\);/);
   const refresh = page.slice(
-    page.indexOf("const refreshCategoryTree = () =>"),
+    page.indexOf("const reloadCategoryAttributes = async ("),
     page.indexOf("/**\n   * 换类目会清空已填的类目属性"),
   );
-  assert.ok(refresh.length > 0, "expected refreshCategoryTree block");
+  assert.ok(refresh.length > 0, "expected reloadCategoryAttributes block");
   assert.match(refresh, /await temuPublishApi\.refreshCategories\(\);/);
   assert.match(refresh, /await loadLevel\(/);
   assert.match(refresh, /setMatchSeq\(\(value\) => value \+ 1\);/);
@@ -1349,9 +1356,14 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   // 草稿库带进来的估填值先铺上（只铺空位），再把合并后的 base 交给自动填
   assert.match(effect, /const carried = carriedAttrPicksRef\.current;/);
   // 带进来的属性必须跟当前叶子类目对得上才铺：不同类目 pid 完全不同，
-  // 铺错等于给 Temu 塞一堆不存在的属性
+  // 铺错等于给 Temu 塞一堆不存在的属性。
+  // 对上类目还不够：草稿存的是「估填那一刻」的 vid，Temu 调过属性表之后就查不到了 ——
+  // 原样铺进去会变成「下拉框空白却算已填」，本地校验放行、提交被拒
+  // 「请求的内容不存在或已被删除」，所以必须再按当前属性表 prune 一遍。
   assert.match(effect, /if \(carried && carried\.catId && carried\.catId === leafCatId\) \{/);
-  assert.match(effect, /base = \{ \.\.\.carried\.picks, \.\.\.attrPicksRef\.current \};/);
+  assert.match(effect, /const pruned = pruneStaleAttrPicks\(carried\.picks, attributes\);/);
+  assert.match(effect, /base = \{ \.\.\.pruned\.picks, \.\.\.attrPicksRef\.current \};/);
+  assert.match(effect, /setStaleAttrNames\(pruned\.dropped\);/);
   assert.match(effect, /runAttributeAutofill\(base, leafCatId\);/);
   // 清空自动填时，「草稿库估了 N 项」这条提示也要一起撤
   assert.match(page, /setCarriedAttrCount\(0\);/);
@@ -1377,6 +1389,10 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   assert.match(page, /className="temu-autofill-bar"/);
   // 两个来源分开说：草稿库已经估好的、进页面后补填的
   assert.match(page, /草稿库已按类目估了 <strong>\{carriedAttrCount\}<\/strong> 项属性/);
+  // 失效项必须当场说出来并点名，不能等提交被 Temu 拒了才知道
+  assert.match(page, /staleAttrNames\.length > 0/);
+  assert.match(page, /项草稿属性/);
+  assert.match(page, /重新选/);
   assert.match(page, /本次补填 <strong>\{autoFill\.hits\.length\}<\/strong> 项/);
   assert.match(page, /describeAutoFill\(autoFill\.hits\)/);
   assert.match(page, /命中多个值，需要你自己选/);
@@ -1475,4 +1491,88 @@ test("入草稿库就把产品属性估好，带入发布页直接用", () => {
   assert.match(library, /attrGuessedPids: attrPrefills\?\.\[entry\.id\]\?\.guessedPids,/);
   assert.match(page, /setGuessedPids\(carried\.guessedPids\);/);
   assert.match(page, /guessedPids=\{guessedPids\}/);
+});
+
+test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点名到底变了什么", () => {
+  // 实测 2026-11-03：桌布类目 10498 提交时回
+  // 「Temu 拒绝了这次提交：货品类目属性更新，请刷新页面后重新创建商品（错误码 6000002）」。
+  // 本地属性表是 1 小时缓存，过时后组出来的 pid/vid 全是旧的 —— 用户照旧表反复补，
+  // 补几次都还是同一个错。
+  //
+  // 只提示「请重新选一遍」是句废话：他打开属性区一看跟原来一样，只能盲选再被拒一次。
+  // 必须把「新增了哪个必填项 / 哪个选择失效了」点名出来。
+  const publish = page.slice(
+    page.indexOf("const publishGoods = () =>"),
+    page.indexOf("}).finally(() => {\n      publishingRef.current = false;"),
+  );
+  assert.ok(publish.length > 0, "expected publishGoods block");
+  assert.match(publish, /if \(\/6000002\|类目属性更新\/\.test\(text\)\) \{/);
+  assert.match(publish, /const diff = await reloadCategoryAttributes\(attributes\)\.catch\(/);
+  assert.match(publish, /const detail = diff \? attributeDiffText\(diff\) : "";/);
+  // 有差异 → 点名；没差异 → 直接说「重选也没用」，别让用户白试第三次
+  assert.match(publish, /Temu 后台改过这个类目的属性定义：\$\{detail\}/);
+  // 没差异 → 说明属性表没变，真凶在规格（无销售属性类目补的假规格）。
+  // 提示必须把这条指出来，不能再让用户「等 1-2 分钟再刷」白等。
+  assert.match(publish, /属性定义没有变化/);
+  assert.match(publish, /本来就没有销售属性/);
+  assert.match(publish, /旧版补的是假规格/);
+  // diff 本身的算法在 attributeModel.test.ts 里做行为测试
+  assert.match(attrModel, /export function describeAttributeDiff\(/);
+  assert.match(attrModel, /export function attributeDiffText\(/);
+});
+
+test("变种规格值要把 Temu 的预设值摆出来，而不是让用户猜", () => {
+  // 实测反馈：「我怎么知道 Temu 要什么？」—— 用户手填「苹果4」这种值，
+  // 提交才被回「[4] 不是尺码表的合法值」。只给 datalist 不够：
+  // 不点开输入框根本看不到有哪些可选值。预设值必须直接列成可点的标签。
+  const panel = readFileSync(
+    new URL("../components/PublishSkuPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /Temu 只认这些\{label\}（点一下填入）/);
+  assert.match(panel, /className=\{`temu-spec-chip/);
+  // 手填非法值要当场标红，不能等提交
+  // 红字要点名是哪一列（颜色/款式/型号…）不对
+  assert.match(panel, /不是合法的\{colorSpecName\}值（Temu 只认类目预设）/);
+  assert.match(panel, /不是合法的\{sizeSpecName\}值（Temu 只认类目预设）/);
+  assert.match(panel, /unknownColors\.length \? " is-bad" : ""/);
+  assert.match(panel, /unknownSizes\.length \? " is-bad" : ""/);
+  // 两个输入框都要能下拉搜
+  assert.match(panel, /list="temu-color-options"/);
+  assert.match(panel, /list="temu-size-options"/);
+  // 样式在位
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.match(css, /\.temu-spec-choices \{/);
+  assert.match(css, /\.temu-spec-chip \{/);
+  assert.match(css, /\.temu-spec-bad \{/);
+});
+
+test("变种两列不能写死「颜色/尺码」：任意类目都要自适应", () => {
+  // 手机壳是「颜色 + 型号」、收纳盒是「颜色 + 容量」、毛巾只有「颜色」、
+  // 桌布干脆一个销售属性都没有。写死中文名会让标签、校验、payload 全错位。
+  // 选择逻辑已抽成纯函数（data/specPair.ts），可被穷举验证
+  const specPair = readFileSync(new URL("../data/specPair.ts", import.meta.url), "utf8");
+  assert.match(specPair, /export const FIRST_SPEC_WORDS = \[/);
+  assert.match(specPair, /export const SECOND_SPEC_WORDS = \[/);
+  assert.match(specPair, /export function pickSpecPair\(specs: TemuParentSpec\[\]\)/);
+  // 两列绝不能落到同一个属性上（类目返回顺序不保证）
+  assert.match(specPair, /item\.parentSpecId !== color/);
+  // 页面只负责调用，不再自己实现一份
+  assert.match(page, /import \{ pickSpecPair \} from "\.\.\/data\/specPair";/);
+  // 只有一列销售属性时，第二列不存在 → 不能硬要尺码，否则抛「父规格列表为空」
+  assert.match(page, /if \(sizeParent\) \{/);
+  // 界面文案用 Temu 返回的真实属性名
+  assert.match(page, /const colorSpecName =/);
+  assert.match(page, /const sizeSpecName =/);
+  assert.match(page, /colorSpecName=\{colorSpecName\}/);
+  assert.match(page, /sizeSpecName=\{sizeSpecName\}/);
+
+  const panel = readFileSync(
+    new URL("../components/PublishSkuPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /变种属性一：\{colorSpecName\}/);
+  assert.match(panel, /变种属性二：\{sizeSpecName\}/);
+  // 单销售属性类目直接不渲染第二列
+  assert.match(panel, /\{sizeParentId > 0 && \(/);
 });

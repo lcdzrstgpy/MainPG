@@ -84,7 +84,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   const catIdRef = useRef(0);
   const [freightId, setFreightId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
-  const [shipmentDays, setShipmentDays] = useState("7");
+  const [shipmentDays, setShipmentDays] = useState("9");
 
   useEffect(() => {
     let alive = true;
@@ -304,7 +304,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
           </select>
         </label>
         <label className="temu-field">
-          <span>发货时效（天）</span>
+          <span>发货时效（天）<em className="temu-muted">Temu 预设 9 天</em></span>
           <input
             className="temu-input"
             value={shipmentDays}

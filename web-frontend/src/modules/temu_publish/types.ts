@@ -98,6 +98,17 @@ export type TemuProperty = {
     parentVidList: number[];
     vidList: number[];
   }> | null;
+  /**
+   * 显示条件（第二套联动规则，和上面那条不是一回事）：
+   * `parentRefPid` 指的是**父属性的 refPid**，父属性取到 parentVids 里任一值才显示本属性。
+   *
+   * 实测 2026-11-03：桌布类目「厚度（mm）」只带这条 —— 材料选了 2512 才该出现。
+   * 以前完全不认，界面照显示、payload 照发，Temu 就回「货品类目属性更新」。
+   */
+  showCondition?: Array<{
+    parentRefPid: number;
+    parentVids: number[];
+  }> | null;
 };
 
 export type TemuAttributes = {

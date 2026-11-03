@@ -6170,6 +6170,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
+    def media_asset_file(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        width: int | None = None,
+    ) -> tuple[Path, str]:
+        """按登录会话取图（不校验临时签名）。见 MediaAssetService.media_asset_file。"""
+        try:
+            return self.media_assets.media_asset_file(
+                asset_id,
+                workspace_id=workspace_id,
+                width=width,
+            )
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
     def retry_media_asset(self, asset_id: str, *, workspace_id: str = "local") -> dict[str, Any]:
         try:
             asset = self.media_assets.retry_asset(asset_id, workspace_id=workspace_id)

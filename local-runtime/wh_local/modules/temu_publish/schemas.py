@@ -169,8 +169,10 @@ class GoodsDraftInput(BaseModel):
     # 实测字段名是顶层 materialImgUrl（2026-10-26 真调确认），文档里没写。
     material_image_url: str = ""
     freight_template_id: str = Field(min_length=1)
-    # 默认 7 天：1 天等于承诺 24 小时发货，POD/定制做不到（会被判延迟发货）
-    shipment_limit_seconds: int = Field(default=7 * 86400, ge=1)
+    # 默认 9 天 = Temu 半托管的预设值（777600 秒）。
+    # 依据（2026-11-03 扫店铺 230 件商品）：213 件历史商品全是 777600，服务商文档的
+    # 发布成功案例也是 777600。1 天等于承诺 24 小时发货，POD/定制做不到，会被判延迟发货。
+    shipment_limit_seconds: int = Field(default=9 * 86400, ge=1)
     properties: list[GoodsPropertyInput] = Field(default_factory=list)
     skcs: list[SkcInput] = Field(min_length=1)
     size_template_ids: list[int] = Field(default_factory=list)

@@ -24,6 +24,29 @@ PRODUCT_ROUTER = "https://yingluan-api.qibang-global.vip/api/temu-product/openap
 # 「改动当天能看到」的折中。
 CACHE_TTL_CATEGORIES = 60 * 60
 CACHE_TTL_ATTRIBUTES = 60 * 60
+
+# 类目树 / 类目匹配 / 属性表是 **Temu 全网统一**的，跟哪家店、哪个账号无关。
+# 这三类缓存放在模块级而不是实例级，原因很实在：清缓存的地方（router._handle）
+# 拿不到「当前店铺的 client 实例」，只能拿到一个按默认凭证构造的实例 ——
+# 实例级缓存下它清的是自己那份空缓存，真正在用的那份纹丝不动，
+# 于是出现「点了刷新、错误照旧」的死循环（2026-11-03 实测踩到）。
+# 注意：parent-specs / freight / warehouse 是**店铺级**的，绝不能共享（会串店）。
+_SHARED_CATALOG_CACHE: dict[str, tuple[float, Any]] = {}
+_SHARED_CATALOG_LOCK = Lock()
+_SHARED_CATALOG_PREFIXES = ("cats:", "cat-match:", "attrs:")
+
+
+def _is_shared_catalog_key(key: str) -> bool:
+    return key.startswith(_SHARED_CATALOG_PREFIXES)
+
+
+def clear_shared_catalog_cache() -> int:
+    """清掉全网统一的类目/属性缓存，返回清掉的条数。任何时刻、任何实例调都生效。"""
+    with _SHARED_CATALOG_LOCK:
+        keys = [key for key in _SHARED_CATALOG_CACHE if _is_shared_catalog_key(key)]
+        for key in keys:
+            _SHARED_CATALOG_CACHE.pop(key, None)
+    return len(keys)
 CACHE_TTL_LOGISTICS = 30 * 60
 
 
@@ -263,6 +286,95 @@ class TemuProductClient:
         """新建规格后清掉父规格缓存，否则最长要等一个 TTL 才看得到新规格。"""
         self._cache_drop("parent-specs")
 
+    def ensure_default_spec(
+        self,
+        spec_name: str = "",
+        catalog: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """拿一个**真实存在**的规格值兜底（父规格「颜色」下的一条真实值），带缓存。
+
+        为什么需要它（2026-11-03 实测）：
+
+        桌布 / 桌旗 / 化妆包这一整片类目 `attrs.get` 返回的属性里 ``isSale`` 全是 false，
+        而 Temu 又要求「规格列表不能为空」。以前发的是 id 全 0 的假规格 ``款式 / 默认``
+        —— 规格校验能过，但 ``goods.add`` 会一直回
+
+            6000002 货品类目属性更新，请刷新页面后重新创建货品
+
+        而且**跟发了哪个属性无关**（12 个必填逐个单发，全是 6000002）。
+
+        第二个坑：值不能随便起。类目把「颜色」当**商品属性**时（化妆包 30988 有 116 个
+        预设值），规格值必须落在那份列表里，否则回
+
+            属性[颜色]校验错误:关键词属性 默认 不是有效值。
+
+        所以这里优先用 `spec_name`（调用方传商品自己的颜色值），不在合法列表里才退回
+        列表第一个；类目没有「颜色」属性时才用「默认」。
+
+        返回 ``{"parentSpecId", "parentSpecName", "specId", "specName"}``。
+        """
+        # ① 父规格：优先「颜色」
+        parent_id, parent_name = 1001, "颜色"
+        try:
+            specs = self.parent_specs()
+            items = specs.get("parentSpecDTOS") or specs.get("parentSpecList") or []
+            hit = next(
+                (
+                    item
+                    for item in items
+                    if isinstance(item, dict) and "颜色" in str(item.get("parentSpecName") or "")
+                ),
+                None,
+            )
+            if hit:
+                parent_id = int(hit.get("parentSpecId") or parent_id)
+                parent_name = str(hit.get("parentSpecName") or parent_name)
+        except Exception:  # noqa: BLE001 - 拿不到就用默认的 1001/颜色
+            pass
+
+        # ② 值：类目把「颜色」当商品属性时，只能从它的预设值里取
+        allowed: list[str] = []
+        color_prop: dict[str, Any] | None = None
+        for item in (catalog or {}).get("properties") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "") == "颜色":
+                color_prop = item
+                allowed = [
+                    str(value.get("value") or "")
+                    for value in (item.get("values") or [])
+                    if value.get("value")
+                ]
+                break
+
+        name = str(spec_name or "").strip()
+        if allowed and name not in allowed:
+            name = allowed[0]
+        if not name:
+            name = allowed[0] if allowed else "默认"
+        # 商品属性「颜色」存在时，规格也复用它自己的父规格 id（认不出就用 1001）
+        if color_prop and int(color_prop.get("parentSpecId") or 0) > 0:
+            parent_id = int(color_prop["parentSpecId"])
+
+        cache_key = f"default-spec:v2:{parent_id}:{name}"
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, dict) and cached.get("specId"):
+            return dict(cached)
+
+        result = self.create_spec(parent_id, name)
+        spec_id = int((result or {}).get("specId") or 0)
+        if spec_id <= 0:
+            raise RuntimeError("Temu 没有返回新建规格的 specId")
+        spec = {
+            "parentSpecId": parent_id,
+            "parentSpecName": parent_name,
+            "specId": spec_id,
+            "specName": name,
+        }
+        # 规则值长期有效，缓存 30 天，避免每次发布都调一次写接口
+        self._cache_put(cache_key, spec, 30 * 24 * 3600)
+        return dict(spec)
+
     def invalidate_categories(self) -> int:
         """清掉类目树、类目匹配、类目属性的读缓存，返回清掉的条数。
 
@@ -277,15 +389,13 @@ class TemuProductClient:
         特意不碰 ``freight:`` / ``parent-specs`` / ``warehouse`` 这些：它们跟
         类目改动无关，一起清等于每次刷新都白打几轮网关。
         """
+        # 类目/属性走共享缓存：必须清那份，否则「另一个实例清了、这个实例还在用旧表」
+        dropped = clear_shared_catalog_cache()
         with self._cache_lock:
-            keys = [
-                key
-                for key in self._cache
-                if key.startswith(("cats:", "cat-match:", "attrs:"))
-            ]
+            keys = [key for key in self._cache if _is_shared_catalog_key(key)]
             for key in keys:
                 self._cache.pop(key, None)
-        return len(keys)
+        return dropped + len(keys)
 
     def goods_list(self, **filters: Any) -> dict[str, Any]:
         """商品列表查询（bg.glo.goods.list.get）。
@@ -397,28 +507,44 @@ class TemuProductClient:
 
     def _cache_get(self, key: str) -> Any | None:
         now = time.monotonic()
-        with self._cache_lock:
-            item = self._cache.get(key)
+        store, lock = (
+            (_SHARED_CATALOG_CACHE, _SHARED_CATALOG_LOCK)
+            if _is_shared_catalog_key(key)
+            else (self._cache, self._cache_lock)
+        )
+        with lock:
+            item = store.get(key)
             if item is None:
                 return None
             expires_at, value = item
             if expires_at <= now:
-                self._cache.pop(key, None)
+                store.pop(key, None)
                 return None
             return value
 
     def _cache_drop(self, key: str) -> None:
         """只清某一条缓存（写完数据后让对应读缓存立即失效）。"""
-        with self._cache_lock:
-            self._cache.pop(key, None)
+        store, lock = (
+            (_SHARED_CATALOG_CACHE, _SHARED_CATALOG_LOCK)
+            if _is_shared_catalog_key(key)
+            else (self._cache, self._cache_lock)
+        )
+        with lock:
+            store.pop(key, None)
 
     def _cache_put(self, key: str, value: Any, ttl: int) -> None:
-        with self._cache_lock:
-            self._cache[key] = (time.monotonic() + max(1, int(ttl)), value)
+        store, lock = (
+            (_SHARED_CATALOG_CACHE, _SHARED_CATALOG_LOCK)
+            if _is_shared_catalog_key(key)
+            else (self._cache, self._cache_lock)
+        )
+        with lock:
+            store[key] = (time.monotonic() + max(1, int(ttl)), value)
 
     def clear_cache(self) -> None:
         with self._cache_lock:
             self._cache.clear()
+        clear_shared_catalog_cache()
 
 
 def _response_json(response: Any, api_type: str) -> dict[str, Any]:

@@ -760,7 +760,26 @@ class TemuPublishService:
                 "Temu 可能判「请重置规格模版」。建议在 Temu 后台确认该叶子类目可正常建品。"
             )
         # 属性名称/refPid/templatePid 以类目属性表为准补齐，避免前端漏填导致发布被拒。
-        payload = _assemble_payload(draft, warnings, catalog)
+        # 一个规格值都没给时，先拿一条**真实**规格兜底（不能再用 id 全 0 的假规格，
+        # 那会让 goods.add 一直回 6000002，详见 client.ensure_default_spec 的注释）。
+        fallback_spec: dict[str, Any] | None = None
+        if not any(skc.main_specs for skc in draft.skcs) and not any(
+            sku.specs for skc in draft.skcs for sku in skc.skus
+        ):
+            # 类目把「颜色」当商品属性时，规格值必须是它的合法预设值，
+            # 所以把用户选的商品颜色带下去（没有就让网关侧自己挑第一个）。
+            preferred_color = ""
+            for item in draft.properties:
+                if str(getattr(item, "prop_name", "") or "") == "颜色" and str(
+                    getattr(item, "prop_value", "") or ""
+                ).strip():
+                    preferred_color = str(item.prop_value).strip()
+                    break
+            try:
+                fallback_spec = self.client().ensure_default_spec(preferred_color, catalog)
+            except Exception as exc:  # noqa: BLE001 - 兜底失败仍要能组装（会带告警）
+                warnings.append(f"自动创建兜底规格失败：{exc}")
+        payload = _assemble_payload(draft, warnings, catalog, fallback_spec)
 
         sku_prices = [
             sku.supplier_price for skc in draft.skcs for sku in skc.skus
@@ -1066,6 +1085,7 @@ def _assemble_payload(
     draft: GoodsDraftInput,
     warnings: list[str],
     catalog: dict[str, Any] | None = None,
+    fallback_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     category_ids = [int(value) for value in draft.category_ids]
     if any(value <= 0 for value in category_ids):
@@ -1319,17 +1339,38 @@ def _assemble_payload(
     if draft.goods_label_name.strip():
         payload["productCustomReq"] = {"goodsLabelName": draft.goods_label_name.strip()}
 
-    # 类目没有销售属性：补一条虚拟规格占位，否则 Temu 会回「规格不能为空」，
-    # 商品永远发不出去（桌布/桌旗/餐垫这类类目全是这种情况）。
+    # 类目没有销售属性：Temu 仍要求「规格列表不能为空」，必须补一条**真实**规格占位。
+    #
+    # ⚠️ 别再用 id 全 0 的假规格（款式/默认）：那样规格校验能过，但 goods.add 会一直回
+    #    6000002「货品类目属性更新」，而且跟填了哪个属性无关 —— 2026-11-03 把 12 个必填
+    #    逐个单发全部复现，清缓存/重选属性都无效。换成真实 specId 后同一份属性表立刻发布成功。
     if not product_spec_reqs:
-        payload["productSpecPropertyReqs"] = [dict(_VIRTUAL_SPEC_DECL)]
+        real_spec = fallback_spec if int((fallback_spec or {}).get("specId") or 0) > 0 else None
+        if real_spec:
+            decl = _spec_decl_payload(_SimpleSpec(real_spec), catalog)
+            sku_spec = {
+                "specId": int(real_spec["specId"]),
+                "specName": str(real_spec["specName"]),
+                "parentSpecId": int(real_spec["parentSpecId"]),
+                "parentSpecName": str(real_spec["parentSpecName"]),
+            }
+            warnings.append(
+                "该类目没有销售属性（Temu 后台会自动补默认规格）：已自动补真实规格"
+                f"「{sku_spec['parentSpecName']}/{sku_spec['specName']}」占位。"
+            )
+        else:
+            decl = dict(_VIRTUAL_SPEC_DECL)
+            sku_spec = dict(_VIRTUAL_SPEC_SKU)
+            warnings.append(
+                "该类目没有销售属性，且自动创建规格失败（连不上 Temu 网关？）："
+                "已退回 id 全 0 的占位规格。这样提交大概率被回「货品类目属性更新」，"
+                "请联网后重试，或在变种区手动选一个规格值。"
+            )
+        payload["productSpecPropertyReqs"] = [decl]
         for skc_req in payload.get("productSkcReqs") or []:
             for sku_req in skc_req.get("productSkuReqs") or []:
                 if not sku_req.get("productSkuSpecReqs"):
-                    sku_req["productSkuSpecReqs"] = [dict(_VIRTUAL_SPEC_SKU)]
-        warnings.append(
-            "该类目没有销售属性（Temu 后台会自动补默认规格）：已自动补「款式/默认」规格占位。"
-        )
+                    sku_req["productSkuSpecReqs"] = [dict(sku_spec)]
 
     # ⚠️ 网关签名实现会「算签名时忽略空数组、转发时又带上」，两边 sign 对不上，
     # 一律回 7000015 sign is invalid（catsmandatory.get 长期踩的就是这个坑）。
@@ -1494,6 +1535,18 @@ _VIRTUAL_SPEC_SKU = {
 }
 
 
+class _SimpleSpec:
+    """把「兜底规格」字典包成带属性的对象，好复用 _spec_decl_payload。"""
+
+    __slots__ = ("parent_spec_id", "parent_spec_name", "spec_id", "spec_name")
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.parent_spec_id = int(data.get("parentSpecId") or 0)
+        self.parent_spec_name = str(data.get("parentSpecName") or "")
+        self.spec_id = int(data.get("specId") or 0)
+        self.spec_name = str(data.get("specName") or "")
+
+
 def _spec_payload(spec: Any) -> dict[str, Any]:
     """SKC / SKU 级规格：**只发 4 个字段**。
 
@@ -1540,14 +1593,21 @@ def _spec_decl_payload(spec: Any, catalog: dict[str, Any] | None = None) -> dict
 def _catalog_property_by_parent(
     catalog: dict[str, Any] | None, parent_spec_id: int, parent_spec_name: str
 ) -> dict[str, Any] | None:
-    """在类目属性里找「父规格 id 对得上」的那一项（销售属性）。"""
+    """在类目属性里找「父规格 id 对得上」的那一项（**真正的**销售属性）。
+
+    ⚠️ 不能退回到「按属性名匹配」：类目里可能有一个叫「颜色」的**商品属性**
+    （`isSale=false`、`parentSpecId=null`），跟销售规格「颜色」同名但不是一回事。
+    按名字兜底会把它的 pid/refPid/templatePid 拿去当规格声明的 id，
+    Temu 直接回（2026-11-03 化妆包 30988 实测）：
+
+        属性[颜色]校验错误:关键词属性 白色 不是有效值。
+
+    而把这三个 id 全填 parentSpecId（1001）后同一个请求发布成功。
+    所以这里只认 parentSpecId，认不出就返回 None，由调用方退回父规格 id。
+    """
     items = [i for i in ((catalog or {}).get("properties") or []) if isinstance(i, dict)]
     for item in items:
         if int(item.get("parentSpecId") or 0) == int(parent_spec_id):
-            return item
-    target = str(parent_spec_name or "").strip()
-    for item in items:
-        if str(item.get("name") or item.get("propertyName") or "").strip() == target:
             return item
     return None
 
@@ -1749,6 +1809,8 @@ def _resolve_applicable_properties(
     by_template = {
         int(item.get("templatePid") or 0): item for item in items if item.get("templatePid")
     }
+    # showCondition 用父属性的 **refPid** 指代父级（不是 templatePid），两套规则各查各的索引
+    by_ref = {int(item.get("refPid") or 0): item for item in items if item.get("refPid")}
     selected = {
         int(getattr(item, "pid", 0) or 0): int(getattr(item, "vid", 0) or 0) for item in properties
     }
@@ -1757,6 +1819,23 @@ def _resolve_applicable_properties(
     dropped: list[str] = []
     for item in items:
         pid = int(item.get("pid") or 0)
+        name = str(item.get("name") or item.get("propertyName") or f"pid={pid}")
+        # ① showCondition（实测 2026-11-03，桌布类目「厚度（mm）」只带这个）
+        #    例：{"parentRefPid": 121, "parentVids": [2512]} —— 只有「材料」选了 2512 才该出现。
+        #    以前完全不认这条规则，于是把不该填的必填属性一起发出去，
+        #    Temu 就回一句「货品类目属性更新」（6000002），完全看不出是哪个属性多了。
+        conditions = item.get("showCondition") or []
+        if conditions:
+            visible = False
+            for cond in conditions:
+                parent = by_ref.get(int(cond.get("parentRefPid") or 0))
+                parent_vid = selected.get(int(parent.get("pid") or 0), 0) if parent else 0
+                if parent_vid and parent_vid in set(cond.get("parentVids") or []):
+                    visible = True
+                    break
+            if not visible:
+                dropped.append(name)
+                continue
         rules = item.get("templatePropertyValueParentList") or []
         if not rules:
             applicable.add(pid)
@@ -1773,9 +1852,7 @@ def _resolve_applicable_properties(
         if matched:
             applicable.add(pid)
         else:
-            dropped.append(
-                str(item.get("name") or item.get("propertyName") or f"pid={pid}")
-            )
+            dropped.append(name)
     return applicable, dropped
 
 

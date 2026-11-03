@@ -132,6 +132,18 @@ class StubCatalogClient:
         }
 
 
+    def ensure_default_spec(
+        self, spec_name: str = "", catalog: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """无销售属性类目兜底用的真实规格（颜色/默认）。"""
+        return {
+            "parentSpecId": 1001,
+            "parentSpecName": "颜色",
+            "specId": 20832,
+            "specName": "默认",
+        }
+
+
 def _draft(properties: list[GoodsPropertyInput] | None = None) -> GoodsDraftInput:
     spec = SkuSpecInput(
         parent_spec_id=1001, parent_spec_name="颜色", spec_id=2001, spec_name="Red"
@@ -1357,6 +1369,22 @@ def test_gateway_auth_errors_carry_actionable_hint() -> None:
     assert plain == "Temu 拒绝了这次提交：boom（错误码 SOME_NEW_CODE）"
 
 
+def test_gateway_error_6000002_explains_stale_attributes() -> None:
+    """6000002「货品类目属性更新」要说清是属性表过时，并给出下一步动作。
+
+    实测 2026-11-03：桌布类目 10498 提交时回这句话。本地属性表是 1 小时缓存，
+    过时后组出来的 pid/vid 全是旧的，照旧表反复补必填项补几次都还是同一个错。
+    """
+    from wh_local.modules.temu_publish.router import _CATEGORY_ATTRS_CHANGED, _gateway_message
+
+    assert _CATEGORY_ATTRS_CHANGED == "6000002"
+    text = _gateway_message("6000002", "货品类目属性更新，请刷新页面后重新创建商品")
+    assert "Temu 拒绝了这次提交：货品类目属性更新" in text
+    assert "6000002" in text
+    assert "属性表已过时" in text
+    assert "重新选" in text
+
+
 def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """解绑只清店铺授权：服务商 client_id / token 是预置的，换店还要用，必须留着。"""
     _clear_temu_env(monkeypatch)
@@ -2009,6 +2037,9 @@ def test_property_without_vid_and_text_is_rejected(tmp_path: Path) -> None:
 class NoSaleCatalogClient:
     """类目属性表里一个销售属性都没有的类目（如「桌布/亚麻布」）。"""
 
+    #: 记录被要求创建的兜底规格，断言用
+    created_specs: list[tuple[int, str]] = []
+
     def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
         return {
             "properties": [
@@ -2023,6 +2054,32 @@ class NoSaleCatalogClient:
                 }
             ]
         }
+
+    def ensure_default_spec(
+        self, spec_name: str = "", catalog: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """真实兜底规格：颜色/默认（specId 非 0）。
+
+        以前这里用的是 id 全 0 的「款式/默认」：Temu 的规格校验能过，但 goods.add
+        会一直回 6000002「货品类目属性更新」，且跟填了哪个属性无关。
+        换成真实 specId 之后同一个类目立刻发布成功（2026-11-03 实测 3 单）。
+        """
+        self.created_specs.append((1001, "默认"))
+        return {
+            "parentSpecId": 1001,
+            "parentSpecName": "颜色",
+            "specId": 20832,
+            "specName": "默认",
+        }
+
+
+class NoSaleCatalogClientWithoutGateway(NoSaleCatalogClient):
+    """连不上网关：兜底规格创建不出来，只能退回占位（并给出告警）。"""
+
+    def ensure_default_spec(
+        self, spec_name: str = "", catalog: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        raise RuntimeError("network unreachable")
 
 
 class SaleCatalogClient(StubCatalogClient):
@@ -2053,32 +2110,37 @@ def _single_sku_draft() -> GoodsDraftInput:
 
 
 def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path) -> None:
-    """没有销售属性的类目：自动补一条「款式/默认」虚拟规格，否则 Temu 回「规格不能为空」。
+    """没有销售属性的类目：自动补一条**真实**规格，否则 Temu 回「规格不能为空」。
 
-    实测（2026-11-03）：id 全 0、只把名称填成「款式/默认」，商品级与 SKU 级各一条，
-    Temu 的全部规格校验都通过。不补的话商品永远发不出去。
+    历史坑（务必保留这段注释）：以前补的是 id 全 0 的「款式/默认」，Temu 的规格校验
+    全都通过、但 `goods.add` 永远回 `6000002 货品类目属性更新，请刷新页面后重新创建货品`。
+    2026-11-03 用真实店铺把 12 个必填属性逐个单发，**每条都回 6000002**，说明跟属性无关；
+    换成「颜色/默认」这种真实 specId 后，同一份属性表立刻发布成功（桌布 10498、桌旗 10497
+    各验一单，productId 都拿到了）。所以这里必须断言 specId 非 0。
     """
-    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
+    client = NoSaleCatalogClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
 
     built = service.build_goods_payload(_single_sku_draft())
     payload = built["payload"]
 
     decls = payload["productSpecPropertyReqs"]
     assert len(decls) == 1
-    assert decls[0]["propName"] == "款式"
+    assert decls[0]["specId"] == 20832, "必须是真实 specId，0 会被 Temu 判「类目属性更新」"
+    assert decls[0]["parentSpecId"] == 1001
     assert decls[0]["specName"] == "默认"
-    # id 全 0 是刻意的：类目没有销售属性，拿不到真实 pid/specId
-    assert (decls[0]["pid"], decls[0]["refPid"], decls[0]["specId"], decls[0]["parentSpecId"]) == (0, 0, 0, 0)
     # 名字不能空，否则 Temu 回「Reference Property Name / Base Property Value 不能为空」
     assert decls[0]["propName"] and decls[0]["specName"]
+    # 确实去要了一条兜底规格（不是凭空写死）
+    assert client.created_specs == [(1001, "默认")]
 
     skc = payload["productSkcReqs"][0]
     sku_specs = skc["productSkuReqs"][0]["productSkuSpecReqs"]
     assert sku_specs == [
-        {"specId": 0, "specName": "默认", "parentSpecId": 0, "parentSpecName": "款式"}
+        {"specId": 20832, "specName": "默认", "parentSpecId": 1001, "parentSpecName": "颜色"}
     ], "SKU 级规格列表不能为空（Temu 会报 Product SKU specification list cannot be empty）"
 
-    # 要告诉用户我们替他补了规格，别让他以为商品真有「款式」属性
+    # 要告诉用户我们替他补了规格，别让他以为商品真有这个属性
     assert any("没有销售属性" in w for w in built["warnings"])
     skc = payload["productSkcReqs"][0]
     assert skc["mainProductSkuSpecReqs"] == [
@@ -2088,6 +2150,24 @@ def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path)
     sku = skc["productSkuReqs"][0]
     assert sku["siteSupplierPrices"] == [{"siteId": 100, "supplierPrice": 1299}]
     assert sku["productSkuStockQuantityReq"]["warehouseStockQuantityReqs"][0]["targetStockAvailable"] == 20
+
+
+def test_single_sku_falls_back_to_placeholder_when_gateway_unreachable(tmp_path: Path) -> None:
+    """连不上网关时仍要能组装出请求体，但要明确告警「这样提交大概率失败」。"""
+    service = TemuPublishService(
+        tmp_path / "runtime.sqlite3", client=NoSaleCatalogClientWithoutGateway()
+    )
+    built = service.build_goods_payload(_single_sku_draft())
+    payload = built["payload"]
+
+    # 退回占位（id 全 0）也不是干脆不补 —— 不补的话 Temu 直接回「规格不能为空」
+    decls = payload["productSpecPropertyReqs"]
+    assert len(decls) == 1
+    assert decls[0]["propName"] == "款式"
+    assert decls[0]["specId"] == 0
+    # 关键：必须告诉用户「这样大概率被拒」，而不是让他再猜几小时
+    assert any("自动创建规格失败" in w for w in built["warnings"])
+    assert any("6000002" in w or "货品类目属性更新" in w for w in built["warnings"])
 
 
 def test_category_with_sale_properties_rejects_empty_specs(tmp_path: Path) -> None:
@@ -2485,6 +2565,12 @@ def test_invalidate_categories_also_drops_attribute_cache_but_keeps_logistics() 
         "errorCode": "1000000",
         "result": {"freightTemplateDTOList": []},
     }
+    # 类目/属性缓存是**模块级共享**的（见 test_shared_catalog_cache_...），
+    # 先清掉别的用例留下的条目，否则「清掉几条」和「全命中缓存」两个断言都会被污染。
+    from wh_local.modules.temu_publish.client import clear_shared_catalog_cache
+
+    clear_shared_catalog_cache()
+
     # 前 3 个响应给首次取数，第 4/5 个给清缓存后的重取（运费模板不该重取）
     client, session = _client(
         [
@@ -2507,7 +2593,7 @@ def test_invalidate_categories_also_drops_attribute_cache_but_keeps_logistics() 
     assert len(session.calls) == 3, "第二次全命中缓存"
 
     dropped = client.invalidate_categories()
-    assert dropped == 2, "cats: + attrs: 各一条"
+    assert dropped >= 2, "cats: + attrs: 各一条（共享缓存里可能还有别的用例留下的条目）"
 
     client.categories(0)
     client.attributes(9)
@@ -2631,3 +2717,216 @@ def test_catsmandatory_request_omits_empty_property_list(tmp_path: Path) -> None
     assert sent[0]["method"] == "bg.glo.goods.catsmandatory.get"
     assert "productPropertyReqs" not in sent[0]["body"], "空数组不该出现在请求体里"
     assert sent[1]["body"]["productPropertyReqs"] == [{"pid": 1, "vid": 10}]
+
+
+def _draft_with_specs(specs: list[SkuSpecInput]) -> GoodsDraftInput:
+    """按「SKU 上带几个规格」造草稿：0 个（无销售属性）/ 1 个（只有颜色）/ 2 个（颜色+尺码）。"""
+    return GoodsDraftInput(
+        category_ids=[18768, 19503, 19668, 19669],
+        title="Any category product",
+        carousel_image_urls=["https://img.example.com/main.jpg"],
+        freight_template_id="HFT-19421251915858203874",
+        properties=[GoodsPropertyInput(pid=1, vid=10)],
+        skcs=[
+            SkcInput(
+                ext_code="SKC-1",
+                preview_image_urls=["https://img.example.com/skc.jpg"],
+                main_specs=[specs[0]] if specs else [],
+                skus=[
+                    SkuInput(
+                        ext_code="SKU-1",
+                        supplier_price=1299,
+                        stock=20,
+                        warehouse_id="WH-07346074419333874",
+                        weight_mg=200000,
+                        length_mm=200,
+                        width_mm=150,
+                        height_mm=30,
+                        specs=specs,
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def test_payload_supports_zero_one_two_spec_columns(tmp_path: Path) -> None:
+    """不同类目的销售属性列数完全不同，三种都要能组装出合法 payload。
+
+    - 0 列：桌布 / 亚麻布这类没有销售属性的类目 → 后端补真实兜底规格「颜色：默认」
+    - 1 列：毛巾 / 手机壳（只有颜色或只有型号）→ 以前前端硬要第二列，会抛
+      「Temu 父规格列表为空，无法创建规格」，等于这类商品永远发不出去
+    - 2 列：颜色 + 尺码（最常见）
+    """
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+
+    color = SkuSpecInput(
+        parent_spec_id=1001, parent_spec_name="颜色", spec_id=2001, spec_name="Red"
+    )
+    size = SkuSpecInput(
+        parent_spec_id=1002, parent_spec_name="尺码", spec_id=2002, spec_name="M"
+    )
+
+    # ① 两列：原样透传
+    two = service.build_goods_payload(_draft_with_specs([color, size]))["payload"]
+    sku_two = two["productSkcReqs"][0]["productSkuReqs"][0]
+    assert [item["specName"] for item in sku_two["productSkuSpecReqs"]] == ["Red", "M"]
+
+    # ② 一列：只发这一个规格，不能被强行补出第二个
+    one = service.build_goods_payload(_draft_with_specs([color]))["payload"]
+    sku_one = one["productSkcReqs"][0]["productSkuReqs"][0]
+    assert [item["specName"] for item in sku_one["productSkuSpecReqs"]] == ["Red"]
+    # 规格声明在**顶层**（payload.productSpecPropertyReqs），不在 SKC 里
+    assert [item["specName"] for item in one["productSpecPropertyReqs"]] == ["Red"]
+
+    # ③ 零列：补一条**真实**兜底规格（颜色/默认），否则 Temu 判「缺规格」；
+    #    而 id 全 0 的占位规格会让 goods.add 一直回 6000002（详见 client.ensure_default_spec）
+    zero = service.build_goods_payload(_draft_with_specs([]))["payload"]
+    sku_zero = zero["productSkcReqs"][0]["productSkuReqs"][0]
+    decl = zero["productSpecPropertyReqs"]
+    assert decl and decl[0]["specName"] == "默认"
+    assert decl[0]["specId"] == 20832, "兜底规格必须带真实 specId"
+    assert [item["specName"] for item in sku_zero["productSkuSpecReqs"]] == ["默认"]
+
+
+def test_shared_catalog_cache_is_cleared_across_client_instances() -> None:
+    """类目/属性缓存必须跨实例共享 —— 否则「清了但没用」。
+
+    2026-11-03 实测：发布被 Temu 回 6000002「货品类目属性更新」后，
+    router._handle 里调 `service.client().invalidate_categories()` 清缓存。
+    但 _handle 拿不到当前 actor，构造出来的是**另一个 client 实例**，
+    清掉的是它自己的空缓存，真正在用的那份纹丝不动 ——
+    结果就是「点了刷新、错误照旧」，连刷 6 次全失败。
+
+    所以这三类（全网统一、与店铺无关）的缓存被提升到模块级：
+    任何实例清，等于所有实例清。而 parent-specs / freight / warehouse 是**店铺级**，
+    必须留在实例上，否则会串店。
+    """
+    from wh_local.modules.temu_publish.client import (
+        TemuCredentials,
+        TemuProductClient,
+        clear_shared_catalog_cache,
+    )
+
+    def make(access_token: str) -> TemuProductClient:
+        return TemuProductClient(
+            TemuCredentials(client="c", token="t", access_token=access_token),
+            session=object(),  # 不真的发请求
+        )
+
+    a = make("shop-a")
+    b = make("shop-b")
+
+    # ① 属性表：A 写入，B 能读到（共享）
+    a._cache_put("attrs:10498:1", {"properties": ["old"]}, 3600)
+    assert b._cache_get("attrs:10498:1") == {"properties": ["old"]}
+
+    # ② 任意一处清缓存，所有实例立即失效
+    assert clear_shared_catalog_cache() >= 1
+    assert b._cache_get("attrs:10498:1") is None
+
+    # ③ 店铺级缓存不能共享（否则换店会拿到别人家的规格/运费模板/仓库）
+    a._cache_put("parent-specs", {"specs": ["a"]}, 3600)
+    a._cache_put("freight:100", {"templates": ["a"]}, 3600)
+    assert b._cache_get("parent-specs") is None
+    assert b._cache_get("freight:100") is None
+    # 但 A 自己还读得到
+    assert a._cache_get("parent-specs") == {"specs": ["a"]}
+
+    # ④ invalidate_categories 也走共享清理（手动「刷新类目树」按钮走这条）
+    a._cache_drop("parent-specs")
+    a._cache_drop("freight:100")
+    a._cache_put("cats:0", {"categoryDTOList": []}, 3600)
+    assert b._cache_get("cats:0") == {"categoryDTOList": []}
+    assert a.invalidate_categories() >= 1
+    assert b._cache_get("cats:0") is None
+
+
+def test_spec_decl_never_borrows_non_sale_property_ids() -> None:
+    """规格声明的 pid/refPid/templatePid 不能借用同名的**商品属性**。
+
+    实测（2026-11-03，化妆包类目 30988）：类目里有一个叫「颜色」的商品属性
+    （isSale=false、parentSpecId=null、pid=13）。按名字兜底匹配到它之后，
+    声明里带上了 pid=13/refPid=63/templatePid=1230780，Temu 回
+
+        属性[颜色]校验错误:关键词属性 白色 不是有效值。
+
+    把这三个 id 全填 parentSpecId（1001）后同一个请求立刻发布成功
+    （productId 52140751895）。所以这里必须只认 parentSpecId。
+    """
+    from wh_local.modules.temu_publish.service import (
+        _SimpleSpec,
+        _catalog_property_by_parent,
+        _spec_decl_payload,
+    )
+
+    catalog = {
+        "properties": [
+            {
+                "pid": 13,
+                "name": "颜色",
+                "refPid": 63,
+                "templatePid": 1230780,
+                "isSale": False,
+                "parentSpecId": None,
+                "required": True,
+                "values": [{"vid": 376, "value": "白色"}],
+            }
+        ]
+    }
+    # 认不出销售属性 → 不返回任何属性
+    assert _catalog_property_by_parent(catalog, 1001, "颜色") is None
+
+    decl = _spec_decl_payload(
+        _SimpleSpec(
+            {"parentSpecId": 1001, "parentSpecName": "颜色", "specId": 2001, "specName": "白色"}
+        ),
+        catalog,
+    )
+    assert (decl["pid"], decl["refPid"], decl["templatePid"]) == (1001, 1001, 1001)
+    assert decl["parentSpecId"] == 1001
+    assert decl["vid"] == 0, "vid 必须是 0，填属性值 id 会被判「主销售属性不合法」"
+
+
+def test_default_spec_value_must_land_in_category_color_values() -> None:
+    """兜底规格的值必须落在类目「颜色」属性的预设值里，否则 Temu 判「不是有效值」。"""
+    from wh_local.modules.temu_publish.client import TemuCredentials, TemuProductClient
+
+    class FakeClient(TemuProductClient):
+        def __init__(self) -> None:
+            super().__init__(
+                TemuCredentials(client="c", token="t", access_token="a"), session=object()
+            )
+            self.created: list[tuple[int, str]] = []
+
+        def parent_specs(self) -> dict[str, Any]:
+            return {"parentSpecDTOS": [{"parentSpecId": 1001, "parentSpecName": "颜色"}]}
+
+        def create_spec(self, parent_spec_id: int, spec_name: str) -> dict[str, Any]:
+            self.created.append((int(parent_spec_id), spec_name))
+            return {"specId": 777}
+
+    catalog = {
+        "properties": [
+            {
+                "pid": 13,
+                "name": "颜色",
+                "isSale": False,
+                "required": True,
+                "values": [{"vid": 376, "value": "白色"}, {"vid": 377, "value": "红色"}],
+            }
+        ]
+    }
+
+    client = FakeClient()
+    # 随便给个不在列表里的值（以前的「默认」）→ 退回第一个合法值
+    spec = client.ensure_default_spec("默认", catalog)
+    assert spec["specName"] == "白色"
+    assert client.created == [(1001, "白色")]
+
+    # 用户自己选了红色 → 就用红色，不要覆盖成白色
+    assert client.ensure_default_spec("红色", catalog)["specName"] == "红色"
+
+    # 类目没有「颜色」属性（桌布 10498）→ 才用「默认」
+    client2 = FakeClient()
+    assert client2.ensure_default_spec("", {"properties": []})["specName"] == "默认"

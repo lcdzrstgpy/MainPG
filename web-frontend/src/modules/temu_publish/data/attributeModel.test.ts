@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  attributeDiffText,
   buildAttributeGroups,
+  describeAttributeDiff,
   missingRequiredNames,
+  pruneStaleAttrPicks,
+  remapAttrPicks,
   visibleProperties,
 } from "./attributeModel.ts";
 import type { TemuAttributes, TemuProperty } from "../types.ts";
@@ -154,4 +158,166 @@ test("必填判定：valueUnit 是空串数组时按「无单位」处理，只�
     }),
     ["厚度", "成分比例"],
   );
+});
+
+test("pruneStaleAttrPicks：草稿存的旧 vid 在当前属性表里查不到就清掉", () => {
+  const attrs = {
+    properties: [
+      prop({
+        pid: 21,
+        name: "材料",
+        required: true,
+        values: [
+          { vid: 210, value: "棉" },
+          { vid: 211, value: "涤纶" },
+        ],
+      }),
+      prop({ pid: 22, name: "颜色", required: true, values: [{ vid: 220, value: "粉" }] }),
+      // 纯输入型属性：没有选项表，只能靠 text
+      prop({ pid: 23, name: "护理说明", required: true, values: [] }),
+    ],
+  } as TemuAttributes;
+
+  const { picks, dropped } = pruneStaleAttrPicks(
+    {
+      21: { vid: 210, text: "" }, // 还在 → 留
+      22: { vid: 999, text: "" }, // vid 已下线 → 丢（典型：下拉框空白却算已填）
+      23: { vid: 0, text: "手洗" }, // 文本型 → 留
+      24: { vid: 240, text: "" }, // 当前类目根本没这个 pid → 丢
+    },
+    attrs,
+  );
+
+  assert.deepEqual(Object.keys(picks).sort(), ["21", "23"]);
+  assert.deepEqual(dropped.sort(), ["pid=24", "颜色"].sort());
+  assert.ok(dropped.includes("颜色"));
+  assert.ok(dropped.includes("pid=24"));
+});
+
+test("pruneStaleAttrPicks：空值/空文本也算失效，别当成「填了」", () => {
+  const attrs = {
+    properties: [prop({ pid: 31, name: "材料", required: true, values: [{ vid: 310, value: "棉" }] })],
+  } as TemuAttributes;
+  const { picks, dropped } = pruneStaleAttrPicks(
+    { 31: { vid: 0, text: "   " }, 32: { vid: 0, text: "" } },
+    attrs,
+  );
+  assert.deepEqual(picks, {});
+  assert.equal(dropped.length, 2);
+});
+
+test("pruneStaleAttrPicks：属性表还没拿到时不误杀（返回空但不算丢）", () => {
+  const { picks, dropped } = pruneStaleAttrPicks({ 41: { vid: 410, text: "" } }, null);
+  assert.deepEqual(picks, {});
+  // null 属性表下无法判断有效性 → 记为丢弃，由调用方决定不展示提示
+  assert.deepEqual(dropped, ["pid=41"]);
+});
+
+test("describeAttributeDiff：只报真正变了的项，没变就说没变", () => {
+  // Temu 回 6000002 时，光说「重新选一遍」是废话 —— 用户打开属性区看跟原来一样，
+  // 只能盲选再被拒一次。这里锁定「点名变更」的行为。
+  const base = {
+    properties: [
+      prop({ pid: 1, name: "材料", required: true, values: [{ vid: 10, value: "棉" }] }),
+      prop({ pid: 2, name: "颜色", required: true, values: [{ vid: 20, value: "粉" }] }),
+    ],
+  } as TemuAttributes;
+  const next = {
+    properties: [
+      // 材料：原来的选值 10 没了，换成 11
+      prop({ pid: 1, name: "材料", required: true, values: [{ vid: 11, value: "涤纶" }] }),
+      // 颜色：还在，vid 没变
+      prop({ pid: 2, name: "颜色", required: true, values: [{ vid: 20, value: "粉" }] }),
+      // 新增必填
+      prop({ pid: 3, name: "护理说明", required: true, values: [] }),
+      // 新增选填：不算「新增必填」
+      prop({ pid: 4, name: "产地", required: false, values: [] }),
+    ],
+  } as TemuAttributes;
+
+  const diff = describeAttributeDiff(base, next, {
+    1: { vid: 10, text: "" },
+    2: { vid: 20, text: "" },
+  });
+  assert.deepEqual(diff.addedRequired, ["护理说明"]);
+  assert.deepEqual(diff.staleChoices, ["材料"]);
+  assert.deepEqual(diff.removed, []);
+
+  const text = attributeDiffText(diff);
+  assert.ok(text.includes("新增必填「护理说明」"), text);
+  assert.ok(text.includes("「材料」原来的选择已失效"), text);
+
+  // 完全没变化 → 空串（调用方据此改说「重选也没用」）
+  assert.equal(attributeDiffText(describeAttributeDiff(next, next, {})), "");
+
+  // 旧表有、新表删掉的属性也要说
+  const removedDiff = describeAttributeDiff(base, { properties: [next.properties[1]] } as TemuAttributes, {});
+  assert.ok(removedDiff.removed.includes("材料"));
+  assert.ok(attributeDiffText(removedDiff).includes("Temu 已经删掉了"));
+});
+
+test("remapAttrPicks：只是 vid 被重建、选值文字没变 → 自动对上，不用用户重选", () => {
+  // Temu 改类目属性最常见的其实就是重建 vid（选项本身没动）。
+  // 之前一律丢掉 → 让用户「从头重选一遍」，而大部分值根本没变。
+  const before = {
+    properties: [prop({ pid: 1, name: "材料", required: true, values: [{ vid: 10, value: "棉" }] })],
+  } as TemuAttributes;
+  const after = {
+    properties: [prop({ pid: 1, name: "材料", required: true, values: [{ vid: 999, value: "棉" }] })],
+  } as TemuAttributes;
+
+  const out = remapAttrPicks(before, after, { 1: { vid: 10, text: "" } });
+  assert.deepEqual(out.picks[1], { vid: 999, text: "" });
+  assert.deepEqual(out.remapped, ["材料"]);
+  assert.deepEqual(out.dropped, []);
+
+  // 选项真的被改名/删掉 → 对不上，只能让用户重选
+  const renamed = {
+    properties: [prop({ pid: 1, name: "材料", required: true, values: [{ vid: 888, value: "亚麻" }] })],
+  } as TemuAttributes;
+  const miss = remapAttrPicks(before, renamed, { 1: { vid: 10, text: "" } });
+  assert.deepEqual(miss.dropped, ["材料"]);
+  assert.deepEqual(miss.remapped, []);
+  assert.deepEqual(miss.picks, {});
+});
+
+test("showCondition：父属性取值不满足时，子属性既不显示也不该发", () => {
+  // 实测 2026-11-03（桌布类目 10498）：
+  // 「厚度（mm）」带 showCondition = [{parentRefPid: 121, parentVids: [2512]}]，
+  // 而 refPid=121 是「材料」。材料选了塑料(2148) 就不该出现「厚度」——
+  // 以前只认 templatePropertyValueParentList，这条被完全忽略，
+  // 于是界面照显示、payload 照发，Temu 回一句「货品类目属性更新」（6000002）。
+  const attrs = {
+    properties: [
+      prop({
+        pid: 89,
+        refPid: 121,
+        name: "材料",
+        required: true,
+        values: [
+          { vid: 2148, value: "塑料" },
+          { vid: 2512, value: "橡胶" },
+        ],
+      }),
+      prop({
+        pid: 2056,
+        refPid: 6933,
+        name: "厚度（mm）",
+        required: true,
+        valueUnit: ["mm"],
+        values: [],
+        showCondition: [{ parentRefPid: 121, parentVids: [2512] }],
+      }),
+    ],
+  } as TemuAttributes;
+
+  const names = (picks: Record<number, { vid: number; text: string }>) =>
+    visibleProperties(attrs, picks).map((item) => item.name);
+
+  // 材料=塑料 → 厚度不出现
+  assert.ok(!names({ 89: { vid: 2148, text: "" } }).includes("厚度（mm）"));
+  // 材料=橡胶(2512) → 厚度出现
+  assert.ok(names({ 89: { vid: 2512, text: "" } }).includes("厚度（mm）"));
+  // 父属性没选 → 也不出现（不能靠猜）
+  assert.ok(!names({}).includes("厚度（mm）"));
 });

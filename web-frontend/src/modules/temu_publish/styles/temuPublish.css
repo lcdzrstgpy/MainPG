@@ -3638,3 +3638,58 @@ textarea.temu-input {
   font-weight: 800;
   vertical-align: middle;
 }
+
+/* 缩略图读不到（文件不在 / 地址失效）：明说「失效」，别一直转「…」让人以为还在加载 */
+.temu-img-failed {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--theme-module-border-strong, #cfdae4);
+  border-radius: 6px;
+  background: var(--theme-module-surface-soft, transparent);
+  color: var(--theme-text-muted, #8a99a8);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+/* 「Temu 只认这些值」快捷标签：把类目预设值直接摆出来，点一下填进去。
+   只给 datalist 不行 —— 不点开输入框根本看不到有哪些可选值，用户照样手填错值。 */
+.temu-spec-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.temu-spec-chip {
+  padding: 1px 9px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.temu-spec-chip:hover {
+  border-color: var(--theme-primary, #2f7d8f);
+}
+
+/* 已经加进列表的值：变淡，避免重复点 */
+.temu-spec-chip.is-picked {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 手填了类目预设之外的值：Temu 会直接判「不是合法的规格值」，先在本地标红 */
+.temu-spec-bad {
+  margin: 6px 0 0;
+  color: #a5342f;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
