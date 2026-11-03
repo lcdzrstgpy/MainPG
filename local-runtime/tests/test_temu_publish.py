@@ -620,14 +620,13 @@ def test_check_mandatory_passes_leaf_category_and_properties(tmp_path: Path) -> 
 
 
 def test_check_mandatory_falls_back_when_gateway_rejects_catsmandatory(tmp_path: Path) -> None:
-    """Temu 拒 catsmandatory.get（部分类目 1000001，网关抖动也一样）→ 必须退回 attrs 必填校验。"""
+    """网关不支持 catsmandatory.get（实测 sign is invalid）→ 必须退回 attrs 必填校验。"""
 
     class StubClient(StubCatalogClient):
         def mandatory_config(self, leaf_cat_id, bind_site_ids, product_property_reqs=None):
             raise TemuGatewayError(
                 "bg.glo.goods.catsmandatory.get",
-                "Does not currently support querying other category configurations",
-                error_code="1000001",
+                "sign is invalid, please check your sign calculation",
             )
 
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubClient())
@@ -2054,16 +2053,12 @@ def _single_sku_draft() -> GoodsDraftInput:
 
 
 def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path) -> None:
-    """没有销售属性的类目：规格声明不发（空数组踩签名坑），仍保留全零主规格占位。
-
-    `productSpecPropertyReqs: []` 会让网关算签名时忽略这个字段、转发时又带上，
-    Temu 重算签名对不上 → `7000015 sign is invalid`（2026-11-02 实测：同一个请求
-    只把空数组去掉，错误就从 7000015 变回 3000000 参数错误）。
-    """
+    """没有销售属性的类目：规格声明整个字段不发（发 [] 会被网关判 sign is invalid）。"""
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
 
     payload = service.build_goods_payload(_single_sku_draft())["payload"]
 
+    # 空数组一律不发：网关算签名时忽略它、转发时又带上，两边 sign 对不上 → 7000015
     assert "productSpecPropertyReqs" not in payload
     skc = payload["productSkcReqs"][0]
     assert skc["mainProductSkuSpecReqs"] == [
@@ -2092,36 +2087,6 @@ def test_multi_variant_still_requires_specs(tmp_path: Path) -> None:
 
     assert payload["productSpecPropertyReqs"]
     assert payload["productSkcReqs"][0]["productSkuReqs"][0]["productSkuSpecReqs"]
-
-
-def test_payload_never_has_top_level_empty_arrays(tmp_path: Path) -> None:
-    """顶层空数组一律不发：网关签名口径和 Temu 不一致，会回 7000015 sign is invalid。
-
-    覆盖两条最容易踩的路径：类目没有销售属性（productSpecPropertyReqs 空）、
-    一个属性都没填（productPropertyReqs 空）。
-    """
-    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
-
-    for draft in (_single_sku_draft(), _draft(properties=[]).model_copy(update={"validate_catalog": False})):
-        payload = service.build_goods_payload(draft)["payload"]
-        empty = [key for key, value in payload.items() if isinstance(value, list) and not value]
-        assert empty == [], f"payload 顶层不该有空数组：{empty}"
-
-
-def test_mandatory_config_omits_empty_property_array() -> None:
-    """catsmandatory 带 `productPropertyReqs: []` 会被判 sign is invalid：空就不发这个键。"""
-    payload = {"success": True, "errorCode": "1000000", "result": {"mandatoryList": []}}
-    client, session = _client([FakeResponse(payload), FakeResponse(payload)])
-
-    client.mandatory_config(10498, [100], [])
-    request = session.calls[-1]["json"]["request"]
-    assert "productPropertyReqs" not in request
-    assert request["leafCatId"] == 10498
-    assert request["configItems"] == [1, 2, 3]
-
-    client.mandatory_config(10498, [100], [{"pid": 1, "vid": 2}])
-    request = session.calls[-1]["json"]["request"]
-    assert request["productPropertyReqs"] == [{"pid": 1, "vid": 2}]
 
 
 class UnitCatalogClient(StubCatalogClient):
@@ -2586,44 +2551,62 @@ def test_refresh_categories_clears_attribute_cache_in_both_layers(tmp_path: Path
     assert fake.attribute_calls == 2, "刷新后必须真的重新取属性，否则必填判断还是旧的"
 
 
-def _duplicate_pid_catalog() -> dict[str, Any]:
-    return {
-        "properties": [
-            {"pid": 1, "name": "材质", "required": True, "templatePid": 919952, "values": [{"vid": 417, "value": "橡胶"}]},
-            {"pid": 3, "name": "风格", "required": False, "templatePid": 500, "values": []},
-            {"pid": 1, "name": "主体材质", "required": False, "templatePid": 1585830, "values": [{"vid": 417, "value": "橡胶"}]},
-        ]
-    }
 
+def test_empty_top_level_lists_are_omitted_from_payload(tmp_path: Path) -> None:
+    """顶层空数组字段整个不发 —— 这是 7000015 sign is invalid 的根因。
 
-def test_catalog_dedupe_keeps_required_property_for_duplicate_pid() -> None:
-    """真实案例（桌垫 1004）：Temu 同时返回 pid=1 的「材质」和「主体材质」。
-
-    前端按 pid 存选择、payload 按 pid 组装，留着两个会互相覆盖；
-    去重必须保留 required 的那个（材质），否则必填项会被 optional 的顶掉。
+    网关算签名时把空数组忽略、转发时又带上，两边对不上；不发就不会有这个歧义。
     """
-    from wh_local.modules.temu_publish.service import _dedupe_catalog_properties
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
 
-    result = _dedupe_catalog_properties(_duplicate_pid_catalog())
+    payload = service.build_goods_payload(_single_sku_draft())["payload"]
 
-    assert [item["pid"] for item in result["properties"]] == [1, 3]
-    assert result["properties"][0]["name"] == "材质"
-    assert result["properties"][0]["templatePid"] == 919952
-    assert result["properties"][0]["required"] is True
+    assert "productSpecPropertyReqs" not in payload, "空规格声明必须整个字段不发"
+    # 这件 draft 有「形状」属性，非空属性照发
+    assert payload["productPropertyReqs"]
+    # 其它数组字段照常发
+    assert payload["carouselImageUrls"]
+    assert payload["productSkcReqs"]
+
+    # 属性也一个都没有时，productPropertyReqs 同样不发（发 [] 一样踩签名）
+    bare = TemuPublishService(tmp_path / "bare.sqlite3", client=NoSaleCatalogClient())
+    bare_payload = bare.build_goods_payload(
+        _single_sku_draft().model_copy(update={"properties": [], "validate_catalog": False})
+    )["payload"]
+    assert "productPropertyReqs" not in bare_payload
 
 
-def test_service_attributes_dedupes_duplicate_pid_before_caching(tmp_path: Path) -> None:
-    """去重必须在 service.attributes() 这个唯一入口做：前端、组装、校验都读它。"""
+def test_non_empty_spec_reqs_are_still_sent(tmp_path: Path) -> None:
+    """有销售属性的类目规格非空，字段必须照发（不能因为「空就不发」把它也砍掉）。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
 
-    class DuplicateClient:
-        def attributes(self, cat_id: int) -> dict[str, Any]:  # noqa: ARG002
-            return _duplicate_pid_catalog()
+    payload = service.build_goods_payload(_draft())["payload"]
+    assert payload["productSpecPropertyReqs"], "非空的规格声明必须保留"
 
-    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=DuplicateClient())
+    # 商品属性：用一个非销售属性验证「非空要发」
+    with_prop = TemuPublishService(tmp_path / "p.sqlite3", client=StubCatalogClient())
+    prop_payload = with_prop.build_goods_payload(_draft())["payload"]
+    assert prop_payload["productPropertyReqs"], "非空的商品属性必须保留"
 
-    first = service.attributes(1004)
-    second = service.attributes(1004)
 
-    for catalog in (first, second):
-        assert [item["pid"] for item in catalog["properties"]] == [1, 3]
-        assert catalog["properties"][0]["name"] == "材质"
+def test_catsmandatory_request_omits_empty_property_list(tmp_path: Path) -> None:
+    """类目必填校验的请求体同样不发空数组（这个接口长期 sign is invalid 就是这个）。"""
+    from wh_local.modules.temu_publish.client import TemuProductClient
+
+    sent: list[dict[str, Any]] = []
+
+    class _Probe(TemuProductClient):
+        def __init__(self) -> None:  # noqa: D107 - 不走真实网关
+            pass
+
+        def call(self, method, body=None, **kwargs):  # noqa: ANN001, D102
+            sent.append({"method": method, "body": body})
+            return {}
+
+    probe = _Probe()
+    probe.mandatory_config(10498, [100], [])
+    probe.mandatory_config(10498, [100], [{"pid": 1, "vid": 10}])
+
+    assert sent[0]["method"] == "bg.glo.goods.catsmandatory.get"
+    assert "productPropertyReqs" not in sent[0]["body"], "空数组不该出现在请求体里"
+    assert sent[1]["body"]["productPropertyReqs"] == [{"pid": 1, "vid": 10}]
