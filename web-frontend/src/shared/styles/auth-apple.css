@@ -515,10 +515,10 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  border: 1.5px solid #c8c8ce;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  border: 1.4px solid #c3c3c9;
   border-radius: 50%;
   background: #fff;
   transition: border-color .18s ease, background-color .18s ease;
@@ -526,15 +526,15 @@
 
 .auth-check-box svg {
   display: block;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   overflow: visible;
 }
 
 .auth-check-box path {
   fill: none;
   stroke: #fff;
-  stroke-width: 2.6;
+  stroke-width: 3.1;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-dasharray: 22;
@@ -567,13 +567,6 @@
 @media (prefers-reduced-motion: reduce) {
   .auth-check-box,
   .auth-check-box path { transition: none !important; animation: none !important; }
-}
-
-.auth-hint {
-  margin: 0 0 0 26px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--auth-ink-secondary);
 }
 
 .auth-privacy { font-size: 12px; }

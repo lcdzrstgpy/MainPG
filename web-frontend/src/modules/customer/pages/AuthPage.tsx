@@ -510,7 +510,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         </svg>
       </span>
       <span>
-        我已阅读并同意{" "}
+        {isLogin ? "登录前请阅读并同意" : "注册前请阅读并同意"}{" "}
         <a
           className="auth-link"
           href="/privacy"
@@ -763,7 +763,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                           <span className="auth-forgot-arrow" aria-hidden="true">↗</span>
                         </button>
                       </div>
-                      {!agreed && <p className="auth-hint">勾选后才能登录</p>}
                     </div>
                   ) : (
                     <div className="auth-field-block">
@@ -810,7 +809,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                   {!isLogin && (
                     <div className="auth-field-block">
                       {privacyCheck}
-                      {!agreed && <p className="auth-hint">勾选后才能注册</p>}
                     </div>
                   )}
 
