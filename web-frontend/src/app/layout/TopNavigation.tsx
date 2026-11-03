@@ -592,42 +592,40 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
               <span aria-hidden="true">⋯</span>
               <span className="tab-overflow-count">{tabs.length}</span>
             </button>
-            {tabMenuOpen && (
-              <div className="tab-overflow-panel" role="dialog" aria-label="全部页签">
-                <div className="tab-overflow-head">
-                  <strong>全部页签</strong>
-                  <span>{tabs.length} 个</span>
-                </div>
-                <ul>
-                  {tabs.map((tab) => (
-                    <li key={tab.key}>
+            <div className="tab-overflow-panel" role="dialog" aria-label="全部页签" data-open={tabMenuOpen ? "true" : "false"} aria-hidden={!tabMenuOpen}>
+              <div className="tab-overflow-head">
+                <strong>全部页签</strong>
+                <span>{tabs.length} 个</span>
+              </div>
+              <ul>
+                {tabs.map((tab) => (
+                  <li key={tab.key}>
+                    <button
+                      type="button"
+                      className={`tab-overflow-item ${activeKey === tab.key ? "is-active" : ""}`}
+                      onClick={() => {
+                        onSelectTab(tab.key);
+                        setTabMenuOpen(false);
+                      }}
+                    >
+                      <span className={tab.iconClass} aria-hidden="true">{tab.icon}</span>
+                      <span className="tab-overflow-label">{tab.label}</span>
+                    </button>
+                    {tab.moduleId !== "dashboard" && (
                       <button
                         type="button"
-                        className={`tab-overflow-item ${activeKey === tab.key ? "is-active" : ""}`}
-                        onClick={() => {
-                          onSelectTab(tab.key);
-                          setTabMenuOpen(false);
-                        }}
+                        className="tab-overflow-close"
+                        onClick={() => closeTabWithEffect(tab.key)}
+                        aria-label={`关闭${tab.label}`}
+                        title="关闭页签"
                       >
-                        <span className={tab.iconClass} aria-hidden="true">{tab.icon}</span>
-                        <span className="tab-overflow-label">{tab.label}</span>
+                        ×
                       </button>
-                      {tab.moduleId !== "dashboard" && (
-                        <button
-                          type="button"
-                          className="tab-overflow-close"
-                          onClick={() => closeTabWithEffect(tab.key)}
-                          aria-label={`关闭${tab.label}`}
-                          title="关闭页签"
-                        >
-                          ×
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
         )}
         {(hasRunning || justFinished.length > 0) && (

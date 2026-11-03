@@ -111,6 +111,24 @@ button { cursor: pointer; }
   border-radius: 12px;
   background: var(--theme-card-bg-solid, #fff);
   box-shadow: 0 16px 36px rgba(21, 59, 92, .14);
+  /* 进出场：面板常驻 DOM，用 data-open 切换；收起时先淡出/收回，
+     再靠 visibility 的延迟真正隐藏，避免「啪」一下出现、又突然消失。 */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px) scale(.98);
+  transform-origin: top right;
+  transition: opacity .16s ease, transform .18s cubic-bezier(.22, 1, .36, 1), visibility 0s linear .18s;
+}
+
+.tab-overflow-panel[data-open="true"] {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity .2s ease, transform .24s cubic-bezier(.22, 1, .36, 1), visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-overflow-panel { transition: none !important; }
 }
 
 .tab-overflow-head {
