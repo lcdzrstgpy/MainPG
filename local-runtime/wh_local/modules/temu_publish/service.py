@@ -1315,6 +1315,14 @@ def _assemble_payload(
     if draft.goods_label_name.strip():
         payload["productCustomReq"] = {"goodsLabelName": draft.goods_label_name.strip()}
 
+    # ⚠️ 网关签名实现会「算签名时忽略空数组、转发时又带上」，两边 sign 对不上，
+    # 一律回 7000015 sign is invalid（catsmandatory.get 长期踩的就是这个坑）。
+    # 所以顶层数组为空就**整个字段不发**，而不是发 []：
+    # Temu 若真要求这些字段，会明确回「Cannot Be Empty」，比签名错误好定位得多。
+    for key in ("productSpecPropertyReqs", "productPropertyReqs"):
+        if isinstance(payload.get(key), list) and not payload[key]:
+            payload.pop(key, None)
+
     return payload
 
 
