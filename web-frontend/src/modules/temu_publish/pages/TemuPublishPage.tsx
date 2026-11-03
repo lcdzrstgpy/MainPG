@@ -1761,7 +1761,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       // 公网外链（如 COS）交给后端代下载，避免浏览器跨域。
       uploaded = await temuPublishApi.uploadImageUrl(text, cateId);
     } else {
-      const blob = await httpBlob(text);
+      // 本地草稿图 / 素材图：读不到文件时给出能照着做的提示。
+      // 原来的报错一路冒到页面顶部会变成「请求的内容不存在或已被删除」，
+      // 用户根本猜不到是图片文件丢了（库里还有记录、磁盘上的文件已被清理）。
+      const blob = await httpBlob(text).catch(() => {
+        const brief = text.length > 64 ? `…${text.slice(-60)}` : text;
+        throw new Error(
+          `图片已失效，读不到文件（多半是素材被清理了）：${brief}。请重新上传这张图后再试。`,
+        );
+      });
       uploaded = await temuPublishApi.uploadImage(await blobToDataUrl(blob), cateId);
     }
     const resolved = pickUploadedUrl(uploaded);
