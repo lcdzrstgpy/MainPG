@@ -504,6 +504,11 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const privacyCheck = (
     <label className="auth-check auth-privacy">
       <input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} />
+      <span className="auth-check-box" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M6.4 12.7l3.8 3.8L17.9 8" />
+        </svg>
+      </span>
       <span>
         我已阅读并同意{" "}
         <a

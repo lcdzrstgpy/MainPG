@@ -499,17 +499,78 @@
   cursor: pointer;
 }
 
+/* 原生框只保留键盘 / 读屏语义，视觉交给下面的圆形容器 */
 .auth-check input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.auth-check-box {
   flex: none;
-  width: 15px;
-  height: 15px;
-  margin: 2px 0 0;
-  accent-color: var(--auth-ink);
-  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1.5px solid #c8c8ce;
+  border-radius: 50%;
+  background: #fff;
+  transition: border-color .18s ease, background-color .18s ease;
+}
+
+.auth-check-box svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  overflow: visible;
+}
+
+.auth-check-box path {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  transition: stroke-dashoffset .2s ease .05s;
+}
+
+.auth-check:hover .auth-check-box { border-color: #9a9aa2; }
+
+/* 勾选：底色由浅入深 + 对勾描边「画」出来 + 一个轻微的弹一下 */
+.auth-check input[type="checkbox"]:checked + .auth-check-box {
+  border-color: var(--auth-ink);
+  background: var(--auth-ink);
+  animation: auth-check-pop .24s cubic-bezier(.22, 1, .36, 1);
+}
+
+.auth-check input[type="checkbox"]:checked + .auth-check-box path { stroke-dashoffset: 0; }
+
+.auth-check input[type="checkbox"]:focus-visible + .auth-check-box {
+  border-color: var(--auth-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--auth-focus) 20%, transparent);
+}
+
+@keyframes auth-check-pop {
+  0% { transform: scale(.72); }
+  55% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-check-box,
+  .auth-check-box path { transition: none !important; animation: none !important; }
 }
 
 .auth-hint {
-  margin: 0 0 0 23px;
+  margin: 0 0 0 26px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--auth-ink-secondary);
