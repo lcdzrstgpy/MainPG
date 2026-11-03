@@ -18,3 +18,11 @@ test("短按松手即取消长按计时，不再在 2 秒后自己冒出拖动�
   assert.match(source, /onPointerCancel=\{endSlotPress\}/);
   assert.match(source, /onPointerLeave=\{endSlotPress\}/);
 });
+
+test("参考图排在提示词上方，且上传入口只属于主图", () => {
+  // 先给参考图、再写这一张的提示词：参考图区在 JSX 里必须排在提示词 textarea 之前。
+  assert.ok(source.indexOf("pod-free-ref-collapse") < source.indexOf("pod-free-prompt"));
+  // 第 2 张起固定以主图为准，只折叠参考图区，不再给上传入口。
+  assert.match(source, /activeVariant === 1 \? "is-open"/);
+  assert.match(source, /!batch && draft\.reference_asset_ids\.length < 4/);
+});

@@ -832,21 +832,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
             <p>{MODEL_INTRO[draft.image_model]}</p>
           </section>
 
-          <section className="pod-setup-card">
-            <textarea
-              className="pod-free-prompt"
-              value={batch ? activePrompt : draft.prompt}
-              maxLength={4000}
-              placeholder={promptPlaceholder}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                if (batch) setActivePrompt(value);
-                else setField("prompt", value);
-              }}
-            />
-            <small className="pod-free-counter">{(batch ? activePrompt : draft.prompt).length}/4000</small>
-          </section>
-
+          {/* 参考图只对主图生效，放在提示词上方：先给参考，再写这一张的提示词。 */}
           <div className={`pod-free-ref-collapse ${activeVariant === 1 ? "is-open" : ""}`} aria-hidden={activeVariant !== 1}>
             <section className="pod-setup-card">
               <div className="pod-section-title"><span>REFERENCES</span><h2>参考图（可选）</h2></div>
@@ -877,6 +863,21 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
               </p>
             </section>
           </div>
+
+          <section className="pod-setup-card">
+            <textarea
+              className="pod-free-prompt"
+              value={batch ? activePrompt : draft.prompt}
+              maxLength={4000}
+              placeholder={promptPlaceholder}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                if (batch) setActivePrompt(value);
+                else setField("prompt", value);
+              }}
+            />
+            <small className="pod-free-counter">{(batch ? activePrompt : draft.prompt).length}/4000</small>
+          </section>
 
           <section className="pod-setup-card pod-free-count">
             <span>当前款式图片数量</span>
