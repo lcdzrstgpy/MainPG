@@ -788,10 +788,14 @@ class TemuPublishService:
     def check_mandatory(self, draft: GoodsDraftInput) -> dict[str, Any]:
         """发布前校验这个叶子类目还缺什么。
 
-        优先走文档里的 `bg.glo.goods.catsmandatory.get`；但**网关实测不支持它**
-        （2026-10-26 真调，PARTNER / CN 两个网关都返回 `sign is invalid`），
-        所以失败时退回本地 `attrs.get` 的必填标记做校验 —— 结论一样能用，只是少了
-        网关侧的额外规则。
+        优先走 `bg.glo.goods.catsmandatory.get`，但它有两层坑，最终都得回退本地 attrs：
+
+        1. 请求体里带空数组 → 网关算签名时忽略、转发时带上，回 `7000015 sign is invalid`
+           （2026-10-26 真调 PARTNER / CN 两个网关都一样；2026-11-03 改成空数组不发后此错消失）
+        2. 空数组不发之后 → 回 `Does not currently support querying other category configurations`
+           （接口本身只支持部分类目，桌布类目 10498 就不在支持范围内）
+
+        所以本地 `attrs.get` 的必填标记才是可靠依据，网关那份只当额外补充。
 
         只做校验，不会提交商品。
         """

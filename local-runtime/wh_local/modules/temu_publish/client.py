@@ -235,7 +235,10 @@ class TemuProductClient:
             "configItems": [1, 2, 3],
         }
         # 同一个签名 bug：空数组会让网关算出的 sign 对不上，
-        # 所以没有属性时整个字段不发（这个接口长期 `sign is invalid` 就是这个原因）
+        # 所以没有属性时整个字段不发（这个接口长期 `sign is invalid` 就是这个原因）。
+        # 实测（2026-11-03）：空数组不发之后签名错误消失，但这类目会回
+        # 「Does not currently support querying other category configurations」——
+        # 接口只支持部分类目，调用方必须保留本地 attrs 兜底。
         if product_property_reqs:
             body["productPropertyReqs"] = list(product_property_reqs)
         return self.call("bg.glo.goods.catsmandatory.get", body)
