@@ -16,16 +16,10 @@ export function ImagePreviewModal({ images, index, onIndexChange, onClose }: { i
   const current = images[index] ?? images[0];
   if (!current) return null;
 
-  // 与「货源与利润」的大图预览保持一致：尽量铺满可视区域（92vw × 88vh），
-  // 小图也放大显示，便于核对货源细节。
-  const viewportWidth = document.documentElement.clientWidth;
-  const viewportHeight = document.documentElement.clientHeight;
-  const previewWidth = Math.max(320, Math.round(viewportWidth * 0.92));
-  const previewHeight = Math.max(320, Math.round(viewportHeight * 0.88));
-
+  // 容器不再固定成 92vw×88vh（那会把竖图垫出大白边），改为图片自身尺寸 + 最大边界。
   return createPortal(
     <div className="profit-image-preview-mask" onClick={onClose}>
-      <div className="profit-image-preview-modal" style={{ left: "50%", top: "50%", width: previewWidth, height: previewHeight, transform: "translate(-50%, -50%)" }} onClick={(event) => event.stopPropagation()}>
+      <div className="profit-image-preview-modal" style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)" }} onClick={(event) => event.stopPropagation()}>
         <button type="button" className="profit-image-preview-close" onClick={onClose} title="关闭">×</button>
         <img className="profit-image-preview-img" src={current.url} alt={current.label} referrerPolicy="no-referrer" />
         {images.length > 1 ? (

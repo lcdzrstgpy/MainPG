@@ -297,7 +297,8 @@ def create_profit_activity_router(
         require_permission(actor, "profit_activity.write", database_path)
         try:
             payload, image, attachment_image, source_image, source_group_images = await _product_form(request)
-            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=True, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)}
+            product = service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=True, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)
+            return _product_response(product, database_path, actor.workspace_id)
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -313,7 +314,8 @@ def create_profit_activity_router(
             payload, image, attachment_image, source_image, source_group_images = await _product_form(request)
             # 路径参数始终指向修改前的商品 ID；请求体可提交新的 product_id。
             payload["current_skc"] = skc
-            return {"product": service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=False, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)}
+            product = service.upsert_product(payload, actor=actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path), require_complete_profile=False, image=image, attachment_image=attachment_image, source_image=source_image, source_group_images=source_group_images)
+            return _product_response(product, database_path, actor.workspace_id)
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
@@ -321,7 +323,8 @@ def create_profit_activity_router(
     async def update_product_values(skc: str, request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.write", database_path)
         try:
-            return {"product": service.update_product_values(skc, await request.json(), actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path))}
+            product = service.update_product_values(skc, await request.json(), actor, allow_company_write=actor_has_permission(actor, "profit_activity.company_write", database_path))
+            return _product_response(product, database_path, actor.workspace_id)
         except ProfitActivityNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         except ValueError as exc:
@@ -744,6 +747,17 @@ def _resign_product_images(
             connection.close()
     except Exception:  # noqa: BLE001 - 图片是展示增强，失败不影响产品列表
         return
+
+
+def _product_response(product: dict[str, Any], db_path: str, workspace_id: str) -> dict[str, Any]:
+    """保存/新建后返回单个产品时，也要重签预览图地址。
+
+    列表接口会调用 _resign_product_images，但保存接口直接返回 service 的结果；
+    预览图地址是 2 小时签名，保存后前端拿旧地址请求就会 403（表现为图片消失）。
+    """
+
+    _resign_product_images([product], str(db_path), workspace_id)
+    return {"product": product}
 
 
 def _product_skus(db_path: str, workspace_id: str, skc: str) -> list[dict[str, Any]]:

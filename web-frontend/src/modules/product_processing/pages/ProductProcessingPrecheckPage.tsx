@@ -1999,13 +1999,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   return (
     <div className="verify-page verify-precheck-page">
-      {/* 已有数据时重新加载（保存后/轮询）也要有明确遮罩，避免整页看起来“点不动”。 */}
-      {loading && (
-        <div className="app-loading-mask verify-precheck-loading-mask" role="status" aria-live="polite">
-          <i className="app-spinner" aria-hidden="true" />
-          <span>正在刷新预检数据…</span>
-        </div>
-      )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>预检与最终发布</h1>

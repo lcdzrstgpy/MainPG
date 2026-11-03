@@ -701,24 +701,37 @@ def _delete_rows(worksheet, row_numbers: set[int]) -> None:
         return
     max_row = worksheet.max_row
     max_column = worksheet.max_column
-    header_styles = [copy(worksheet.cell(1, column)._style) for column in range(1, max_column + 1)]
+    freeze_panes = worksheet.freeze_panes
     widths = {
         key: dimension.width
         for key, dimension in worksheet.column_dimensions.items()
         if dimension.width is not None
     }
-    kept_rows = [
-        [worksheet.cell(row, column).value for column in range(1, max_column + 1)]
-        for row in range(1, max_row + 1)
-        if row == 1 or row not in targets
-    ]
+    # 保留每行的值、单元格样式和行高：活动模板的表头/数据行样式、行高
+    # （如 36/20）与原文件保持一致，避免重建后视觉变形。
+    kept_rows: list[tuple[list[Any], list[Any], float | None]] = []
+    for row in range(1, max_row + 1):
+        if row > 1 and row in targets:
+            continue
+        values: list[Any] = []
+        styles: list[Any] = []
+        for column in range(1, max_column + 1):
+            cell = worksheet.cell(row, column)
+            values.append(cell.value)
+            styles.append(copy(cell._style))
+        dimension = worksheet.row_dimensions.get(row)
+        kept_rows.append((values, styles, dimension.height if dimension is not None else None))
     worksheet.delete_rows(1, max_row)
-    for values in kept_rows:
+    for new_row, (values, styles, height) in enumerate(kept_rows, start=1):
         worksheet.append(values)
-    for column, style in enumerate(header_styles, start=1):
-        worksheet.cell(1, column)._style = style
+        for column, style in enumerate(styles, start=1):
+            worksheet.cell(new_row, column)._style = style
+        if height is not None:
+            worksheet.row_dimensions[new_row].height = height
     for key, width in widths.items():
         worksheet.column_dimensions[key].width = width
+    if freeze_panes:
+        worksheet.freeze_panes = freeze_panes
 
 
 def _removed_row(worksheet, row_number: int, reason_code: str, decision: dict[str, Any] | None, column_count: int | None = None) -> dict[str, Any]:
