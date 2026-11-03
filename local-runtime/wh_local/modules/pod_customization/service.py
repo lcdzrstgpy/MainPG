@@ -965,6 +965,14 @@ class PodCustomizationService:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         if batch.get("mode") != "free":
             raise PodRepositoryError("POD free batch not found", 404)
+        # 主图固定在第一位：第 2 张起都拿第 1 张当参考，换掉它等于换了整条产品线。
+        if request.from_variant == 1 or request.to_variant == 1:
+            raise PodRepositoryError("主图固定在第一位，不能参与拖动排序", 422)
+        target = int((batch.get("generation_meta") or {}).get("free_target_count") or 0)
+        if target and not (
+            2 <= request.from_variant <= target and 2 <= request.to_variant <= target
+        ):
+            raise PodRepositoryError("槽位号超出当前款式张数", 422)
         if not self.repository.swap_free_panel_order(
             batch_id,
             actor.workspace_id,
@@ -2852,10 +2860,20 @@ class PodCustomizationService:
         ]
         if title is None or title.get("status") not in {"failed", "completed"}:
             raise PodRepositoryError("only a settled POD title can be regenerated", 409)
-        if len(results) != 4 or any(
+        # 自由定制的点数由建批时冻结（4–6），不能沿用全定制的「必须四张」口径。
+        required_images = self.repository.title_image_requirement(
+            str(batch.get("mode") or ""), batch.get("generation_meta") or {}
+        )
+        if len(results) != required_images or any(
             item.get("status") != "completed" or not item.get("public_url") for item in results
         ):
-            raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
+            if required_images == 4:
+                raise PodRepositoryError(
+                    "all four public POD images are required before regenerating a title", 409
+                )
+            raise PodRepositoryError(
+                f"请先把当前款式的 {required_images} 张图全部生成并发布，再重新生成标题", 409
+            )
 
     def _preflight_manual_title(self, actor: Actor, batch_id: str, style_index: int) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)

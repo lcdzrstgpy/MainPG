@@ -516,9 +516,18 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  /** 一次按压结束（松手/取消/移出）：计时器和按下坐标一起清掉。
+      只清计时器的话，短按松手后指针原地停两秒仍会触发拖动幽灵。 */
+  const endSlotPress = () => {
+    clearSlotLongPress();
+    pressRef.current = null;
+  };
+
   const beginSlotPress = (variant: number, preview: string, event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!batch || !preview || running || busy === "generate" || busy === "reorder") return;
+    // 每次按下都先清掉上一次长按的残留，避免下一次点击被误吞。
     longPressFiredRef.current = false;
+    // 主图固定在第一位：只有第 2 张起才允许长按拖动排序。
+    if (variant < 2 || !batch || !preview || running || busy === "generate" || busy === "reorder") return;
     clearSlotLongPress();
     pressRef.current = { variant, preview, x: event.clientX, y: event.clientY };
     const rect = event.currentTarget.getBoundingClientRect();
@@ -555,7 +564,8 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
       const node = document.elementFromPoint(event.clientX, event.clientY);
       const target = node instanceof Element ? node.closest<HTMLElement>("[data-free-variant]") : null;
       const next = Number(target?.dataset.freeVariant || 0);
-      const resolved = next >= 1 ? next : null;
+      // 第 1 槽是主图，不接受拖入：把别的图换进去等于顶掉主图。
+      const resolved = next >= 2 ? next : null;
       dropVariantRef.current = resolved;
       setDropVariant(resolved);
     };
@@ -565,6 +575,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
       setDragGhost(null);
       setDropVariant(null);
       dropVariantRef.current = null;
+      pressRef.current = null;
       // 松手仍在原槽位不调接口；这次 click 也会被 longPressFired 拦掉，不触发选中切换。
       if (from && to && to !== from) void reorderSlots(from, to);
     };
@@ -579,7 +590,8 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
   }, [draggingSlot]);
 
   const reorderSlots = async (from: number, to: number) => {
-    if (!batch) return;
+    // 主图固定在第一位：任何涉及第 1 槽的换序请求都不发出去。
+    if (!batch || from < 2 || to < 2) return;
     setBusy("reorder");
     setError("");
     try {
@@ -1009,7 +1021,9 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
                   aria-hidden={isLeaving || undefined}
                   onPointerDown={(event) => beginSlotPress(variant, preview, event)}
                   onPointerMove={trackSlotPress}
-                  onPointerLeave={clearSlotLongPress}
+                  onPointerUp={endSlotPress}
+                  onPointerCancel={endSlotPress}
+                  onPointerLeave={endSlotPress}
                   onClick={() => {
                     if (longPressFiredRef.current) {
                       longPressFiredRef.current = false;
@@ -1021,7 +1035,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
                   title={
                     variant > 1 && !mainReady
                       ? "先生成主图后才能生成后续图片"
-                      : preview && batch
+                      : preview && batch && variant > 1
                         ? "长按 2 秒可拖动排序"
                         : undefined
                   }
