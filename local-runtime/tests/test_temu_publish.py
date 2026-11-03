@@ -2627,3 +2627,62 @@ def test_service_attributes_dedupes_duplicate_pid_before_caching(tmp_path: Path)
     for catalog in (first, second):
         assert [item["pid"] for item in catalog["properties"]] == [1, 3]
         assert catalog["properties"][0]["name"] == "材质"
+
+def test_empty_top_level_lists_are_omitted_from_payload(tmp_path: Path) -> None:
+    """顶层空数组字段整个不发 —— 这是 7000015 sign is invalid 的根因。
+
+    网关算签名时把空数组忽略、转发时又带上，两边对不上；不发就不会有这个歧义。
+    """
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
+
+    payload = service.build_goods_payload(_single_sku_draft())["payload"]
+
+    assert "productSpecPropertyReqs" not in payload, "空规格声明必须整个字段不发"
+    # 这件 draft 有「形状」属性，非空属性照发
+    assert payload["productPropertyReqs"]
+    # 其它数组字段照常发
+    assert payload["carouselImageUrls"]
+    assert payload["productSkcReqs"]
+
+    # 属性也一个都没有时，productPropertyReqs 同样不发（发 [] 一样踩签名）
+    bare = TemuPublishService(tmp_path / "bare.sqlite3", client=NoSaleCatalogClient())
+    bare_payload = bare.build_goods_payload(
+        _single_sku_draft().model_copy(update={"properties": [], "validate_catalog": False})
+    )["payload"]
+    assert "productPropertyReqs" not in bare_payload
+
+
+def test_non_empty_spec_reqs_are_still_sent(tmp_path: Path) -> None:
+    """有销售属性的类目规格非空，字段必须照发（不能因为「空就不发」把它也砍掉）。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
+
+    payload = service.build_goods_payload(_draft())["payload"]
+    assert payload["productSpecPropertyReqs"], "非空的规格声明必须保留"
+
+    # 商品属性：用一个非销售属性验证「非空要发」
+    with_prop = TemuPublishService(tmp_path / "p.sqlite3", client=StubCatalogClient())
+    prop_payload = with_prop.build_goods_payload(_draft())["payload"]
+    assert prop_payload["productPropertyReqs"], "非空的商品属性必须保留"
+
+
+def test_catsmandatory_request_omits_empty_property_list(tmp_path: Path) -> None:
+    """类目必填校验的请求体同样不发空数组（这个接口长期 sign is invalid 就是这个）。"""
+    from wh_local.modules.temu_publish.client import TemuProductClient
+
+    sent: list[dict[str, Any]] = []
+
+    class _Probe(TemuProductClient):
+        def __init__(self) -> None:  # noqa: D107 - 不走真实网关
+            pass
+
+        def call(self, method, body=None, **kwargs):  # noqa: ANN001, D102
+            sent.append({"method": method, "body": body})
+            return {}
+
+    probe = _Probe()
+    probe.mandatory_config(10498, [100], [])
+    probe.mandatory_config(10498, [100], [{"pid": 1, "vid": 10}])
+
+    assert sent[0]["method"] == "bg.glo.goods.catsmandatory.get"
+    assert "productPropertyReqs" not in sent[0]["body"], "空数组不该出现在请求体里"
+    assert sent[1]["body"]["productPropertyReqs"] == [{"pid": 1, "vid": 10}]
