@@ -837,7 +837,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
           {/* 参考图只对主图生效，放在提示词上方：先给参考，再写这一张的提示词。 */}
           <div className={`pod-free-ref-collapse ${activeVariant === 1 ? "is-open" : ""}`} aria-hidden={activeVariant !== 1}>
             <section className="pod-setup-card">
-              <div className="pod-section-title"><span>REFERENCES</span><h2>参考图（可选）</h2></div>
+              <div className="pod-section-title"><span>REFERENCES</span><h2>参考图</h2></div>
               <div className="pod-free-refs">
                 {Array.from({ length: MAX_FREE_REFERENCES }, (_, index) => {
                   const assetId = draft.reference_asset_ids[index];
