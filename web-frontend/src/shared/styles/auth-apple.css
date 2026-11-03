@@ -38,6 +38,8 @@
     "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
   -webkit-font-smoothing: antialiased;
   overflow-x: clip;
+  /* 导航高度：注册页的返回键用它算固定位置（返回键与导航是兄弟节点，所以挂在页面上） */
+  --auth-nav-h: 64px;
   /* Windows 的滚动条占 17px 且不是浮层：让 main 自己当滚动容器并常驻槽位，
      内容溢出时居中布局不会横向跳（浏览器窗口那层滚动条保留给整页）。 */
   height: 100vh;
@@ -254,8 +256,11 @@
 /* 注册页：卡片很高、面板顶部只到导航下方，返回键再右上偏 50px 会显得孤零零地吊着；
    这一步改为与左上角「界野」左缘对齐，落在它正下方。 */
 .auth-back[data-step="register"] {
-  top: -12px;
-  left: calc(max(32px, (100vw - 1080px) / 2) - 50vw + (var(--auth-col, 340px) / 2));
+  /* 卡片很高时面板顶部很靠上，锚面板会让返回键贴着「界野」；这一步改成相对视口定位，
+     与品牌的间距在任何窗口高度下都一致（导航高度 + 40px）。 */
+  position: fixed;
+  top: calc(var(--auth-nav-h, 64px) + 40px);
+  left: max(32px, (100vw - 1080px) / 2);
 }
 
 .auth-page .auth-back { color: rgba(255, 255, 255, .82); }
@@ -717,6 +722,7 @@
 @media (max-width: 680px) {
   .auth-page { padding: 0 20px 40px; }
   .auth-nav { height: 56px; }
+  .auth-page { --auth-nav-h: 56px; }
   .auth-nav-links { gap: 14px; }
   .auth-logo-slot-hero { width: 132px; }
   .auth-logo-slot-form { width: 72px; }
@@ -727,6 +733,7 @@
   .auth-hero .auth-hero-cta { width: 100%; }
   .auth-panel { width: 100%; padding-bottom: 0; }
   .auth-back { left: 0; }
+  .auth-back[data-step="register"] { left: 20px; }
   .auth-panel-body {
     width: 100%;
     margin: 22px 0 0;
@@ -749,6 +756,7 @@
 /* 更矮时继续让位：导航条、品牌区、标题、按钮同步收一档 */
 @media (max-height: 840px) and (min-width: 681px) {
   .auth-nav { height: 56px; }
+  .auth-page { --auth-nav-h: 56px; }
   .auth-logo-slot-form { width: 68px; }
   .auth-panel-head h1 { font-size: 23px; }
   .auth-submit { height: 44px; }
@@ -756,6 +764,7 @@
 
 @media (max-height: 780px) and (min-width: 681px) {
   .auth-nav { height: 52px; }
+  .auth-page { --auth-nav-h: 52px; }
   /* 面板贴着导航时，别让「← 返回」再往上 38px 顶进导航条 */
   .auth-back { top: -10px; }
   .auth-submit { height: 42px; }
@@ -779,6 +788,7 @@
   .auth-hero-copy { margin-top: 24px; }
   .auth-hero-actions { margin-top: 24px; }
   .auth-nav { height: 48px; }
+  .auth-page { --auth-nav-h: 48px; }
   .auth-field { padding-top: 2px; padding-bottom: 3px; --auth-field-pad-b: 3px; }
   .auth-submit { height: 38px; }
   .auth-panel-head h1 { font-size: 21px; }
@@ -789,6 +799,7 @@
    这一档把标题、品牌、行高再压一轮，尽量让 6 个字段的注册页也一屏放下。 */
 @media (max-height: 620px) and (min-width: 681px) {
   .auth-nav { height: 44px; }
+  .auth-page { --auth-nav-h: 44px; }
   .auth-back { top: 0; }
   .auth-logo-slot-form { width: 56px; }
   .auth-panel-head h1 { font-size: 20px; }
