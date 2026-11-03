@@ -254,7 +254,7 @@
 /* 注册页：卡片很高、面板顶部只到导航下方，返回键再右上偏 50px 会显得孤零零地吊着；
    这一步改为与左上角「界野」左缘对齐，落在它正下方。 */
 .auth-back[data-step="register"] {
-  top: -52px;
+  top: -12px;
   left: calc(max(32px, (100vw - 1080px) / 2) - 50vw + (var(--auth-col, 340px) / 2));
 }
 
