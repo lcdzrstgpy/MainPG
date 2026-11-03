@@ -270,6 +270,12 @@ export function PublishSkuPanel({
         <p className="temu-cat-hint">
           这个类目在 Temu 没有销售属性，不能建颜色/尺码变种：按<strong>单 SKU</strong> 提交，
           只用下表第 1 行的价格、库存、尺寸与重量。
+          {/* Temu 接口要求规格列表非空，但这类目拿不到真实规格 —— 后端会自动补一条
+              「款式 / 默认」占位（Temu 后台自己发也是这么做的）。这里先讲清楚，
+              免得看到发布结果里的 warning 一头雾水。 */}
+          <br />
+          发布时会自动补一条「<strong>款式：默认</strong>」的规格占位（Temu 接口要求规格非空），
+          商品里不会真的多出一个款式可选。
         </p>
       ) : (
         <div className="temu-variant-spec">

@@ -1319,6 +1319,18 @@ def _assemble_payload(
     if draft.goods_label_name.strip():
         payload["productCustomReq"] = {"goodsLabelName": draft.goods_label_name.strip()}
 
+    # 类目没有销售属性：补一条虚拟规格占位，否则 Temu 会回「规格不能为空」，
+    # 商品永远发不出去（桌布/桌旗/餐垫这类类目全是这种情况）。
+    if not product_spec_reqs:
+        payload["productSpecPropertyReqs"] = [dict(_VIRTUAL_SPEC_DECL)]
+        for skc_req in payload.get("productSkcReqs") or []:
+            for sku_req in skc_req.get("productSkuReqs") or []:
+                if not sku_req.get("productSkuSpecReqs"):
+                    sku_req["productSkuSpecReqs"] = [dict(_VIRTUAL_SPEC_SKU)]
+        warnings.append(
+            "该类目没有销售属性（Temu 后台会自动补默认规格）：已自动补「款式/默认」规格占位。"
+        )
+
     # ⚠️ 网关签名实现会「算签名时忽略空数组、转发时又带上」，两边 sign 对不上，
     # 一律回 7000015 sign is invalid（catsmandatory.get 长期踩的就是这个坑）。
     # 所以顶层数组为空就**整个字段不发**，而不是发 []：
@@ -1450,6 +1462,36 @@ def _catalog_value_text(catalog_item: dict[str, Any], vid: int) -> str:
 
 # 主销售规格实测必须传全 0 的空对象：填真实规格反而被判「主销售属性不合法」。
 _EMPTY_MAIN_SPEC = {"specId": 0, "specName": "", "parentSpecId": 0, "parentSpecName": ""}
+
+# 无销售属性的类目（桌布 / 桌旗 / 餐垫这一整片）Temu 接口仍要求「规格列表非空」：
+#   Product Specification Attribute Cannot Be Empty
+#   Product SKU specification list cannot be empty
+# Temu 后台会自动补一条默认规格，接口不会，所以要我们补。
+# 实测（2026-11-03 用无效类目做安全实验）：id 全填 0、只把名称填成「款式 / 默认」，
+# 商品级与 SKU 级各一条，Temu 的全部规格校验都通过。
+_VIRTUAL_SPEC_PARENT = "款式"
+_VIRTUAL_SPEC_VALUE = "默认"
+_VIRTUAL_SPEC_DECL = {
+    "pid": 0,
+    "vid": 0,
+    "refPid": 0,
+    "templatePid": 0,
+    "specId": 0,
+    "propName": _VIRTUAL_SPEC_PARENT,
+    "specName": _VIRTUAL_SPEC_VALUE,
+    "propValue": _VIRTUAL_SPEC_VALUE,
+    "valueUnit": "",
+    "parentSpecId": 0,
+    "parentSpecName": _VIRTUAL_SPEC_PARENT,
+    "valueGroupId": 0,
+    "valueGroupName": "",
+}
+_VIRTUAL_SPEC_SKU = {
+    "specId": 0,
+    "specName": _VIRTUAL_SPEC_VALUE,
+    "parentSpecId": 0,
+    "parentSpecName": _VIRTUAL_SPEC_PARENT,
+}
 
 
 def _spec_payload(spec: Any) -> dict[str, Any]:

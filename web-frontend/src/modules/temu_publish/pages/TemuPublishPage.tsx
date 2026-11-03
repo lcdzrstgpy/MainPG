@@ -1964,7 +1964,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (singleSku) {
       if (rows.length > 1) {
         warnings.push(
-          `该类目没有销售属性（不能建颜色/尺码变种）：只提交第 1 行，后面 ${rows.length - 1} 行已忽略。`,
+          `该类目没有销售属性（不能建颜色/尺码变种）：只提交第 1 行，后面 ${rows.length - 1} 行已忽略。`
+            + " 规格会由后端自动补「款式：默认」占位。",
         );
       }
       const row = rows[0];

@@ -2053,18 +2053,37 @@ def _single_sku_draft() -> GoodsDraftInput:
 
 
 def test_single_sku_payload_for_category_without_sale_properties(tmp_path: Path) -> None:
-    """没有销售属性的类目：规格声明整个字段不发（发 [] 会被网关判 sign is invalid）。"""
+    """没有销售属性的类目：自动补一条「款式/默认」虚拟规格，否则 Temu 回「规格不能为空」。
+
+    实测（2026-11-03）：id 全 0、只把名称填成「款式/默认」，商品级与 SKU 级各一条，
+    Temu 的全部规格校验都通过。不补的话商品永远发不出去。
+    """
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=NoSaleCatalogClient())
 
-    payload = service.build_goods_payload(_single_sku_draft())["payload"]
+    built = service.build_goods_payload(_single_sku_draft())
+    payload = built["payload"]
 
-    # 空数组一律不发：网关算签名时忽略它、转发时又带上，两边 sign 对不上 → 7000015
-    assert "productSpecPropertyReqs" not in payload
+    decls = payload["productSpecPropertyReqs"]
+    assert len(decls) == 1
+    assert decls[0]["propName"] == "款式"
+    assert decls[0]["specName"] == "默认"
+    # id 全 0 是刻意的：类目没有销售属性，拿不到真实 pid/specId
+    assert (decls[0]["pid"], decls[0]["refPid"], decls[0]["specId"], decls[0]["parentSpecId"]) == (0, 0, 0, 0)
+    # 名字不能空，否则 Temu 回「Reference Property Name / Base Property Value 不能为空」
+    assert decls[0]["propName"] and decls[0]["specName"]
+
+    skc = payload["productSkcReqs"][0]
+    sku_specs = skc["productSkuReqs"][0]["productSkuSpecReqs"]
+    assert sku_specs == [
+        {"specId": 0, "specName": "默认", "parentSpecId": 0, "parentSpecName": "款式"}
+    ], "SKU 级规格列表不能为空（Temu 会报 Product SKU specification list cannot be empty）"
+
+    # 要告诉用户我们替他补了规格，别让他以为商品真有「款式」属性
+    assert any("没有销售属性" in w for w in built["warnings"])
     skc = payload["productSkcReqs"][0]
     assert skc["mainProductSkuSpecReqs"] == [
         {"specId": 0, "specName": "", "parentSpecId": 0, "parentSpecName": ""}
     ]
-    assert skc["productSkuReqs"][0]["productSkuSpecReqs"] == []
     # 单 SKU 也要把价格/库存/物流发全
     sku = skc["productSkuReqs"][0]
     assert sku["siteSupplierPrices"] == [{"siteId": 100, "supplierPrice": 1299}]
@@ -2561,7 +2580,9 @@ def test_empty_top_level_lists_are_omitted_from_payload(tmp_path: Path) -> None:
 
     payload = service.build_goods_payload(_single_sku_draft())["payload"]
 
-    assert "productSpecPropertyReqs" not in payload, "空规格声明必须整个字段不发"
+    # 顶层不许出现「空数组」值：空数组会让网关的 sign 对不上（7000015）
+    empty_lists = [k for k, v in payload.items() if isinstance(v, list) and not v]
+    assert empty_lists == [], f"顶层不该有空数组字段：{empty_lists}"
     # 这件 draft 有「形状」属性，非空属性照发
     assert payload["productPropertyReqs"]
     # 其它数组字段照常发
