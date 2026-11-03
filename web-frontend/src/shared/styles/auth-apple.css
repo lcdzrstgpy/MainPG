@@ -10,18 +10,83 @@
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 0 32px 56px;
-  color: var(--auth-ink);
-  background: var(--auth-bg);
+  /* 底部留白跟随视口：矮窗口下这块最容易被误当成「必须滚动」 */
+  padding: 0 32px clamp(12px, 4.5vh, 56px);
+  color: #f7fdff;
+  /* A 方案配色（2026-11-03）：卡片、输入井、链接、焦点全部从当前主题推导。
+     背景是主题渐变（可能是暖玫红/暖橙），过去卡片用固定冷白 rgba(248,252,255,.88)，
+     白块在暖底上会发蓝、发灰；现在卡片底色取主题光斑色往暖白里混，
+     输入区改成比卡片略深的同色系「井」，不再有纯白块。 */
+  --auth-card-tint: color-mix(in srgb, var(--theme-auth-halo-a, #ffffff) 46%, #fffdfb);
+  /* 输入井用不透明色：输入框的自动填充底色只能靠 box-shadow 盖，
+     半透明色盖不住，会露出 Chrome 的淡蓝色块。 */
+  --auth-field-bg: var(--theme-auth-well, #f7eceb);
+  --auth-line: color-mix(in srgb, var(--theme-auth-accent, #0066cc) 16%, #ffffff);
+  --auth-link: var(--theme-auth-accent, #0066cc);
+  --auth-focus: color-mix(in srgb, var(--theme-auth-accent, #0066cc) 82%, #1d1d1f);
+  --auth-ink-secondary: color-mix(in srgb, var(--theme-auth-accent, #0066cc) 10%, #6e6e73);
+  /* A 方案：恢复原版的「主题渐变 + 两团光斑 + 斜向流光」。
+     光斑用 radial-gradient 而不是 blur 的实心圆，省掉实时模糊开销；
+     上面再压一层很淡的暗色蒙层，保证浅色主题（如 violet）上白字仍可读。 */
+  background-color: var(--theme-auth-gradient, linear-gradient(135deg, #082b55 0%, #0d4d82 34%, #147ea0 62%, #1fc6bc 100%));
+  background-image:
+    linear-gradient(rgba(7, 20, 38, .16), rgba(7, 20, 38, .16)),
+    var(--theme-auth-gradient, linear-gradient(135deg, #082b55 0%, #0d4d82 34%, #147ea0 62%, #1fc6bc 100%));
+  /* Windows 上 -apple-system / PingFang 都不存在，中文会落到系统默认的微软雅黑；
+     显式写上 YaHei，避免不同机器回退到不同字体导致行宽/换行不一致。 */
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
-    "Hiragino Sans GB", "Segoe UI", var(--font-sans, sans-serif);
+    "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
   -webkit-font-smoothing: antialiased;
   overflow-x: clip;
+  /* Windows 的滚动条占 17px 且不是浮层：让 main 自己当滚动容器并常驻槽位，
+     内容溢出时居中布局不会横向跳（浏览器窗口那层滚动条保留给整页）。 */
+  height: 100vh;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+/* 两团缓慢漂移的光斑（跟随主题色）。
+   用 fixed：绝对定位 + inset:-10% 会把页面滚动高度撑大 10%，
+   注册页字段多时看起来像「页面被撑开」。 */
+.auth-page::before {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle 420px at 12% 8%, var(--theme-auth-halo-a, rgba(120, 205, 255, .5)), transparent 70%),
+    radial-gradient(circle 380px at 88% 92%, var(--theme-auth-halo-b, rgba(60, 225, 205, .38)), transparent 70%);
+  animation: auth-halo-drift 26s ease-in-out infinite alternate;
+}
+
+/* 斜向流光 */
+.auth-page::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 32%, rgba(255, 255, 255, .10) 46%, transparent 60%);
+  background-size: 220% 100%;
+  animation: auth-shine 9s ease-in-out infinite;
+}
+
+@keyframes auth-halo-drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(3%, 2%, 0) scale(1.08); }
+}
+
+@keyframes auth-shine {
+  0%, 100% { background-position: 140% 0; }
+  50% { background-position: -40% 0; }
 }
 
 /* ── 顶部导航 ─────────────────────────────────────────────── */
 
 .auth-nav {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 1080px;
   height: 64px;
@@ -36,7 +101,7 @@
   border: 0;
   padding: 4px 0;
   background: none;
-  color: var(--auth-ink);
+  color: #ffffff;
   font-size: 15px;
   font-weight: var(--weight-semibold, 600);
   letter-spacing: .02em;
@@ -51,20 +116,23 @@
 
 .auth-nav-links .auth-link {
   font-size: 12px;
-  color: var(--auth-ink-secondary);
+  color: rgba(255, 255, 255, .78);
 }
 
-.auth-nav-links .auth-link:hover { color: var(--auth-ink); }
+.auth-nav-links .auth-link:hover { color: #ffffff; }
 
 /* ── 舞台：两态共用中轴 ───────────────────────────────────── */
 
 .auth-stage {
+  position: relative;
+  z-index: 1;
   width: 100%;
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* safe：内容比视口高时不要向上溢出（否则顶部会被裁掉、还滚不到），改成从顶部开始排 */
+  justify-content: safe center;
   padding-bottom: 3vh;
   min-height: 0;
 }
@@ -73,6 +141,9 @@
 
 .auth-logo-slot {
   position: relative;
+  /* 高于卡片：登录↔注册切换时面板会瞬间变高，卡片上沿会扫过 logo 的动画路径，
+     抬高层级才能保证 FLIP 过程里 logo 始终露在外面。 */
+  z-index: 3;
   display: block;
   flex: none;
 }
@@ -84,6 +155,8 @@
   height: 100%;
   object-fit: contain;
   transform-origin: top left;
+  /* 深色渐变底上，墨色书法要反白才看得见 */
+  filter: brightness(0) invert(1) drop-shadow(0 14px 30px rgba(3, 22, 44, .32));
   transition: transform var(--duration-logo, .62s) var(--ease-apple, cubic-bezier(.22, 1, .36, 1));
 }
 
@@ -116,7 +189,8 @@
   line-height: 1.15;
   font-weight: var(--weight-semibold, 600);
   letter-spacing: .01em;
-  color: var(--auth-ink);
+  color: #ffffff;
+  text-shadow: 0 2px 24px rgba(4, 20, 40, .32);
 }
 
 .auth-hero-copy p {
@@ -124,7 +198,8 @@
   max-width: 500px;
   font-size: 18px;
   line-height: 1.55;
-  color: var(--auth-ink-secondary);
+  color: rgba(247, 253, 255, .8);
+  text-shadow: 0 1px 14px rgba(4, 20, 40, .3);
 }
 
 .auth-hero-actions {
@@ -137,12 +212,19 @@
 .auth-hero .auth-hero-cta {
   margin: 0;
   width: 220px;
+  color: var(--auth-ink);
+  background: #ffffff;
 }
+
+.auth-hero .auth-hero-cta:hover:not(:disabled) { background: #f2f4f7; }
 
 .auth-hero-links {
   margin: 0;
   font-size: 13px;
 }
+
+.auth-hero-links .auth-link { color: rgba(255, 255, 255, .86); }
+.auth-hero-links .auth-link:hover { color: #ffffff; }
 
 /* ── 表单态 ───────────────────────────────────────────────── */
 
@@ -150,26 +232,67 @@
   position: relative;
   width: var(--auth-col, 340px);
   max-width: 100%;
-  padding-bottom: 4vh;
+  padding-bottom: clamp(6px, 2vh, 24px);
   display: flex;
   flex-direction: column;
   align-items: center;
 }
 
-/* 「← 返回」与导航栏左缘对齐，和上方「界野」同一条竖线。
+/* 「← 返回」原先对齐导航栏左缘（与上方「界野」同一条竖线）。
+   2026-11-03 按用户要求：整体上移 40px、右移 50px（top −38 = 2 − 40），
+   让它靠近 logo 那一行、离卡片更近。
    面板左缘在 50vw − 列宽/2，导航内容左缘在 max(32px, (100vw − 1080px)/2)，
-   两者相减得到相对面板的偏移，避免它贴在 logo 旁边。
+   两者相减得到相对面板的偏移；+50px 是本次右移量。
    窄屏下面板占满整行，改回 left: 0（见 ≤680 断点）。 */
 .auth-back {
   position: absolute;
-  top: 2px;
-  left: calc(max(32px, (100vw - 1080px) / 2) - 50vw + (var(--auth-col, 340px) / 2));
+  top: -38px;
+  left: calc(max(32px, (100vw - 1080px) / 2) - 50vw + (var(--auth-col, 340px) / 2) + 50px);
   font-size: 12px;
 }
 
+.auth-page .auth-back { color: rgba(255, 255, 255, .82); }
+.auth-page .auth-back:hover { color: #ffffff; }
+
+/* 渐变底上表单必须有一块浅色承载，否则标签、协议、底部链接全看不清。
+   卡片底色放在 ::before 上单独渐显：logo 的 620ms 缩放还在进行时，
+   卡片先不出现，避免它抢在 logo 前面把字盖住。 */
 .auth-panel-body {
-  width: 100%;
-  padding-top: 40px;
+  position: relative;
+  isolation: isolate;
+  width: calc(100% + 60px);
+  margin: clamp(14px, 2.4vh, 28px) -30px 0;
+  padding: clamp(18px, 2.6vh, 28px) 30px clamp(20px, 2.8vh, 30px);
+  color: var(--auth-ink);
+}
+
+.auth-panel-body::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: 24px;
+  /* 底色先铺一层不透明的暖白，再把主题色薄薄压上去：
+     直接用半透明 tint 会让渐变透上来，卡片在暖底上发灰。 */
+  background-color: #fffdfb;
+  background-image: linear-gradient(var(--auth-card-tint), var(--auth-card-tint));
+  border: 1px solid rgba(255, 255, 255, .5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), 0 30px 64px -22px rgba(4, 24, 48, .42);
+  /* 卡片要等 logo 的 620ms FLIP 快落地时再显形：
+     面板变高时卡片上沿会瞬间上移一大截，logo 是在「白色卡片」里穿过去的，
+     卡片一早就显形的话，白色书法字直接看不见。 */
+  animation: auth-card-in .34s var(--ease-apple, cubic-bezier(.22, 1, .36, 1)) .14s both;
+  pointer-events: none;
+}
+
+.auth-panel-body > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes auth-card-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .auth-panel-head { text-align: center; }
@@ -206,12 +329,12 @@
 
 .auth-form {
   display: grid;
-  gap: 20px;
-  margin-top: 36px;
+  gap: clamp(14px, 1.9vh, 20px);
+  margin-top: clamp(20px, 3.2vh, 36px);
 }
 
 /* 主按钮与上方选项行再拉开一点，接近 Apple 的节奏（约 55px） */
-.auth-form > .auth-submit { margin-top: 12px; }
+.auth-form > .auth-submit { margin-top: clamp(8px, 1vh, 12px); }
 
 .auth-field-block { display: grid; gap: 8px; position: relative; }
 
@@ -242,7 +365,9 @@
 .auth-field {
   position: relative;
   display: block;
-  padding: 8px 16px 9px;
+  /* 底部内边距单独提成变量：绝对定位的「小眼睛」要靠它反推垂直中心 */
+  --auth-field-pad-b: clamp(4px, .65vh, 7px);
+  padding: clamp(3px, .5vh, 6px) 16px var(--auth-field-pad-b);
 }
 
 .auth-field-label {
@@ -257,14 +382,14 @@
 .auth-field input {
   display: block;
   width: 100%;
-  height: 24px;
-  margin-top: 2px;
+  height: 21px;
+  margin-top: 1px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--auth-ink);
   font-size: 17px;
-  line-height: 24px;
+  line-height: 21px;
   outline: none;
   -webkit-appearance: none;
 }
@@ -280,10 +405,35 @@
 
 .auth-field.has-action input { padding-right: 96px; }
 
+/* 密码可见性：18px 的小眼睛按钮，和输入文字同一行（替代原来的「显示/隐藏」文字） */
+.auth-field.is-eye input { padding-right: 44px; }
+
+/* 用双类名提高优先级：.auth-field-action 的 bottom 在这条规则之后声明，单类会被它盖掉 */
+.auth-field-action.auth-field-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  right: 8px;
+  /* 图标比输入行高 6px：底边再往上 3px，中心才和输入文字对齐 */
+  bottom: calc(var(--auth-field-pad-b) - 3px);
+  padding: 0;
+  border-radius: 50%;
+  color: var(--auth-ink-secondary);
+  transition: color .16s ease, background-color .16s ease;
+}
+
+.auth-field-eye:hover { color: var(--auth-ink); }
+
+.auth-field-eye:active { background: color-mix(in srgb, var(--auth-ink) 7%, transparent); }
+
+.auth-field-eye svg { width: 18px; height: 18px; display: block; }
+
 .auth-field-action {
   position: absolute;
   right: 12px;
-  bottom: 9px;
+  bottom: clamp(4px, .65vh, 7px);
   border: 0;
   padding: 2px 4px;
   background: none;
@@ -390,8 +540,8 @@
 .auth-submit:active:not(:disabled) { transform: scale(.985); }
 
 .auth-submit:disabled {
-  background: #e8e8ed;
-  color: #a1a1a6;
+  background: color-mix(in srgb, var(--theme-auth-accent, #0066cc) 9%, transparent);
+  color: color-mix(in srgb, var(--theme-auth-accent, #0066cc) 34%, #8f8f94);
   cursor: not-allowed;
 }
 
@@ -432,7 +582,7 @@
 }
 
 .auth-footer {
-  margin: 24px 0 0;
+  margin: clamp(14px, 2vh, 24px) 0 0;
   text-align: center;
   font-size: 13px;
   line-height: 1.5;
@@ -472,10 +622,12 @@
   animation: auth-fade-up .34s var(--ease-apple, cubic-bezier(.22, 1, .36, 1)) both;
 }
 
+/* 表单入场比 logo 的 620ms FLIP 慢半拍：0.3s 起、0.4s 走完，
+   注册页最后一项约 0.94s 结束，比之前 0.34s 一口气弹完要松弛。 */
 .auth-page[data-enter="true"] .auth-panel-head,
 .auth-page[data-enter="true"] .auth-form > *,
 .auth-page[data-enter="true"] .auth-footer {
-  animation: auth-fade-up .34s var(--ease-apple, cubic-bezier(.22, 1, .36, 1)) both;
+  animation: auth-fade-up .4s var(--ease-apple, cubic-bezier(.22, 1, .36, 1)) both;
 }
 
 .auth-page[data-enter="true"] .auth-hero h1 { animation-delay: .06s; }
@@ -483,15 +635,15 @@
 .auth-page[data-enter="true"] .auth-hero-cta { animation-delay: .14s; }
 .auth-page[data-enter="true"] .auth-hero-links { animation-delay: .18s; }
 
-.auth-page[data-enter="true"] .auth-panel-head { animation-delay: .09s; }
-.auth-page[data-enter="true"] .auth-footer { animation-delay: .32s; }
+.auth-page[data-enter="true"] .auth-panel-head { animation-delay: .3s; }
+.auth-page[data-enter="true"] .auth-footer { animation-delay: .56s; }
 
-.auth-page[data-enter="true"] .auth-form > :nth-child(1) { animation-delay: .14s; }
-.auth-page[data-enter="true"] .auth-form > :nth-child(2) { animation-delay: .18s; }
-.auth-page[data-enter="true"] .auth-form > :nth-child(3) { animation-delay: .22s; }
-.auth-page[data-enter="true"] .auth-form > :nth-child(4) { animation-delay: .26s; }
-.auth-page[data-enter="true"] .auth-form > :nth-child(5) { animation-delay: .3s; }
-.auth-page[data-enter="true"] .auth-form > :nth-child(6) { animation-delay: .34s; }
+.auth-page[data-enter="true"] .auth-form > :nth-child(1) { animation-delay: .34s; }
+.auth-page[data-enter="true"] .auth-form > :nth-child(2) { animation-delay: .38s; }
+.auth-page[data-enter="true"] .auth-form > :nth-child(3) { animation-delay: .42s; }
+.auth-page[data-enter="true"] .auth-form > :nth-child(4) { animation-delay: .46s; }
+.auth-page[data-enter="true"] .auth-form > :nth-child(5) { animation-delay: .5s; }
+.auth-page[data-enter="true"] .auth-form > :nth-child(6) { animation-delay: .54s; }
 
 /* ── 响应式 ───────────────────────────────────────────────── */
 
@@ -514,31 +666,96 @@
   .auth-hero .auth-hero-cta { width: 100%; }
   .auth-panel { width: 100%; padding-bottom: 0; }
   .auth-back { left: 0; }
-  .auth-panel-body { padding-top: 24px; }
+  .auth-panel-body {
+    width: 100%;
+    margin: 22px 0 0;
+    padding: 22px 18px 24px;
+  }
+  .auth-panel-body::before { border-radius: 20px; }
   .auth-panel-head h1 { font-size: 24px; }
   .auth-field input { font-size: 16px; }
 }
 
+/* 矮屏（笔记本全屏或浏览器带工具栏）：进一步收紧标题与品牌区，
+   目标是注册页 6 个字段也一屏放下、不出现滚动条。 */
+@media (max-height: 900px) and (min-width: 681px) {
+  .auth-logo-slot-form { width: 76px; }
+  .auth-panel-head h1 { font-size: 25px; }
+  .auth-panel-head p { margin-top: 6px; font-size: 14px; }
+  .auth-submit { height: 46px; }
+}
+
+/* 更矮时继续让位：导航条、品牌区、标题、按钮同步收一档 */
+@media (max-height: 840px) and (min-width: 681px) {
+  .auth-nav { height: 56px; }
+  .auth-logo-slot-form { width: 68px; }
+  .auth-panel-head h1 { font-size: 23px; }
+  .auth-submit { height: 44px; }
+}
+
 @media (max-height: 780px) and (min-width: 681px) {
+  .auth-nav { height: 52px; }
+  /* 面板贴着导航时，别让「← 返回」再往上 38px 顶进导航条 */
+  .auth-back { top: -10px; }
+  .auth-submit { height: 42px; }
+  .auth-field input { height: 20px; line-height: 20px; font-size: 16px; }
   .auth-logo-slot-hero { width: 160px; }
   .auth-hero h1 { font-size: 34px; }
   .auth-hero-copy { margin-top: 32px; gap: 12px; }
   .auth-hero-actions { margin-top: 32px; gap: 14px; }
   .auth-panel { padding-bottom: 2vh; }
-  .auth-panel-body { padding-top: 32px; }
+  .auth-panel-body { padding: 22px 26px 24px; }
+}
+
+/* 极矮（外接小屏/分屏）：logo 与副标题让位，保证表单仍是一屏 */
+@media (max-height: 740px) and (min-width: 681px) {
+  .auth-logo-slot-form { width: 56px; }
+  .auth-panel-head p { display: none; }
+  .auth-panel-body { margin-top: 10px; }
 }
 
 @media (max-height: 660px) {
   .auth-hero-copy { margin-top: 24px; }
   .auth-hero-actions { margin-top: 24px; }
-  .auth-field { padding-top: 6px; padding-bottom: 7px; }
-  .auth-submit { height: 46px; }
+  .auth-nav { height: 48px; }
+  .auth-field { padding-top: 2px; padding-bottom: 3px; --auth-field-pad-b: 3px; }
+  .auth-submit { height: 38px; }
+  .auth-panel-head h1 { font-size: 21px; }
+  .auth-logo-slot-form { width: 48px; }
+}
+
+/* Windows 笔记本常见 125% / 150% 缩放：逻辑视口只有 520–680 高（还要减掉浏览器工具栏），
+   这一档把标题、品牌、行高再压一轮，尽量让 6 个字段的注册页也一屏放下。 */
+@media (max-height: 620px) and (min-width: 681px) {
+  .auth-nav { height: 44px; }
+  .auth-back { top: 0; }
+  .auth-logo-slot-form { width: 56px; }
+  .auth-panel-head h1 { font-size: 20px; }
+  .auth-panel-head p { display: none; }
+  .auth-panel-body { margin-top: 8px; padding: 14px 22px 16px; }
+  .auth-form { gap: 10px; margin-top: 14px; }
+  .auth-field-label { font-size: 10px; line-height: 12px; }
+  .auth-field input { height: 18px; line-height: 18px; font-size: 15px; }
+  .auth-submit { height: 36px; font-size: 15px; }
+  .auth-footer { margin-top: 10px; font-size: 12px; }
+}
+
+/* 再往下（≈ 560 高，对应 1080p 屏幕 150% 缩放 + 浏览器工具栏）：只收行高与间距 */
+@media (max-height: 580px) and (min-width: 681px) {
+  .auth-logo-slot-form { width: 44px; }
+  .auth-field { padding-top: 1px; padding-bottom: 2px; --auth-field-pad-b: 2px; }
+  .auth-field input { height: 17px; line-height: 17px; }
+  .auth-form { gap: 8px; }
+  .auth-submit { height: 34px; }
 }
 
 /* ── 降级 ─────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
+  .auth-page,
   .auth-page *,
+  .auth-page::before,
+  .auth-page::after,
   .auth-page *::before,
   .auth-page *::after {
     animation: none !important;
@@ -554,6 +771,12 @@
 html[data-perf-mode="on"] .auth-logo-slot img {
   will-change: auto;
   transition: none !important;
+}
+
+html[data-perf-mode="on"] .auth-page::before,
+html[data-perf-mode="on"] .auth-page::after,
+html[data-perf-mode="on"] .auth-panel-body::before {
+  animation: none !important;
 }
 
 html[data-perf-mode="on"] .auth-page[data-enter="true"] .auth-hero-copy > *,

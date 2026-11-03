@@ -70,11 +70,12 @@
   /* ---- 登录页：宣纸白 + 墨色 ----
      登录页是入口，刻意与 9 套业务主题解耦（Apple 账户页也是中性页）。
      改这里就能整体换肤，版式与动效不受影响。 */
-  --auth-bg: #fbfbfd;
+  --auth-bg: #fbf8f3;
   --auth-ink: #1d1d1f;
   --auth-ink-secondary: #6e6e73;
   --auth-ink-tertiary: #86868b;
   --auth-line: #d2d2d7;
+  /* 以下三项现在是兜底值：登录页会在 .auth-page 上按主题重算（见 auth-apple.css 的 A 方案） */
   --auth-field-bg: #ffffff;
   --auth-focus: #0071e3;
   --auth-link: #0066cc;

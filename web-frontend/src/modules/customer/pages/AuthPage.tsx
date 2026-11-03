@@ -64,6 +64,28 @@ function readSessionHintOnce(): string {
   return "";
 }
 
+/** 密码可见性图标：细线小眼睛，尺寸跟着 .auth-field-eye 的 font-size/尺寸走。 */
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M2.4 12S6 5.8 12 5.8 21.6 12 21.6 12 18 18.2 12 18.2 2.4 12 2.4 12Z" />
+      <circle cx="12" cy="12" r="3.1" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M2.4 12S6 5.8 12 5.8 21.6 12 21.6 12 18 18.2 12 18.2 2.4 12 2.4 12Z" />
+      <circle cx="12" cy="12" r="3.1" />
+      <path d="M3.6 3.6l16.8 16.8" />
+    </svg>
+  );
+}
+
 export function AuthPage({ onEnter }: AuthPageProps) {
   // 会话失效原因提示（被顶替/过期）：登录页只消费一次。
   const [sessionHint] = useState(readSessionHintOnce);
@@ -408,7 +430,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   );
 
   const passwordField = (
-    <div className={`auth-field${password ? " has-action" : ""}`}>
+    <div className={`auth-field${password ? " has-action is-eye" : ""}`}>
       <label className="auth-field-label" htmlFor="auth-password">
         {isLogin ? "密码" : "密码（至少 8 位）"}
       </label>
@@ -432,11 +454,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       {password && (
         <button
           type="button"
-          className="auth-field-action"
+          className="auth-field-action auth-field-eye"
           aria-pressed={showPassword}
+          aria-label={showPassword ? "隐藏密码" : "显示密码"}
+          title={showPassword ? "隐藏密码" : "显示密码"}
           onClick={() => setShowPassword((value) => !value)}
         >
-          {showPassword ? "隐藏" : "显示"}
+          {showPassword ? <EyeOffIcon /> : <EyeIcon />}
         </button>
       )}
     </div>
@@ -466,13 +490,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         <button type="button" className="auth-nav-brand" onClick={() => goToStep("welcome")}>
           {BRAND_NAME}
         </button>
-        <nav className="auth-nav-links" aria-label="帮助与条款">
+        <nav className="auth-nav-links" aria-label="条款">
           <a className="auth-link" href="/privacy" target="_blank" rel="noopener noreferrer">
             隐私政策
           </a>
-          <button type="button" className="auth-link" onClick={() => goToStep("forgot")}>
-            需要帮助？
-          </button>
         </nav>
       </header>
 
