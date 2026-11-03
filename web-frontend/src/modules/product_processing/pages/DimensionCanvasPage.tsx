@@ -630,21 +630,23 @@ export function DimensionCanvasPage({ initialBatchId, initialItemId, onOpenPrech
               onDisplayUnitChange={(displayUnit) => updateEditor(toggleDisplayUnit(editor, displayUnit))}
             />
             <main className="dimension-stage-panel">
-              <DimensionCanvasStage
-                editor={editor}
-                asset={activeAsset}
-                zoom={zoom}
-                onZoomChange={setZoom}
-                onSelectAnnotation={(annotationId) => updateEditor({ ...editor, selectedAnnotationId: annotationId }, false, false)}
-                onCommitEditor={(next) => updateEditor(next)}
-                onCommitAnnotation={commitAnnotation}
-              />
-              {busy !== "" && (
-                <div className="app-loading-mask" role="status" aria-live="polite">
-                  <i className="app-spinner" aria-hidden="true" />
-                  {busyLabel}
-                </div>
-              )}
+              <div className="dimension-stage-body">
+                <DimensionCanvasStage
+                  editor={editor}
+                  asset={activeAsset}
+                  zoom={zoom}
+                  onZoomChange={setZoom}
+                  onSelectAnnotation={(annotationId) => updateEditor({ ...editor, selectedAnnotationId: annotationId }, false, false)}
+                  onCommitEditor={(next) => updateEditor(next)}
+                  onCommitAnnotation={commitAnnotation}
+                />
+                {busy !== "" && (
+                  <div className="app-loading-mask" role="status" aria-live="polite">
+                    <i className="app-spinner" aria-hidden="true" />
+                    {busyLabel}
+                  </div>
+                )}
+              </div>
               <footer className="dimension-editor-footer">
                 <label>回写位置
                   <select value={editor.targetSlotId} onChange={(event) => updateEditor({ ...editor, targetSlotId: event.target.value })}>
