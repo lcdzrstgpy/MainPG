@@ -70,9 +70,10 @@ from .doubao_text import (
 )
 from .domain.category_classifier import classify_titles
 from .domain.category_image_presets import CATEGORY_IMAGE_PROMPTS
-from .domain.background_presets import select_backdrop_fragment
+from .domain.background_presets import detect_category_id, select_backdrop_fragment
 from .domain.custom_backgrounds import CustomBackgroundStore, user_background_id
 from .domain.usage_rooms import resolve_usage_place
+from .domain.variant_axes import normalize_variant_attributes
 from .domain.photo_card_library import (
     CARD_LIBRARIES,
     LAYER_KEYS,
@@ -896,6 +897,30 @@ def _apply_background_rules(
     if str(scene_style or "").strip().lower() == "ornate":
         result = _apply_ornate_rules(result)
     return result
+
+
+# 宠物用品（宠物衣服/牵引/窝垫）最常见的翻车：衣服被画成「空壳立着」，
+# 或者只有一截狗腿/狗屁股从衣服里钻出来，看着诡异。这条规则放在提示词最后，
+# 优先级高于逐格角色和「手持使用」的预设描述。
+PET_PRODUCT_RULE = """PET PRODUCT REALISM (this SKU is used by a pet; this block overrides any hand or empty-garment instruction above):
+- Empty product shots (flat lay, hanger, plinth) must show the item holding a believable 3D shape by itself: a ghost mannequin, a hanger or a clean flat lay. Never a hollow garment standing upright as if worn by an invisible body.
+- If a pet appears, the WHOLE pet must be in frame: head, ears, torso, all four legs and tail, anatomically correct and in proportion, wearing the item properly. Never render only legs, paws, a rear end, a headless body or a tail inside, under or beside the garment.
+- Do not place a human hand or person in a panel where a pet wears the item; the pet is the wearer. A hand may appear only when the panel explicitly asks for adjustment, and then the pet must still be complete and the hand anatomically correct.
+- If the pet or the garment cannot be rendered completely and correctly, show the item empty on a hanger or as a flat lay instead."""
+
+_PET_KEYWORDS = ("宠物", "猫", "狗", "pet", "dog", "cat", "puppy", "kitten")
+_PET_EXCLUSIONS = ("热狗", "hot dog", "hotdog")
+
+
+def _is_pet_product(category: str, title: str) -> bool:
+    """判断这条链接是不是宠物用品（宠物服饰/牵引/窝垫等）。"""
+
+    haystack = f"{category} {title}".lower()
+    if any(word in haystack for word in _PET_EXCLUSIONS):
+        return False
+    if not any(keyword in haystack for keyword in _PET_KEYWORDS):
+        return False
+    return detect_category_id(category, title) == "pet_supplies"
 
 # 商品自定义组合直连计费的子项 scope（对齐 auth-api billing_pricing_items.feature_key）。
 # 组合本质是图片生成：主图为单张 hero，处理阶段生成 3 张轮播 + 详情合成。
@@ -7475,7 +7500,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     "sku_id": str(record.get("sku_id") or record.get("source_sku_id") or "").strip(),
                     "source_sku_id": str(record.get("source_sku_id") or "").strip() or None,
                     "display_name": str(record.get("display_name") or "").strip() or None,
-                    "attributes": record.get("attributes") if isinstance(record.get("attributes"), dict) else {},
+                    "attributes": normalize_variant_attributes(record.get("attributes")),
                     "image_url": str(record.get("image_url") or record.get("imageUrl") or "").strip() or None,
                 }
                 for record in (result.get("source_variant_records") or [])
@@ -11105,6 +11130,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             prompt = append_content_reference(prompt, reference, kind="image")
             self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
             scene_main = str(main_background or "scene").strip().lower() != "white"
+            # 宠物用品：衣服空壳/半截宠物这类「诡异」画面单独加一条硬规则。
+            pet_product = _is_pet_product(category, optimized_title)
             # 这个 SKU 真实的使用位置：优先视觉识别，其次品类关键词兜底。
             usage_place = resolve_usage_place(
                 str((vision_identity or {}).get("usage_scene", {}).get("place") or "")
@@ -11181,18 +11208,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     )
 
             def single_prompt(role: str) -> str:
-                return append_subject_analysis(
+                base = append_subject_analysis(
                     f"{standalone_prompt.rstrip()}\n\n"
                     f"{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}",
                     vision_identity,
                 )
+                return f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
 
             def two_image_prompt(left_role: str, right_role: str) -> str:
-                return append_subject_analysis(
+                base = append_subject_analysis(
                     f"{prompt.rstrip()}\n\n"
                     f"{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}",
                     vision_identity,
                 )
+                return f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
 
             def generate_one(
                 image_prompt: str,
@@ -11270,6 +11299,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         usage_place=usage_place,
                         scene_style=resolved_scene_style,
                     )
+                if pet_product:
+                    # 放在整段最后：必须压过逐格角色/预设里「手持使用」的写法。
+                    grid_prompt = f"{grid_prompt}\n\n{PET_PRODUCT_RULE}"
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.
                 media = generate_one(
@@ -11774,6 +11806,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 main_background=main_background,
                 usage_place=usage_place,
             )
+        if _is_pet_product(category, optimized_title):
+            base_prompt = f"{base_prompt.rstrip()}\n\n{PET_PRODUCT_RULE}"
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)
         attempt_count = 0
         provider_status_class = "success"
@@ -13848,7 +13882,15 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "selection_criteria": raw.get("selection_criteria") or {},
                 "variant_complexity": raw.get("variant_complexity") or {},
                 "captured_fields": raw.get("captured_fields") or {},
-                "source_variant_records": raw.get("source_variant_records") or [],
+                "source_variant_records": [
+                    {
+                        **record,
+                        # 「颜色=蓝色 S」在展示层就拆成颜色 + 尺码，旧草稿也能直接看到拆分结果。
+                        "attributes": normalize_variant_attributes(record.get("attributes")),
+                    }
+                    for record in (raw.get("source_variant_records") or [])
+                    if isinstance(record, dict)
+                ],
                 "raw_variant_combinations_count": len(raw.get("raw_variant_combinations") or []),
             },
             "raw_payload_summary": True,
@@ -13865,13 +13907,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         for variant in variants:
             if not isinstance(variant, dict):
                 continue
-            attributes = variant.get("attributes") if isinstance(variant.get("attributes"), dict) else {}
+            raw_attributes = (
+                variant.get("attributes") if isinstance(variant.get("attributes"), dict) else {}
+            )
+            raw_label = "/".join(str(value) for value in raw_attributes.values())
+            attributes = normalize_variant_attributes(raw_attributes)
+            variant["attributes"] = attributes
             label = "/".join(str(value) for value in attributes.values())
             variant_id = str(variant.get("sku_id") or variant.get("source_sku_id") or "")
-            if label in delete_values or variant_id in delete_values:
+            # 兼容拆分前的旧 key（"蓝色 S"）与拆分后的新 key（"蓝色/S"）。
+            if label in delete_values or raw_label in delete_values or variant_id in delete_values:
                 continue
-            if label in edits:
-                variant["display_name"] = str(edits[label]).strip()
+            edited = edits.get(label) or edits.get(raw_label)
+            if edited is not None:
+                variant["display_name"] = str(edited).strip()
             kept.append(variant)
         raw["source_variant_records"] = kept
         raw["sku_name_edits"] = edits
