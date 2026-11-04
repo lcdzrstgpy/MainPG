@@ -115,6 +115,8 @@ class StubCatalogClient:
     def __init__(self, required: bool = True, values: list[dict[str, Any]] | None = None) -> None:
         self._required = required
         self._values = values or [{"vid": 10, "value": "PU"}]
+        #: 记录「被要求建兜底规格」的次数，用来断言不该建的时候没建
+        self.spec_requests: list[tuple[int, str]] = []
 
     def attributes(self, cat_id: int, supported_type: int = 1) -> dict[str, Any]:
         return {
@@ -136,6 +138,7 @@ class StubCatalogClient:
         self, spec_name: str = "", catalog: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """无销售属性类目兜底用的真实规格（颜色/默认）。"""
+        self.spec_requests.append((1001, spec_name or "默认"))
         return {
             "parentSpecId": 1001,
             "parentSpecName": "颜色",
@@ -1369,11 +1372,13 @@ def test_gateway_auth_errors_carry_actionable_hint() -> None:
     assert plain == "Temu 拒绝了这次提交：boom（错误码 SOME_NEW_CODE）"
 
 
-def test_gateway_error_6000002_explains_stale_attributes() -> None:
-    """6000002「货品类目属性更新」要说清是属性表过时，并给出下一步动作。
+def test_gateway_error_6000002_points_at_the_real_cause() -> None:
+    """6000002「货品类目属性更新」的提示不能再说「属性表过时」。
 
-    实测 2026-11-03：桌布类目 10498 提交时回这句话。本地属性表是 1 小时缓存，
-    过时后组出来的 pid/vid 全是旧的，照旧表反复补必填项补几次都还是同一个错。
+    2026-11-03 最终定位：桌布 / 化妆包这类没有销售属性的类目，真因是补的规格
+    不是该类目的合法值（id 全 0 的占位、或值不在「颜色」预设值里），
+    跟缓存新旧无关 —— 清了缓存重拉同一份属性表照样报。
+    所以文案要引导「先看 Temu 点名了哪个属性」，而不是让用户去点「刷新类目树」白折腾。
     """
     from wh_local.modules.temu_publish.router import _CATEGORY_ATTRS_CHANGED, _gateway_message
 
@@ -1381,8 +1386,9 @@ def test_gateway_error_6000002_explains_stale_attributes() -> None:
     text = _gateway_message("6000002", "货品类目属性更新，请刷新页面后重新创建商品")
     assert "Temu 拒绝了这次提交：货品类目属性更新" in text
     assert "6000002" in text
-    assert "属性表已过时" in text
+    assert "属性表已过时" not in text, "这个结论已经被证伪，别再误导排查"
     assert "重新选" in text
+    assert "真实规格" in text
 
 
 def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2171,11 +2177,17 @@ def test_single_sku_falls_back_to_placeholder_when_gateway_unreachable(tmp_path:
 
 
 def test_category_with_sale_properties_rejects_empty_specs(tmp_path: Path) -> None:
-    """有销售属性的类目不能按单 SKU 发：提前报错，别让 Temu 回一句难懂的。"""
-    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=SaleCatalogClient())
+    """有销售属性的类目不能按单 SKU 发：提前报错，别让 Temu 回一句难懂的。
+
+    并且**不能**去建兜底规格：那种情况下这个请求注定被本地拒掉，
+    再向 Temu 发一次 spec.create 纯属浪费，还会往店铺规格库里塞用不上的值。
+    """
+    client = SaleCatalogClient()
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
 
     with pytest.raises(ValueError, match="至少要给每个 SKU 填一个规格值"):
         service.build_goods_payload(_single_sku_draft())
+    assert client.spec_requests == [], "有销售属性时不该调用 ensure_default_spec"
 
 
 def test_multi_variant_still_requires_specs(tmp_path: Path) -> None:

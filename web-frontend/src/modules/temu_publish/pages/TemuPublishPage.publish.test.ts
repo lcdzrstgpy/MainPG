@@ -1515,7 +1515,9 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
   // 提示必须把这条指出来，不能再让用户「等 1-2 分钟再刷」白等。
   assert.match(publish, /属性定义没有变化/);
   assert.match(publish, /本来就没有销售属性/);
-  assert.match(publish, /旧版补的是假规格/);
+  // 别再对着终端用户说「把程序更新到最新版」——他自己就是最新版，这句等于推卸
+  assert.doesNotMatch(publish, /把程序和本地后端都更新到最新版/);
+  assert.match(publish, /把类目 id 发给开发排查/);
   // diff 本身的算法在 attributeModel.test.ts 里做行为测试
   assert.match(attrModel, /export function describeAttributeDiff\(/);
   assert.match(attrModel, /export function attributeDiffText\(/);

@@ -763,7 +763,15 @@ class TemuPublishService:
         # 一个规格值都没给时，先拿一条**真实**规格兜底（不能再用 id 全 0 的假规格，
         # 那会让 goods.add 一直回 6000002，详见 client.ensure_default_spec 的注释）。
         fallback_spec: dict[str, Any] | None = None
-        if not any(skc.main_specs for skc in draft.skcs) and not any(
+        # 只有**确实没有销售属性**的类目才需要兜底规格。
+        # 类目本来就有销售属性、只是草稿没填规格时，_assemble_payload 会直接抛
+        # 「至少要给每个 SKU 填一个规格值」——那种情况下再去建规格，等于向 Temu
+        # 发一次注定用不上的写请求（还会往店铺规格库塞垃圾值）。
+        has_sale_attr = any(
+            isinstance(item, dict) and item.get("isSale")
+            for item in ((catalog or {}).get("properties") or [])
+        )
+        if not has_sale_attr and not any(skc.main_specs for skc in draft.skcs) and not any(
             sku.specs for skc in draft.skcs for sku in skc.skus
         ):
             # 类目把「颜色」当商品属性时，规格值必须是它的合法预设值，
