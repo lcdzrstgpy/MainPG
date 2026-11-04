@@ -755,17 +755,31 @@ test("类目不需要尺码表时不带旧的尺码模板 id", () => {
   assert.match(page, /size_template_ids: sizeChart\.has === false \? \[\] : sizeTemplates,/);
 });
 
-test("没有销售属性的类目按单 SKU 发（桌布这类永远发不出去的老问题）", () => {
-  // saleValueIndex 为空 = 该类目没有 isSale 属性 → 不调 ensureSpec，规格发空数组
-  assert.match(page, /const singleSku = saleValueIndex\.size === 0;/);
+test("单 SKU 与多规格：按类目能力走，不能只看 isSale", () => {
+  // 实测 2026-11-04：化妆包 30988 / 桌布 10498 / 餐垫 10493 的 attrs 里
+  // 一个 isSale 都没有，但 inputMaxSpecNum=2，说明允许自定义规格；
+  // 假发 31035 反过来（inputMaxSpecNum=0、带两个预设销售属性）。
+  // 所以「没有 isSale」不能直接判单 SKU —— 化妆包被硬压成单 SKU 是错的。
+  assert.match(page, /const specDimLimit = Number\(attributes\?\.inputMaxSpecNum \?\? 0\);/);
+  assert.match(page, /const hasPresetSaleProps = saleValueIndex\.size > 0;/);
+  assert.match(page, /const canCustomSpecs = specDimLimit > 0;/);
+  // 有预设 → 必须多规格；没有预设但能自定义 → 看用户开关；都没有 → 单 SKU
+  assert.match(
+    page,
+    /const singleSkuMode = hasPresetSaleProps \? false : !\(canCustomSpecs && variantsOn\);/,
+  );
+  // 单 SKU 分支仍然是「规格发空数组」
   assert.match(page, /main_specs: \[\],\n\s*skus: \[buildSku\(row, "变种第 1 行", \[\], skcImage\)\],/);
-  assert.match(page, /该类目没有销售属性（不能建颜色\/尺码变种）：只提交第 1 行/);
+  // 没有 isSale 但要能开变种：给一个勾选项，别再写「只能单 SKU」
+  assert.match(page, /className="temu-variant-toggle"/);
+  assert.match(page, /多种颜色\/尺码就勾上/);
+  assert.ok(!page.includes("只能按单 SKU 发布；想按颜色卖就换一个带变种的类目"));
 
   // 价格/库存/物流字段只能有一份映射（抽成 buildSku，两条路径共用）
   assert.match(page, /const buildSku = \(\n\s*row: VariantRow,/);
 
-  // 变种面板要按这个开关收起变种生成区与颜色/尺码两列
-  assert.match(page, /singleSku=\{saleValueIndex\.size === 0\}/);
+  // 变种面板按 singleSku 收起变种生成区与颜色/尺码两列
+  assert.match(page, /singleSku=\{singleSkuMode\}/);
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /singleSku\?: boolean;/);
   assert.match(panel, /\{!singleSku && \(/);

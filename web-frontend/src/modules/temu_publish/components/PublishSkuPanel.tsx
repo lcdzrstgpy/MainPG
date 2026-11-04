@@ -516,7 +516,11 @@ export function PublishSkuPanel({
                     list="temu-color-options"
                     value={row.colorName}
                     onChange={(event) => onUpdateRow(row.key, { colorName: event.target.value })}
-                    placeholder={`选预设${colorSpecName}`}
+                    // 类目没有预设值（化妆包这类走自定义规格）时别写「选预设」，
+                    // 否则用户以为必须从下拉里挑，而其实要自己输入
+                    placeholder={
+                      colorOptions.length ? `选预设${colorSpecName}` : `输入${colorSpecName}，如白色`
+                    }
                     title={`Temu 只认类目预设的${colorSpecName}值，自己输入会被拒`}
                   />
                   <input
@@ -524,7 +528,7 @@ export function PublishSkuPanel({
                     list="temu-size-options"
                     value={row.sizeName}
                     onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
-                    placeholder="选预设值"
+                    placeholder={sizeOptions.length ? "选预设值" : `输入${sizeSpecName}`}
                   />
                 </>
               )}

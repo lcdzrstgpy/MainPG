@@ -581,6 +581,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [showFieldErrors, setShowFieldErrors] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 类目没有预设销售属性、但允许自定义规格时（化妆包这类），由用户决定单 SKU 还是多规格
+  const [variantsOn, setVariantsOn] = useState(false);
   // 顶部「绑定/切换店铺」的小菜单：不占地方，点开才展开已存店铺
   const [shopMenuOpen, setShopMenuOpen] = useState(false);
   const [accessToken, setAccessToken] = useState("");
@@ -1729,6 +1731,31 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return index;
   }, [attributes]);
 
+  /**
+   * 类目允许几个自定义规格维度（Temu 的 inputMaxSpecNum）。
+   *
+   * 实测（2026-11-04，真实店铺）：
+   *   化妆包 30988 = 2、桌布 10498 = 2、餐垫 10493 = 2 —— 这些类目 attrs 里
+   *   **一个 isSale 属性都没有**，但都允许自定义规格；
+   *   假发 31035 = 0，反而带两个预设销售属性（颜色 / 头发长度）。
+   *
+   * 所以「没有 isSale」≠「不能多变种」：以前只看 isSale 就判单 SKU，
+   * 化妆包这种能卖多色的类目被硬压成单 SKU，是错的。
+   */
+  const specDimLimit = Number(attributes?.inputMaxSpecNum ?? 0);
+  /** 类目自带预设销售属性（颜色/尺码带 specId，可直接选） */
+  const hasPresetSaleProps = saleValueIndex.size > 0;
+  /** 没有预设、但允许自定义规格（值由我们 createSpec 建） */
+  const canCustomSpecs = specDimLimit > 0;
+
+  /**
+   * 走单 SKU 还是多规格：
+   * - 类目有预设销售属性 → 必须多规格（不然 Temu 判「规格不能为空」）
+   * - 没有预设但允许自定义 → 看用户勾选（默认单 SKU，保持原有习惯）
+   * - 两样都没有 → 只能单 SKU
+   */
+  const singleSkuMode = hasPresetSaleProps ? false : !(canCustomSpecs && variantsOn);
+
   /** 取某个父规格下的预设值（给变种表下拉用）。 */
   const specOptions = (parentSpecId: number): string[] =>
     (saleValueIndex.get(parentSpecId) ?? []).map((item) => item.name);
@@ -2062,11 +2089,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
     const skcs: TemuGoodsDraft["skcs"] = [];
     /**
-     * 类目没有销售属性（如「桌布/亚麻布」这类只有商品属性的类目）：
-     * Temu 不给颜色/尺码变种，只能建单 SKU 商品 —— 规格声明与 SKU 规格都发空数组。
-     * 以前这里一律走 ensureSpec，这类类目直接抛「不是合法的规格值」，等于永远发不出去。
+     * 单 SKU 分支：规格声明与 SKU 规格都发空数组。
+     *
+     * 触发条件见上面的 singleSku：类目没有预设销售属性、且用户没开「多规格」。
+     * 注意**不代表类目不支持变种** —— 化妆包/桌布这类没有 isSale，但
+     * inputMaxSpecNum=2，用户打开开关后照样能按颜色发（已有成功发布的实例）。
      */
-    const singleSku = saleValueIndex.size === 0;
+    const singleSku = singleSkuMode;
     if (singleSku) {
       if (rows.length > 1) {
         warnings.push(
@@ -3032,10 +3061,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   </>
                 )}
 
-                {leaf?.isLeaf && attributes && saleValueIndex.size === 0 && (
-                  <p className="temu-cat-hint">
-                    该类目在 Temu 没有销售属性（建不了颜色/尺码变种），只能按单 SKU 发布；想按颜色卖就换一个带变种的类目。
-                  </p>
+                {leaf?.isLeaf && attributes && !hasPresetSaleProps && (
+                  canCustomSpecs ? (
+                    <label className="temu-variant-toggle">
+                      <input
+                        type="checkbox"
+                        checked={variantsOn}
+                        onChange={(event) => setVariantsOn(event.target.checked)}
+                      />
+                      <span>
+                        这个类目可以按规格发（最多 {specDimLimit} 个维度）：
+                        <strong>多种颜色/尺码就勾上</strong>
+                        <em className="temu-muted">
+                          不勾＝单 SKU（只需价格库存）；勾上＝填颜色/尺码，提交时自动建对应规格值
+                        </em>
+                      </span>
+                    </label>
+                  ) : (
+                    <p className="temu-cat-hint">
+                      该类目在 Temu 没有销售属性，也没有自定义规格入口 —— 只能按单 SKU 发布。
+                    </p>
+                  )
                 )}
 
                 <details className="temu-cat-advanced">
@@ -3475,7 +3521,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               onSizesTextChange={(value) => patch({ sizesText: value })}
               extCodePrefix={productCode}
               fallbackThumb={effectiveMaterial}
-              singleSku={saleValueIndex.size === 0}
+              singleSku={singleSkuMode}
             />
             {sizeChart.has !== false && (
               <div className="temu-field">

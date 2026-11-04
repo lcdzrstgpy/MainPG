@@ -4381,3 +4381,40 @@ textarea.temu-input {
   font-size: 11px;
   font-weight: 700;
 }
+
+/* ---- 13. 「类目没有预设销售属性但允许自定义规格」的开关 ----
+   化妆包这类类目 attrs 里没有 isSale，但 inputMaxSpecNum=2，能按颜色发。
+   以前直接判单 SKU，用户想卖多色没入口。 */
+.is-console .temu-variant-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.is-console .temu-variant-toggle input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+.is-console .temu-variant-toggle span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  color: var(--temu-text);
+}
+
+.is-console .temu-variant-toggle strong {
+  font-weight: 600;
+}
+
+.is-console .temu-variant-toggle:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+}
