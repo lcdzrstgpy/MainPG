@@ -13,7 +13,8 @@
     range: "7d",
     hiddenStores: readHiddenStores(),
     allStores: [],
-    page: "overview",
+    page: "boss",
+    bossRank: "store",
     orderStatus: "",
     orderKeyword: "",
     trendMode: "store",
@@ -160,7 +161,7 @@
       localStorage.setItem(TOKEN_KEY, state.token);
       localStorage.setItem(ACCOUNT_KEY, JSON.stringify(state.account));
       setView("dashboard");
-      setPage("overview");
+      setPage("boss");
       await load();
     } catch (cause) {
       error.textContent = cause.message || String(cause);
@@ -458,6 +459,8 @@
 
       var stroke = document.createElementNS("http://www.w3.org/2000/svg", "path");
       stroke.setAttribute("class", "series-line");
+      // pathLength=1 让 stroke-dasharray:1 能覆盖整条曲线，CSS 里据此做「描线」入场动画。
+      stroke.setAttribute("pathLength", "1");
       stroke.setAttribute("d", linePath);
       stroke.setAttribute("stroke", item.color);
       svg.appendChild(stroke);
@@ -1075,6 +1078,10 @@
     var pending = 0;
     var active = 0;
     var sales30 = 0;
+    var pricePending = 0;
+    var notPublished = 0;
+    var published = 0;
+    var delisted = 0;
     codes.forEach(function (code) {
       var payload = latest[code].payload;
       var rowPending = Number(payload.pending_shipment || 0);
@@ -1083,6 +1090,10 @@
       pending += rowPending;
       active += rowActive;
       sales30 += rowSales;
+      pricePending += Number(payload.listing_price_pending || 0);
+      notPublished += Number(payload.listing_not_published || 0);
+      published += Number(payload.listing_published || 0);
+      delisted += Number(payload.listing_delisted || 0);
       var tr = document.createElement("tr");
       tr.innerHTML =
         "<td class='store-name'>" + escapeHtml(names[code] || code) + "</td>" +
@@ -1090,6 +1101,10 @@
         "<td>" + escapeHtml(staff[code] || "-") + "</td>" +
         "<td class='num'>" + integer(rowPending) + "</td>" +
         "<td class='num'>" + integer(rowActive) + "</td>" +
+        "<td class='num'>" + integer(payload.listing_price_pending) + "</td>" +
+        "<td class='num'>" + integer(payload.listing_not_published) + "</td>" +
+        "<td class='num pos'>" + integer(payload.listing_published) + "</td>" +
+        "<td class='num'>" + integer(payload.listing_delisted) + "</td>" +
         "<td class='num'>" + integer(rowSales) + "</td>" +
         "<td class='num " + (Number(payload.refund_pending || 0) > 0 ? "neg" : "") + "'>" +
           integer(payload.refund_pending) + "</td>" +
@@ -1102,6 +1117,10 @@
       sumCard("店铺数", integer(codes.length)) +
       sumCard("待发货合计", integer(pending)) +
       sumCard("在售商品合计", integer(active)) +
+      sumCard("价格申报中合计", integer(pricePending)) +
+      sumCard("未发布合计", integer(notPublished)) +
+      sumCard("已发布合计", integer(published)) +
+      sumCard("已下架合计", integer(delisted)) +
       sumCard("近 30 日销量合计", integer(sales30));
   }
 
@@ -1352,13 +1371,757 @@
     }
   }
 
+  // ---------- 经营驾驶舱 ----------
+  // 只看三件事：赚了多少、钱花在哪、有什么风险。
+  // 所以这一页不做大表格，全部用「结论卡 + 白话解释 + 金额化风险」。
+  var BOSS_COLOR = {
+    brand: "#10b981",
+    blue: "#3b82f6",
+    amber: "#f59e0b",
+    slate: "#94a3b8",
+    danger: "#ef4444"
+  };
+
+  function bossNumber(value) {
+    var number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function bossMoney(value) {
+    var number = Number(value) || 0;
+    return (number < 0 ? "-" : "") + "¥" + money(Math.abs(number));
+  }
+
+  function bossCompact(value) {
+    var number = Number(value) || 0;
+    var sign = number < 0 ? "-" : "";
+    var abs = Math.abs(number);
+    if (abs >= 100000000) return sign + (abs / 100000000).toFixed(2) + "亿";
+    if (abs >= 10000) return sign + (abs / 10000).toFixed(1) + "万";
+    return sign + integer(abs);
+  }
+
+  function bossDelta(current, previous) {
+    var cur = Number(current);
+    var prev = Number(previous);
+    if (!Number.isFinite(cur) || !Number.isFinite(prev) || prev === 0) return null;
+    return (cur - prev) / Math.abs(prev);
+  }
+
+  function bossDeltaChip(delta) {
+    if (delta == null) return "<span class='boss-delta is-flat'>上期无对比</span>";
+    return "<span class='boss-delta " + (delta >= 0 ? "is-up" : "is-down") + "'>" +
+      (delta >= 0 ? "▲ " : "▼ ") + Math.abs(delta * 100).toFixed(1) + "%</span>" +
+      "<span class='boss-delta-label'>较上期</span>";
+  }
+
+  function bossSparkline(values, color) {
+    var list = (values || []).map(function (value) { return Number(value) || 0; });
+    if (list.length < 2) return "";
+    var width = 140;
+    var height = 36;
+    var pad = 3;
+    var min = Math.min.apply(null, list);
+    var max = Math.max.apply(null, list);
+    var span = max - min || 1;
+    var points = list.map(function (value, index) {
+      return [
+        pad + ((width - pad * 2) * index) / (list.length - 1),
+        height - pad - ((height - pad * 2) * (value - min)) / span
+      ];
+    });
+    var line = smoothPath(points);
+    var area = line +
+      " L" + points[points.length - 1][0].toFixed(1) + " " + (height - pad) +
+      " L" + points[0][0].toFixed(1) + " " + (height - pad) + " Z";
+    return "<svg viewBox='0 0 " + width + " " + height + "' preserveAspectRatio='none' aria-hidden='true'>" +
+      "<path d='" + area + "' fill='" + color + "' opacity='.12'></path>" +
+      "<path d='" + line + "' fill='none' stroke='" + color + "' stroke-width='2' stroke-linecap='round'></path>" +
+      "</svg>";
+  }
+
+  function bossEmptyArt(title, desc) {
+    return "<div class='boss-empty'>" +
+      "<svg viewBox='0 0 96 72' aria-hidden='true'>" +
+      "<rect x='10' y='28' width='52' height='32' rx='6' fill='none' stroke='currentColor' stroke-width='2'/>" +
+      "<path d='M10 36h52' stroke='currentColor' stroke-width='2'/>" +
+      "<path d='M30 28l6-12h18l6 12' fill='none' stroke='currentColor' stroke-width='2' stroke-linejoin='round'/>" +
+      "<circle cx='74' cy='52' r='10' fill='none' stroke='currentColor' stroke-width='2'/>" +
+      "<path d='M70 52l3 3 6-6' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/>" +
+      "</svg>" +
+      "<strong>" + title + "</strong><p>" + desc + "</p></div>";
+  }
+
+  function bossHealthChip(label, value, tone, tip) {
+    return "<span class='boss-chip " + (tone || "") + "'" +
+      (tip ? " title='" + escapeHtml(tip) + "'" : "") + ">" +
+      "<b>" + escapeHtml(value) + "</b>" + escapeHtml(label) + "</span>";
+  }
+
+  function bossHeroCard(config) {
+    var raw = config.raw == null ? "" : String(config.raw);
+    return "<article class='boss-card " + (config.tone || "") + "'>" +
+      "<div class='boss-card-top'><span class='boss-card-label'>" + config.label + "</span>" +
+      (config.tip ? "<i class='boss-tip' title='" + escapeHtml(config.tip) + "'>?</i>" : "") +
+      "</div>" +
+      "<strong class='boss-card-value' data-value='0' data-target='" + escapeHtml(raw) +
+        "' data-format='" + config.format + "'>" + config.display + "</strong>" +
+      "<div class='boss-card-foot'>" + (config.foot || "") + "</div>" +
+      "<p class='boss-card-hint'>" + config.hint + "</p>" +
+      "<div class='boss-spark'>" + (config.spark || "") + "</div>" +
+      "</article>";
+  }
+
+  /** 只统计「利润算得出来」的订单：这类订单的 GMV 与各项成本能对得上。 */
+  function bossOrderCosts(rows) {
+    var summary = { count: 0, incomplete: 0, gmv: 0, commission: 0, purchase: 0, head: 0, tail: 0, profit: 0 };
+    (rows || []).forEach(function (row) {
+      if (row.kind !== "order") return;
+      var payload = row.payload || {};
+      if (payload.profit_estimate_cny == null) {
+        summary.incomplete += 1;
+        return;
+      }
+      summary.count += 1;
+      summary.gmv += bossNumber(payload.gmv_cny);
+      summary.commission += bossNumber(payload.commission_cny);
+      summary.purchase += bossNumber(payload.purchase_cost_cny);
+      summary.head += bossNumber(payload.head_freight_cny);
+      summary.tail += bossNumber(payload.tail_freight_cny);
+      summary.profit += bossNumber(payload.profit_estimate_cny);
+    });
+    return summary;
+  }
+
+  function bossFinanceSummary(rows) {
+    var summary = { total: 0, ad: 0, penalty: 0, other: 0 };
+    (rows || []).forEach(function (row) {
+      if (row.kind !== "finance") return;
+      var amount = Number((row.payload || {}).amount || 0);
+      if (amount >= 0) return;
+      var value = -amount;
+      var category = String((row.payload || {}).category || "");
+      summary.total += value;
+      if (category === "promotion") summary.ad += value;
+      else if (category === "penalty") summary.penalty += value;
+      else summary.other += value;
+    });
+    return summary;
+  }
+
+  function bossLatestMetrics(rows) {
+    var map = {};
+    (rows || []).forEach(function (row) {
+      if (row.kind !== "metric") return;
+      var code = String(row.store_code || "");
+      if (!code) return;
+      var payload = row.payload || {};
+      var stamp = String(payload.captured_at || row.stat_date || "");
+      if (!map[code] || stamp > map[code].stamp) map[code] = { stamp: stamp, payload: payload };
+    });
+    return map;
+  }
+
+  function renderBoss(overview, records, financeRecords, orderRecords, previous) {
+    var totals = (overview && overview.totals) || {};
+    var stores = (overview && overview.all_stores) || [];
+    var storeRows = (overview && overview.top_stores) || [];
+    var trend = (overview && overview.trend) || [];
+    var byAccount = (overview && overview.by_account) || [];
+    var prevTotals = (previous && previous.totals) || null;
+
+    var costs = bossOrderCosts(orderRecords);
+    var expenses = bossFinanceSummary(financeRecords);
+    var financeTotal = bossNumber(totals.finance_expense_cny) || expenses.total;
+    var adCost = expenses.ad;
+    var penalty = expenses.penalty;
+    var otherCost = Math.max(0, financeTotal - adCost - penalty);
+
+    var sales = bossNumber(totals.gmv_cny);
+    var hasCostChain = costs.count > 0;
+    var chainSales = hasCostChain ? costs.gmv : sales;
+    var orderProfit = hasCostChain
+      ? costs.profit
+      : (totals.profit_cny == null ? null : bossNumber(totals.profit_cny));
+    var netProfit = orderProfit == null ? null : orderProfit - financeTotal;
+    var payback = bossNumber(totals.settlement_payback_cny);
+    var pendingCash = Math.max(0, sales - payback);
+    var paybackRate = sales > 0 ? payback / sales : null;
+
+    var prevNet = null;
+    if (prevTotals && prevTotals.profit_cny != null) {
+      prevNet = bossNumber(prevTotals.profit_cny) - bossNumber(prevTotals.finance_expense_cny);
+    }
+
+    var trendDates = trend.map(function (row) { return String(row.key || row.label || ""); });
+    var gmvSeries = trend.map(function (row) { return bossNumber(row.gmv_cny); });
+    var netSeries = trend.map(function (row) {
+      if (row.profit_cny == null) return 0;
+      return bossNumber(row.profit_cny) - bossNumber(row.finance_expense_cny);
+    });
+
+    // 数据健康条：最先要确认的是「这些数字能不能信」。
+    var lastDate = String((overview && overview.end) || "").slice(0, 10);
+    if (!lastDate && trendDates.length) lastDate = trendDates[trendDates.length - 1];
+    var withData = stores.filter(function (item) {
+      return String(item.last_stat_date || "") !== "";
+    }).length;
+    var profitStores = storeRows.filter(function (item) { return item.profit_cny != null; }).length;
+    var cutoffDate = lastDate ? iso(addDays(new Date(lastDate + "T00:00:00"), -7)) : "";
+    var staleStores = stores.filter(function (item) {
+      var stamp = String(item.last_stat_date || "");
+      return !stamp || (cutoffDate !== "" && stamp < cutoffDate);
+    }).length;
+    $("#bossHealth").innerHTML =
+      bossHealthChip("数据截止", lastDate ? lastDate.slice(5) : "暂无", "", "最近一天有经营数据的日期") +
+      bossHealthChip("覆盖店铺", withData + "/" + stores.length, withData === stores.length ? "is-ok" : "is-warn", "有上报数据的店铺数 / 团队店铺总数") +
+      bossHealthChip("利润完整", profitStores + "/" + storeRows.length, profitStores === storeRows.length ? "is-ok" : "is-warn", "能算出利润的店铺：需要维护采购价和重量") +
+      (staleStores
+        ? bossHealthChip("超 7 天未报", staleStores + " 家", "is-danger", "这些店铺的数据可能已经过期")
+        : bossHealthChip("上报状态", "全部新鲜", "is-ok", "所有店铺 7 天内有数据更新"));
+
+    if (!storeRows.length && !trend.length) {
+      $("#bossHero").innerHTML = bossEmptyArt(
+        "还没有可以看的经营数据",
+        "员工在工作台采集数据并点「提交本周汇总」后，这里会自动出现结论。"
+      );
+      $("#bossWaterfall").innerHTML = "";
+      $("#bossWaterfallNote").textContent = "";
+      $("#bossRisks").innerHTML = bossEmptyArt("暂时没有风险项", "有数据后会自动列出待处理事项。");
+      $("#bossFunnel").innerHTML = "";
+      $("#bossRank").innerHTML = "";
+      $("#bossTrendChart").innerHTML = "";
+      $("#bossTrendLegend").innerHTML = "";
+      $("#bossProfitBadge").textContent = "—";
+      return;
+    }
+
+    $("#bossHero").innerHTML =
+      bossHeroCard({
+        label: "净利",
+        raw: netProfit,
+        format: "money",
+        display: netProfit == null ? "—" : bossMoney(netProfit),
+        tone: netProfit == null ? "" : (netProfit >= 0 ? "is-good" : "is-bad"),
+        tip: "订单利润减去广告、罚款等费用，才是真正落袋的钱。",
+        hint: "扣掉货款、运费、佣金、广告和罚款后，真正赚到的钱。",
+        foot: bossDeltaChip(bossDelta(netProfit, prevNet)) +
+          "<span class='boss-delta-label'>利润完整 " + profitStores + "/" + storeRows.length + " 店</span>",
+        spark: bossSparkline(netSeries, netProfit != null && netProfit < 0 ? BOSS_COLOR.danger : BOSS_COLOR.brand)
+      }) +
+      bossHeroCard({
+        label: "销售额",
+        raw: sales,
+        format: "money",
+        display: bossMoney(sales),
+        tip: "买家一共付了多少钱，还没有扣任何成本。",
+        hint: "买家一共付了多少钱，还没扣成本。",
+        foot: bossDeltaChip(bossDelta(sales, prevTotals ? prevTotals.gmv_cny : null)),
+        spark: bossSparkline(gmvSeries, BOSS_COLOR.blue)
+      }) +
+      bossHeroCard({
+        label: "已回款",
+        raw: payback,
+        format: "money",
+        display: bossMoney(payback),
+        tip: "平台已经结算到账的钱，和销售额不是一回事。",
+        hint: "平台已经结算到账的钱，通常比销售额晚一段时间。",
+        foot: "<span class='boss-delta-label'>回款率 " + (paybackRate == null ? "—" : (paybackRate * 100).toFixed(0) + "%") + "</span>",
+        spark: bossSparkline(trend.map(function (row) { return bossNumber(row.settlement_payback_cny); }), BOSS_COLOR.amber)
+      }) +
+      bossHeroCard({
+        label: "待回款",
+        raw: pendingCash,
+        format: "money",
+        display: bossMoney(pendingCash),
+        tone: pendingCash > 0 ? "is-pending" : "",
+        tip: "卖出去但平台还没结算的钱，通常压在账期里。",
+        hint: "卖出去了、还没结算的钱，压在平台账期里。",
+        foot: "<span class='boss-delta-label'>销售额 − 已回款</span>",
+        spark: bossSparkline(trend.map(function (row) {
+          return Math.max(0, bossNumber(row.gmv_cny) - bossNumber(row.settlement_payback_cny));
+        }), BOSS_COLOR.slate)
+      });
+
+    document.querySelectorAll("#bossHero .boss-card-value").forEach(function (el) {
+      var target = Number(el.getAttribute("data-target"));
+      if (!Number.isFinite(target)) return;
+      var format = el.getAttribute("data-format");
+      countUp(el, target, format === "money"
+        ? function (value) { return bossMoney(value); }
+        : function (value) { return integer(value); });
+    });
+
+    paintBossWaterfall({
+      chainSales: chainSales,
+      hasCostChain: hasCostChain,
+      costs: costs,
+      orderProfit: orderProfit,
+      adCost: adCost,
+      penalty: penalty,
+      otherCost: otherCost,
+      netProfit: netProfit,
+      orderRecords: orderRecords
+    });
+
+    renderBossRisks({
+      metricRows: records,
+      penalty: penalty,
+      staleStores: staleStores
+    });
+
+    renderBossFunnel(totals);
+
+    state.boss = { storeRows: storeRows, byAccount: byAccount };
+    paintBossRank();
+
+    $("#bossTrendHint").textContent = (trendDates.length ? trendDates[0] + " ~ " + trendDates[trendDates.length - 1] : "—") +
+      " · 净利只统计已核算成本的订单";
+    drawBossTrend($("#bossTrendChart"), trendDates, [
+      { name: "销售额", color: BOSS_COLOR.blue, values: gmvSeries },
+      { name: "净利", color: BOSS_COLOR.brand, values: netSeries }
+    ]);
+    $("#bossTrendLegend").innerHTML = [
+      { name: "销售额", color: BOSS_COLOR.blue },
+      { name: "净利（已扣费用）", color: BOSS_COLOR.brand }
+    ].map(function (item) {
+      return "<span class='item'><i class='dot' style='background:" + item.color + "'></i>" +
+        escapeHtml(item.name) + "</span>";
+    }).join("");
+  }
+
+  function paintBossWaterfall(state) {
+    var el = $("#bossWaterfall");
+    if (!el) return;
+    var base = state.chainSales > 0 ? state.chainSales : 0;
+    var running = base;
+    var rows = [];
+    rows.push({ label: "销售额", value: base, kind: "is-start" });
+
+    if (state.hasCostChain) {
+      [
+        { label: "平台佣金", value: state.costs.commission, hint: "平台按成交金额收取的佣金" },
+        { label: "采购成本", value: state.costs.purchase, hint: "商品进货花的钱" },
+        { label: "头程运费", value: state.costs.head, hint: "从国内发到平台仓库的运费" },
+        { label: "尾程运费", value: state.costs.tail, hint: "平台配送给买家的运费" }
+      ].forEach(function (step) {
+        if (step.value <= 0) return;
+        running -= step.value;
+        rows.push({
+          label: step.label,
+          delta: step.value,
+          value: Math.max(0, running),
+          kind: "is-minus",
+          hint: step.hint
+        });
+      });
+    }
+
+    var profitValue = state.hasCostChain ? Math.max(0, running) : state.orderProfit;
+    if (profitValue != null) {
+      running = profitValue;
+      rows.push({
+        label: state.hasCostChain ? "订单利润" : "订单利润（汇总）",
+        value: Math.max(0, running),
+        kind: "is-subtotal",
+        hint: state.hasCostChain ? "销售额扣掉佣金、采购和运费后剩下的钱" : "平台订单利润合计，成本明细暂未拆分"
+      });
+    }
+
+    if (running != null) {
+      [
+        { label: "广告推广", value: state.adCost, hint: "投广告花的钱" },
+        { label: "平台罚款", value: state.penalty, hint: "违规或超时被平台扣的钱" },
+        { label: "其他费用", value: state.otherCost, hint: "对账中心里的其他支出" }
+      ].forEach(function (step) {
+        if (step.value <= 0) return;
+        running -= step.value;
+        rows.push({
+          label: step.label,
+          delta: step.value,
+          value: Math.max(0, running),
+          kind: "is-minus",
+          hint: step.hint
+        });
+      });
+    }
+
+    rows.push({
+      label: "净利",
+      value: running == null ? 0 : Math.max(0, running),
+      kind: "is-final" + (running != null && running < 0 ? " is-negative" : ""),
+      hint: "真正落袋的钱",
+      empty: running == null
+    });
+
+    el.innerHTML = rows.map(function (row) {
+      var width = base > 0 ? Math.max(2, Math.min(100, (row.value / base) * 100)) : 2;
+      var valueText = row.empty
+        ? "—"
+        : (row.kind === "is-minus" ? "−" + bossMoney(row.delta) : bossMoney(row.value));
+      return "<div class='wf-row " + row.kind + "'" + (row.hint ? " title='" + escapeHtml(row.hint) + "'" : "") + ">" +
+        "<div class='wf-head'><span class='wf-label'>" + row.label + "</span>" +
+        "<span class='wf-value'>" + valueText + "</span></div>" +
+        "<div class='wf-track'><i style='width:" + width.toFixed(1) + "%'></i></div>" +
+        "</div>";
+    }).join("");
+
+    var margin = state.netProfit != null && state.chainSales > 0 ? state.netProfit / state.chainSales : null;
+    $("#bossProfitBadge").textContent = margin == null
+      ? "利润数据不足"
+      : "净利率 " + (margin * 100).toFixed(1) + "%";
+
+    var notes = [];
+    if (state.hasCostChain) {
+      notes.push("按已核算成本的 " + integer(state.costs.count) + " 条订单计算");
+    } else if (state.orderProfit != null) {
+      notes.push("本期没有订单成本明细，订单利润改用平台利润汇总估算");
+    }
+    if (state.costs.incomplete) {
+      notes.push("另有 " + integer(state.costs.incomplete) + " 条订单缺采购价或重量，未计入净利");
+    }
+    if ((state.orderRecords || []).length >= 4900) {
+      notes.push("订单明细超过 5000 条，成本按最近 5000 条估算");
+    }
+    if (!notes.length) notes.push("本期还没有能核算成本的订单，净利暂时算不出来");
+    $("#bossWaterfallNote").textContent = notes.join("；") + "。";
+  }
+
+  function renderBossRisks(data) {
+    var el = $("#bossRisks");
+    if (!el) return;
+    var map = bossLatestMetrics(data.metricRows);
+    var sums = { pending: 0, refund: 0, cancel: 0, pricePending: 0, notPublished: 0, delisted: 0 };
+    Object.keys(map).forEach(function (code) {
+      var payload = map[code].payload || {};
+      sums.pending += bossNumber(payload.pending_shipment);
+      sums.refund += bossNumber(payload.refund_pending);
+      sums.cancel += bossNumber(payload.cancel_pending);
+      sums.pricePending += bossNumber(payload.listing_price_pending);
+      sums.notPublished += bossNumber(payload.listing_not_published);
+      sums.delisted += bossNumber(payload.listing_delisted);
+    });
+
+    var items = [];
+    if (data.penalty > 0) {
+      items.push({
+        title: "平台罚款 " + bossMoney(data.penalty),
+        hint: "财务流水里能看到罚款原因，金额直接从利润里扣",
+        value: "罚款",
+        tone: "is-danger"
+      });
+    }
+    if (sums.pending > 0) {
+      items.push({
+        title: integer(sums.pending) + " 单还没发货",
+        hint: "超时发货会被平台扣分，尽快安排",
+        value: integer(sums.pending) + " 单",
+        tone: "is-warn"
+      });
+    }
+    if (sums.refund > 0) {
+      items.push({
+        title: integer(sums.refund) + " 单退货退款待处理",
+        hint: "买家在等处理，拖久了容易变纠纷",
+        value: integer(sums.refund) + " 单",
+        tone: "is-warn"
+      });
+    }
+    if (sums.cancel > 0) {
+      items.push({
+        title: integer(sums.cancel) + " 单取消待处理",
+        hint: "买家申请取消，需要及时响应",
+        value: integer(sums.cancel) + " 单",
+        tone: "is-warn"
+      });
+    }
+    if (sums.delisted > 0) {
+      items.push({
+        title: integer(sums.delisted) + " 个商品已下架",
+        hint: "确认是否误下架，能卖的重新上架",
+        value: integer(sums.delisted) + " 个",
+        tone: "is-warn"
+      });
+    }
+    if (sums.pricePending > 0) {
+      items.push({
+        title: integer(sums.pricePending) + " 个新品卡在价格审核",
+        hint: "审核通过才能开卖，卡住就没有新增供给",
+        value: integer(sums.pricePending) + " 个",
+        tone: "is-muted"
+      });
+    }
+    if (sums.notPublished > 0) {
+      items.push({
+        title: integer(sums.notPublished) + " 个商品还没上架",
+        hint: "已经建好但没发布，等于没开始卖",
+        value: integer(sums.notPublished) + " 个",
+        tone: "is-muted"
+      });
+    }
+    if (data.staleStores > 0) {
+      items.push({
+        title: data.staleStores + " 家店超过 7 天没上报",
+        hint: "这些店的数字可能是旧的，决策前先确认",
+        value: data.staleStores + " 家",
+        tone: "is-danger"
+      });
+    }
+
+    if (!items.length) {
+      el.innerHTML = "<li class='boss-risk-empty'>" + bossEmptyArt(
+        "这段时间没有需要处理的异常",
+        "待发货、退款、罚款和上新阻塞都会自动出现在这里。"
+      ) + "</li>";
+      return;
+    }
+    var shown = items.slice(0, 6);
+    el.innerHTML = shown.map(function (item) {
+      return "<li class='boss-risk " + item.tone + "'>" +
+        "<span class='boss-risk-dot'></span>" +
+        "<div class='boss-risk-body'><strong>" + item.title + "</strong><p>" + item.hint + "</p></div>" +
+        "<span class='boss-risk-value'>" + item.value + "</span>" +
+        "</li>";
+    }).join("") + (items.length > shown.length
+      ? "<li class='boss-risk-more'>还有 " + (items.length - shown.length) + " 项，去「店铺指标」看全部</li>"
+      : "");
+  }
+
+  function renderBossFunnel(totals) {
+    var el = $("#bossFunnel");
+    if (!el) return;
+    var exposure = bossNumber(totals.exposure);
+    var clicks = bossNumber(totals.clicks);
+    var orders = bossNumber(totals.order_count);
+    if (exposure <= 0) {
+      el.innerHTML = bossEmptyArt(
+        "还没有流量数据",
+        "员工在经营分析里采集一次「商品流量」，这里就会显示曝光到成交。"
+      );
+      return;
+    }
+    var maxValue = Math.max(exposure, clicks, orders, 1);
+    function width(value) {
+      return Math.max(6, Math.round((100 * Math.log(1 + value)) / Math.log(1 + maxValue)));
+    }
+    var clickRate = exposure > 0 ? (clicks / exposure) * 100 : null;
+    var orderRate = clicks > 0 ? (orders / clicks) * 100 : null;
+    el.innerHTML = [
+      { label: "曝光", value: exposure, suffix: "次", note: "商品被看到的总次数" },
+      { label: "点击", value: clicks, suffix: "次", note: clickRate == null ? "" : "点击率 " + clickRate.toFixed(1) + "%" },
+      { label: "成交", value: orders, suffix: "单", note: orderRate == null ? "" : "点击后下单 " + orderRate.toFixed(1) + "%" }
+    ].map(function (row, index) {
+      return "<div class='funnel-row'>" +
+        "<div class='funnel-head'><span class='funnel-label'>" + row.label + "</span>" +
+        "<span class='funnel-value'>" + integer(row.value) + " " + row.suffix + "</span></div>" +
+        "<div class='funnel-track'><i style='width:" + (index === 0 ? 100 : width(row.value)) + "%'></i></div>" +
+        (row.note ? "<p class='funnel-note'>" + row.note + "</p>" : "") +
+        "</div>";
+    }).join("");
+  }
+
+  function paintBossRank() {
+    var el = $("#bossRank");
+    if (!el || !state.boss) return;
+    var mode = state.bossRank || "store";
+    var source = mode === "staff" ? state.boss.byAccount : state.boss.storeRows;
+    var rows = (source || []).map(function (row) {
+      var profit = row.profit_cny == null ? null : bossNumber(row.profit_cny);
+      var expense = bossNumber(row.finance_expense_cny);
+      return {
+        name: String(row.label || row.username || row.key || "—"),
+        net: profit == null ? null : profit - expense,
+        gmv: bossNumber(row.gmv_cny),
+        orders: bossNumber(row.order_count)
+      };
+    });
+    var hasNet = rows.some(function (row) { return row.net != null; });
+    rows.sort(function (left, right) {
+      var a = hasNet ? (left.net == null ? -Infinity : left.net) : left.gmv;
+      var b = hasNet ? (right.net == null ? -Infinity : right.net) : right.gmv;
+      return b - a;
+    });
+    rows = rows.slice(0, 8);
+    if (!rows.length) {
+      el.innerHTML = bossEmptyArt("还没有店铺或员工数据", "提交汇总后，这里会按赚钱多少排序。");
+      return;
+    }
+    var maxValue = Math.max.apply(null, rows.map(function (row) {
+      return Math.abs(hasNet ? (row.net || 0) : row.gmv);
+    }).concat([1]));
+    $("#bossRankHint").textContent = hasNet
+      ? "净利 = 订单利润 − 费用（按" + (mode === "staff" ? "员工" : "店铺") + "）"
+      : "利润数据不足，先按销售额排序";
+    el.innerHTML = rows.map(function (row, index) {
+      var value = hasNet ? (row.net || 0) : row.gmv;
+      var width = Math.max(4, Math.round((Math.abs(value) / maxValue) * 100));
+      var tone = hasNet && value < 0 ? " is-negative" : "";
+      var valueText = hasNet
+        ? (row.net == null ? "利润待补" : bossMoney(row.net))
+        : bossMoney(row.gmv);
+      return "<div class='boss-rank-row" + tone + "'>" +
+        "<span class='boss-rank-no'>" + (index + 1) + "</span>" +
+        "<div class='boss-rank-body'>" +
+          "<div class='boss-rank-top'><strong>" + escapeHtml(row.name) + "</strong>" +
+          "<span class='boss-rank-net'>" + valueText + "</span></div>" +
+          "<div class='boss-rank-track'><i style='width:" + width + "%'></i></div>" +
+          "<small>销售额 " + bossMoney(row.gmv) + " · 订单 " + integer(row.orders) + "</small>" +
+        "</div>" +
+      "</div>";
+    }).join("");
+  }
+
+  /** 驾驶舱趋势：同时画销售额和净利，负值也能落在坐标里。 */
+  function drawBossTrend(el, dates, series) {
+    if (!el) return;
+    el.innerHTML = "";
+    if (!dates.length || !series.length) {
+      el.innerHTML = "<div class='empty'><strong>这段时间没有走势</strong><p>员工提交周汇总后，这里会显示每天的销售额和净利。</p></div>";
+      return;
+    }
+    var width = el.clientWidth || 720;
+    var height = el.clientHeight || 260;
+    var pad = { left: 58, right: 16, top: 16, bottom: 26 };
+    var all = [];
+    series.forEach(function (item) {
+      (item.values || []).forEach(function (value) { all.push(Number(value) || 0); });
+    });
+    var max = Math.max.apply(null, all.concat([0]));
+    var min = Math.min.apply(null, all.concat([0]));
+    if (max === min) max = min + 1;
+
+    function xAt(index) {
+      if (dates.length === 1) return (pad.left + width - pad.right) / 2;
+      return pad.left + ((width - pad.left - pad.right) * index) / (dates.length - 1);
+    }
+    function yAt(value) {
+      return pad.top + (height - pad.top - pad.bottom) * (1 - ((Number(value) || 0) - min) / (max - min));
+    }
+
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    var grid = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    grid.setAttribute("class", "grid");
+    for (var line = 0; line <= 3; line += 1) {
+      var value = max - ((max - min) * line) / 3;
+      var y = yAt(value);
+      var rule = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      rule.setAttribute("x1", pad.left);
+      rule.setAttribute("x2", width - pad.right);
+      rule.setAttribute("y1", y);
+      rule.setAttribute("y2", y);
+      grid.appendChild(rule);
+      var label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", pad.left - 10);
+      label.setAttribute("y", y + 4);
+      label.setAttribute("text-anchor", "end");
+      label.textContent = "¥" + bossCompact(value);
+      grid.appendChild(label);
+    }
+    svg.appendChild(grid);
+
+    if (min < 0) {
+      var zero = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      zero.setAttribute("x1", pad.left);
+      zero.setAttribute("x2", width - pad.right);
+      zero.setAttribute("y1", yAt(0));
+      zero.setAttribute("y2", yAt(0));
+      zero.setAttribute("stroke-dasharray", "4 4");
+      zero.setAttribute("stroke", "currentColor");
+      zero.setAttribute("opacity", ".35");
+      svg.appendChild(zero);
+    }
+
+    series.forEach(function (item) {
+      var points = (item.values || []).map(function (value, index) {
+        return [xAt(index), yAt(value)];
+      });
+      var path = smoothPath(points);
+      var stroke = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      stroke.setAttribute("class", "series-line");
+      stroke.setAttribute("pathLength", "1");
+      stroke.setAttribute("d", path);
+      stroke.setAttribute("fill", "none");
+      stroke.setAttribute("stroke", item.color);
+      stroke.setAttribute("stroke-width", "2.4");
+      stroke.setAttribute("stroke-linecap", "round");
+      stroke.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(stroke);
+      if (dates.length <= 40) {
+        points.forEach(function (point, index) {
+          var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          dot.setAttribute("class", "series-dot");
+          dot.setAttribute("cx", point[0]);
+          dot.setAttribute("cy", point[1]);
+          dot.setAttribute("r", 3);
+          dot.setAttribute("fill", "var(--surface)");
+          dot.setAttribute("stroke", item.color);
+          var tip = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          tip.textContent = dates[index] + " · " + item.name + " " + bossMoney(item.values[index]);
+          dot.appendChild(tip);
+          svg.appendChild(dot);
+        });
+      }
+    });
+
+    var axis = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    axis.setAttribute("class", "axis");
+    var every = Math.max(1, Math.ceil(dates.length / 7));
+    dates.forEach(function (day, index) {
+      if (index % every !== 0 && index !== dates.length - 1) return;
+      var text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute("x", xAt(index));
+      text.setAttribute("y", height - 6);
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = String(day || "").slice(5);
+      axis.appendChild(text);
+    });
+    svg.appendChild(axis);
+    el.appendChild(svg);
+  }
+
+  function previousRangeParams() {
+    if (state.range === "all") return "";
+    var dates = rangeDates(state.range);
+    var start = new Date(dates.start + "T00:00:00");
+    var end = new Date(dates.end + "T00:00:00");
+    var days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+    var prevEnd = addDays(start, -1);
+    var prevStart = addDays(prevEnd, -(days - 1));
+    var parts = ["from=" + iso(prevStart), "to=" + iso(prevEnd)];
+    if (state.hiddenStores.length) {
+      parts.push("exclude=" + encodeURIComponent(state.hiddenStores.join(",")));
+    }
+    return parts.join("&");
+  }
+
   async function load() {
     if (state.loading || !state.token) return;
     state.loading = true;
     var refresh = $("#refreshBtn");
     if (refresh) refresh.textContent = "刷新中…";
     try {
-      if (state.page === "overview") {
+      if (state.page === "boss") {
+        var bossRange = rangeParams();
+        var bossPrev = previousRangeParams();
+        var bossCalls = [
+          api("/overview?top=50&" + bossRange),
+          api("/records?kind=metric,traffic,sales&limit=5000&" + bossRange),
+          api("/records?kind=finance&limit=5000&" + bossRange),
+          api("/records?kind=order&limit=5000&" + bossRange)
+        ];
+        if (bossPrev) bossCalls.push(api("/overview?top=50&" + bossPrev));
+        var bossData = await Promise.all(bossCalls);
+        renderBoss(
+          bossData[0],
+          (bossData[1] && bossData[1].records) || [],
+          (bossData[2] && bossData[2].records) || [],
+          (bossData[3] && bossData[3].records) || [],
+          bossPrev ? bossData[4] : null
+        );
+      } else if (state.page === "overview") {
         var results = await Promise.all([
           api("/overview?top=8&" + rangeParams()),
           api("/trends?top=6&" + rangeParams()),
@@ -1410,6 +2173,15 @@
       button.addEventListener("click", function () {
         setPage(button.getAttribute("data-page") || "overview");
         load();
+      });
+    });
+    document.querySelectorAll("#bossRankMode button").forEach(function (button) {
+      button.addEventListener("click", function () {
+        state.bossRank = button.getAttribute("data-rank") || "store";
+        document.querySelectorAll("#bossRankMode button").forEach(function (item) {
+          item.classList.toggle("active", item === button);
+        });
+        paintBossRank();
       });
     });
     var orderQuery = $("#orderQueryBtn");
@@ -1549,7 +2321,7 @@
   bind();
   if (state.token) {
     setView("dashboard");
-    setPage("overview");
+    setPage("boss");
     load();
   } else {
     setView("auth");

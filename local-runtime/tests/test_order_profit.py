@@ -435,7 +435,7 @@ def test_request_capture_all_queues_plugin_command(tmp_path: Path) -> None:
     response = client.post(
         "/api/order-profit/captures-all",
         headers=headers,
-        json={"session_id": session["session_id"]},
+        json={"session_id": session["session_id"], "shop_name": "Bluqevix"},
     )
     assert response.status_code == 200
     body = response.json()
@@ -445,6 +445,54 @@ def test_request_capture_all_queues_plugin_command(tmp_path: Path) -> None:
     )
     assert command.command_type == "temu_capture_all"
     assert command.status == "queued"
+    # 采集指令必须带上目标店铺，插件才能核对当前登录店铺、阻止写错店。
+    assert command.payload["shop_name"] == "Bluqevix"
+
+
+def test_recent_captures_returns_step_results(tmp_path: Path) -> None:
+    queue = DataCollectionPluginQueue(tmp_path / "queue.sqlite3")
+    session = queue.create_session(
+        actor_id="local-demo-admin",
+        workspace_id="default",
+        capabilities={"temu_order_profit_capture": True, "temu_capture_all": True},
+    )
+    service = OrderProfitService(
+        OrderProfitRepository(tmp_path / "order_profit.sqlite3"),
+        plugin_queue=queue,
+    )
+    app = FastAPI()
+    app.include_router(create_order_profit_router(service), prefix="/api")
+    client = TestClient(app)
+    headers = {"X-Workspace-ID": "default"}
+
+    created = client.post(
+        "/api/order-profit/captures-all",
+        headers=headers,
+        json={"session_id": session["session_id"], "shop_name": "Bluqevix"},
+    ).json()
+    assert created.get("command_id"), created
+    queue.receive_result(
+        session_token=session["session_token"],
+        command_id=created["command_id"],
+        status="succeeded",
+        result={
+            "ok": True,
+            "statusText": "一键采集完成：成功 1 项，跳过 1 项，失败 1 项",
+            "results": [
+                {"key": "store", "label": "店铺首页指标", "state": "ok", "detail": ""},
+                {"key": "finance", "label": "对账中心", "state": "skipped", "detail": "没有数据"},
+                {"key": "orders", "label": "订单列表", "state": "failed", "detail": "页面未加载"},
+            ],
+        },
+    )
+
+    recent = client.get("/api/order-profit/captures/recent", headers=headers).json()
+    assert len(recent["items"]) == 1
+    item = recent["items"][0]
+    assert item["command_id"] == created["command_id"]
+    assert item["shop_name"] == "Bluqevix"
+    assert item["status"] == "succeeded"
+    assert [row["state"] for row in item["results"]] == ["ok", "skipped", "failed"]
 
 
 def test_incremental_and_resource_commands_and_cancel(tmp_path: Path) -> None:

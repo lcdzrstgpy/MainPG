@@ -92,8 +92,8 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
     autoRepull: false,
     // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
     dimensionCard: false,
-    // 场景风格默认智能混合：按批次在极简/生活/花哨之间轮换，避免四格背景趋同。
-    sceneStyle: 'smart',
+    // 场景风格默认花哨：花艺/礼赠/丝绒/镜面背景出片更有质感，需要克制时再切极简或生活。
+    sceneStyle: 'ornate',
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());

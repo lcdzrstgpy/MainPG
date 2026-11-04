@@ -11,6 +11,8 @@ type Props = {
   slides: CollectionModeSlide[];
   isActive: boolean;
   onSelect: () => void;
+  /** 一行用途说明，补足入口卡的信息密度（只说做什么，不堆参数）。 */
+  description?: string;
 };
 
 /**
@@ -23,7 +25,7 @@ type Props = {
  *
  * 未选中的卡片图片仍按模糊样式渲染（CSS 负责），切回来时先清晰再开始轮播。
  */
-export function CollectionModeCard({ label, iconClass, slides, isActive, onSelect }: Props) {
+export function CollectionModeCard({ label, iconClass, slides, isActive, onSelect, description }: Props) {
   const [index, setIndex] = useState(0);
   const count = slides.length;
 
@@ -58,9 +60,13 @@ export function CollectionModeCard({ label, iconClass, slides, isActive, onSelec
         ))}
       </span>
       <span className="collection-mode-veil" aria-hidden="true" />
+      {isActive && <span className="collection-mode-current" aria-hidden="true">✓ 当前入口</span>}
       <span className="collection-mode-label">
-        <span className={`iconfont ${iconClass}`} aria-hidden="true" />
-        {label}
+        <span className="collection-mode-label-main">
+          <span className={`iconfont ${iconClass}`} aria-hidden="true" />
+          {label}
+        </span>
+        {description && <small>{description}</small>}
       </span>
     </button>
   );

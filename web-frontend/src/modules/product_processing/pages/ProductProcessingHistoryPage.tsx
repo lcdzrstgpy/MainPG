@@ -40,6 +40,17 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
+/** 列表左侧的状态徽标图标：与状态文案同源，只做视觉强化，不重复无障碍语义。 */
+function statusIcon(status: string): string {
+  if (status === "completed" || status === "completed_with_review") return "icon-check-circle";
+  if (status === "running") return "icon-sync";
+  if (status === "queued" || status === "paused") return "icon-time-circle";
+  if (status === "partial_failure") return "icon-file-exception";
+  if (status === "failed") return "icon-close-circle";
+  if (status === "cancelled") return "icon-undo";
+  return "icon-filedone";
+}
+
 function canEnterPrecheck(task: TaskHistoryItem): boolean {
   return task.success_count > 0 && ["completed", "completed_with_review", "partial_failure", "cancelled"].includes(task.status);
 }
@@ -112,9 +123,23 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
           <h1>历史记录</h1>
           <p>所有 AI 处理批次都会保存在这里；关闭任务页不会中断后台处理，可随时重新打开查看进度、结果和输出文件。</p>
         </div>
-        <div className="processing-history-summary" aria-label="当前页任务概览">
-          <span>处理中 <b>{summary.active}</b></span>
-          <span>已完成 <b>{summary.completed}</b></span>
+        <div className="processing-history-hero-visual">
+          <svg className="processing-history-hero-art" viewBox="0 0 132 66" aria-hidden="true" focusable="false">
+            <g fill="none" stroke="rgba(255, 255, 255, .62)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="30" y="18" width="46" height="30" rx="9" fill="rgba(255, 255, 255, .1)" />
+              <rect x="21" y="12" width="46" height="30" rx="9" fill="rgba(255, 255, 255, .16)" stroke="rgba(255, 255, 255, .82)" />
+              <path d="M31 24h26M31 31h17" stroke="rgba(255, 255, 255, .6)" />
+              <circle cx="94" cy="22" r="13" fill="rgba(255, 255, 255, .12)" stroke="rgba(255, 255, 255, .78)" />
+              <path d="M94 15v7l5 3.4" stroke="rgba(255, 255, 255, .95)" />
+              <circle cx="74" cy="50" r="7" fill="rgba(255, 255, 255, .2)" stroke="rgba(255, 255, 255, .7)" />
+              <path d="M70.6 50l2.4 2.4 4.4-5.2" stroke="rgba(255, 255, 255, .95)" />
+              <path d="M46 48l1.5 3.4 3.4 1.5-3.4 1.5L46 58l-1.5-3.6-3.4-1.5 3.4-1.5z" stroke="rgba(255, 255, 255, .55)" strokeWidth="1.2" />
+            </g>
+          </svg>
+          <div className="processing-history-summary" aria-label="当前页任务概览">
+            <span>处理中 <b>{summary.active}</b></span>
+            <span>已完成 <b>{summary.completed}</b></span>
+          </div>
         </div>
       </header>
 
@@ -144,11 +169,38 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
             正在读取历史任务…
           </div>
         )}
-        {!loading && tasks.length === 0 && <p className="verify-empty">暂无 AI 处理记录。开始处理后，批次会自动保存在这里。</p>}
+        {!loading && tasks.length === 0 && (
+          <div className="processing-history-empty">
+            <svg className="processing-history-empty-art" viewBox="0 0 150 96" aria-hidden="true" focusable="false">
+              <defs>
+                <linearGradient id="processingHistoryEmptyStroke" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#3aa9d8" />
+                  <stop offset="1" stopColor="#1fbfa6" />
+                </linearGradient>
+              </defs>
+              <g fill="none" stroke="url(#processingHistoryEmptyStroke)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="42" y="30" width="56" height="36" rx="10" fill="rgba(56, 169, 214, .08)" />
+                <path d="M52 44h30M52 52h20" stroke="rgba(56, 169, 214, .5)" />
+                <circle cx="104" cy="30" r="13" fill="rgba(25, 189, 163, .1)" />
+                <path d="M104 22v8l5 3" />
+                <circle cx="62" cy="72" r="6.5" fill="rgba(25, 189, 163, .12)" />
+                <path d="M59 72l2.3 2.3 4-4.8" />
+                <path d="M124 54l1.7 3.9 3.9 1.7-3.9 1.7L124 65l-1.7-3.7-3.9-1.7 3.9-1.7z" strokeWidth="1.2" opacity=".8" />
+                <path d="M26 22l1.3 3 3 1.3-3 1.3L26 31l-1.3-3.4-3-1.3 3-1.3z" strokeWidth="1.2" opacity=".55" />
+                <path d="M38 78h74" strokeDasharray="3 6" opacity=".45" />
+              </g>
+            </svg>
+            <strong>还没有处理批次</strong>
+            <p>从「AI 处理」提交第一个批次后，进度、耗时和输出文件都会自动归档在这里。</p>
+          </div>
+        )}
         {!loading && tasks.length > 0 && (
           <ul className="processing-history-items">
             {tasks.map((task) => (
-              <li key={task.task_id}>
+              <li key={task.task_id} className={`status-${task.status}`}>
+                <span className="processing-history-status" aria-hidden="true">
+                  <i className={`iconfont ${statusIcon(task.status)}`} />
+                </span>
                 <div className="processing-history-primary">
                   <strong title={task.title}>{task.title || `处理任务 #${task.task_id}`}</strong>
                   <span className={`verify-badge status-${task.status}`}>{statusLabel(task.status)}</span>

@@ -3680,14 +3680,41 @@
 
 .processing-history-items li {
   display: grid;
-  grid-template-columns: minmax(260px, 1.1fr) minmax(340px, 1.5fr) auto;
+  grid-template-columns: auto minmax(260px, 1.1fr) minmax(340px, 1.5fr) auto;
   gap: 14px;
   align-items: center;
   padding: 14px 22px;
   border: 1px solid #e0ebf3;
   border-radius: 999px;
   background: #fff;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
 }
+.processing-history-items li:hover {
+  transform: translateY(-1px);
+  border-color: #c6e0ee;
+  box-shadow: 0 8px 20px rgba(12, 91, 139, .09);
+}
+
+/* 状态徽标：给每行一个彩色圆角方块，列表不必只靠右侧小字辨识状态 */
+.processing-history-status {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: #0a8fca;
+  background: #edf7fd;
+  font-size: 1.06rem;
+}
+.processing-history-status .iconfont { line-height: 1; }
+.processing-history-items li.status-completed .processing-history-status,
+.processing-history-items li.status-completed_with_review .processing-history-status { color: #0f9d78; background: #e7f8f1; }
+.processing-history-items li.status-failed .processing-history-status,
+.processing-history-items li.status-partial_failure .processing-history-status { color: #d9534f; background: #fdeeee; }
+.processing-history-items li.status-cancelled .processing-history-status { color: #8c7a5c; background: #f8f2e8; }
+.processing-history-items li.status-running .processing-history-status { color: #0a8fca; background: #e9f5fe; }
+.processing-history-items li.status-running .processing-history-status .iconfont { animation: processing-history-spin 1.6s linear infinite; }
+@keyframes processing-history-spin { to { transform: rotate(360deg); } }
 
 .processing-history-primary,
 .processing-history-meta {
@@ -3748,6 +3775,30 @@
   gap: 10px;
 }
 
+/* 页头插画：与统计胶囊一起构成右侧视觉块，替代原来只有两枚胶囊的空白 */
+.processing-history-hero-visual {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+.processing-history-hero-art {
+  width: 132px;
+  height: 66px;
+  opacity: .95;
+}
+
+/* 空状态：用一张线稿插画 + 说明替代单行灰字 */
+.processing-history-empty {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 26px 16px 10px;
+  text-align: center;
+}
+.processing-history-empty-art { width: 150px; height: 96px; }
+.processing-history-empty strong { color: #18334d; font-size: .95rem; }
+.processing-history-empty p { max-width: 340px; margin: 0; color: #7a8fa3; font-size: .8rem; line-height: 1.6; }
+
 @media (max-width: 800px) {
   .verify-commandbar {
     flex-direction: column;
@@ -3783,11 +3834,16 @@
     margin-left: 0;
   }
   .processing-history-items li {
-    grid-template-columns: 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
     /* 窄屏列表行会堆叠成多行，胶囊端部半径会切到内容，改用连续圆角。 */
     border-radius: 18px;
     padding: 14px 18px;
   }
+  .processing-history-primary,
+  .processing-history-meta,
+  .processing-history-actions { grid-column: 2; }
+  .processing-history-status { grid-row: 1 / span 3; align-self: center; }
+  .processing-history-hero-art { display: none; }
   .processing-history-actions {
     justify-content: flex-start;
   }
@@ -6920,6 +6976,46 @@
   font-size: 0.68rem;
   padding: 2px 4px;
   cursor: pointer;
+}
+
+/* 展开 / 收起底板库：默认收起，避免 20 张缩略图把设置区撑成一整屏。 */
+.verify-bg-toggle {
+  border: 1px solid var(--theme-border, #d6e4ee);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--theme-text-secondary, #526a82);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 2px 12px;
+  cursor: pointer;
+}
+
+.verify-bg-toggle:hover {
+  border-color: var(--theme-primary, #2f6fed);
+  color: var(--theme-primary, #2f6fed);
+}
+
+/* 收起态只留一张已选底板缩略图 + 名称。 */
+.verify-bg-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid var(--theme-border, rgba(15, 23, 42, .14));
+  border-radius: 999px;
+  background: #fff;
+  font-size: 0.72rem;
+  color: var(--theme-text-secondary, #64748b);
+}
+
+.verify-bg-current img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
 }
 
 .verify-bg-group-label {

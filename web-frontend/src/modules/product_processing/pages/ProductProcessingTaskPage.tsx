@@ -27,7 +27,7 @@ import type {
   TaskOutputsResponse,
 } from '../types';
 import { registerRunningTask } from '../../../shared/runtime/taskActivity';
-import { SYSTEM_BACKGROUNDS, backgroundAssetUrl } from '../data/backgroundTemplates';
+import { SYSTEM_BACKGROUNDS, backgroundAssetUrl, backgroundById } from '../data/backgroundTemplates';
 import '../styles/ProductProcessingVerifyPage.css';
 
 const IMAGE_LAYER_OPTION_KEYS: Record<
@@ -267,8 +267,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       autoRepull: false,
       // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
       dimensionCard: false,
-      // 场景风格：默认智能混合（按批次在极简/生活/花哨之间轮换），保证四格背景不趋同。
-      sceneStyle: 'smart',
+      // 场景风格：默认花哨（花艺/礼赠/丝绒/镜面），按需再切极简或生活。
+      sceneStyle: 'ornate',
     }
   );
   const imageSelection: PhotoSelection = {
@@ -392,7 +392,20 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 后端出主图时把商品抠图合成到这张底板上（不是只当提示词参考）。
   const [userBackgrounds, setUserBackgrounds] = useState<UserBackgroundItem[]>([]);
   const [bgUploading, setBgUploading] = useState(false);
+  // 底板列表默认收起：20 张缩略图常驻会把设置区撑得很长，只在需要挑底板时展开。
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const bgFileInputRef = useRef<HTMLInputElement | null>(null);
+  // 当前选中的底板（系统或上传）：收起时只显示一张小缩略图 + 名称。
+  const selectedBackground = (() => {
+    const template = options.backgroundTemplate || '';
+    if (!template) return null;
+    if (template.startsWith('user:')) {
+      const item = userBackgrounds.find((entry) => entry.template_id === template);
+      return item ? { name: item.name, url: userBackgroundUrl(item.id, ctx.workspaceId) } : null;
+    }
+    const item = backgroundById(template);
+    return item ? { name: item.name, url: backgroundAssetUrl(item.id) } : null;
+  })();
 
   // 成功类提示统一走右上角 toast：3 秒后自动消失；新消息会清理旧定时器，卸载时也不留悬挂回调。
   useEffect(() => {
@@ -864,7 +877,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         // 是否自动烧制第 4 格尺寸图（默认关闭，需用户在处理设置里显式勾选）
         dimension_card: options.dimensionCard === true,
         // 场景风格：smart / minimal / lifestyle / ornate（后端按档位给四格分配不同背景族）
-        scene_style: options.sceneStyle || 'smart',
+        scene_style: options.sceneStyle || 'ornate',
         // 主图背景：scene=主图也带场景背景（默认）；white=主图保持纯白
         main_background: options.mainBackground || 'scene',
         // 手选的系统背景底板；空=按品类自动选片段
@@ -1081,7 +1094,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 生图组合</span>
+              <span className="verify-sub">基础参数 · 出图风格 · 生图组合</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -1098,16 +1111,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <option value="es">西班牙语 · Espanol</option>
                 </select>
               </label>
-              <label title="决定四格的背景风格：智能混合按批次在极简/生活/花哨之间轮换；花哨档适合节庆、潮玩、礼品类，会使用花艺、礼赠、丝绒、金属镜面等背景">
+              <label title="决定四格的背景风格：花哨档默认使用花艺、礼赠、丝绒、金属镜面等背景；极简/生活更克制；智能混合按批次在三档之间轮换">
                 场景风格
                 <select
-                  value={options.sceneStyle || 'smart'}
+                  value={options.sceneStyle || 'ornate'}
                   onChange={(e) => setOptions((p) => ({ ...p, sceneStyle: e.target.value as ProductProcessingOptions['sceneStyle'] }))}
                 >
-                  <option value="smart">智能混合（默认）</option>
-                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面（默认）</option>
                   <option value="lifestyle">生活 · 桌面/窗影/梳妆台</option>
-                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面</option>
+                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="smart">智能混合 · 按批次轮换</option>
                 </select>
               </label>
               <label title="主图背景：场景背景会让主图也带真实台面与背景（默认，解决纯白单调）；纯白则保持死白底">
@@ -1121,7 +1134,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </select>
               </label>
               {options.mainBackground !== 'white' ? (
-                <div className="verify-bg-picker">
+                <div className={`verify-bg-picker${bgPickerOpen ? ' is-open' : ''}`}>
                   <div className="verify-bg-picker-head">
                     <strong>背景模板</strong>
                     <small>
@@ -1132,6 +1145,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                         : '自动：按品类匹配背景，不锁死风格'}
                     </small>
                     <div className="verify-bg-actions">
+                      <button
+                        type="button"
+                        className="verify-bg-toggle"
+                        aria-expanded={bgPickerOpen}
+                        onClick={() => setBgPickerOpen((open) => !open)}
+                      >
+                        {bgPickerOpen ? '收起底板' : '选择底板'}
+                      </button>
                       <button
                         type="button"
                         className="verify-bg-upload"
@@ -1163,6 +1184,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       ) : null}
                     </div>
                   </div>
+                  {!bgPickerOpen && selectedBackground ? (
+                    <div className="verify-bg-current">
+                      <img src={selectedBackground.url} alt={selectedBackground.name} />
+                      <span>{selectedBackground.name}</span>
+                    </div>
+                  ) : null}
+                  {bgPickerOpen ? (
+                    <>
                   {userBackgrounds.length ? (
                     <div className="verify-bg-user">
                       <span className="verify-bg-group-label">我的背景</span>
@@ -1223,6 +1252,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       </button>
                     ))}
                   </div>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
               <div className="verify-inline-checks">

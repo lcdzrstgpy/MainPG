@@ -142,8 +142,8 @@ class DraftProcessRequest(BaseModel):
     # 是否自动烧制第 4 格尺寸图（尺寸卡）：默认开启。部分商品不需要尺寸图，
     # 关闭后整批不导入尺寸画布、不烧卡，也不做原链接尺寸图 OCR 预取。
     dimension_card: bool = True
-    # 场景风格：决定四格背景族（smart 智能混合 / minimal 极简 / lifestyle 生活 / ornate 花哨）。
-    scene_style: str = "smart"
+    # 场景风格：决定四格背景族（ornate 花哨（默认） / lifestyle 生活 / minimal 极简 / smart 智能混合）。
+    scene_style: str = "ornate"
     # 主图背景：scene=主图也用场景背景（默认，客户反馈纯白单调）；white=主图保持纯白。
     main_background: str = "scene"
     # 手选系统底板 id（bg_*）；空=按品类自动选背景片段。

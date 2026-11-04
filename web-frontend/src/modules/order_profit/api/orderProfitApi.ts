@@ -4,6 +4,7 @@ import type {
   AfterSaleRow,
   AppealRow,
   CaptureBatches,
+  CaptureRunList,
   FinanceResponse,
   LinkChangeRow,
   MarkupResponse,
@@ -70,10 +71,14 @@ export const orderProfitApi = {
       method: "POST",
       body: { session_id: sessionId, mode },
     }),
-  startCaptureAll: (sessionId: string, incremental = false) =>
+  startCaptureAll: (sessionId: string, incremental = false, shopName = "") =>
     ppRequest<OrderProfitCommand>(context(), `${BASE}/captures-all`, {
       method: "POST",
-      body: { session_id: sessionId, incremental },
+      body: {
+        session_id: sessionId,
+        incremental,
+        ...(shopName.trim() ? { shop_name: shopName.trim() } : {}),
+      },
     }),
   startResourceCapture: (sessionId: string, resource: string) =>
     ppRequest<OrderProfitCommand>(context(), `${BASE}/captures/resource`, {
@@ -90,6 +95,8 @@ export const orderProfitApi = {
     ppRequest<OrderProfitCaptureStatus>(context(), `${BASE}/captures/${commandId}`),
   latestCapture: () =>
     ppRequest<{ capture: Record<string, unknown> | null }>(context(), `${BASE}/captures/latest`),
+  recentCaptures: (limit = 10) =>
+    ppRequest<CaptureRunList>(context(), `${BASE}/captures/recent${query({ limit })}`),
   orders: (params: {
     month?: string;
     store?: string;

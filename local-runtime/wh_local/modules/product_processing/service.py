@@ -721,11 +721,16 @@ _SCENE_PANEL1_REWRITES: tuple[tuple[str, str], ...] = (
     (
         "2 Panel 1: pure white seamless, 78%-85%, no text, no room.",
         "2 Panel 1: one real category-matched backdrop with visible surface and depth, no companion props, "
-        "74%-82%, no text.",
+        "62%-74%, no text.",
     ),
     (
         "The white hero fills 78%-85% with a 7% inner safe margin",
-        "The hero panel fills 74%-82% with a 7% inner safe margin",
+        "The hero panel fills 62%-74% with a 7% inner safe margin",
+    ),
+    # 方舟 A/B/C/D 四套模板的「首图必须做大」：场景档下留出空间感，比例才不像贴上去的。
+    (
+        "**首图必须做大——约占画幅 78%-85%**",
+        "**主图约占画幅 62%-74%，给背景留出真实空间感**",
     ),
     # 逐格角色文案（单格重绘 / 精品模式的预设主图）
     (
@@ -749,7 +754,7 @@ _SCENE_PANEL1_REWRITES: tuple[tuple[str, str], ...] = (
         "Complete product centered on a seamless studio sweep at about 78%-85% with balanced, even negative space "
         "and a crisp grounded contact shadow.",
         "Complete product centered on a real, category-matched backdrop with visible surface and depth at about "
-        "74%-82%, balanced negative space and a crisp grounded contact shadow.",
+        "62%-74%, balanced negative space and a crisp grounded contact shadow.",
     ),
     # 导演模式逐格卡片的兜底句
     (
@@ -907,6 +912,17 @@ PET_PRODUCT_RULE = """PET PRODUCT REALISM (this SKU is used by a pet; this block
 - If a pet appears, the WHOLE pet must be in frame: head, ears, torso, all four legs and tail, anatomically correct and in proportion, wearing the item properly. Never render only legs, paws, a rear end, a headless body or a tail inside, under or beside the garment.
 - Do not place a human hand or person in a panel where a pet wears the item; the pet is the wearer. A hand may appear only when the panel explicitly asks for adjustment, and then the pet must still be complete and the hand anatomically correct.
 - If the pet or the garment cannot be rendered completely and correctly, show the item empty on a hanger or as a flat lay instead."""
+
+# 场景背景最容易翻车的另一类：商品像抠图贴纸贴在背景上——比例跟场景里的地板缝、
+# 路沿、家具对不上，没有接地阴影、透视也不一致。这条规则永远放在提示词最末尾，
+# 覆盖前面所有「商品占画面 74%-82%」的构图描述。
+SCENE_REALISM_RULE = """SCENE REALISM (hard rule; applies to every panel):
+- Scale: size the product against real anchors already in the scene (plank and tile seams, kerbs, table edges, chair legs, door height) so the picture reads at true life scale. The product must never look larger or smaller than it would in real life beside those anchors.
+- Contact: the product rests ON the surface with a grounded contact shadow and correct occlusion; it must never float, hover, sink into, or be pasted onto the surface. No cut-out edge, white halo, doubled outline or sticker look.
+- Perspective: the product's camera height and vanishing points must match the backdrop. Never paste a straight-on product view into a 45-degree, top-down or low-angle scene.
+- Light: key-light direction, colour temperature and reflections must match the scene, including the shadow the product throws onto the floor or wall.
+- Form: keep the product's real proportions, geometry, material and print exactly as the reference; never stretch, squash, bend, mirror or duplicate it.
+- If a believable true-scale placement is impossible, use a simple calm surface instead of a busy scene."""
 
 _PET_KEYWORDS = ("宠物", "猫", "狗", "pet", "dog", "cat", "puppy", "kitten")
 _PET_EXCLUSIONS = ("热狗", "hot dog", "hotdog")
@@ -4266,10 +4282,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
         # 是否自动烧制第 4 格尺寸图：默认开启；关闭后整批跳过尺寸画布导入/烧卡与 OCR 预取。
         s["dimension_card"] = _as_bool(s.get("dimension_card"), default=True)
-        # 场景风格：决定四格背景族；未知值回落 smart（按批次稳定轮换三档）。
-        _scene_style = str(s.get("scene_style") or "smart").strip().lower()
+        # 场景风格：决定四格背景族；默认花哨，未知值回落 ornate。
+        _scene_style = str(s.get("scene_style") or "ornate").strip().lower()
         s["scene_style"] = (
-            _scene_style if _scene_style in {"smart", "minimal", "lifestyle", "ornate"} else "smart"
+            _scene_style if _scene_style in {"smart", "minimal", "lifestyle", "ornate"} else "ornate"
         )
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
@@ -10219,6 +10235,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         panel_plan_override=panel_plan_override,
                         main_background=str(settings.get("main_background") or "scene"),
                         background_template=str(settings.get("background_template") or ""),
+                        scene_style=str(settings.get("scene_style") or "ornate"),
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -10240,7 +10257,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         workspace_id=workspace_id,
                         batch_image_prompt=batch_image_prompt,
                         panel_plan_override=panel_plan_override,
-                        scene_style=str(settings.get("scene_style") or "smart"),
+                        scene_style=str(settings.get("scene_style") or "ornate"),
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -10353,7 +10370,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     batch_image_prompt=batch_image_prompt,
                     image_preset=str(settings.get("image_preset") or "auto"),
                     panel_plan_override=panel_plan_override,
-                    scene_style=str(settings.get("scene_style") or "smart"),
+                    scene_style=str(settings.get("scene_style") or "ornate"),
                     main_background=str(settings.get("main_background") or "scene"),
                     background_template=str(settings.get("background_template") or ""),
                 )
@@ -11057,7 +11074,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         batch_image_prompt: str = "",
         image_preset: str = "",
         panel_plan_override: str = "",
-        scene_style: str = "smart",
+        scene_style: str = "ornate",
         main_background: str = "scene",
         background_template: str = "",
     ) -> GridImageOutput:
@@ -11213,6 +11230,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     f"{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}",
                     vision_identity,
                 )
+                if scene_main:
+                    base = f"{base}\n\n{SCENE_REALISM_RULE}"
                 return f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
 
             def two_image_prompt(left_role: str, right_role: str) -> str:
@@ -11221,6 +11240,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     f"{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}",
                     vision_identity,
                 )
+                if scene_main:
+                    base = f"{base}\n\n{SCENE_REALISM_RULE}"
                 return f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
 
             def generate_one(
@@ -11278,12 +11299,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     # 闸门是最末尾、权重最高的一层：主图要按用户选的底板，这里也必须点名。
                     selected_gate = (
                         f"2 Panel 1: the selected backdrop ({backdrop_fragment}), no companion props, "
-                        "74%-82%, no text, no badge or sticker."
+                        "62%-74%, no text, no badge or sticker."
                     )
                     for candidate in (
                         "2 Panel 1: pure white seamless, 78%-85%, no text, no room.",
                         "2 Panel 1: one real category-matched backdrop with visible surface and depth, "
-                        "no companion props, 74%-82%, no text.",
+                        "no companion props, 62%-74%, no text.",
                     ):
                         final_gate = final_gate.replace(candidate, selected_gate)
                 grid_prompt = append_subject_analysis(
@@ -11299,6 +11320,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         usage_place=usage_place,
                         scene_style=resolved_scene_style,
                     )
+                if scene_main:
+                    # 场景背景的贴纸感/比例失真：放在整段最后，压过前面的构图比例描述。
+                    grid_prompt = f"{grid_prompt}\n\n{SCENE_REALISM_RULE}"
                 if pet_product:
                     # 放在整段最后：必须压过逐格角色/预设里「手持使用」的写法。
                     grid_prompt = f"{grid_prompt}\n\n{PET_PRODUCT_RULE}"
@@ -11720,6 +11744,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         panel_plan_override: str = "",
         main_background: str = "scene",
         background_template: str = "",
+        scene_style: str = "ornate",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
@@ -11738,6 +11763,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except Exception:
             pass
         allows_people = str(image_preset or "").strip().lower() == "lifestyle_use"
+        scene_main = str(main_background or "scene").strip().lower() != "white"
+        resolved_scene_style = _resolve_scene_style(
+            scene_style, _scene_style_seed(task_id, draft_id)
+        )
         system_backdrop_selected = bool(str(background_template or "").strip()) and not str(
             background_template
         ).strip().lower().startswith("user:")
@@ -11805,7 +11834,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 base_prompt,
                 main_background=main_background,
                 usage_place=usage_place,
+                scene_style=resolved_scene_style,
             )
+        if scene_main:
+            base_prompt = f"{base_prompt.rstrip()}\n\n{SCENE_REALISM_RULE}"
         if _is_pet_product(category, optimized_title):
             base_prompt = f"{base_prompt.rstrip()}\n\n{PET_PRODUCT_RULE}"
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)

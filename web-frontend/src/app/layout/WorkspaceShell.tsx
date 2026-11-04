@@ -1185,7 +1185,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         );
         break;
       case "order_profit_overview":
-        content = <OrderProfitPage view="overview" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
+        content = (
+          <OrderProfitPage
+            view="overview"
+            isActive={isActive}
+            onOpenCapture={() => openModule("order_profit_capture")}
+            onOpenOrders={() => openModule("order_profit_orders")}
+          />
+        );
         break;
       case "order_profit_orders":
         content = <OrderProfitPage view="orders" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
@@ -1194,7 +1201,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <OrderProfitPage view="funds" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
         break;
       case "order_profit_accounts":
-        content = <OrderProfitPage view="accounts" isActive={isActive} />;
+        content = <OrderProfitPage view="accounts" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
         break;
       case "order_profit_capture":
         content = <OrderProfitPage view="capture" isActive={isActive} onOpenAccounts={() => openModule("order_profit_accounts")} />;

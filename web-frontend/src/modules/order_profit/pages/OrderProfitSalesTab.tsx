@@ -2,11 +2,26 @@ import { useEffect, useState } from "react";
 
 import { orderProfitApi } from "../api/orderProfitApi";
 import { ChartKindSwitch } from "../components/ChartControls";
+import { ShopDataGlyph, type ShopDataGlyphName } from "../components/ShopDataGlyph";
+import { EmptyBlock, Metric, MetricBand, SectionCard } from "../components/ShopDataPrimitives";
 import { TrendChart, type ChartKind, type TrendSeries } from "../components/TrendChart";
 import { beijingTime, numberText } from "../format";
 import type { SalesSnapshot, SalesSummaryResponse } from "../types";
 
 const HEALTH_FIELDS = ["售罄健康分数", "无法报名活动商品数", "待反馈", "待补货", "未按期补货", "爆款商品"];
+
+/** 销量页指标 → 细线图标。 */
+function salesGlyph(label: string): ShopDataGlyphName {
+  if (/售罄|低库存|预警/.test(label)) return "warning";
+  if (/可售天数|10天/.test(label)) return "calendar";
+  if (/GMV|金额/.test(label)) return "money";
+  if (/满足率|健康/.test(label)) return "shield";
+  if (/销量|商品/.test(label)) return "box";
+  return "chart";
+}
+
+/** 销量页优先展示的指标：销量、售罄、低库存、售罄影响。 */
+const CORE_METRIC_PATTERN = /今日总销量|售罄|低库存|库存可售天数|10天/;
 
 /** 快照指标是带单位/占比的字符串，取前面的数字用于画趋势。 */
 function metricNumber(value: string | undefined): number {
@@ -53,6 +68,8 @@ export function OrderProfitSalesTab({
   const metrics = Object.entries(latest?.metrics || {}).filter(
     ([label]) => !label.includes("(较昨日)") && !label.includes("(较近7日)"),
   );
+  const coreMetrics = metrics.filter(([label]) => CORE_METRIC_PATTERN.test(label)).slice(0, 4);
+  const extraMetrics = metrics.filter(([label]) => !coreMetrics.some(([core]) => core === label));
   const history = data?.history || [];
   const trendRows = [...history]
     .sort((left, right) => String(left.stat_date).localeCompare(String(right.stat_date)))
@@ -81,29 +98,43 @@ export function OrderProfitSalesTab({
 
   return (
     <section className="op-view">
-      <div className="op-card op-filter-card">
-        <div className="op-filter-row">
-          <span className="op-hint">
-            {latest
-              ? `${latest.region || "全球"} · 统计日期 ${latest.stat_date || "—"}${
-                  latest.health["最近更新时间"] ? ` · 页面更新 ${latest.health["最近更新时间"]}` : ""
-                }`
-              : "尚未采集"}
-          </span>
-        </div>
-        <p className="op-hint">
-          在 Temu「经营分析 → 销量分析」页打开着的情况下，用数据采集页的「一键全量采集」或对「销量分析」这一步点「重试这一步」，会读取数据概览的销量/售罄/库存指标和售罄健康分数。若页面提示「该区暂无权限」，插件会自动切到「全球」再采。
-        </p>
+      <div className="op-view-toolbar">
+        <span className="op-view-toolbar-meta">
+          {latest
+            ? `${latest.region || "全球"} · 统计日期 ${latest.stat_date || "—"}${
+                latest.health["最近更新时间"] ? ` · 页面更新 ${latest.health["最近更新时间"]}` : ""
+              }`
+            : "尚未采集"}
+        </span>
       </div>
 
       {error ? <div className="op-alert is-error">{error}</div> : null}
 
-      <div className="op-card op-chart-card">
-        <div className="op-table-head">
-          <strong>销量与库存趋势</strong>
-          <span>最近 {trendRows.length} 次快照</span>
-          <ChartKindSwitch value={chartKind} onChange={setChartKind} />
-        </div>
+      {!latest && !loading ? (
+        <EmptyBlock
+          art="sales"
+          title="还没有销量分析数据"
+          desc="在 Temu「经营分析 → 销量分析」打开页面后，到数据采集页重新采集「销量分析」这一步。"
+        />
+      ) : (
+        <MetricBand>
+          {coreMetrics.length ? (
+            coreMetrics.map(([label, value]) => {
+              const day = latest?.metrics[`${label}(较昨日)`];
+              return <Metric key={label} label={label} value={value} hint={day ? `较昨日 ${day}` : undefined} glyph={salesGlyph(label)} />;
+            })
+          ) : (
+            <Metric label="销量指标" value={loading ? "…" : "—"} hint="采集后展示" />
+          )}
+        </MetricBand>
+      )}
+
+      <SectionCard
+        title="销量与库存趋势"
+        desc={`按统计日期看最近 ${trendRows.length || 0} 次快照：销量是否起来，售罄与低库存是否在恶化。`}
+        action={<ChartKindSwitch value={chartKind} onChange={setChartKind} />}
+        icon="trend"
+      >
         {loading ? (
           <div className="op-skeleton op-skeleton-chart" />
         ) : (
@@ -115,48 +146,16 @@ export function OrderProfitSalesTab({
             emptyText="采集两次以上才会形成趋势"
           />
         )}
-      </div>
-
-      <div className="op-card op-table-card">
-        <div className="op-table-head">
-          <strong>数据概览</strong>
-          <span>{latest?.shop_name || "未采集"}</span>
-          <small>{loading ? "加载中…" : latest ? `${metrics.length} 项指标` : "无数据"}</small>
-        </div>
-        <div className="op-stats-grid">
-          {latest
-            ? metrics.map(([label, value]) => {
-                const day = latest.metrics[`${label}(较昨日)`];
-                const week = latest.metrics[`${label}(较近7日)`];
-                return (
-                  <div className="op-stat" key={label}>
-                    <span>{label}</span>
-                    <strong>{value}</strong>
-                    {day || week ? (
-                      <small>
-                        较昨日 {day || "—"} · 较近7日 {week || "—"}
-                      </small>
-                    ) : null}
-                  </div>
-                );
-              })
-            : null}
-          {!latest && !loading ? (
-            <div className="op-empty">
-              <strong>还没有销量分析数据</strong>
-              <span>打开 Temu「经营分析 → 销量分析」后，用数据采集页重新采集「销量分析」这一步再查看。</span>
-            </div>
-          ) : null}
-        </div>
-      </div>
+      </SectionCard>
 
       {latest ? (
-        <div className="op-card op-table-card">
-          <div className="op-table-head">
-            <strong>售罄健康</strong>
-            <small>{latest.captured_at ? `采集于 ${beijingTime(latest.captured_at)}` : ""}</small>
-          </div>
-          <div className="op-stats-grid">
+        <SectionCard
+          title="售罄健康"
+          desc="决定还能不能正常报名活动、是否需要补货；异常项优先处理。"
+          meta={<span className="op-chip">{latest.captured_at ? `采集于 ${beijingTime(latest.captured_at)}` : ""}</span>}
+          icon="shield"
+        >
+          <div className="op-stats-grid op-stats-nine">
             {HEALTH_FIELDS.map((label) => (
               <div className="op-stat" key={label}>
                 <span>{label}</span>
@@ -164,57 +163,85 @@ export function OrderProfitSalesTab({
               </div>
             ))}
           </div>
-        </div>
+        </SectionCard>
       ) : null}
 
-      <div className="op-card op-table-card">
-        <div className="op-table-head">
-          <strong>历史快照</strong>
-          <small>{history.length} 条</small>
-        </div>
-        <div className="op-table-wrap">
-          <table className="op-table op-table-finance">
-            <thead>
-              <tr>
-                <th>统计日期</th>
-                <th>区域</th>
-                <th className="op-num">今日总销量</th>
-                <th className="op-num">SKU售罄</th>
-                <th className="op-num">低库存预警</th>
-                <th className="op-num">售罄影响GMV</th>
-                <th className="op-num">库存可售天数</th>
-                <th className="op-num">10天满足率</th>
-                <th>采集时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!history.length && !loading ? (
+      <details className="op-disclosure">
+        <summary>
+          <ShopDataGlyph name="ledger" />
+          <span>更多指标与历史快照</span>
+          <small>{metrics.length} 项指标 · {history.length} 条快照</small>
+        </summary>
+        <div className="op-disclosure-body">
+          {extraMetrics.length ? (
+            <div className="op-stats-grid op-stats-nine">
+              {extraMetrics.map(([label, value]) => {
+                const day = latest?.metrics[`${label}(较昨日)`];
+                const week = latest?.metrics[`${label}(较近7日)`];
+                return (
+                  <div className="op-stat" key={label}>
+                    <span>{label}</span>
+                    <strong>{value}</strong>
+                    {day || week ? (
+                      <small>较昨日 {day || "—"} · 较近7日 {week || "—"}</small>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="op-hint">当前快照没有更多指标。</p>
+          )}
+
+          <div className="op-table-wrap">
+            <table className="op-table op-table-finance">
+              <thead>
                 <tr>
-                  <td colSpan={9}>
-                    <div className="op-empty">
-                      <strong>还没有历史快照</strong>
-                      <span>每次采集会按「区域 + 统计日期」覆盖或新增一条。</span>
-                    </div>
-                  </td>
+                  <th>统计日期</th>
+                  <th>区域</th>
+                  <th className="op-num">今日总销量</th>
+                  <th className="op-num">SKU售罄</th>
+                  <th className="op-num">低库存预警</th>
+                  <th className="op-num">售罄影响GMV</th>
+                  <th className="op-num">库存可售天数</th>
+                  <th className="op-num">10天满足率</th>
+                  <th>采集时间</th>
                 </tr>
-              ) : null}
-              {history.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.stat_date || "—"}</td>
-                  <td>{row.region || "—"}</td>
-                  <td className="op-num">{row.metrics["今日总销量"] || "—"}</td>
-                  <td className="op-num">{row.metrics["SKU售罄数&占比"] || "—"}</td>
-                  <td className="op-num">{row.metrics["低库存预警SKU数&占比"] || "—"}</td>
-                  <td className="op-num">{row.metrics["售罄影响GMV&占比"] || "—"}</td>
-                  <td className="op-num">{row.metrics["库存可售天数"] || "—"}</td>
-                  <td className="op-num">{row.metrics["10天库存满足率"] || "—"}</td>
-                  <td className="op-muted">{beijingTime(row.captured_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {!history.length && !loading ? (
+                  <tr>
+                    <td colSpan={9}>
+                      <EmptyBlock
+                        compact
+                        title="还没有历史快照"
+                        desc="每次采集会按「区域 + 统计日期」覆盖或新增一条。"
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+                {history.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.stat_date || "—"}</td>
+                    <td>{row.region || "—"}</td>
+                    <td className="op-num">{row.metrics["今日总销量"] || "—"}</td>
+                    <td className="op-num">{row.metrics["SKU售罄数&占比"] || "—"}</td>
+                    <td className="op-num">{row.metrics["低库存预警SKU数&占比"] || "—"}</td>
+                    <td className="op-num">{row.metrics["售罄影响GMV&占比"] || "—"}</td>
+                    <td className="op-num">{row.metrics["库存可售天数"] || "—"}</td>
+                    <td className="op-num">{row.metrics["10天库存满足率"] || "—"}</td>
+                    <td className="op-muted">{beijingTime(row.captured_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      </details>
+
+      <p className="op-footnote">
+        数据来自 Temu「经营分析 → 销量分析」；若页面提示「该区暂无权限」，插件会自动切到「全球」再采。
+      </p>
     </section>
   );
 }
