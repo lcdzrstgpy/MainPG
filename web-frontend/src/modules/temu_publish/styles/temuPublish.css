@@ -278,6 +278,73 @@ textarea.temu-input {
   font-size: 13px;
 }
 
+/* 换类目后行里残留的非法规格值：只提示，不动用户填的价格/重量 */
+.temu-spec-mismatch {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #edc4c1;
+  border-radius: var(--radius-md, 10px);
+  background: #fff4f3;
+  color: #a84c48;
+  font-size: 12.5px;
+}
+
+.temu-spec-mismatch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.temu-spec-mismatch-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.temu-spec-mismatch p {
+  margin: 0;
+  color: inherit;
+  opacity: 0.85;
+}
+
+.temu-spec-mismatch ul {
+  margin: 0;
+  padding-left: 18px;
+  max-height: 132px;
+  overflow: auto;
+}
+
+.temu-link-button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 手动刷新类目树：Temu 后台改完类目后不用等 1 小时缓存 */
+.temu-cat-refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.temu-cat-refresh .temu-link {
+  flex: none;
+}
+
+.temu-cat-refresh em {
+  font-style: normal;
+}
+
 .temu-two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -391,6 +458,36 @@ textarea.temu-input {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
+}
+
+/* 属性联动分组：带子属性的父项占满一行，子项缩进挂在它下面。
+   子项只在父属性选中且取值命中规则时才渲染（见 visibleProperties），
+   所以这里不需要额外的显示/隐藏逻辑，竖线 + 缩进就是「谁带出来的」提示。 */
+.temu-attr-group {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.temu-attr-group.is-nested {
+  grid-column: auto;
+}
+
+.temu-attr-children {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--theme-module-border-strong, #a7dafa);
+}
+
+/* 嵌套层里没有下级子项的叶子属性：占一格，别撑满整行。 */
+.temu-attr-dependent {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
 .temu-sku-table {
@@ -894,6 +991,10 @@ textarea.temu-input {
 }
 .temu-edit-dialog {
   width: min(640px, 94vw);
+  /* 硬上限：内容里有不折行的长标题时，grid/flex 子项的 min-width:auto 会顶宽，
+     光靠 width 兜不住（曾把批量发布弹窗顶出视口，右侧内容被切）。 */
+  min-width: 0;
+  max-width: calc(100vw - 48px);
   max-height: 88vh;
   display: grid;
   gap: 14px;
@@ -902,6 +1003,13 @@ textarea.temu-input {
   background: #fff;
   box-shadow: 0 28px 70px rgba(4, 18, 30, 0.42);
   overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* 弹窗里的每一块都不许被内容顶宽：min-width:auto 默认按 min-content 算，
+   中间任何一层漏掉，长标题就会从弹窗边框里溢出去（表现为文字被切一半）。 */
+.temu-edit-dialog > * {
+  min-width: 0;
 }
 .temu-edit-head {
   display: flex;
@@ -1016,23 +1124,38 @@ textarea.temu-input {
 .temu-bulk-menu-wrap {
   position: relative;
 }
+/* 批量改价触发器：原来写死一套蓝（#1f6f92 / #f4fbfe），换 peach/alpine 这类主题会串色，
+   改成跟按钮体系同一套主题变量 */
 .temu-bulk-trigger {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
-  border: 1px solid #cfe1eb;
-  border-radius: 8px;
-  color: #1f6f92;
-  background: #f4fbfe;
-  font-size: 0.78rem;
-  font-weight: 800;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-module-border, #cfe1eb);
+  border-radius: var(--radius-md, 10px);
+  color: var(--theme-module-primary-strong, #1f6f92);
+  background: var(--theme-module-surface-tint, #f4fbfe);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.12s ease;
 }
 .temu-bulk-trigger:hover,
 .temu-bulk-trigger.is-open {
-  border-color: #8ecfe6;
-  background: #e9f8fe;
+  border-color: var(--theme-module-primary-strong, #8ecfe6);
+  background: var(--theme-module-surface-soft, #e9f8fe);
+}
+.temu-bulk-trigger:active {
+  transform: translateY(1px);
+}
+.temu-bulk-trigger:focus-visible {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: 2px;
 }
 .temu-bulk-panel {
   position: absolute;
@@ -2228,13 +2351,38 @@ textarea.temu-input {
 }
 
 .is-console .temu-variant-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 固定 24×24：原来只有字号，hover 变色时行高会抖一下 */
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
-  color: #d75b65;
+  border-radius: 7px;
+  color: #c85c66;
   background: transparent;
+  font: inherit;
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.is-console .temu-variant-del:hover:not(:disabled) {
+  color: #b3313d;
+  background: #ffecee;
+}
+
+.is-console .temu-variant-del:active:not(:disabled) {
+  background: #ffdfe2;
+}
+
+.is-console .temu-variant-del:focus-visible {
+  outline: 2px solid #d75b65;
+  outline-offset: 1px;
 }
 
 .is-console .temu-variant-del:disabled {
@@ -2442,6 +2590,26 @@ textarea.temu-input {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.temu-fail-entry {
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.12s ease;
+}
+
+.temu-fail-entry:hover {
+  filter: brightness(0.98);
+}
+
+.temu-fail-entry:active {
+  transform: translateY(1px);
+}
+
+.temu-fail-entry:focus-visible {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: 2px;
 }
 
 .temu-fail-entry.has-dot {
@@ -2687,6 +2855,9 @@ textarea.temu-input {
   flex-direction: column;
   gap: 12px;
   padding: 4px 2px 0;
+  /* 中间这层也得能收缩：否则里面 nowrap 的长标题会把它撑宽，
+     弹窗本身虽然被 max-width 卡住了，内容还是会溢出到边框外被切。 */
+  min-width: 0;
 }
 
 .temu-batch-list {
@@ -2699,15 +2870,21 @@ textarea.temu-input {
   overflow: auto;
   font-size: 12px;
   line-height: 1.8;
+  min-width: 0;
 }
 
 .temu-batch-list li {
   display: flex;
   gap: 8px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .temu-batch-list li span {
+  /* flex 子项默认 min-width:auto（= 内容宽度），标题 white-space:nowrap 时
+     整行撑到最长标题那么宽，把弹窗顶出视口（截图里右侧被切掉就是这个原因）。
+     必须显式 min-width:0，ellipsis 才真正生效。 */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2728,6 +2905,13 @@ textarea.temu-input {
 .temu-batch-dialog .temu-field > span > em {
   font-style: normal;
   font-weight: 400;
+}
+
+/* 原生 select 的固有宽度按最长 option 算，模板名长（「名字（一级 > 二级 > 三级）」）
+   时同样会把弹窗顶宽；这里允许它收缩到容器宽度。 */
+.temu-batch-dialog .temu-input {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ---------- 发布后核对：店铺里的商品 ---------- */
@@ -2924,6 +3108,26 @@ textarea.temu-input {
   text-align: left;
 }
 
+/* 「字段齐 · 属性待填」并排两个小标：草稿数据齐了，但属性只能在发布页填 */
+.temu-ready-stack {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.temu-ready.is-pending {
+  color: #4a6379;
+  background: var(--theme-module-soft, rgba(0, 0, 0, 0.05));
+}
+
+/* 属性是按类目「估」的：蓝标提示，跟「填好了」区分开 */
+.temu-ready.is-estimated {
+  color: #1f5b96;
+  background: #e8f2fc;
+}
+
 /* 翻页请求进行中：保留上一页内容并压暗，比闪成空白稳 */
 .temu-draft-table-wrap.is-loading {
   opacity: 0.45;
@@ -2933,6 +3137,10 @@ textarea.temu-input {
 /* 草稿自带的分类（POD 模板自由文本 / AI 采集路径）：中性色，别当错误 */
 .temu-draft-table .col-cat small.is-draft {
   color: #6b8296;
+}
+/* 按标题自动匹配出来的 Temu 类目：是「有」但不是人工确认过，用橙色提醒看一眼 */
+.temu-draft-table .col-cat small.is-auto {
+  color: #a56a12;
 }
 
 /* ---------- 发布检查：缺项标红（只在点过发布被拦之后生效） ---------- */
@@ -3054,24 +3262,21 @@ textarea.temu-input {
   gap: 8px;
 }
 
-.is-console .temu-console-actions .temu-btn {
-  min-height: 34px;
-  padding: 7px 14px;
+/* 只作用于次要按钮：这条选择器比 .temu-btn-primary 具体，
+   原来会把主按钮的实心底色与白字一起冲成浅底灰字（主按钮因此不够醒目） */
+.is-console .temu-console-actions .temu-btn:not(.temu-btn-primary) {
   border-color: var(--theme-module-border, #dce8f2);
   background: var(--theme-module-surface-soft, #f6fafd);
   color: var(--theme-text-secondary, #527089);
-  font-size: 0.78rem;
 }
 
-.is-console .temu-console-actions .temu-btn:hover:not(:disabled) {
+.is-console .temu-console-actions .temu-btn:not(.temu-btn-primary):hover:not(:disabled) {
   border-color: var(--theme-module-border-strong, #bcd6ec);
   color: var(--theme-text-primary, #1a3551);
 }
 
 .is-console .temu-console-actions .temu-btn-primary {
   padding-inline: 20px;
-  font-weight: 750;
-  box-shadow: 0 10px 20px -14px var(--theme-module-shadow, rgba(8, 123, 245, 0.7));
 }
 
 /* 区块卡：左侧状态条（灰=未开始 / 蓝=当前 / 绿=已完成） */
@@ -3167,4 +3372,269 @@ textarea.temu-input {
   .is-console .temu-console-actions {
     justify-content: flex-start;
   }
+}
+
+
+/* ================================================================
+   按钮体系（2026-10-29）
+   —— 一套尺寸、一套层级、明确的交互反馈。只动样式，不碰逻辑。
+   原来的问题：3 套高度（34 / 26 / 26px）、hover 只变边框、没有按下反馈、
+   没有键盘焦点、主按钮靠 brightness 提亮（发灰）、禁用的主按钮还留着投影。
+   ================================================================ */
+
+/* 高度改成「上下 0 内边距 + min-height + line-height:1」：
+   文字永远垂直居中，原来 7px 内边距配不同字号，并排时高度会差 1~2px */
+.temu-btn {
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 15px;
+  /* 圆角跟主题走，别写死：有的主题 --radius-md 更小 */
+  border-radius: var(--radius-md, 10px);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.18s ease,
+    transform 0.12s ease,
+    filter 0.15s ease;
+}
+
+/* 次要按钮 hover：整块底色变化，比只改边框"有回应"。
+   排除主按钮/危险/紧急，否则会把它们的实心底色冲成浅色。 */
+.temu-btn:not(.temu-btn-primary):not(.is-danger):not(.is-urgent):hover:not(:disabled) {
+  border-color: var(--theme-module-border-strong, #b9d7ee);
+  background: var(--theme-module-surface-tint, #eff7fd);
+  color: var(--theme-text-primary, #16324f);
+}
+
+/* 按下：轻微下沉 + 阴影收紧 —— 点了有手感 */
+.temu-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* 键盘焦点：Tab 过来要看得见（配合 Ctrl+Enter 的键盘工作流） */
+.temu-btn:focus-visible,
+.temu-link:focus-visible {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: 2px;
+}
+
+/* 主按钮：实心主色 + 顶部一道内高光 + 柔和下沉阴影，比单纯 brightness 有质感 */
+.temu-btn-primary {
+  border-color: transparent;
+  color: #fff;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 58%),
+    var(--theme-module-primary-strong, #087bf5);
+  font-weight: 700;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.24) inset,
+    0 8px 18px -12px var(--theme-module-shadow, rgba(8, 123, 245, 0.75));
+}
+
+.temu-btn-primary:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.07);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.28) inset,
+    0 12px 24px -12px var(--theme-module-shadow, rgba(8, 123, 245, 0.8));
+}
+
+.temu-btn-primary:active:not(:disabled) {
+  filter: brightness(0.96);
+}
+
+/* 禁用的主按钮：不许留投影（留着看着像还能点） */
+.temu-btn-primary:disabled {
+  color: var(--theme-text-muted, #9aa9b8);
+  background: var(--theme-module-surface-soft, #eef2f6);
+  border-color: transparent;
+  box-shadow: none;
+  filter: none;
+}
+
+/* 小号：28px（原来 26px 配 12px 字偏挤）；is-small 与 temu-btn-sm 统一成一套 */
+.is-console .temu-btn-sm,
+.is-console .temu-btn.is-small {
+  min-height: 28px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* 顶部操作区统一回基础尺寸，不再单独一套 0.78rem */
+.is-console .temu-console-actions .temu-btn {
+  min-height: 34px;
+  padding: 0 15px;
+  font-size: 13px;
+}
+
+/* 有未应用的值时（应用到全部）：加一个左侧小圆点，比纯黄底更抓眼 */
+.temu-btn.is-urgent {
+  position: relative;
+}
+
+.temu-btn.is-urgent::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e08a00;
+  flex: none;
+}
+
+/* 文字链接按钮：hover 出下划线，别只靠颜色变化 */
+.temu-link:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 按钮区最后一颗按钮贴右（操作列、行尾动作）保持原来的对齐，只调间距 */
+.is-console .temu-rail-actions,
+.is-console .temu-console-actions,
+.temu-publish-actions {
+  gap: 8px;
+}
+
+/* ---------- 批量发布：现场配置（不用产品模板） ---------- */
+
+.temu-batch-manual {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  min-width: 0;
+}
+
+.temu-batch-manual-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.temu-batch-manual-head strong {
+  font-size: 0.82rem;
+  color: var(--theme-text-primary, #20364d);
+}
+
+.temu-batch-manual-head em,
+.temu-batch-manual em {
+  font-style: normal;
+}
+
+.temu-batch-search {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-batch-search .temu-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.temu-batch-paths {
+  margin: 0;
+  padding: 6px 8px;
+  list-style: none;
+  max-height: 132px;
+  overflow: auto;
+  border-radius: var(--radius-sm, 6px);
+  background: #fff;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.temu-batch-paths button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-batch-paths button:hover {
+  text-decoration: underline;
+}
+
+.temu-batch-picked {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--theme-text-primary, #20364d);
+  overflow-wrap: anywhere;
+}
+
+.temu-batch-attrs {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 现场配置里的属性表单撑满，别跟弹窗网格抢宽度 */
+.temu-batch-attrs .temu-attr-grid,
+.temu-batch-attrs .temu-attr-children {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
+.temu-batch-manual-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ---------- 产品属性自动填提示条 ---------- */
+
+.temu-autofill-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--theme-module-border-strong, #a7dafa);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
+  color: var(--theme-text-secondary, #4a6379);
+  font-size: 12px;
+  line-height: 1.6;
+  min-width: 0;
+}
+
+.temu-autofill-bar strong {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-autofill-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 属性值是按类目「估」的：小橙标，优先核对这几项 */
+.temu-attr-guessed {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #fff3e0;
+  color: #a35a00;
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 800;
+  vertical-align: middle;
 }

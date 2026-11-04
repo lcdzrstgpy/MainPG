@@ -95,8 +95,18 @@ const FAILURE_KEY = "temu_publish_failures";
 
 const MAX_FAILURES = 100;
 
-/** 草稿 → 上次在发布页选过的 Temu 类目路径（选完就记，不必等发布成功）。 */
-export type DraftCategoryMemo = { path: TemuCategory[]; label: string; at: string };
+/**
+ * 草稿 → Temu 类目路径。
+ *
+ * `auto: true` 表示这条是**按标题自动匹配**出来的（入草稿库时补的），不是人工选过的：
+ * 只是「大概方向」，发布前最好扫一眼。人工选过的 memo 不带这个标记。
+ */
+export type DraftCategoryMemo = {
+  path: TemuCategory[];
+  label: string;
+  at: string;
+  auto?: boolean;
+};
 
 const DRAFT_CATEGORY_KEY = "temu_draft_category_v1";
 
@@ -105,13 +115,14 @@ export const localStore = {
   storageScope: scope,
   draftCategories: (): Record<string, DraftCategoryMemo> => read(DRAFT_CATEGORY_KEY, {}),
   /** 记住某条草稿的类目：下次「用于发布」直接选中，草稿库也能显示路径。 */
-  rememberDraftCategory: (draftId: string, path: TemuCategory[]) => {
+  rememberDraftCategory: (draftId: string, path: TemuCategory[], options?: { auto?: boolean }) => {
     if (!draftId || !path.length) return;
     const next = { ...localStore.draftCategories() };
     next[draftId] = {
       path,
       label: path.map((item) => item.catName || String(item.catId)).join(" > "),
       at: new Date().toLocaleString("zh-CN"),
+      ...(options?.auto ? { auto: true } : {}),
     };
     write(DRAFT_CATEGORY_KEY, next);
   },

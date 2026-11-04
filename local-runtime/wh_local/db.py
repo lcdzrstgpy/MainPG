@@ -1022,6 +1022,17 @@ def _module_migrations() -> list[tuple[str, str, str]]:
                 dimension_templates_sql.read_text(encoding="utf-8"),
             )
         )
+    draft_source_ref_lookup_sql = (
+        root / "modules" / "product_processing" / "migrations" / "006_draft_source_ref_lookup.sql"
+    )
+    if draft_source_ref_lookup_sql.exists():
+        migrations.append(
+            (
+                "product_processing:006_draft_source_ref_lookup",
+                "product_processing",
+                draft_source_ref_lookup_sql.read_text(encoding="utf-8"),
+            )
+        )
     # POD 迁移清单**从契约注册表派生**，不再手写一份：
     # 手写清单曾漏过 `015_replica_customization`（2026-10-08 实测），导致走 init_db
     # 的库永远不建复刻表 —— 只有 POD 仓储自己的迁移器建。两份清单必然漂移，

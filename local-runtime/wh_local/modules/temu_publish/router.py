@@ -276,6 +276,16 @@ def create_temu_publish_router(
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 
+    @router.post("/categories/refresh")
+    def refresh_categories(
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """手动刷新类目树缓存（Temu 后台改完类目后不用等 TTL）。"""
+        try:
+            return _service(actor).refresh_categories()
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
     @router.post("/categories/match")
     def match_category(
         payload: CategoryMatchRequest,

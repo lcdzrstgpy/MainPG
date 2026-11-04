@@ -52,6 +52,11 @@ export const temuPublishApi = {
     httpJson<{ categoryDTOList: TemuCategory[] }>(
       `${BASE}/categories${query({ parent_cat_id: parentCatId })}`,
     ),
+  /** 手动刷新类目树缓存：Temu 后台改完类目后不用等 TTL。 */
+  refreshCategories: () =>
+    httpJson<{ ok: boolean; dropped: number }>(`${BASE}/categories/refresh`, {
+      method: "POST",
+    }),
   matchCategory: (searchText: string, siteId = 100) =>
     httpJson<{ categoryPathDTOS: TemuCategoryPath[] }>(`${BASE}/categories/match`, {
       method: "POST",

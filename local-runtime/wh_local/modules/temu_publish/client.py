@@ -19,7 +19,10 @@ import requests
 PRODUCT_ROUTER = "https://yingluan-api.qibang-global.vip/api/temu-product/openapi/router"
 
 # 发布页常用的缓存时长（秒）。
-CACHE_TTL_CATEGORIES = 6 * 60 * 60
+# 类目树 6 小时太长：Temu 调整/下架类目后，最长要 6 小时才能看到，
+# 期间用户可能把商品发到已废弃的类目上。1 小时是「基本不浪费请求」和
+# 「改动当天能看到」的折中。
+CACHE_TTL_CATEGORIES = 60 * 60
 CACHE_TTL_ATTRIBUTES = 60 * 60
 CACHE_TTL_LOGISTICS = 30 * 60
 
@@ -255,6 +258,30 @@ class TemuProductClient:
     def invalidate_parent_specs(self) -> None:
         """新建规格后清掉父规格缓存，否则最长要等一个 TTL 才看得到新规格。"""
         self._cache_drop("parent-specs")
+
+    def invalidate_categories(self) -> int:
+        """清掉类目树、类目匹配、类目属性的读缓存，返回清掉的条数。
+
+        用途：Temu 后台调整/下架类目后，缓存最长要 1 小时才过期。给用户一个
+        手动刷新入口，不用等 TTL。
+
+        **包含 ``attrs:``**：属性表是按 catId 定义的，Temu 给某个类目加/改必填
+        属性时，只清类目树的话用户点完刷新拿到的还是旧属性表（连必填判断一起
+        是旧的），得等 1 小时或重启才有变化。类目和它的属性是同一条链路，
+        一起失效才符合「我点了刷新」的预期。
+
+        特意不碰 ``freight:`` / ``parent-specs`` / ``warehouse`` 这些：它们跟
+        类目改动无关，一起清等于每次刷新都白打几轮网关。
+        """
+        with self._cache_lock:
+            keys = [
+                key
+                for key in self._cache
+                if key.startswith(("cats:", "cat-match:", "attrs:"))
+            ]
+            for key in keys:
+                self._cache.pop(key, None)
+        return len(keys)
 
     def goods_list(self, **filters: Any) -> dict[str, Any]:
         """商品列表查询（bg.glo.goods.list.get）。
