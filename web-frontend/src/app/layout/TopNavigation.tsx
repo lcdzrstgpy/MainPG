@@ -336,6 +336,16 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
     closingTimers.current.add(timer);
   };
 
+  // 可关闭的页签（工作台是兜底页，永远保留）。
+  const closableTabs = tabs.filter((tab) => tab.moduleId !== "dashboard");
+
+  // 一键清空：逐个走收起动画，避免整条页签栏瞬间消失；工作台始终留着。
+  const closeAllTabs = () => {
+    if (!closableTabs.length) return;
+    setTabMenuOpen(false);
+    closableTabs.forEach((tab) => closeTabWithEffect(tab.key));
+  };
+
   return (
     <header ref={topbarRef} className={`topbar-card is-pinned ${topbarStuck ? "is-stuck" : ""}`}>
       <span className="topbar-glass" aria-hidden="true" />
@@ -596,7 +606,19 @@ export function TopNavigation({ sidebarPinned, activeKey, tabs, onToggleSidebar,
               <div className="tab-overflow-panel" role="dialog" aria-label="全部页签">
                 <div className="tab-overflow-head">
                   <strong>全部页签</strong>
-                  <span>{tabs.length} 个</span>
+                  <div className="tab-overflow-head-actions">
+                    <span>{tabs.length} 个</span>
+                    {closableTabs.length > 0 && (
+                      <button
+                        type="button"
+                        className="tab-overflow-clear"
+                        onClick={closeAllTabs}
+                        title="关闭除工作台外的全部页签"
+                      >
+                        一键清空
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <ul>
                   {tabs.map((tab) => (

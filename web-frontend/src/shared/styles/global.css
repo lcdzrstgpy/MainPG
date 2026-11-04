@@ -172,6 +172,24 @@ button { cursor: pointer; }
 
 .tab-overflow-head strong { font-size: .84rem; }
 .tab-overflow-head span { font-size: .72rem; color: var(--theme-text-muted, #8a9cb0); }
+.tab-overflow-head-actions { display: flex; align-items: center; gap: 8px; }
+
+/* 一键清空：只留工作台，其余页签统一收起。 */
+.tab-overflow-clear {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--theme-text-muted, #8a9cb0);
+  font-size: .72rem;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: color .16s ease, background .16s ease;
+}
+
+.tab-overflow-clear:hover { color: #e25d65; background: #fff0f1; }
+
 .tab-overflow-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .tab-overflow-panel li { display: flex; align-items: center; gap: 2px; }
 

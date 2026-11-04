@@ -372,6 +372,33 @@ export type CaptureBatch = {
   created_at: string;
 };
 
+export type CaptureRunStep = {
+  key: string;
+  label: string;
+  state: string;
+  detail?: string;
+};
+
+export type CaptureRunSummary = {
+  command_id: number;
+  command_type: string;
+  status: string;
+  ok: boolean;
+  status_text: string;
+  error: string;
+  help: string;
+  shop_name: string;
+  incremental: boolean;
+  resource: string;
+  results: CaptureRunStep[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type CaptureRunList = {
+  items: CaptureRunSummary[];
+};
+
 export type CaptureBatches = {
   batches: CaptureBatch[];
   latest: CaptureBatch | null;
@@ -449,6 +476,11 @@ export type StoreMetrics = {
   cancel_pending: number;
   ship_timeliness: number | null;
   delivery_timeliness: number | null;
+  /** 首页「商品上新状态」：价格申报中 / 未发布到站点 / 已发布到站点 / 已下架。 */
+  listing_price_pending?: number;
+  listing_not_published?: number;
+  listing_published?: number;
+  listing_delisted?: number;
   captured_at: string;
   updated_at?: string;
 };

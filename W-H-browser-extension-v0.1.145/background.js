@@ -15857,6 +15857,11 @@ const TEMU_AUTO_TARGETS = {
   traffic: {
     url: FLUX_PAGE_URL,
     match: (url) => /\/main\/flux-analysis/i.test(url)
+  },
+  sales: {
+    url: TEMU_SALES_PAGE_URL,
+    // 销量分析就是数据中心的 goods-data；站点域名各账号不同，按路径匹配。
+    match: (url) => /data-center\/goods-data/i.test(url)
   }
 };
 
@@ -16496,34 +16501,37 @@ async function autoCaptureTemuFinance(context = {}) {
 }
 
 async function autoCaptureTemuSales() {
-  const login = await ensureTemuLogin({ openLoginPage: true });
-  if (login?.logged_in === false) throw new TemuLoginRequiredError(login?.reason);
-  const matcher = (url) => /\/main\/data-center\/goods-data/i.test(String(url || ""));
-  let tabs = [];
+  const opened = await openAutoCaptureTab("sales");
+  let tab = opened.tab;
+  let created = opened.created;
   try {
-    tabs = await chrome.tabs.query({});
-  } catch (_error) {
-    tabs = [];
-  }
-  let tab = tabs
-    .filter((item) => item?.id && matcher(item.url))
-    .sort((left, right) =>
-      (Number(right.active) - Number(left.active))
-      || (Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))
-    )[0] || null;
-  let created = false;
-  if (!tab) {
-    tab = await chrome.tabs.create({ url: TEMU_SALES_PAGE_URL, active: false });
-    created = true;
-    await waitForTabUrl(tab.id, matcher, 45000);
-    await ensureTabInjectable(tab.id);
-  }
-  try {
-    await delay(4000);
-    return await captureTemuSalesFromTab(tab);
+    // 数据概览卡片是接口回来后异步渲染的，先等「数据概览」出现再读。
+    await waitForTemuSalesOverview(tab.id, 25000);
+    // 和财务页一样：非前台标签页会被浏览器降频，卡片渲染不全，读取期间切到前台。
+    return await runWithTabActive(tab.id, () =>
+      retryTemuCapture(() => captureTemuSalesFromTab(tab), 3, 3000)
+    );
   } finally {
     if (created) await closeTabQuietly(tab.id);
   }
+}
+
+/** 等销量分析页渲染出「数据概览」（可能在同源 iframe 里）。 */
+async function waitForTemuSalesOverview(tabId, timeoutMs = 25000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => /数据概览/.test(document.body?.innerText || "")
+      });
+      if ((results || []).some((item) => item?.result)) return true;
+    } catch (_error) {
+      // 页面还在跳转/未注入，下一轮再试。
+    }
+    await delay(1500);
+  }
+  return false;
 }
 
 async function autoCaptureTemuStoreMetrics() {
@@ -18475,8 +18483,10 @@ async function captureTemuTrafficFromTab(sourceTab) {
 
 async function readTemuSalesPage(tabId) {
   try {
+    // 数据中心的卡片在部分账号上渲染在同源 iframe 里，只读主文档会一个指标都拿不到；
+    // 这里逐帧读取，取解析出指标最多的那一帧。
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       world: "MAIN",
       func: () => {
         const norm = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -18544,6 +18554,10 @@ async function readTemuSalesPage(tabId) {
           shop_name: shopMatch ? shopMatch[1].trim() : "",
           page_title: document.title,
           page_url: location.href,
+          // 诊断字段：失败时能直接看出是「页面没渲染」还是「标签对不上」。
+          found_labels: metrics.length,
+          has_overview: /数据概览/.test(text),
+          text_length: text.length,
           capturedAt: new Date().toISOString(),
           statusText: metrics.length
             ? `已读取销量分析 ${metrics.length} 项指标（${region}）`
@@ -18551,7 +18565,17 @@ async function readTemuSalesPage(tabId) {
         };
       }
     });
-    return results?.[0]?.result || null;
+    const frames = (results || [])
+      .map((item) => item?.result)
+      .filter((item) => item && typeof item === "object");
+    if (!frames.length) return null;
+    // 有指标的帧优先；都没有指标时也保留一个帧，好让上层把「该区暂无权限」等诊断传回去。
+    frames.sort((left, right) => {
+      const leftScore = (left.ok ? 100 : 0) + (left.metrics?.length || 0);
+      const rightScore = (right.ok ? 100 : 0) + (right.metrics?.length || 0);
+      return rightScore - leftScore;
+    });
+    return frames[0];
   } catch (error) {
     return {
       ok: false,
@@ -18666,10 +18690,16 @@ async function captureTemuSalesFromTab(sourceTab) {
       help: lastSwitch?.hint || result?.hint || ""
     };
   }
-  return result || {
+  const hint = result?.has_overview === false
+    ? "页面还没渲染出「数据概览」，刷新页面或稍后重试"
+    : "页面上没找到预期的指标标签（页面结构可能变了）";
+  return {
+    ...(result || {}),
     ok: false,
-    error: "sales_capture_failed",
-    statusText: "销量分析页没有读到指标，请确认停在「经营分析 → 销量分析」"
+    error: result?.error || "sales_capture_failed",
+    statusText: result
+      ? `销量分析页没有读到指标：${hint}（文本 ${result.text_length || 0} 字，${result.page_url || ""}）`
+      : "销量分析页没有读到指标，请确认停在「经营分析 → 销量分析」"
   };
 }
 

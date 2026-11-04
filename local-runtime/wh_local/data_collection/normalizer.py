@@ -312,7 +312,12 @@ def _candidate_from_search_item(
         "price_cny": price,
         "min_order_quantity": moq,
         "sales_text": _text_value(item, ("sales", "sales_text", "sold", "volume")),
-        "shop_name": _text_value(item, ("shop_name", "shop", "seller_name", "company")),
+        "shop_name": _text_value(
+            item,
+            # 1688 item_search 用 seller_nick / shop_title，淘宝用 nick / shop_name；
+            # 少一个别名就会让卡片一直显示「店铺待补齐」。
+            ("shop_name", "shop", "seller_name", "company", "seller_nick", "shop_title", "nick", "company_name"),
+        ),
         "location": _text_value(item, ("location", "area", "province")),
     }
     missing = _missing_fields((), fields)

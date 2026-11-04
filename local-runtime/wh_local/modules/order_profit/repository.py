@@ -224,6 +224,8 @@ class OrderProfitRepository:
             self._ensure_shop_store_codes(conn)
             self._ensure_item_manual_costs(conn)
             self._upgrade_shop_scoped_tables(conn)
+            # 必须在按店铺重建快照表之后再补列：重建用的是旧 DDL，会丢新增字段。
+            self._ensure_store_metrics_fields(conn)
             self._backfill_active_shops(conn)
             conn.commit()
 
@@ -262,6 +264,23 @@ class OrderProfitRepository:
                 ON store_accounts(workspace_id);
             """
         )
+
+    @staticmethod
+    def _ensure_store_metrics_fields(conn: sqlite3.Connection) -> None:
+        """店铺首页「商品上新状态」四块指标（老库平滑加列）。"""
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info('store_metrics')").fetchall()
+        }
+        additions = {
+            "listing_price_pending": "INTEGER NOT NULL DEFAULT 0",
+            "listing_not_published": "INTEGER NOT NULL DEFAULT 0",
+            "listing_published": "INTEGER NOT NULL DEFAULT 0",
+            "listing_delisted": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE store_metrics ADD COLUMN {name} {ddl}")
 
     @staticmethod
     def _ensure_item_manual_costs(conn: sqlite3.Connection) -> None:
@@ -828,8 +847,9 @@ class OrderProfitRepository:
                 "INSERT INTO store_metrics "
                 "(workspace_id, shop_name, pending_shipment, active_products, sales_today, "
                 "sales_7d, sales_30d, refund_pending, cancel_pending, ship_timeliness, "
-                "delivery_timeliness, captured_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "delivery_timeliness, listing_price_pending, listing_not_published, "
+                "listing_published, listing_delisted, captured_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(workspace_id, shop_name) DO UPDATE SET "
                 "shop_name = excluded.shop_name, "
                 "pending_shipment = excluded.pending_shipment, "
@@ -841,6 +861,10 @@ class OrderProfitRepository:
                 "cancel_pending = excluded.cancel_pending, "
                 "ship_timeliness = excluded.ship_timeliness, "
                 "delivery_timeliness = excluded.delivery_timeliness, "
+                "listing_price_pending = excluded.listing_price_pending, "
+                "listing_not_published = excluded.listing_not_published, "
+                "listing_published = excluded.listing_published, "
+                "listing_delisted = excluded.listing_delisted, "
                 "captured_at = excluded.captured_at, "
                 "updated_at = excluded.updated_at",
                 (
@@ -855,6 +879,10 @@ class OrderProfitRepository:
                     _int(metrics.get("cancel_pending")),
                     _float(metrics.get("ship_timeliness")),
                     _float(metrics.get("delivery_timeliness")),
+                    _int(metrics.get("listing_price_pending")),
+                    _int(metrics.get("listing_not_published")),
+                    _int(metrics.get("listing_published")),
+                    _int(metrics.get("listing_delisted")),
                     _text(captured_at) or now,
                     now,
                 ),
@@ -1689,6 +1717,7 @@ class OrderProfitRepository:
             for row in conn.execute(
                 "SELECT pending_shipment, active_products, sales_today, sales_7d, sales_30d, "
                 "refund_pending, cancel_pending, ship_timeliness, delivery_timeliness, "
+                "listing_price_pending, listing_not_published, listing_published, listing_delisted, "
                 "captured_at, updated_at FROM store_metrics "
                 "WHERE workspace_id = ? AND shop_name = ?",
                 (workspace_id, shop),

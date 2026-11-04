@@ -732,6 +732,23 @@ class DataCollectionPluginQueue:
             ).fetchall()
             return tuple(self._command(conn, int(row["id"])) for row in rows)
 
+    def list_capture_commands(
+        self, *, workspace_id: str, limit: int = 20
+    ) -> tuple[PluginCommand, ...]:
+        """最近的数据采集指令（全量/增量/单步补采），用于工作台采集中心。"""
+        limit = max(1, min(int(limit), 50))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT c.id FROM data_collection_plugin_commands c
+                JOIN data_collection_plugin_sessions s ON s.id = c.session_id
+                WHERE s.workspace_id = ?
+                  AND c.command_type IN ('temu_capture_all', 'temu_capture_incremental',
+                                         'temu_capture_resource')
+                ORDER BY c.created_at DESC, c.id DESC LIMIT ?""",
+                (workspace_id, limit),
+            ).fetchall()
+            return tuple(self._command(conn, int(row["id"])) for row in rows)
+
     def workspace_for_session(self, session_token: str) -> str:
         """Return the workspace bound to a connected browser session."""
         with self._connect() as conn:

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { orderProfitApi } from "../api/orderProfitApi";
+import { ShopDataGlyph } from "../components/ShopDataGlyph";
+import { EmptyBlock, Metric, MetricBand, SectionCard } from "../components/ShopDataPrimitives";
 import { money, numberText } from "../format";
 import type { FinanceResponse } from "../types";
 
@@ -64,29 +66,43 @@ export function OrderProfitFinanceTab({
             <button type="button" className="op-btn op-btn-primary" onClick={() => setAppliedMonth(month)}>查询</button>
             <button type="button" className="op-btn" onClick={() => { setMonth(CURRENT_MONTH); setAppliedMonth(CURRENT_MONTH); }}>重置</button>
           </div>
+          <span className="op-view-toolbar-meta">
+            {loading ? "加载中…" : `${appliedMonth} · ${entries.length} 条流水`}
+          </span>
         </div>
-        <p className="op-hint">
-          在 Temu 对账中心用插件弹窗「采集财务流水」同步推广服务费与罚款；店铺指标与 PO 单结算回款在侧栏「店铺数据」查看。
-        </p>
-      </div>
-
-      <div className="op-stats-grid">
-        <div className="op-stat"><span>流水条数</span><strong>{numberText(summary?.entries)}</strong></div>
-        <div className="op-stat"><span>流入金额</span><strong className="is-positive">{money(summary?.inflow)}</strong></div>
-        <div className="op-stat"><span>流出金额</span><strong className="is-negative">{money(-(summary?.outflow || 0))}</strong></div>
-        <div className="op-stat"><span>广告费用</span><strong className="is-negative">{money(-(summary?.ad_cost || 0))}</strong></div>
-        <div className="op-stat"><span>平台罚款</span><strong className="is-negative">{money(-(summary?.penalty || 0))}</strong></div>
-        <div className="op-stat"><span>结算金额</span><strong className="is-positive">{money(summary?.settlement)}</strong></div>
       </div>
 
       {error ? <div className="op-alert is-error">{error}</div> : null}
 
-      <div className="op-card op-table-card">
-        <div className="op-table-head">
-          <strong>财务流水</strong>
-          <span>{loading ? "加载中…" : `${entries.length} 条`}</span>
-          <small>金额为 CNY；推广服务费计入广告费用，罚款类计入平台罚款</small>
+      <MetricBand>
+        <Metric label="流入金额" value={money(summary?.inflow)} tone="is-positive" hint="本月进入账户的金额" glyph="wallet" />
+        <Metric label="流出金额" value={money(-(summary?.outflow || 0))} tone="is-negative" hint="含推广费、罚款等扣款" glyph="refresh" />
+        <Metric label="广告费用" value={money(-(summary?.ad_cost || 0))} tone="is-negative" hint="推广服务费" glyph="ad" />
+        <Metric label="平台罚款" value={money(-(summary?.penalty || 0))} tone="is-negative" hint="罚款类流水" glyph="penalty" />
+      </MetricBand>
+
+      <details className="op-disclosure">
+        <summary>
+          <ShopDataGlyph name="cost" />
+          <span>金额构成补充</span>
+          <small>结算金额 · 流水条数</small>
+        </summary>
+        <div className="op-disclosure-body">
+          <div className="op-stats-grid">
+            <div className="op-stat"><span>结算金额</span><strong className="is-positive">{money(summary?.settlement)}</strong></div>
+            <div className="op-stat"><span>流水条数</span><strong>{numberText(summary?.entries)}</strong></div>
+          </div>
         </div>
+      </details>
+
+      <SectionCard
+        className="op-section-table"
+        title="财务流水"
+        desc="逐笔看钱扣在哪；金额为 CNY，推广服务费计入广告费用，罚款类计入平台罚款。"
+        meta={<span className="op-chip">{loading ? "读取中…" : `${entries.length} 条`}</span>}
+        icon="ledger"
+        scene="finance"
+      >
         <div className="op-table-wrap">
           <table className="op-table op-table-finance">
             <thead>
@@ -103,10 +119,12 @@ export function OrderProfitFinanceTab({
               {!entries.length && !loading ? (
                 <tr>
                   <td colSpan={6}>
-                    <div className="op-empty">
-                      <strong>该月份还没有财务流水</strong>
-                      <span>打开 Temu 对账中心，用插件弹窗采集财务流水后再查看。</span>
-                    </div>
+                    <EmptyBlock
+                      compact
+                      art="funds"
+                      title="该月份还没有财务流水"
+                      desc="打开 Temu 对账中心，用插件弹窗采集财务流水后再查看。"
+                    />
                   </td>
                 </tr>
               ) : null}
@@ -129,7 +147,11 @@ export function OrderProfitFinanceTab({
             </tbody>
           </table>
         </div>
-      </div>
+      </SectionCard>
+
+      <p className="op-footnote">
+        数据来自 Temu 对账中心；店铺指标与 PO 单结算回款在经营概览与「结算回款」中查看。
+      </p>
     </section>
   );
 }
