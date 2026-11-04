@@ -2513,18 +2513,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               {remainingContentSteps.length ? `还差 ${remainingContentSteps.length} 项` : "可提交"}
             </span>
           </div>
-          {/* 五段进度条：一眼看出走到第几步。悬停能看到这一步还差什么 */}
-          <div className="temu-progress" role="presentation">
-            {flowSteps
-              .filter((step) => step.id !== "sec-publish")
-              .map((step) => (
-                <span
-                  key={step.id}
-                  className={step.done ? "is-done" : ""}
-                  title={`${step.label}：${step.done ? "已完成" : `还差 ${step.missing.join("、")}`}`}
-                />
-              ))}
-          </div>
+          {/* 进度改成下面的横向步骤条：可点击跳转、能显示「还差什么」，
+              原来这排只读小圆点表达的是同一件事，留着是重复信息 */}
         </div>
         <div className="temu-console-actions">
           <button
@@ -2595,7 +2585,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
             <div>
               <span>服务商凭据</span>
-              <strong>{gatewayReady ? "已配置（解绑店铺不影响）" : "未配置"}</strong>
+              <strong>{gatewayReady ? "已由服务器下发（不用管）" : "还没拿到"}</strong>
             </div>
             <div>
               <span>店铺授权</span>
@@ -2645,9 +2635,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
           )}
 
-          {/* 服务商 client_id / token 是预置的，不让用户填也不展示 */}
+          {/* 服务商 client_id / token 由服务器统一下发：安装包里不带，也不让用户填 */}
           <p className="temu-muted">
-            服务商凭据（client_id / token）：{gatewayReady ? "已预置，不用管" : "还没预置，请联系服务商开通；这里不用填"}
+            服务商凭据（client_id / token）：
+            {gatewayReady
+              ? "已由服务器下发，不用管；服务商换了凭据会自动更新"
+              : "还没拿到 —— 登录后打开本页会自动获取（需要联网）。一直拿不到请联系管理员"}
           </p>
           <label className="temu-field">
             <span>
@@ -2695,6 +2688,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           <button type="button" onClick={() => setError("")}>关闭</button>
         </div>
       )}
+
+      {/* 横向步骤条：粘在顶部，点一下滚到那一块。
+          不做分步向导 —— 发布要在「类目 → 属性 → 变种」之间来回对照，
+          一次只显示一步会逼人翻页，反而更慢。 */}
+      <nav className="temu-stepbar" aria-label="发布步骤">
+        {flowSteps.map((step, index) => (
+          <button
+            key={step.id}
+            type="button"
+            className={`temu-stepbar-item${step.done ? " is-done" : ""}${
+              activeSectionId === step.id ? " is-active" : ""
+            }`}
+            onClick={() => jumpTo(step.id)}
+            title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
+          >
+            <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
+            <span className="temu-stepbar-label">{step.label}</span>
+          </button>
+        ))}
+      </nav>
 
       <div className="temu-console-body">
         <div className="temu-console-main">
@@ -2821,146 +2834,186 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 产品分类<em className="temu-required">*</em>
                 <em className="temu-muted">会记住上次用过的分类</em>
               </span>
-              {presets.length > 0 && (
-                <div className="temu-preset-bar">
-                  <span className="temu-preset-title">预设</span>
-                  {presets.map((preset) => (
-                    <span key={preset.name} className="temu-preset-chip">
-                      <button
-                        type="button"
-                        onClick={() => applyPreset(preset)}
-                        title={preset.categoryPath.map((item) => item.catName).join(" / ")}
-                      >
-                        {preset.name}
-                      </button>
-                      <button
-                        type="button"
-                        className="temu-preset-del"
-                        onClick={() => removePreset(preset.name)}
-                        aria-label={`删除预设 ${preset.name}`}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              {(titleMatching || titleMatches.length > 0) && (
-                <div className="temu-title-match">
-                  <span>{titleMatching ? "正在按标题匹配类目…" : "按标题推荐（点一下切换）"}</span>
-                  {titleMatches.slice(0, 3).map((dto, index) => {
-                    const path = categoryPathFromDto(dto);
-                    if (!path.length) return null;
-                    const isLeaf = path[path.length - 1].isLeaf;
-                    return (
-                      <button
-                        key={`${index}-${path[path.length - 1].catId}`}
-                        type="button"
-                        onClick={() => void applyCategory(path)}
-                        disabled={busy !== ""}
-                      >
-                        {path.map(categoryName).join(" / ")}
-                        {isLeaf ? "" : "（需继续选）"}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              <div className="temu-search-row">
-                <input
-                  className="temu-input"
-                  value={categoryQuery}
-                  onChange={(event) => setCategoryQuery(event.target.value)}
-                  placeholder="搜类目关键词，如 wig / storage basket"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") searchCategory();
-                  }}
-                />
-                <button type="button" className="temu-btn" onClick={searchCategory} disabled={busy !== ""}>
-                  搜索
-                </button>
-              </div>
-              {matchPaths.length > 0 && (
-                <div className="temu-match-list">
-                  {matchPaths.slice(0, 8).map((dto, index) => {
-                    const path = categoryPathFromDto(dto);
-                    return (
-                      <button key={index} type="button" onClick={() => chooseMatchedPath(dto)}>
-                        {path.map(categoryName).join(" / ")}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              {categoryPath.length > 0 && (
-                <div className="temu-breadcrumb">
-                  {categoryPath.map((item, index) => (
-                    <button key={`${item.catId}-${index}`} type="button" onClick={() => resetToLevel(index)}>
-                      {categoryName(item)}
-                    </button>
-                  ))}
-                  <span>{leaf?.isLeaf ? "叶子类目" : "继续选下一级"}</span>
-                  <button type="button" className="temu-link" onClick={() => resetToLevel(-1)} disabled={busy !== ""}>
-                    重选
-                  </button>
-                </div>
-              )}
-              <div className="temu-cat-refresh">
-                <button
-                  type="button"
-                  className="temu-link"
-                  onClick={() => void refreshCategoryTree()}
-                  disabled={busy !== ""}
-                  title="Temu 后台改过类目或该类目的必填属性后点这里，不用等缓存过期"
-                >
-                  刷新类目树
-                </button>
-                <em className="temu-muted">
-                  类目和属性缓存 1 小时；改完看不到新的就点这个
-                </em>
-              </div>
-              {leaf?.isLeaf && attributes && saleValueIndex.size === 0 && (
-                <p className="temu-cat-hint">
-                  该类目在 Temu 没有销售属性（建不了颜色/尺码变种），只能按单 SKU 发布；想按颜色卖就换一个带变种的类目。
-                </p>
-              )}
-              {categoryOptions.length > 0 && (
-                <>
-                  <button
-                    type="button"
-                    className="temu-browser-toggle"
-                    onClick={() => setShowCategoryBrowser((value) => !value)}
-                  >
-                    {showCategoryBrowser
-                      ? "收起分类浏览"
-                      : `浏览全部 ${categoryOptions.length} 个分类（也可以直接在上面搜关键词）`}
-                  </button>
-                  {showCategoryBrowser && (
-                    <div className="temu-category-list">
-                      {categoryOptions.map((item) => (
-                        <button key={item.catId} type="button" onClick={() => chooseCategory(item)} disabled={busy !== ""}>
-                          {categoryName(item)}
-                          <span>{item.isLeaf ? "叶子" : "展开"}</span>
+
+              {/* 类目选择区：以前是「预设 + 标题推荐 + 搜索 + 结果列表 + 面包屑 + 刷新 +
+                  浏览全部 + 存预设」八件平铺，扫一眼不知道从哪下手。
+                  现在按状态分两副面孔：已选类目 → 一条摘要条；未选 → 只留搜索与推荐。
+                  刷新/浏览全部/存预设属于低频操作，收进「高级」折叠里。 */}
+              <div className="temu-cat-picker">
+                {presets.length > 0 && (
+                  <div className="temu-preset-bar">
+                    <span className="temu-preset-title">预设</span>
+                    {presets.map((preset) => (
+                      <span key={preset.name} className="temu-preset-chip">
+                        <button
+                          type="button"
+                          onClick={() => applyPreset(preset)}
+                          title={preset.categoryPath.map((item) => item.catName).join(" / ")}
+                        >
+                          {preset.name}
                         </button>
-                      ))}
+                        <button
+                          type="button"
+                          className="temu-preset-del"
+                          onClick={() => removePreset(preset.name)}
+                          aria-label={`删除预设 ${preset.name}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {leaf?.isLeaf ? (
+                  <div className="temu-cat-selected">
+                    <div className="temu-cat-selected-main">
+                      <span className="temu-cat-selected-label">已选类目</span>
+                      <strong>{categoryPath.map(categoryName).join(" / ")}</strong>
+                      <span className="temu-cat-selected-id">id {leaf.catId}</span>
                     </div>
-                  )}
-                </>
-              )}
-              <div className="temu-preset-save">
-                <input
-                  className="temu-input"
-                  value={presetName}
-                  onChange={(event) => setPresetName(event.target.value)}
-                  placeholder="预设名（只记分类+运费+仓库，随手切换用）"
-                  title="预设 = 分类 + 运费模板 + 发货仓库，最多存 6 个，用来快速换品"
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") savePreset();
-                  }}
-                />
-                <button type="button" className="temu-btn" onClick={savePreset} disabled={!categoryPath.length}>
-                  存为预设
-                </button>
+                    <button
+                      type="button"
+                      className="temu-btn"
+                      onClick={() => resetToLevel(-1)}
+                      disabled={busy !== ""}
+                    >
+                      更换类目
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="temu-search-row">
+                      <input
+                        className="temu-input"
+                        value={categoryQuery}
+                        onChange={(event) => setCategoryQuery(event.target.value)}
+                        placeholder="搜类目关键词，如 wig / storage basket"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") searchCategory();
+                        }}
+                      />
+                      <button type="button" className="temu-btn" onClick={searchCategory} disabled={busy !== ""}>
+                        搜索
+                      </button>
+                    </div>
+
+                    {(titleMatching || titleMatches.length > 0) && (
+                      <div className="temu-title-match">
+                        <span>{titleMatching ? "正在按标题匹配类目…" : "按标题推荐（点一下切换）"}</span>
+                        {titleMatches.slice(0, 3).map((dto, index) => {
+                          const path = categoryPathFromDto(dto);
+                          if (!path.length) return null;
+                          const isLeaf = path[path.length - 1].isLeaf;
+                          return (
+                            <button
+                              key={`${index}-${path[path.length - 1].catId}`}
+                              type="button"
+                              onClick={() => void applyCategory(path)}
+                              disabled={busy !== ""}
+                            >
+                              {path.map(categoryName).join(" / ")}
+                              {isLeaf ? "" : "（需继续选）"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {matchPaths.length > 0 && (
+                      <div className="temu-match-list">
+                        {matchPaths.slice(0, 8).map((dto, index) => {
+                          const path = categoryPathFromDto(dto);
+                          return (
+                            <button key={index} type="button" onClick={() => chooseMatchedPath(dto)}>
+                              {path.map(categoryName).join(" / ")}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {categoryPath.length > 0 && (
+                      <div className="temu-breadcrumb">
+                        {categoryPath.map((item, index) => (
+                          <button key={`${item.catId}-${index}`} type="button" onClick={() => resetToLevel(index)}>
+                            {categoryName(item)}
+                          </button>
+                        ))}
+                        <span>{leaf?.isLeaf ? "叶子类目" : "继续选下一级"}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {leaf?.isLeaf && attributes && saleValueIndex.size === 0 && (
+                  <p className="temu-cat-hint">
+                    该类目在 Temu 没有销售属性（建不了颜色/尺码变种），只能按单 SKU 发布；想按颜色卖就换一个带变种的类目。
+                  </p>
+                )}
+
+                <details className="temu-cat-advanced">
+                  <summary>高级：刷新类目树 · 浏览全部 · 存为预设</summary>
+                  <div className="temu-cat-advanced-body">
+                    <div className="temu-cat-refresh">
+                      <button
+                        type="button"
+                        className="temu-link"
+                        onClick={() => void refreshCategoryTree()}
+                        disabled={busy !== ""}
+                        title="Temu 后台改过类目或该类目的必填属性后点这里，不用等缓存过期"
+                      >
+                        刷新类目树
+                      </button>
+                      <em className="temu-muted">类目和属性缓存 1 小时；改完看不到新的就点这个</em>
+                    </div>
+
+                    {categoryOptions.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="temu-browser-toggle"
+                          onClick={() => setShowCategoryBrowser((value) => !value)}
+                        >
+                          {showCategoryBrowser
+                            ? "收起分类浏览"
+                            : `浏览全部 ${categoryOptions.length} 个分类（也可以直接在上面搜关键词）`}
+                        </button>
+                        {showCategoryBrowser && (
+                          <div className="temu-category-list">
+                            {categoryOptions.map((item) => (
+                              <button
+                                key={item.catId}
+                                type="button"
+                                onClick={() => chooseCategory(item)}
+                                disabled={busy !== ""}
+                              >
+                                {categoryName(item)}
+                                <span>{item.isLeaf ? "叶子" : "展开"}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    <div className="temu-preset-save">
+                      <input
+                        className="temu-input"
+                        value={presetName}
+                        onChange={(event) => setPresetName(event.target.value)}
+                        placeholder="预设名（只记分类+运费+仓库，随手切换用）"
+                        title="预设 = 分类 + 运费模板 + 发货仓库，最多存 6 个，用来快速换品"
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") savePreset();
+                        }}
+                      />
+                      <button type="button" className="temu-btn" onClick={savePreset} disabled={!categoryPath.length}>
+                        存为预设
+                      </button>
+                    </div>
+                  </div>
+                </details>
               </div>
             </div>
 
@@ -3672,6 +3725,34 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </p>
           </div>
         </aside>
+      </div>
+
+      {/* 底部操作条：粘在视口底部。表单很长，滚到任何位置都能直接校验/提交，
+          不用再滚回页面顶部或右侧找按钮。 */}
+      <div className="temu-actionbar">
+        <span className={`temu-actionbar-status${remainingContentSteps.length ? " is-warn" : " is-ok"}`}>
+          {remainingContentSteps.length
+            ? `还差 ${remainingContentSteps.length} 项：${remainingContentSteps[0].missing.join("、") || remainingContentSteps[0].label}`
+            : "必填项都齐了，可以提交"}
+        </span>
+        <div className="temu-actionbar-actions">
+          <button
+            type="button"
+            className="temu-btn"
+            onClick={() => void checkMandatory()}
+            disabled={busy !== "" || !ready}
+          >
+            校验必填
+          </button>
+          <button
+            type="button"
+            className="temu-btn temu-btn-primary"
+            onClick={() => void publishGoods()}
+            disabled={submitDisabled}
+          >
+            {publishing ? "提交中…" : "提交发布"}
+          </button>
+        </div>
       </div>
     </div>
   );

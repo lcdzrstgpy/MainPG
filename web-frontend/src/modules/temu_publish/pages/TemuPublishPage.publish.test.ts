@@ -191,11 +191,14 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /const gatewayReady = !!\(status\?\.configured\.yl_client/);
   assert.ok(!/status\?\.hints\.yl_client/.test(page), "不要再把 client/token 掩码展示出来");
   assert.match(page, /服务商凭据<\/span>/);
-  // 服务商 client_id / token 是预置的：界面上不给输入框，只给状态说明
+  // 服务商 client_id / token 由服务器下发：界面上不给输入框，只给状态说明
   assert.ok(!page.includes("setYlClient"), "不要再用输入框收 client_id");
   assert.ok(!page.includes("setYlToken"), "不要再用输入框收服务商 token");
   assert.match(page, /服务商凭据（client_id \/ token）/);
-  assert.match(page, /已预置，不用管/);
+  // 未配置时要说「登录后自动获取」，而不是让用户去找服务商 ——
+  // 安装包里不带凭据，正确动作是登录一次，不是联系服务商开权限
+  assert.match(page, /登录后打开本页会自动获取/);
+  assert.match(page, /已由服务器下发/);
   // 打开面板时重读一次状态，避免显示成旧值
   assert.match(page, /void temuPublishApi\s*\.settings\(\)/);
   assert.match(page, /if \(!fresh\.configured\.ready\) return undefined;/);

@@ -14,6 +14,7 @@ import ipaddress
 import json
 import os
 import socket
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ import requests
 
 from ...db import transaction
 from ..basic_settings.service import decrypt_secret, encrypt_secret
+from ...secrets import decrypt_credential_file
 from .client import (
     TemuCredentials,
     TemuCredentialMissing,
@@ -42,6 +44,12 @@ LEGACY_SCOPE = SECRET_SCOPE
 # 这种凭证允许被第一个登录的账号认领一次（认领后改成该账号），之后别人不会自动继承。
 BOOTSTRAP_ACTORS = {"", "system-bootstrap", "local-demo-admin", "system"}
 SECRET_NAMES = ("yl_client", "yl_token", "access_token")
+
+# 服务商凭据的「版本指纹」：服务器下发的那对凭据算出来的摘要。
+# 存在同一个 scope 下，用来判断「服务器上的凭据变了没有」——
+# 变了就自动覆盖本地那份，这样服务商重置 token 后能一键把新值推到所有装机用户，
+# 不用一个个手填，也不用重新发版。不在 SECRET_NAMES 里：它不是凭据，不对外暴露。
+PROVIDER_VERSION_NAME = "yl_version"
 # 多店铺：每个店铺存成一条 name = "shop:<id>" 的加密 JSON（含店铺名与 token），
 # 当前启用的店铺 id 存在 "active_shop"；`access_token` 始终是「当前店铺」的镜像，
 # 这样 client()/发布等所有既有链路都不用改。
@@ -60,6 +68,20 @@ BUNDLED_GATEWAY_PATH = Path(__file__).resolve().parents[2] / "data" / "temu_gate
 BUNDLED_GATEWAY_LOCAL_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "temu_gateway.local.json"
 )
+# 安装包**只**分发加密后的凭据（与 cos.enc / onebound.enc 同一套做法）：
+# 明文 json 一旦进包，解包就能拿到整个系统共用的那对服务商凭据。
+BUNDLED_GATEWAY_ENC_NAME = "temu_gateway.enc"
+
+
+def _encrypted_gateway_paths() -> list[Path]:
+    """``temu_gateway.enc`` 的候选位置：开发态在 data/ 下，安装态在可执行文件同目录。"""
+    candidates = [Path(__file__).resolve().parents[2] / "data" / BUNDLED_GATEWAY_ENC_NAME]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / BUNDLED_GATEWAY_ENC_NAME)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / BUNDLED_GATEWAY_ENC_NAME)
+    return candidates
 
 
 class TemuCredentialStore:
@@ -100,13 +122,21 @@ class TemuCredentialStore:
         return values
 
     def _load_bundled_gateway(self) -> dict[str, str]:
-        """读随安装包分发的服务商凭据（``wh_local/data/temu_gateway.json``）。
+        """读「随程序放」的服务商凭据（正常安装包里是没有的）。
 
-        只覆盖服务商级别的两个字段，**不含**店铺 access_token —— 那是个人的。
-        文件缺失/字段为空/JSON 坏掉都按「没配」处理，绝不让设置页或发布链路崩。
+        只覆盖服务商级别的两个字段，**不含**店铺 access_token —— 那是个人的
+        （见 ``_load_bundled_gateway`` 里硬编码的字段名）。
+
+        优先级：
+        1. 明文 ``wh_local/data/temu_gateway.local.json``（开发机用，不进 git）
+        2. 加密 ``temu_gateway.enc``（历史安装包兼容；**新版本不再打包它**）
+
+        注意：正式发布的安装包**不携带任何服务商凭据**（打包脚本会拦）。
+        凭据由服务器下发（``gateway_sync``），泄露时只需在服务器换一对即可作废。
+        这里保留读取只是为了开发机与老包能跑，不是发布路径。
         """
         merged: dict[str, str] = {}
-        # local 覆盖优先（打包机上的真值），再退到随包的模板
+        # 明文优先：打包机上放真值，先被读到；安装包里没有明文，走下面的 .enc
         for path in (BUNDLED_GATEWAY_LOCAL_PATH, BUNDLED_GATEWAY_PATH):
             try:
                 if not path.is_file():
@@ -122,6 +152,24 @@ class TemuCredentialStore:
                 value = str(payload.get(name) or "").strip()
                 if value:
                     merged[name] = value
+
+        # 加密兜底：安装包形态（可执行文件同目录 / _MEIPASS）
+        if "yl_client" not in merged or "yl_token" not in merged:
+            for path in _encrypted_gateway_paths():
+                try:
+                    if not path.is_file():
+                        continue
+                    payload = decrypt_credential_file(path)
+                except (OSError, ValueError):
+                    continue
+                for name in ("yl_client", "yl_token"):
+                    if name in merged:
+                        continue
+                    value = str(payload.get(name) or "").strip()
+                    if value:
+                        merged[name] = value
+                if "yl_client" in merged and "yl_token" in merged:
+                    break
         return merged
 
     def _load_stored(self) -> dict[str, str]:
@@ -208,18 +256,53 @@ class TemuCredentialStore:
                     (LEGACY_SCOPE, "access_token", self.owner_id),
                 )
 
-    def save_provider_credentials(self, *, client: str, token: str, actor_id: str) -> None:
+    def provider_version(self) -> str:
+        """读取上次写入的服务商凭据指纹；没有（老数据 / 手动填的）返回空串。"""
+        with transaction(self.database_path) as conn:
+            row = conn.execute(
+                "SELECT ciphertext FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), PROVIDER_VERSION_NAME),
+            ).fetchone()
+        if row is None:
+            return ""
+        try:
+            return str(decrypt_secret(str(row["ciphertext"])) or "")
+        except RuntimeError:
+            # 密文坏了（换机器/换系统用户名后解不开）当作「需要重新拉一次」
+            return ""
+
+    def clear_provider_version(self) -> None:
+        """忘掉指纹（不是删凭据）。
+
+        网关回报 client/token 失效时调它：下次同步会因为「指纹对不上」重新拉一遍，
+        从而拿到服务商换过的新值。只清指纹、不动凭据，避免把用户已经能用的东西弄丢。
+        """
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                "DELETE FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), PROVIDER_VERSION_NAME),
+            )
+
+    def save_provider_credentials(
+        self, *, client: str, token: str, actor_id: str, version: str = ""
+    ) -> None:
         """只写服务商级两字段（服务器下发用），不动店铺 access_token。
 
         与 ``save()`` 分开是为了避免「同步凭据」把用户已经绑好的店铺清掉。
+
+        ``version`` 是这对凭据的指纹，一起落库：下次同步拿服务器上的指纹跟它比，
+        不一致就覆盖 —— 这是「服务商换 token 后能推到老用户」的唯一依据。
         """
         client_value = str(client or "").strip()
         token_value = str(token or "").strip()
         if not client_value or not token_value:
             raise ValueError("服务商凭据不能为空")
         now = datetime.now().astimezone().isoformat(timespec="seconds")
+        rows = [("yl_client", client_value), ("yl_token", token_value)]
+        if str(version or "").strip():
+            rows.append((PROVIDER_VERSION_NAME, str(version).strip()))
         with transaction(self.database_path) as conn:
-            for name, value in (("yl_client", client_value), ("yl_token", token_value)):
+            for name, value in rows:
                 conn.execute(
                     """INSERT INTO secret_values(scope, name, ciphertext, updated_by, updated_at)
                        VALUES (?, ?, ?, ?, ?)

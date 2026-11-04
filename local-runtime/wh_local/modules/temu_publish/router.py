@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ...session import Actor, actor_from_authorization
 from .client import TemuCredentialMissing, TemuGatewayError, clear_shared_catalog_cache
 from .submissions import DuplicateSubmission
-from .gateway_sync import sync_provider_credentials
+from .gateway_sync import mark_provider_credentials_stale, sync_provider_credentials
 from .library import collect_all_draft_entries, paginate_draft_library
 from .schemas import (
     DetailImageUploadRequest,
@@ -83,6 +83,13 @@ _UPSTREAM_ERROR_CODES = {
     "INVALID_RESPONSE",
 }
 
+# 「服务商凭据本身不对」的错误码子集：命中后自动去服务器拉最新的那一对。
+# CLIENT_TOKEN_REQUIRED / INVALID 是客户端凭据缺/错；PERMISSION_DENIED 是
+# 服务商把这对凭据停了（重置 token 后旧值就会变成这个），都必须触发换新。
+_PROVIDER_CREDENTIAL_ERRORS = frozenset(
+    {"CLIENT_TOKEN_REQUIRED", "CLIENT_TOKEN_INVALID", "CLIENT_PERMISSION_DENIED"}
+)
+
 
 # 草稿库聚合结果短缓存：进页面/切页签回来不必重新扫 8 个任务 + 6 个批次。
 # key = (账号, limit)；发布/刷新会带 refresh=1 绕过。
@@ -102,19 +109,29 @@ def create_temu_publish_router(
     router = APIRouter(prefix="/api/temu-publish", tags=["temu-publish"])
     service = TemuPublishService(database_path)
 
-    def _sync_gateway(actor: Actor) -> None:
+    def _sync_gateway(actor: Actor, *, force: bool = False) -> bool:
         """本地没有服务商凭据时，从客户中心拉一次（静默失败，退回随包兜底）。
 
         服务商 YL client/token 是整个系统共用的一对，不该让用户手填；
         装好的包登录一次就自动配好，换机器也不用重来。
+
+        ``force=True``：网关刚说凭据失效，跳过 5 分钟核对节流立刻重拉 ——
+        服务商重置 token 后，老用户重试一次就能自动换成新值。
         """
         if not customer_auth_base_url or remote_token_resolver is None:
-            return
-        sync_provider_credentials(
+            return False
+        return sync_provider_credentials(
             database_path,
             actor.id,
             base_url=customer_auth_base_url,
             token_resolver=lambda: remote_token_resolver(actor),
+            force=force,
+        )
+
+    def _is_provider_credential_error(exc: Exception) -> bool:
+        """网关因为「client/token 不对」拒绝时返回 True（和参数错区分开）。"""
+        return isinstance(exc, TemuGatewayError) and str(exc.error_code or "").upper() in (
+            _PROVIDER_CREDENTIAL_ERRORS
         )
 
     def _service(actor: Actor) -> TemuPublishService:
@@ -546,8 +563,26 @@ def create_temu_publish_router(
         用户确认要重复上架时带 force=true。
         """
         try:
+            # 发布前顺手核对一次服务商凭据（5 分钟内核对过就跳过，不额外耗时）：
+            # 服务商换过 token 的话，这里会先换成新的，避免用户撞一次 403。
+            _sync_gateway(actor)
             return _service(actor).publish_goods(payload, force=force)
         except Exception as exc:  # noqa: BLE001
+            if _is_provider_credential_error(exc):
+                # 本地存的那份被服务商作废了（重置 token / 停用 client）：
+                # 忘掉指纹、立刻按服务器上的最新值覆盖，然后让用户重试一次。
+                mark_provider_credentials_stale(database_path, actor.id)
+                if _sync_gateway(actor, force=True):
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error_code": "TEMU_CREDENTIAL_REFRESHED",
+                            "message": (
+                                "服务商凭据已过期，已自动更新为服务器上的最新值 —— "
+                                "请再点一次「提交发布」。若仍失败，联系管理员确认服务商凭据是否已更换。"
+                            ),
+                        },
+                    ) from exc
             raise _handle(exc) from exc
 
     return router

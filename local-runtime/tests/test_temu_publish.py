@@ -2467,7 +2467,10 @@ def test_bundled_gateway_tolerates_missing_or_broken_file(tmp_path: Path, monkey
 
 
 def test_sync_provider_credentials_pulls_once_and_skips_when_present(tmp_path: Path, monkeypatch) -> None:
-    """服务器下发：本地空时拉一次并落库；已有凭据绝不覆盖。"""
+    """服务器下发：本地空时拉一次并落库；值没变时不再重复写库。
+
+    （值变了要覆盖 —— 见 ``test_sync_provider_credentials_overwrites_when_server_rotates``）
+    """
     from wh_local.modules.temu_publish import gateway_sync
     from wh_local.modules.temu_publish.service import TemuCredentialStore
 
@@ -2942,3 +2945,184 @@ def test_default_spec_value_must_land_in_category_color_values() -> None:
     # 类目没有「颜色」属性（桌布 10498）→ 才用「默认」
     client2 = FakeClient()
     assert client2.ensure_default_spec("", {"properties": []})["specName"] == "默认"
+
+
+def test_bundled_gateway_reads_encrypted_blob(tmp_path: Path, monkeypatch) -> None:
+    """兼容老包：temu_gateway.enc 仍能读，但**新版本不再打包它**。
+
+    2026-11-04 起改为「安装包不带凭据，登录后由服务器下发」：加密随包只能防
+    grep，解包后自带 decrypt 命令就能还原，挡不住人。所以正式包不再生成 .enc，
+    这段读取只留给历史安装包和开发机；这里锁住「能读 + 损坏/缺失不崩」。
+    """
+    from wh_local import secrets as secrets_mod
+    from wh_local.db import init_db
+    from wh_local.modules.temu_publish import service as service_mod
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+
+    payload = json.dumps({"yl_client": "enc-client", "yl_token": "enc-token"}).encode("utf-8")
+    enc = tmp_path / "temu_gateway.enc"
+    enc.write_bytes(secrets_mod.encrypt_bytes(payload))
+
+    # 明文两份都不存在，只有 .enc
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_PATH", tmp_path / "missing.json")
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_LOCAL_PATH", tmp_path / "missing.local.json")
+    monkeypatch.setattr(service_mod, "_encrypted_gateway_paths", lambda: [enc])
+    for name in ("WH_TEMU_YL_CLIENT", "WH_TEMU_YL_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    loaded = TemuCredentialStore(db, owner_id="cust_enc").load()
+    assert (loaded.client, loaded.token) == ("enc-client", "enc-token")
+
+    # 明文存在时优先用明文（打包机 / 开发机的场景）
+    local = tmp_path / "temu_gateway.local.json"
+    local.write_text(json.dumps({"yl_client": "plain-client"}), encoding="utf-8")
+    monkeypatch.setattr(service_mod, "BUNDLED_GATEWAY_LOCAL_PATH", local)
+    loaded = TemuCredentialStore(db, owner_id="cust_enc").load()
+    assert loaded.client == "plain-client"
+    assert loaded.token == "enc-token", "明文缺的字段继续用 .enc 里的"
+
+    # .enc 坏掉（比如拷错文件）时不能抛异常，按「没配」处理
+    enc.write_bytes(b"not-a-valid-blob")
+    local.unlink()
+    loaded = TemuCredentialStore(db, owner_id="cust_enc2").load()
+    assert loaded.client == "" and loaded.token == ""
+
+
+def test_sync_provider_credentials_overwrites_when_server_rotates(tmp_path: Path, monkeypatch) -> None:
+    """服务商换过 client/token 后，本地那份要**自动换成新的**。
+
+    这是「凭据泄露能作废」的唯一开关：以前只在本地为空时才拉，一旦写过就再也不更新，
+    结果服务器改了新值，老用户还在用旧值、一直 403，而且自己没法修（不知道新值）。
+    """
+    from wh_local.modules.temu_publish import gateway_sync
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    served = {"client": "old-client", "token": "old-token"}
+
+    def fake_fetch(base_url: str, token: str, *, timeout: float = 4.0):
+        return {"yl_client": served["client"], "yl_token": served["token"]}
+
+    monkeypatch.setattr(gateway_sync, "fetch_gateway_credentials", fake_fetch)
+    kwargs = {"base_url": "https://x/auth-api", "token_resolver": lambda: "tok"}
+
+    assert gateway_sync.sync_provider_credentials(db, "cust_r", **kwargs)
+    store = TemuCredentialStore(db, owner_id="cust_r")
+    assert (store.load().client, store.load().token) == ("old-client", "old-token")
+    old_version = store.provider_version()
+    assert old_version, "指纹要落库，否则没法判断服务器那边变没变"
+
+    # 服务商在服务器上换了一对 → 指纹变了 → 本地自动覆盖
+    served.update(client="new-client", token="new-token")
+    gateway_sync.reset_backoff()
+    assert gateway_sync.sync_provider_credentials(db, "cust_r", **kwargs)
+    assert (store.load().client, store.load().token) == ("new-client", "new-token")
+    assert store.provider_version() != old_version
+
+    # 值没变就不再写库（避免每次核对都动一次数据库）
+    gateway_sync.reset_backoff()
+    assert not gateway_sync.sync_provider_credentials(db, "cust_r", **kwargs)
+    gateway_sync.reset_backoff()
+
+
+def test_sync_provider_credentials_throttles_verification(tmp_path: Path, monkeypatch) -> None:
+    """已有凭据时 5 分钟内不再问服务器：进页面、发布都想快，不能每次都等一个 RTT。"""
+    from wh_local.modules.temu_publish import gateway_sync
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    gateway_sync.reset_backoff()
+    calls: list[str] = []
+
+    def fake_fetch(base_url: str, token: str, *, timeout: float = 4.0):
+        calls.append(token)
+        return {"yl_client": "c", "yl_token": "t"}
+
+    monkeypatch.setattr(gateway_sync, "fetch_gateway_credentials", fake_fetch)
+    kwargs = {"base_url": "https://x/auth-api", "token_resolver": lambda: "tok"}
+
+    assert gateway_sync.sync_provider_credentials(db, "cust_t", **kwargs)
+    assert not gateway_sync.sync_provider_credentials(db, "cust_t", **kwargs)
+    assert calls == ["tok"], "刚核对过，不该再打远端"
+
+    # force=True（网关说凭据失效）要无视节流
+    assert not gateway_sync.sync_provider_credentials(db, "cust_t", force=True, **kwargs)
+    assert calls == ["tok", "tok"], "force 必须真的重拉"
+    gateway_sync.reset_backoff()
+
+
+def test_gateway_rejects_credentials_triggers_refresh_and_retry_hint(tmp_path: Path, monkeypatch) -> None:
+    """网关说 client/token 失效时：忘掉指纹 + 立刻按服务器最新值重拉，并让用户重试一次。
+
+    场景：服务商重置了 token，服务器已经换成新值，但用户本机还存着旧的 ——
+    以前只会回一句「服务商网关拒绝了这个 client…IP 白名单」，用户永远修不好。
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish import router as router_mod
+    from wh_local.modules.temu_publish.client import TemuGatewayError
+    from wh_local.modules.temu_publish.service import TemuCredentialStore
+    from wh_local.session import Actor, actor_from_authorization
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    store = TemuCredentialStore(db_path, owner_id="cust_z")
+    store.save_provider_credentials(client="old", token="old", actor_id="cust_z", version="v1")
+
+    sync_calls: list[bool] = []
+
+    def fake_sync(*args, **kwargs):  # noqa: ANN001 - 替身，只记录 force
+        sync_calls.append(kwargs.get("force", False))
+        return True  # 「确实拉到了新值」
+
+    monkeypatch.setattr(router_mod, "sync_provider_credentials", fake_sync)
+
+    def boom(self, payload, *, force=False):  # noqa: ANN001 - 替身
+        raise TemuGatewayError(
+            "bg.glo.goods.add", "Client is not allowed to call this API",
+            error_code="CLIENT_PERMISSION_DENIED", http_status=403,
+        )
+
+    monkeypatch.setattr(router_mod.TemuPublishService, "publish_goods", boom)
+
+    app = FastAPI()
+    app.include_router(
+        router_mod.create_temu_publish_router(
+            db_path,
+            remote_token_resolver=lambda actor: "remote-token",
+            customer_auth_base_url="https://x/auth-api",
+        )
+    )
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_z", username="z", role="admin"
+    )
+    http = TestClient(app)
+
+    resp = http.post("/api/temu-publish/publish", json=_draft().model_dump(mode="json"))
+    assert resp.status_code == 502, resp.text
+    body = resp.json()["detail"]
+    assert body["error_code"] == "TEMU_CREDENTIAL_REFRESHED"
+    assert "再点一次" in body["message"]
+
+    # 发布前核对一次（force=False），失败后强制重拉一次（force=True）
+    assert sync_calls == [False, True]
+    assert store.provider_version() == "", "失效后要忘掉指纹，下次才会以服务器为准"
+
+
+def test_provider_fingerprint_never_leaks_credentials() -> None:
+    """指纹必须是摘要：落库/日志里的东西不能反推出凭据。"""
+    from wh_local.modules.temu_publish.gateway_sync import provider_fingerprint
+
+    fingerprint = provider_fingerprint("client-abc", "token-xyz")
+    assert len(fingerprint) == 16
+    assert "client-abc" not in fingerprint and "token-xyz" not in fingerprint
+    # 同一对永远同一个值，换任一个都会变
+    assert provider_fingerprint("client-abc", "token-xyz") == fingerprint
+    assert provider_fingerprint("client-abc", "token-xy2") != fingerprint
+    assert provider_fingerprint("client-abd", "token-xyz") != fingerprint

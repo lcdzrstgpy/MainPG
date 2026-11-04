@@ -3693,3 +3693,443 @@ textarea.temu-input {
   font-size: 0.78rem;
   line-height: 1.5;
 }
+
+/* ================================================================
+   v2 视觉层（2026-11-04）—— 只覆盖外观，不动类名与布局语义
+
+   取向：去装饰、立层级。
+   - 不再靠投影堆立体感：卡片一律「纯色面 + 1px 细边」，阴影只留状态反馈用
+   - 不再用渐变当装饰：hero、区块头、按钮全部收敛为单一强调色
+   - 圆角统一 8 / 12 两档，之前 14 / 16 / 20 混用显得松散
+   - 字号收紧：标题 15、正文 13、说明 11.5，弱化的一律降一级而不是同字号换颜色
+   ================================================================ */
+
+/* 局部语义变量：主题里没有 success / warning 这类令牌，
+   文字色一律走主题变量（深色主题才不会黑底黑字），
+   语义色沿用模块内既有的 #146c43 / #a5342f 家族，保持一致。 */
+.temu-publish-page.is-console {
+  --temu-text: var(--theme-text-primary, #1f2d3d);
+  --temu-text-muted: var(--theme-text-muted, #7c8fa3);
+  --temu-ok: #146c43;
+  --temu-ok-soft: #e8f8ef;
+  --temu-warn: #8a5a00;
+}
+
+/* ---- 1. 卡片与区块 ---- */
+
+.is-console .temu-sec,
+.is-console .temu-card {
+  padding: 20px 22px 22px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 12px;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: none;
+  gap: 16px;
+}
+
+/* 左侧那根 3px 竖条是纯装饰，和「当前该填哪块」的描边重复表达同一件事 */
+.is-console .temu-sec::before {
+  display: none;
+}
+
+.is-console .temu-sec.is-active {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  box-shadow: 0 0 0 1px var(--theme-module-primary-strong, #087bf5) inset;
+}
+
+.is-console .temu-sec-last {
+  background: var(--theme-module-surface, #fff);
+}
+
+/* ---- 2. 区块头：标题 + 一行说明 + 右侧状态 ---- */
+
+.is-console .temu-sec-head {
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--theme-module-border, #edf3f8);
+}
+
+.is-console .temu-sec-title h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.is-console .temu-sec-title p {
+  font-size: 12px;
+  color: var(--temu-text-muted);
+  line-height: 1.45;
+}
+
+/* 编号改成细边小徽标，不再是实心色块 */
+.is-console .temu-sec-num {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--temu-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.is-console .temu-sec-num.is-done {
+  border-color: transparent;
+  background: var(--temu-ok-soft);
+  color: var(--temu-ok);
+}
+
+.is-console .temu-sec-head.is-active .temu-sec-num {
+  border-color: transparent;
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+}
+
+/* ---- 3. 表单字段 ---- */
+
+.is-console .temu-field > span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--temu-text);
+}
+
+.is-console .temu-input {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 8px;
+  background: var(--theme-module-surface, #fff);
+  font-size: 13px;
+  transition: border-color 0.14s ease;
+}
+
+.is-console .temu-input:hover:not(:disabled):not(:focus) {
+  border-color: var(--theme-module-border-strong, #b9cad9);
+}
+
+/* focus 用一个干净的描边，不用发光阴影 —— 主题切换时也不会串色 */
+.is-console .temu-input:focus {
+  outline: 2px solid var(--theme-module-primary-strong, #087bf5);
+  outline-offset: -1px;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* ---- 4. 按钮 ---- */
+
+.is-console .temu-btn {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 8px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--temu-text);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+  transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+
+.is-console .temu-btn:hover:not(:disabled) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--theme-module-primary-strong, #087bf5);
+  box-shadow: none;
+  transform: none;
+}
+
+.is-console .temu-btn-primary {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+  background-image: none;
+}
+
+.is-console .temu-btn-primary:hover:not(:disabled) {
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+  filter: brightness(1.06);
+  box-shadow: none;
+  transform: none;
+}
+
+.is-console .temu-btn:disabled {
+  border-color: var(--theme-module-border, #e4ecf3);
+  background: var(--theme-module-surface-soft, #f5f7f9);
+  color: var(--temu-text-muted);
+}
+
+/* ---- 5. 步骤条（粘顶） ---- */
+
+.temu-stepbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 10px 0;
+  background: var(--theme-card-bg-solid, #fff);
+  border-bottom: 1px solid var(--theme-module-border, #edf3f8);
+}
+
+.temu-stepbar-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--temu-text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.temu-stepbar-item:hover {
+  background: var(--theme-module-surface-soft, #f5f8fa);
+  color: var(--temu-text);
+}
+
+.temu-stepbar-num {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 5px;
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.temu-stepbar-item.is-done {
+  color: var(--temu-text);
+}
+
+.temu-stepbar-item.is-done .temu-stepbar-num {
+  border-color: transparent;
+  background: var(--temu-ok-soft);
+  color: var(--temu-ok);
+}
+
+.temu-stepbar-item.is-active {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-stepbar-item.is-active .temu-stepbar-num {
+  border-color: transparent;
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+}
+
+/* ---- 6. 底部操作条（粘底） ---- */
+
+.temu-actionbar {
+  position: sticky;
+  bottom: 0;
+  z-index: 13;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--theme-module-border, #edf3f8);
+  background: var(--theme-card-bg-solid, #fff);
+}
+
+.temu-actionbar-status {
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--temu-text-muted);
+}
+
+.temu-actionbar-status.is-warn {
+  color: var(--temu-warn);
+}
+
+.temu-actionbar-status.is-ok {
+  color: var(--temu-ok);
+}
+
+.temu-actionbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ---- 7. 右侧检查栏：去阴影、缩内边距 ---- */
+
+.is-console .temu-rail-card {
+  padding: 16px 16px 14px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 12px;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: none;
+}
+
+.is-console .temu-rail-error {
+  max-height: 96px;
+  overflow: auto;
+}
+
+/* 页面上方那排小圆点已经被步骤条取代，留着是重复信息 */
+.is-console .temu-progress {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .temu-stepbar {
+    overflow-x: auto;
+  }
+  .temu-stepbar-item {
+    flex: 0 0 auto;
+  }
+}
+
+/* ---- 8. 类目选择区（v2） ----
+   原来八件元素平铺，现在按「已选 / 未选」两副面孔，低频操作折进 details。 */
+
+.is-console .temu-cat-picker {
+  display: grid;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+/* 已选：一条摘要，替掉搜索框 + 结果列表 + 面包屑三块 */
+.is-console .temu-cat-selected {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.is-console .temu-cat-selected-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.is-console .temu-cat-selected-label {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--theme-module-surface-tint, #eef5fb);
+  color: var(--temu-text-muted);
+  font-size: 11px;
+}
+
+.is-console .temu-cat-selected-main strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--temu-text);
+  line-height: 1.4;
+}
+
+.is-console .temu-cat-selected-id {
+  flex: 0 0 auto;
+  color: var(--temu-text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.is-console .temu-cat-selected > .temu-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* 搜索行：主输入框加高，按钮同高 */
+.is-console .temu-search-row .temu-input {
+  min-height: 40px;
+  font-size: 13.5px;
+}
+
+.is-console .temu-search-row .temu-btn {
+  min-height: 40px;
+  padding: 0 18px;
+}
+
+/* 匹配结果：一行一条，别做成大按钮块 */
+.is-console .temu-match-list {
+  display: grid;
+  gap: 2px;
+  max-height: 232px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 8px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.is-console .temu-match-list button {
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--temu-text);
+  font-size: 12.5px;
+  text-align: left;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.is-console .temu-match-list button:hover {
+  background: var(--theme-module-surface-soft, #f5f8fa);
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+/* 高级折叠：默认收起，标题当一行说明用 */
+.is-console .temu-cat-advanced {
+  border-top: 1px dashed var(--theme-module-border, #e8eef4);
+  padding-top: 8px;
+}
+
+.is-console .temu-cat-advanced > summary {
+  color: var(--temu-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.is-console .temu-cat-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.is-console .temu-cat-advanced > summary::before {
+  content: "+";
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.is-console .temu-cat-advanced[open] > summary::before {
+  content: "−";
+}
+
+.is-console .temu-cat-advanced > summary:hover {
+  color: var(--temu-text);
+}
+
+.is-console .temu-cat-advanced-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+}
