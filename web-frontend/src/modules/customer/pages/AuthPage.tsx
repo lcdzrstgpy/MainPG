@@ -1,13 +1,28 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
-import { BRAND_LOGO_URL, BRAND_NAME } from "../../../shared/brand";
-import { clearPrivacyConsent, readPrivacyConsent, savePrivacyConsent } from "../../../shared/privacyConsent";
+import { BRAND_LOGO_URL, BRAND_NAME, type BrandLogoRect } from "../../../shared/brand";
+import {
+  PRIVACY_POLICY_VERSION_FALLBACK,
+  clearPrivacyConsent,
+  readPrivacyConsent,
+  resolvePolicyVersion,
+  savePrivacyConsent,
+} from "../../../shared/privacyConsent";
+import {
+  syncPrivacyPolicy,
+  type PrivacyPolicyDocument,
+} from "../../../shared/api/privacyPolicyApi";
 import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 import { markPodAgreementPending, clearPodAgreementPending } from "../../../shared/components/PodUsageAgreementModal";
 import { useLogoFlip } from "./authLogoTransition";
 
-type AuthPageProps = { onEnter: () => void };
+type AuthPageProps = {
+  /** 登录成功：把当前 logo 的屏幕矩形交出去，入场动画从它开始飞 */
+  onEnter: (origin?: BrandLogoRect | null) => void;
+  /** 登录成功后页面在下层多留 380ms 给入场动画当背景，随后淡出卸载 */
+  exiting?: boolean;
+};
 type AuthStep = "welcome" | "login" | "register" | "forgot";
 
 type FieldKey =
@@ -64,7 +79,29 @@ function readSessionHintOnce(): string {
   return "";
 }
 
-export function AuthPage({ onEnter }: AuthPageProps) {
+/** 密码可见性图标：细线小眼睛，尺寸跟着 .auth-field-eye 的 font-size/尺寸走。 */
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M2.4 12S6 5.8 12 5.8 21.6 12 21.6 12 18 18.2 12 18.2 2.4 12 2.4 12Z" />
+      <circle cx="12" cy="12" r="3.1" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+      <path d="M2.4 12S6 5.8 12 5.8 21.6 12 21.6 12 18 18.2 12 18.2 2.4 12 2.4 12Z" />
+      <circle cx="12" cy="12" r="3.1" />
+      <path d="M3.6 3.6l16.8 16.8" />
+    </svg>
+  );
+}
+
+export function AuthPage({ onEnter, exiting = false }: AuthPageProps) {
   // 会话失效原因提示（被顶替/过期）：登录页只消费一次。
   const [sessionHint] = useState(readSessionHintOnce);
   // 每次进入都从首屏开始；welcome = 首屏，其余三态共用同一个表单面板。
@@ -106,10 +143,66 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   // 首次必须由用户**主动**勾选（不默认勾选同意，合规要求，见 shared/privacyConsent.ts）；
   // 勾过之后本地记住、下次直接回填；取消勾选即撤回记录；协议版本变更会自动失效并重新征求。
   const [agreed, setAgreed] = useState(() => readPrivacyConsent());
+  // 隐私政策：正文托管在服务端，版本以远端为准、拉不到就用内置常量兜底。
+  const [policyVersion, setPolicyVersion] = useState(PRIVACY_POLICY_VERSION_FALLBACK);
+
   // 账号密码记忆交给浏览器密码管理器（autocomplete），应用内不再自建账号库。
   // 表单改由 JS 校验（表单加了 noValidate），失败时把焦点送回对应输入框。
   const fieldRefs = useRef<Partial<Record<FieldKey, HTMLInputElement | null>>>({});
   const { logoRef, slotRef } = useLogoFlip(step);
+
+  // 返回键在不同步骤的位置不同（登录/找回跟着卡片，注册对齐到「界野」正下方），
+  // 直接切会「瞬移」；这里用 FLIP：先按旧位置做反向位移，再过渡回 0，看起来是滑过去的。
+  const backRef = useRef<HTMLButtonElement>(null);
+  const backRectRef = useRef<DOMRect | null>(null);
+  useLayoutEffect(() => {
+    const el = backRef.current;
+    if (!el) {
+      backRectRef.current = null;
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const prev = backRectRef.current;
+    backRectRef.current = rect;
+    if (!prev) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const dx = prev.left - rect.left;
+    const dy = prev.top - rect.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    el.style.transition = "none";
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    // 强制一次回流，确保上面的反向位移先生效
+    void el.offsetWidth;
+    window.requestAnimationFrame(() => {
+      el.style.transition = "transform .42s var(--ease-apple, cubic-bezier(.22, 1, .36, 1))";
+      el.style.transform = "";
+      window.setTimeout(() => {
+        el.style.transition = "";
+      }, 440);
+    });
+  }, [step, entered]);
+
+  /**
+   * 拿到远端隐私政策文档后的统一处理：版本以远端为准，正文地址用 public_url；
+   * 版本变了就把「已同意」按新版本重新判定，触发重新勾选。
+   */
+  const applyPolicyDocument = useCallback((doc: PrivacyPolicyDocument) => {
+    const nextVersion = resolvePolicyVersion(doc);
+    setPolicyVersion(nextVersion);
+    setAgreed((current) => current && readPrivacyConsent(nextVersion));
+  }, []);
+
+  // 启动时静默同步一次隐私政策（异步、不阻塞首屏）：远端失败会自动退回本地留存副本
+  useEffect(() => {
+    let alive = true;
+    void syncPrivacyPolicy().then((result) => {
+      if (!alive || !result.document) return;
+      applyPolicyDocument(result.document);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [applyPolicyDocument]);
 
   useEffect(() => {
     if (codeCooldown <= 0) return;
@@ -145,7 +238,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   /** 勾选即记录「已同意」；取消勾选同时撤回该记录（合规要求提供便捷的撤回方式）。 */
   function handleAgreeChange(next: boolean) {
     setAgreed(next);
-    if (next) savePrivacyConsent();
+    if (next) savePrivacyConsent(undefined, policyVersion);
     else clearPrivacyConsent();
   }
 
@@ -297,7 +390,14 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       // 的公告弹窗/消息中心会复用同一个在飞请求先等它完成再渲染。
       resetMessagesSync();
       void syncMessages();
-      onEnter();
+      // 把登录页 logo 此刻的屏幕矩形交给入场动画：动画的第一帧就摆在同一个
+      // 位置、同一个大小上，视觉上等于「这个 logo 自己飞走了」。
+      const logoRect = logoRef.current?.getBoundingClientRect();
+      onEnter(
+        logoRect
+          ? { x: logoRect.x, y: logoRect.y, width: logoRect.width, height: logoRect.height }
+          : null,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "请求失败，请稍后再试";
       setError(message);
@@ -408,7 +508,7 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   );
 
   const passwordField = (
-    <div className={`auth-field${password ? " has-action" : ""}`}>
+    <div className={`auth-field${password ? " has-action is-eye" : ""}`}>
       <label className="auth-field-label" htmlFor="auth-password">
         {isLogin ? "密码" : "密码（至少 8 位）"}
       </label>
@@ -432,11 +532,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       {password && (
         <button
           type="button"
-          className="auth-field-action"
+          className="auth-field-action auth-field-eye"
           aria-pressed={showPassword}
+          aria-label={showPassword ? "隐藏密码" : "显示密码"}
+          title={showPassword ? "隐藏密码" : "显示密码"}
           onClick={() => setShowPassword((value) => !value)}
         >
-          {showPassword ? "隐藏" : "显示"}
+          {showPassword ? <EyeOffIcon /> : <EyeIcon />}
         </button>
       )}
     </div>
@@ -445,14 +547,22 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const privacyCheck = (
     <label className="auth-check auth-privacy">
       <input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} />
+      <span className="auth-check-box" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M6.4 12.7l3.8 3.8L17.9 8" />
+        </svg>
+      </span>
       <span>
-        我已阅读并同意{" "}
+        {isLogin ? "登录前请阅读并同意" : "注册前请阅读并同意"}{" "}
         <a
           className="auth-link"
           href="/privacy"
           target="_blank"
           rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
+          onClick={(event) => {
+            // 在 <label> 里：只阻止「顺带勾选」，不拦默认的跳转
+            event.stopPropagation();
+          }}
         >
           《界野隐私政策》
         </a>
@@ -461,18 +571,18 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   );
 
   return (
-    <main className="auth-page" data-enter={entered ? "true" : "false"}>
+    <main
+      className={exiting ? "auth-page is-exiting" : "auth-page"}
+      data-enter={entered ? "true" : "false"}
+    >
       <header className="auth-nav">
         <button type="button" className="auth-nav-brand" onClick={() => goToStep("welcome")}>
           {BRAND_NAME}
         </button>
-        <nav className="auth-nav-links" aria-label="帮助与条款">
+        <nav className="auth-nav-links" aria-label="条款">
           <a className="auth-link" href="/privacy" target="_blank" rel="noopener noreferrer">
             隐私政策
           </a>
-          <button type="button" className="auth-link" onClick={() => goToStep("forgot")}>
-            需要帮助？
-          </button>
         </nav>
       </header>
 
@@ -500,7 +610,13 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         ) : (
           <section className="auth-panel">
             {entered && (
-              <button type="button" className="auth-link auth-back" onClick={() => goToStep("welcome")}>
+              <button
+                ref={backRef}
+                type="button"
+                className="auth-link auth-back"
+                data-step={step}
+                onClick={() => goToStep("welcome")}
+              >
                 ← 返回
               </button>
             )}
@@ -699,7 +815,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                           <span className="auth-forgot-arrow" aria-hidden="true">↗</span>
                         </button>
                       </div>
-                      {!agreed && <p className="auth-hint">勾选后才能登录</p>}
                     </div>
                   ) : (
                     <div className="auth-field-block">
@@ -746,7 +861,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
                   {!isLogin && (
                     <div className="auth-field-block">
                       {privacyCheck}
-                      {!agreed && <p className="auth-hint">勾选后才能注册</p>}
                     </div>
                   )}
 

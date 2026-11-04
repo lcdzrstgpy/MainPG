@@ -65,6 +65,7 @@ import type { DimensionCanvasItem, DimensionNotification } from "../../modules/p
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
+import type { BrandLogoRect } from "../../shared/brand";
 import {
   GuideBoardPanel,
   firstPendingGuideSubTask,
@@ -111,6 +112,8 @@ type WorkspaceShellProps = {
   currentRole?: string;
   onSignOut: () => void;
   playEntryAnimation?: boolean;
+  /** 登录页 logo 的屏幕矩形：入场动画从这里起飞 */
+  entryOrigin?: BrandLogoRect | null;
   onEntryAnimationComplete?: () => void;
 };
 
@@ -295,7 +298,7 @@ function ModuleFallback() {
   );
 }
 
-export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
+export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, entryOrigin = null, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
   const { theme } = useTheme();
   const { uiMode } = useUiMode();
   // 特效偏好（个人中心 → 偏好设置）：点击特效 / 全屏特效，localStorage 持久化。
@@ -1344,7 +1347,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           setPodAgreementOpen(false);
         }}
       />
-      <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
+      <BrandEntryAnimation active={playEntryAnimation} origin={entryOrigin} onComplete={onEntryAnimationComplete} />
     </main>
   );
 }

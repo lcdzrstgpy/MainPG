@@ -11,6 +11,7 @@ import {
 } from "../api/messagesApi";
 import { toAnnouncementSummary } from "../lib/announcementMarkdown";
 import { requestAnnouncementReplay } from "./AnnouncementModal";
+import { useFadePresence } from "../hooks/useFadePresence";
 
 const POLL_INTERVAL = 15_000;
 
@@ -33,6 +34,8 @@ function formatTime(value: string): string {
 export function InboxBell() {
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
+  // 收起时先播完淡出再卸载，避免消息中心「啪」一下消失
+  const { mounted: panelMounted, open: panelOpen } = useFadePresence(open);
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(false);
   // 弹层本地展开状态：点击消息项展开/收起正文，与服务端 read 状态解耦。
@@ -192,8 +195,14 @@ export function InboxBell() {
           </span>
         )}
       </button>
-      {open && (
-        <div className="inbox-popover" role="dialog" aria-label="消息中心">
+      {panelMounted && (
+        <div
+          className="inbox-popover ui-popover"
+          role="dialog"
+          aria-label="消息中心"
+          data-open={panelOpen ? "true" : "false"}
+          aria-hidden={!panelOpen}
+        >
           <header className="inbox-popover-header">
             <strong>消息中心</strong>
             {unread > 0 && (

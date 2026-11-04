@@ -32,6 +32,8 @@ type Props = { isActive?: boolean };
 
 const FLASH: FreeImageModel = "doubao-seedream-5-0-flash-260915";
 const PRO: FreeImageModel = "doubao-seedream-5-0-pro-260628";
+/** 参考图只服务主图：两个格位并排铺满一行，空位本身就是上传入口。 */
+const MAX_FREE_REFERENCES = 2;
 const TERMINAL: ReadonlySet<string> = new Set([
   "completed",
   "partial_failure",
@@ -370,7 +372,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
 
   const pickReferences = async (files: FileList | null) => {
     if (!files || !files.length || batch) return;
-    const remaining = Math.max(0, 4 - draft.reference_asset_ids.length);
+    const remaining = Math.max(0, MAX_FREE_REFERENCES - draft.reference_asset_ids.length);
     const selected = Array.from(files).slice(0, remaining);
     if (!selected.length) return;
     setUploading(true);
@@ -516,9 +518,18 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
     }
   };
 
+  /** 一次按压结束（松手/取消/移出）：计时器和按下坐标一起清掉。
+      只清计时器的话，短按松手后指针原地停两秒仍会触发拖动幽灵。 */
+  const endSlotPress = () => {
+    clearSlotLongPress();
+    pressRef.current = null;
+  };
+
   const beginSlotPress = (variant: number, preview: string, event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!batch || !preview || running || busy === "generate" || busy === "reorder") return;
+    // 每次按下都先清掉上一次长按的残留，避免下一次点击被误吞。
     longPressFiredRef.current = false;
+    // 主图固定在第一位：只有第 2 张起才允许长按拖动排序。
+    if (variant < 2 || !batch || !preview || running || busy === "generate" || busy === "reorder") return;
     clearSlotLongPress();
     pressRef.current = { variant, preview, x: event.clientX, y: event.clientY };
     const rect = event.currentTarget.getBoundingClientRect();
@@ -555,7 +566,8 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
       const node = document.elementFromPoint(event.clientX, event.clientY);
       const target = node instanceof Element ? node.closest<HTMLElement>("[data-free-variant]") : null;
       const next = Number(target?.dataset.freeVariant || 0);
-      const resolved = next >= 1 ? next : null;
+      // 第 1 槽是主图，不接受拖入：把别的图换进去等于顶掉主图。
+      const resolved = next >= 2 ? next : null;
       dropVariantRef.current = resolved;
       setDropVariant(resolved);
     };
@@ -565,6 +577,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
       setDragGhost(null);
       setDropVariant(null);
       dropVariantRef.current = null;
+      pressRef.current = null;
       // 松手仍在原槽位不调接口；这次 click 也会被 longPressFired 拦掉，不触发选中切换。
       if (from && to && to !== from) void reorderSlots(from, to);
     };
@@ -579,7 +592,8 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
   }, [draggingSlot]);
 
   const reorderSlots = async (from: number, to: number) => {
-    if (!batch) return;
+    // 主图固定在第一位：任何涉及第 1 槽的换序请求都不发出去。
+    if (!batch || from < 2 || to < 2) return;
     setBusy("reorder");
     setError("");
     try {
@@ -820,6 +834,44 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
             <p>{MODEL_INTRO[draft.image_model]}</p>
           </section>
 
+          {/* 参考图只对主图生效，放在提示词上方：先给参考，再写这一张的提示词。 */}
+          <div className={`pod-free-ref-collapse ${activeVariant === 1 ? "is-open" : ""}`} aria-hidden={activeVariant !== 1}>
+            <section className="pod-setup-card">
+              <div className="pod-section-title"><span>REFERENCES</span><h2>参考图</h2></div>
+              <div className="pod-free-refs">
+                {Array.from({ length: MAX_FREE_REFERENCES }, (_, index) => {
+                  const assetId = draft.reference_asset_ids[index];
+                  if (assetId) {
+                    return (
+                      <div key={assetId} className="pod-free-ref">
+                        <PodAssetImage path={draft.reference_previews[assetId]} alt="参考图" />
+                        {!batch && <button type="button" aria-label="移除参考图" onClick={() => removeReference(assetId)}>×</button>}
+                      </div>
+                    );
+                  }
+                  // 空位本身就是上传入口：两个入口并排铺满一行，右侧不留大片空白。
+                  return batch ? null : (
+                    <button key={`ref-slot-${index}`} type="button" className="pod-free-ref-add" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+                      <span className="iconfont icon-upload" aria-hidden="true" />
+                      <small>{uploading ? "上传中…" : "上传参考图"}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={(event) => void pickReferences(event.target.files)}
+              />
+              <p className="pod-free-hint">
+                {batch ? "参考图已随主图冻结。" : `最多 ${MAX_FREE_REFERENCES} 张，只对主图生效；第 2 张用以固定参考主图`}
+              </p>
+            </section>
+          </div>
+
           <section className="pod-setup-card">
             <textarea
               className="pod-free-prompt"
@@ -834,37 +886,6 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
             />
             <small className="pod-free-counter">{(batch ? activePrompt : draft.prompt).length}/4000</small>
           </section>
-
-          <div className={`pod-free-ref-collapse ${activeVariant === 1 ? "is-open" : ""}`} aria-hidden={activeVariant !== 1}>
-            <section className="pod-setup-card">
-              <div className="pod-section-title"><span>REFERENCES</span><h2>参考图（可选）</h2></div>
-              <div className="pod-free-refs">
-                {draft.reference_asset_ids.map((assetId) => (
-                  <div key={assetId} className="pod-free-ref">
-                    <PodAssetImage path={draft.reference_previews[assetId]} alt="参考图" />
-                    {!batch && <button type="button" aria-label="移除参考图" onClick={() => removeReference(assetId)}>×</button>}
-                  </div>
-                ))}
-                {!batch && draft.reference_asset_ids.length < 4 && (
-                  <button type="button" className="pod-free-ref-add" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-                    <span className="iconfont icon-upload" aria-hidden="true" />
-                    <small>{uploading ? "上传中…" : "上传参考图"}</small>
-                  </button>
-                )}
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                multiple
-                hidden
-                onChange={(event) => void pickReferences(event.target.files)}
-              />
-              <p className="pod-free-hint">
-                {batch ? "参考图已随主图冻结。" : "最多 4 张，只对主图生效；第 2 张起固定参考主图。"}
-              </p>
-            </section>
-          </div>
 
           <section className="pod-setup-card pod-free-count">
             <span>当前款式图片数量</span>
@@ -1009,7 +1030,9 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
                   aria-hidden={isLeaving || undefined}
                   onPointerDown={(event) => beginSlotPress(variant, preview, event)}
                   onPointerMove={trackSlotPress}
-                  onPointerLeave={clearSlotLongPress}
+                  onPointerUp={endSlotPress}
+                  onPointerCancel={endSlotPress}
+                  onPointerLeave={endSlotPress}
                   onClick={() => {
                     if (longPressFiredRef.current) {
                       longPressFiredRef.current = false;
@@ -1021,7 +1044,7 @@ export function PodFreeCustomizationPage({ isActive = true }: Props) {
                   title={
                     variant > 1 && !mainReady
                       ? "先生成主图后才能生成后续图片"
-                      : preview && batch
+                      : preview && batch && variant > 1
                         ? "长按 2 秒可拖动排序"
                         : undefined
                   }

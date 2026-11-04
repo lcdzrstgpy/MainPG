@@ -1166,7 +1166,6 @@ def _register_frontend_shell(app: FastAPI) -> None:
     brand = frontend_dist / "brand"
     theme = frontend_dist / "theme"
     index = frontend_dist / "index.html"
-    privacy = frontend_dist / "privacy.html"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="workbench-assets")
     if brand.is_dir():
@@ -1191,9 +1190,37 @@ def _register_frontend_shell(app: FastAPI) -> None:
             path = request.url.path
             if path.startswith("/assets/"):
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            elif path == "/" or path.startswith("/brand/") or path.startswith("/theme/") or path == "/privacy":
+            elif path == "/" or path.startswith("/brand/") or path.startswith("/theme/"):
                 response.headers["Cache-Control"] = "no-cache"
         return response
+
+    @app.get("/privacy", include_in_schema=False, response_class=HTMLResponse)
+    def workbench_privacy():
+        """隐私政策的本地入口：转发平台服务器页面，并把上一次成功的页面留存下来。
+
+        产品约定（2026-11-03）：联网时展示服务端最新正文，断网时用本地留存副本兜底；
+        客户端始终以 `/privacy` 新标签页打开，URL 与改造前一致。
+        """
+        # no-cache：页面内容随时可能被服务端改掉，浏览器不应自行缓存
+        page = _fetch_privacy_page()
+        if page is not None:
+            return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
+        stale = _read_cached_privacy_page()
+        if stale is not None:
+            return HTMLResponse(stale, headers={"Cache-Control": "no-cache"})
+        return HTMLResponse(
+            "<h1>隐私政策暂时不可用</h1>"
+            "<p>当前网络不可用，本地也还没有留存过副本，请接入网络后重新打开。</p>",
+            status_code=503,
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    @app.get("/privacy.md", include_in_schema=False)
+    def workbench_privacy_markdown():
+        """服务端页面的「纯文本版本」：本地不存副本，直接跳平台服务器。"""
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(f"{_PRIVACY_PAGE_URL}.md", status_code=307)
 
     @app.get("/", include_in_schema=False, response_class=HTMLResponse)
     def workbench_root():
@@ -1204,14 +1231,48 @@ def _register_frontend_shell(app: FastAPI) -> None:
             status_code=200,
         )
 
-    @app.get("/privacy", include_in_schema=False, response_class=HTMLResponse)
-    def workbench_privacy():
-        if privacy.is_file():
-            return FileResponse(privacy)
-        return HTMLResponse(
-            "<h1>隐私政策页面尚未构建</h1><p>请在 web-frontend 目录执行 npm run build。</p>",
-            status_code=200,
+
+# ── 隐私政策页面：本地缓存转发 ────────────────────────────────────
+# 页面本体由平台服务器托管（/privacy），本地只做 5 分钟缓存 + 断网兜底：
+# 这样客户端点「隐私政策」仍然是原来的「新标签页打开 /privacy」，
+# 联网看到的是服务端最新内容，断网看到的是上一次成功抓取的整页 HTML。
+_PRIVACY_PAGE_URL = (
+    os.environ.get("WH_LOCAL_PRIVACY_PAGE_URL", "").strip()
+    or "https://workbench.haocoming.top/privacy"
+)
+_PRIVACY_PAGE_TIMEOUT_SECONDS = 5.0
+_PRIVACY_PAGE_TTL_SECONDS = 300.0
+_privacy_page_cache: dict[str, Any] = {"at": 0.0, "html": None}
+_privacy_page_lock = threading.Lock()
+
+
+def _read_cached_privacy_page() -> str | None:
+    with _privacy_page_lock:
+        return _privacy_page_cache["html"]
+
+
+def _fetch_privacy_page() -> str | None:
+    """拉一次远端页面；5 分钟内命中缓存。任何失败返回 None（调用方用旧副本兜底）。"""
+    with _privacy_page_lock:
+        cached = _privacy_page_cache["html"]
+        fresh = cached is not None and (
+            time.monotonic() - _privacy_page_cache["at"] < _PRIVACY_PAGE_TTL_SECONDS
         )
+    if fresh:
+        return cached
+    try:
+        import requests
+
+        response = requests.get(_PRIVACY_PAGE_URL, timeout=_PRIVACY_PAGE_TIMEOUT_SECONDS)
+        if response.status_code != 200 or not response.text.strip():
+            return None
+        page = response.text
+    except Exception:  # noqa: BLE001 - 网络失败一律按「没有远端页面」处理
+        return None
+    with _privacy_page_lock:
+        _privacy_page_cache["at"] = time.monotonic()
+        _privacy_page_cache["html"] = page
+    return page
 
 
 def _register_data_collection(

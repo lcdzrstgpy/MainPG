@@ -475,7 +475,8 @@
 }
 
 .pod-free-ref-collapse {
-  max-height: 420px;
+  /* 两个参考图格位是正方形，宽屏下会比 420 高；上限放宽，避免展开时被裁掉。 */
+  max-height: 720px;
   overflow: hidden;
   opacity: 1;
   transition:
@@ -493,7 +494,8 @@
 
 .pod-free-refs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* 两个参考图格位并排铺满：空位本身就是上传入口，别在右边留一大块空白。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
 }
 
