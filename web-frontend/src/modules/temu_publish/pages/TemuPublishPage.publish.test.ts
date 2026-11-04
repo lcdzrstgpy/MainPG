@@ -1676,3 +1676,19 @@ test("草稿库带了真规格就自动按多规格发，不用用户再勾", ()
   assert.ok(meta.length > 0, "expected applyPrefillMeta block");
   assert.match(meta, /if \(hasRealSpecValue\(prefill\)\) setVariantsOn\(true\);/);
 });
+
+test("库存默认 0（先按售罄建品，开卖前补）", () => {
+  // 用户要求：新建行库存默认 0，不用每次手填。
+  // 0 是 Temu 接受的合法值，商品会落到「售罄/不可售」；后端提交后会带一条提醒，
+  // 所以不会出现「悄悄发了 0 库存还不知道」的情况。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const batch = panel.slice(
+    panel.indexOf("export const EMPTY_BATCH"),
+    panel.indexOf("let rowSeed"),
+  );
+  assert.match(batch, /stock: "0",/, "新建行的库存默认应为 0");
+  // 批量填充输入框的占位提示也要跟着改，否则提示和实际默认值互相打脸
+  assert.match(panel, /patchBatch\(\{ stock: e\.target\.value \}\)\} placeholder="0"/);
+  // 0 依然是合法值：校验只拦空值/负数
+  assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
+});

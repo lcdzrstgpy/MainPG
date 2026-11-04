@@ -38,7 +38,9 @@ export type VariantBatch = {
 export const EMPTY_BATCH: VariantBatch = {
   supplierPrice: "",
   suggestedPrice: "",
-  stock: "",
+  // 库存默认 0：先按「售罄」建品，开卖前再补。
+  // 0 是 Temu 接受的合法值，商品会处于售罄/不可售状态；提交后后端也会给一条提醒。
+  stock: "0",
   weightG: "",
   lengthCm: "",
   widthCm: "",
@@ -456,7 +458,7 @@ export function PublishSkuPanel({
           </label>
           <label>
             库存
-            <input className="temu-input" inputMode="numeric" value={batch.stock} onChange={(e) => patchBatch({ stock: e.target.value })} placeholder="50" />
+            <input className="temu-input" inputMode="numeric" value={batch.stock} onChange={(e) => patchBatch({ stock: e.target.value })} placeholder="0" />
           </label>
           <label>
             长 cm
