@@ -804,11 +804,11 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
           </div>
         )}
         <div className="verify-draft-list">
-          {/* 切换批次/刷新时列表非空，也要给出明确的加载遮罩；否则看起来像点不动。 */}
+          {/* 刷新时不再压暗整页：只在列表顶部给一个小状态，列表保持可读。 */}
           {listLoading && !isPoolEmpty && !listError && (
-            <div className="app-loading-mask" role="status" aria-live="polite">
-              <i className="app-spinner" aria-hidden="true" />
-              <span>正在加载草稿…</span>
+            <div className="verify-draft-refreshing" role="status" aria-live="polite">
+              <i className="app-spinner is-sm" aria-hidden="true" />
+              <span>刷新中…</span>
             </div>
           )}
           {pageDrafts.map((draft) => {

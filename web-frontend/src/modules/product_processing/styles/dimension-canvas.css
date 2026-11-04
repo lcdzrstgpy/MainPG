@@ -705,6 +705,14 @@
   min-width: 0;
 }
 
+/* 画布遮罩只盖画布本身，不盖底部工具栏 */
+.dimension-stage-body {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+
 .dimension-stage-viewport {
   position: relative;
   display: flex;
