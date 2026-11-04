@@ -4418,3 +4418,192 @@ textarea.temu-input {
 .is-console .temu-variant-toggle:hover {
   border-color: var(--theme-module-primary-strong, #087bf5);
 }
+
+/* ================================================================
+   发布历史页（独立页面，不在 is-console 壳里，所以用 --theme-* 变量）
+   ================================================================ */
+
+.temu-history-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px 28px;
+  max-width: 1080px;
+  color: var(--theme-text-primary, #1f2d3d);
+}
+
+.temu-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--theme-module-border, #e4ecf3);
+}
+
+.temu-history-head h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.temu-history-head p {
+  margin: 4px 0 0;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.temu-history-tabs {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.temu-history-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 8px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.temu-history-tab em {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-history-tab.is-active {
+  border-color: var(--theme-primary, #087bf5);
+  color: var(--theme-primary, #087bf5);
+}
+
+.temu-history-tab.is-active em {
+  background: var(--theme-primary, #087bf5);
+  color: #fff;
+}
+
+.temu-history-empty,
+.temu-history-error {
+  margin: 0;
+  padding: 18px;
+  border: 1px dashed var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 10px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.temu-history-error {
+  border-style: solid;
+  border-color: #d93025;
+  color: #a5342f;
+}
+
+.temu-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.temu-history-row {
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.temu-history-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.temu-history-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* 成功用绿、失败用红（国内习惯：红=异常，不是涨跌语义） */
+.temu-history-badge.is-success {
+  background: #e8f8ef;
+  color: #146c43;
+}
+
+.temu-history-badge.is-failed {
+  background: #fdeceb;
+  color: #a5342f;
+}
+
+.temu-history-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.temu-history-text strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-history-meta {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}
+
+.temu-history-gid {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 7px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-history-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--theme-module-border, #e8eef4);
+}
+
+.temu-history-reason {
+  flex: 1 1 320px;
+  margin: 0;
+  color: #a5342f;
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.temu-history-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}

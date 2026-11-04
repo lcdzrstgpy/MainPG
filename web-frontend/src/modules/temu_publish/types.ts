@@ -185,6 +185,8 @@ export type TemuSkcDraft = {
 };
 
 export type TemuGoodsDraft = {
+  /** 来源草稿条目 id：发布成功后后端据此把它从草稿库移除 */
+  draft_id?: string;
   category_ids: number[];
   title: string;
   /** 英文标题（选填）；填了会覆盖自动生成的 en 标题 */
@@ -415,3 +417,28 @@ export type TemuLowStockResult = {
   can_update_stock: boolean;
 };
 
+
+
+/** 一条发布记录（成功或失败）。后端 temu_publish_submissions 的一行。 */
+export type TemuPublishHistoryItem = {
+  id: number;
+  title: string;
+  sku_count: number;
+  /** success / failed */
+  status: string;
+  goods_id: string;
+  error: string;
+  /** 来源草稿条目 id（ai:任务:项 / pod:批次:款式），手填的为空 */
+  draft_id: string;
+  leaf_cat_id: number;
+  image: string;
+  created_at: string;
+};
+
+export type TemuPublishHistory = {
+  items: TemuPublishHistoryItem[];
+  total: number;
+  counts: { success: number; failed: number };
+  page: number;
+  page_size: number;
+};

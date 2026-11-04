@@ -1692,3 +1692,32 @@ test("库存默认 0（先按售罄建品，开卖前补）", () => {
   // 0 依然是合法值：校验只拦空值/负数
   assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
 });
+
+test("发布历史：成功与失败分开，成功过的草稿从草稿库消失", () => {
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const apiTs = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
+  const modules = readFileSync(
+    new URL("../../../app/navigation/modules.ts", import.meta.url),
+    "utf8",
+  );
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 两个 tab，各自带数量
+  assert.match(history, /const \[tab, setTab\] = useState<Tab>\("success"\)/);
+  assert.match(history, /成功 <em>\{counts\.success\}<\/em>/);
+  assert.match(history, /失败 <em>\{counts\.failed\}<\/em>/);
+  // 成功显示商品 id，失败展开看原因（Temu 原话 + 错误码）
+  assert.match(history, /id \{item\.goods_id \|\| "—"\}/);
+  assert.match(history, /失败原因|temu-history-reason/);
+  assert.match(history, /去草稿库重发/);
+  // 走的是后端台账，不是本机 localStorage
+  assert.match(apiTs, /publish-history\?/);
+  assert.match(history, /temuPublishApi\.publishHistory\(/);
+
+  // 导航：草稿库 → 发布商品 → 发布历史
+  assert.match(modules, /id: "temu_publish_history"/);
+  assert.match(modules, /children: \[temuDraftLibrary, temuPublish, temuPublishHistory\]/);
+
+  // 草稿库里那份「发布失败历史」抽屉已经搬走（避免两份失败列表）
+  assert.ok(!library.includes("发布失败历史"), "草稿库不该再有第二条失败列表");
+});

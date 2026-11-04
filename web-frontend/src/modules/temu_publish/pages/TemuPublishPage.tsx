@@ -2189,6 +2189,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       outer_goods_url: form.externalUrl.trim(),
       properties,
       skcs,
+      // 带上来源草稿 id：发布成功后这条草稿会从草稿库移除（避免重复上架），
+      // 同时发布历史里能看出这条是从哪条草稿来的
+      draft_id: prefillDraftId.current || "",
       site_ids: [SITE_ID],
       // 类目明确不需要尺码表（sizeChart.has === false）时不要带旧的模板 id：
       // 字段被藏起来了，用户看不到也改不掉，带上去只会让 Temu 回一句莫名其妙的话

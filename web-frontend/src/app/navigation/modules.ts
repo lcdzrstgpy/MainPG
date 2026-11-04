@@ -10,6 +10,7 @@ export type WorkspaceModuleId =
   | "product_processing_tasks"
   | "temu_publish"
   | "temu_draft_library"
+  | "temu_publish_history"
   | "combo_generate"
   | "combo_prompt_preset"
   | "combo_history"
@@ -179,6 +180,14 @@ const temuPublish: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-upload",
   description: "选择类目与属性，组装 Temu 商品发布请求体",
+};
+
+const temuPublishHistory: WorkspaceModule = {
+  id: "temu_publish_history",
+  label: "发布历史",
+  icon: "",
+  iconClass: "iconfont icon-reloadtime",
+  description: "成功与失败的发布记录分开看",
 };
 
 const temuDraftLibrary: WorkspaceModule = {
@@ -360,7 +369,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-upload",
     description: "Temu 商品发布与草稿库",
     defaultChildId: "temu_draft_library",
-    children: [temuDraftLibrary, temuPublish],
+    children: [temuDraftLibrary, temuPublish, temuPublishHistory],
   },
   {
     // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。

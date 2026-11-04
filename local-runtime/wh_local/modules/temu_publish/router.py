@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...session import Actor, actor_from_authorization
 from .client import TemuCredentialMissing, TemuGatewayError, clear_shared_catalog_cache
+from . import submissions as submission_ledger
 from .submissions import DuplicateSubmission
 from .gateway_sync import mark_provider_credentials_stale, sync_provider_credentials
 from .library import collect_all_draft_entries, paginate_draft_library
@@ -305,7 +306,33 @@ def create_temu_publish_router(
             with _LIBRARY_CACHE_LOCK:
                 _LIBRARY_CACHE[key] = (now, cached)
 
-        return paginate_draft_library(cached, source=source, query=q, page=page, page_size=page_size)
+        # 已经成功发布过的草稿从库里去掉：同一件商品不该让人再发一次。
+        # 这里每次实时查（draft_id 有索引、量很小），发布完刷新就能立刻消失，
+        # 不受上面 60 秒聚合缓存的影响。
+        published = submission_ledger.published_draft_ids(database_path, actor.id)
+        entries = [item for item in cached.get("entries", []) if item.get("id") not in published]
+        view = {**cached, "entries": entries}
+        return paginate_draft_library(view, source=source, query=q, page=page, page_size=page_size)
+
+    # ---------- 发布历史 ----------
+
+    @router.get("/publish-history")
+    def publish_history(
+        status: str = Query(default="", description="success / failed，留空=全部"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=30, ge=1, le=200),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """成功与失败的发布记录分开取：成功看商品 id，失败看原因。"""
+        submission_ledger.ensure_table(database_path)
+        data = submission_ledger.list_history(
+            database_path,
+            actor.id,
+            status=status,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+        return {**data, "page": page, "page_size": page_size}
 
     # ---------- 发布配套查询 ----------
 

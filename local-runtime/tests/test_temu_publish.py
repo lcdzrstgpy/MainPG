@@ -3126,3 +3126,103 @@ def test_provider_fingerprint_never_leaks_credentials() -> None:
     assert provider_fingerprint("client-abc", "token-xyz") == fingerprint
     assert provider_fingerprint("client-abc", "token-xy2") != fingerprint
     assert provider_fingerprint("client-abd", "token-xyz") != fingerprint
+
+
+def test_publish_history_splits_success_and_failure(tmp_path: Path) -> None:
+    """发布历史要能按成功/失败分开取，并带上商品 id 与失败原因。"""
+    from wh_local.modules.temu_publish import submissions as ledger
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    ledger.ensure_table(db)
+
+    ok_id = ledger.begin(
+        db, "cust_h", "fp-ok", "OK 商品", 2,
+        draft_id="pod:batch1:1", leaf_cat_id=30988, image="https://img/x.jpg",
+    )
+    ledger.finish(db, ok_id, "success", gid="50210594175")
+    bad_id = ledger.begin(db, "cust_h", "fp-bad", "坏商品", 1, draft_id="ai:task1:item9")
+    ledger.finish(db, bad_id, "failed", error="属性[颜色]校验错误")
+
+    all_rows = ledger.list_history(db, "cust_h")
+    assert all_rows["total"] == 2
+    assert all_rows["counts"] == {"success": 1, "failed": 1}
+
+    ok = ledger.list_history(db, "cust_h", status="success")
+    assert ok["total"] == 1
+    item = ok["items"][0]
+    assert (item["goods_id"], item["draft_id"], item["leaf_cat_id"]) == (
+        "50210594175", "pod:batch1:1", 30988,
+    )
+    assert item["image"] == "https://img/x.jpg"
+
+    bad = ledger.list_history(db, "cust_h", status="failed")
+    assert bad["total"] == 1
+    assert "属性[颜色]" in bad["items"][0]["error"]
+
+    # 别人看不到
+    assert ledger.list_history(db, "cust_other")["total"] == 0
+
+
+def test_published_draft_ids_only_counts_success(tmp_path: Path) -> None:
+    """只有「成功且带 draft_id」的草稿才算已发布；失败/手填的不算。"""
+    from wh_local.modules.temu_publish import submissions as ledger
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    ledger.ensure_table(db)
+
+    ok1 = ledger.begin(db, "cust_p", "f1", "A", 1, draft_id="pod:b:1")
+    ledger.finish(db, ok1, "success", gid="1")
+    ok2 = ledger.begin(db, "cust_p", "f2", "B", 1, draft_id="ai:t:2")
+    ledger.finish(db, ok2, "success", gid="2")
+    bad = ledger.begin(db, "cust_p", "f3", "C", 1, draft_id="ai:t:3")
+    ledger.finish(db, bad, "failed", error="x")
+    manual = ledger.begin(db, "cust_p", "f4", "手填", 1)
+    ledger.finish(db, manual, "success", gid="4")
+
+    assert ledger.published_draft_ids(db, "cust_p") == {"pod:b:1", "ai:t:2"}
+    assert ledger.published_draft_ids(db, "cust_other") == set()
+
+
+def test_draft_library_drops_published_entries(tmp_path: Path, monkeypatch) -> None:
+    """草稿库里已经成功发布的条目要消失 —— 否则用户会重复上架同一件商品。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish import router as router_mod
+    from wh_local.modules.temu_publish import submissions as ledger
+    from wh_local.session import Actor, actor_from_authorization
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    ledger.ensure_table(db)
+    done = ledger.begin(db, "cust_lib", "f1", "发过的", 1, draft_id="pod:b:1")
+    ledger.finish(db, done, "success", gid="999")
+
+    monkeypatch.setattr(
+        router_mod,
+        "collect_all_draft_entries",
+        lambda **kwargs: {
+            "entries": [
+                {"id": "pod:b:1", "source": "pod", "title": "发过的"},
+                {"id": "ai:t:2", "source": "ai", "title": "还没发"},
+            ],
+            "warnings": [],
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(router_mod.create_temu_publish_router(db))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="cust_lib", username="lib", role="admin"
+    )
+    http = TestClient(app)
+
+    data = http.get("/api/temu-publish/draft-library?refresh=true").json()
+    ids = [item["id"] for item in data["entries"]]
+    assert ids == ["ai:t:2"], f"已发布的草稿应被过滤掉，实际 {ids}"
+
+    history = http.get("/api/temu-publish/publish-history?status=success").json()
+    assert history["total"] == 1
+    assert history["items"][0]["draft_id"] == "pod:b:1"

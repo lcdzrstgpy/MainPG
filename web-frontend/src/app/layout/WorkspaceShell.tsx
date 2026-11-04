@@ -48,6 +48,7 @@ const ComboKitHistoryPage = lazy(() => import("../../modules/combo_kit/pages/Com
 const DimensionCanvasPage = lazy(() => import("../../modules/product_processing/pages/DimensionCanvasPage").then((m) => ({ default: m.DimensionCanvasPage })));
 const TemuPublishPage = lazy(() => import("../../modules/temu_publish/pages/TemuPublishPage").then((m) => ({ default: m.TemuPublishPage })));
 const TemuDraftLibraryPage = lazy(() => import("../../modules/temu_publish/pages/TemuDraftLibraryPage").then((m) => ({ default: m.TemuDraftLibraryPage })));
+const TemuPublishHistoryPage = lazy(() => import("../../modules/temu_publish/pages/TemuPublishHistoryPage").then((m) => ({ default: m.TemuPublishHistoryPage })));
 const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
 const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_customization/pages/PodSemiCustomizationPage").then((m) => ({ default: m.PodSemiCustomizationPage })));
 const PodFreeCustomizationPage = lazy(() => import("../../modules/pod_free_customization/pages/PodFreeCustomizationPage").then((m) => ({ default: m.PodFreeCustomizationPage })));
@@ -1032,6 +1033,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
               openModule("temu_publish");
             }}
           />
+        );
+        break;
+      case "temu_publish_history":
+        content = (
+          <TemuPublishHistoryPage onOpenDraftLibrary={() => openModule("temu_draft_library")} />
         );
         break;
       case "pod_customization":

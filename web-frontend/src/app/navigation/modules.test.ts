@@ -43,10 +43,12 @@ test("POD customization is a grouped section with full, semi and replica customi
   assert.deepEqual(temuWorkflow?.children?.map((child) => child.id), [
     "temu_draft_library",
     "temu_publish",
+    "temu_publish_history",
   ]);
   assert.deepEqual(temuWorkflow?.children?.map((child) => child.label), [
     "草稿库",
     "发布商品（实验）",
+    "发布历史",
   ]);
   assert.equal(workspaceModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
   assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");

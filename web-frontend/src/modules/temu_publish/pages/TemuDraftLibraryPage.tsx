@@ -426,7 +426,6 @@ export function TemuDraftLibraryPage({
   const [picker, setPicker] = useState<"product" | "variant" | null>(null);
   // 点「用于发布」先弹基础信息确认，确认后才带进发布页
   const [confirmEntry, setConfirmEntry] = useState<TemuDraftEntry | null>(null);
-  const [failures, setFailures] = useState(() => localStore.failures());
   // 草稿 → 上次在发布页选过的 Temu 类目：进页面/切回来都重读，刚选完的能立刻显示
   const [categoryMemo, setCategoryMemo] = useState<Record<string, DraftCategoryMemo>>(() =>
     localStore.draftCategories(),
@@ -435,7 +434,6 @@ export function TemuDraftLibraryPage({
   const [attrPrefills, setAttrPrefills] = useState<Record<string, DraftAttrPrefill>>(() =>
     readDraftAttrPrefills(storageScope()),
   );
-  const [showFailures, setShowFailures] = useState(false);
   const [productTpl, setProductTpl] = useState("");
   const [variantTpl, setVariantTpl] = useState("");
   const [batchState, setBatchState] = useState<{ running: boolean; text: string }>({
@@ -1053,15 +1051,6 @@ export function TemuDraftLibraryPage({
             {productTpl ? ` · 产品模板：${productTpl}` : ""}
             {variantTpl ? ` · 变种模板：${variantTpl}` : ""}
           </span>
-          <button
-            type="button"
-            className={`temu-fail-entry${failures.length ? " has-dot" : ""}`}
-            onClick={() => setShowFailures((value) => !value)}
-            title="发布失败的产品会记在这里，点开看原因并可重试"
-          >
-            发布失败历史{failures.length ? ` (${failures.length})` : ""}
-            {failures.length > 0 && <em className="temu-fail-dot" aria-hidden="true" />}
-          </button>
         </div>
 
           <TemuDraftBulkBar
@@ -1098,61 +1087,7 @@ export function TemuDraftLibraryPage({
             </p>
           )}
 
-          {showFailures && (
-            <div className="temu-fail-panel">
-              <div className="temu-fail-panel-head">
-                <strong>发布失败历史（{failures.length}）</strong>
-                {failures.length > 0 && (
-                  <button
-                    type="button"
-                    className="temu-link"
-                    onClick={() => {
-                      localStore.clearFailures();
-                      setFailures([]);
-                    }}
-                  >
-                    清空
-                  </button>
-                )}
-              </div>
-              {failures.length === 0 ? (
-                <p className="temu-muted">暂无失败记录。发布失败时会自动记在这里。</p>
-              ) : (
-                failures.map((item) => (
-                  <div className="temu-fail-row" key={item.id}>
-                    <div className="temu-fail-main">
-                      <strong>{item.draftTitle}</strong>
-                      <span className="temu-muted">
-                        {item.siteLabel} · {item.categoryLabel} · {item.skuLabel} · {item.priceLabel} · {item.at}
-                      </span>
-                      <em>失败原因：{item.reason}</em>
-                      <em className="is-hint">解决方案：{item.hint}</em>
-                      {item.traceId && <span className="temu-muted">Trace {item.traceId}</span>}
-                    </div>
-                    <div className="temu-fail-ops">
-                      <button
-                        type="button"
-                        className="temu-btn temu-btn-sm"
-                        onClick={() => {
-                          if (item.prefill) onUseDraft(item.prefill as never);
-                          setShowFailures(false);
-                        }}
-                      >
-                        重试
-                      </button>
-                      <button
-                        type="button"
-                        className="temu-link"
-                        onClick={() => setFailures(localStore.removeFailure(item.id))}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
+
 
           {picker && (
             <div className="temu-template-picker">
@@ -1557,7 +1492,7 @@ export function TemuDraftLibraryPage({
                   </p>
                 ) : (
                   <p className="temu-edit-note">
-                    接口非幂等：重复提交会在店铺里多出商品；中途某条失败只跳过它，原因进「发布失败历史」。
+                    接口非幂等：重复提交会在店铺里多出商品；中途某条失败只跳过它，原因进「发布历史」。
                     同一条草稿 24 小时内重复提交会被拦一次，需要你二次确认。
                   </p>
                 )}

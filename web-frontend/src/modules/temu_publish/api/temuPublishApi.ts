@@ -10,6 +10,7 @@ import type {
   TemuGoodsDraft,
   TemuImageUploadResult,
   TemuLowStockResult,
+  TemuPublishHistory,
   TemuParentSpec,
   TemuPublishResult,
   TemuSettingsStatus,
@@ -121,6 +122,16 @@ export const temuPublishApi = {
     httpJson<TemuSettingsStatus>(`${BASE}/settings/shops/${shopId}/activate`, { method: "POST" }),
   removeShop: (shopId: string) =>
     httpJson<TemuSettingsStatus>(`${BASE}/settings/shops/${shopId}`, { method: "DELETE" }),
+
+  /** 发布历史：成功与失败分开取（status 留空=全部） */
+  publishHistory: (params: { status?: "success" | "failed" | ""; page?: number; pageSize?: number } = {}) =>
+    httpJson<TemuPublishHistory>(
+      `${BASE}/publish-history?${new URLSearchParams({
+        status: params.status ?? "",
+        page: String(params.page ?? 1),
+        page_size: String(params.pageSize ?? 30),
+      })}`,
+    ),
 
   goodsDetail: (productId: string | number) =>
     httpJson<Record<string, unknown>>(`${BASE}/goods/${productId}`),

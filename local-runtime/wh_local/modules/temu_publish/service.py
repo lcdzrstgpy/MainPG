@@ -1121,7 +1121,14 @@ class TemuPublishService:
             len(skc.get("productSkuReqs") or []) for skc in payload.get("productSkcReqs") or []
         )
         submission_id = submission_ledger.begin(
-            self.database_path, self.owner_id, fingerprint, draft.title, sku_count
+            self.database_path,
+            self.owner_id,
+            fingerprint,
+            draft.title,
+            sku_count,
+            draft_id=str(getattr(draft, "draft_id", "") or ""),
+            leaf_cat_id=int(draft.category_ids[-1]) if draft.category_ids else 0,
+            image=(draft.carousel_image_urls[0] if draft.carousel_image_urls else ""),
         )
         try:
             result = self.client().add_goods(payload)

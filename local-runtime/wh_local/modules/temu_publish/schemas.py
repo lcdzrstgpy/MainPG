@@ -156,6 +156,9 @@ class DetailImageInput(BaseModel):
 class GoodsDraftInput(BaseModel):
     """发布商品草稿（只用于组装 goods.add 请求体，不提交）。"""
 
+    # 草稿库条目 id（ai:任务:项 / pod:批次:款式）。发布成功后靠它把这条草稿从草稿库移除，
+    # 也用来在发布历史里显示「这条是从哪来的」。手填/无来源时留空。
+    draft_id: str = Field(default="", max_length=160)
     category_ids: list[int] = Field(min_length=1, max_length=10)
     title: str = Field(min_length=1, max_length=255)
     # 英文标题（选填）：填了就作为 productI18nReqs 的 en 标题，不填则按标题内容自动判断。

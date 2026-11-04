@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,18 @@ def ensure_table(database_path: Path) -> None:
             )
             """
         )
+        # 老库补列：发布历史要显示「来自哪条草稿 / 哪个类目 / 哪张图」，
+        # 并且成功后要把那条草稿从草稿库里去掉 —— 都依赖 draft_id。
+        existing = {
+            str(row[1]) for row in conn.execute(f"PRAGMA table_info({TABLE})").fetchall()
+        }
+        for column, ddl in (
+            ("draft_id", "TEXT NOT NULL DEFAULT ''"),
+            ("leaf_cat_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("image", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {TABLE} ADD COLUMN {column} {ddl}")
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_owner ON {TABLE}(owner_id, fingerprint, created_ts)"
         )
@@ -125,17 +138,42 @@ def find_recent(
     }
 
 
-def begin(database_path: Path, owner_id: str, fingerprint: str, title: str, sku_count: int) -> int:
-    """提交前落一笔 pending（先写再提交：请求超时也算「可能已经建了」）。"""
+def begin(
+    database_path: Path,
+    owner_id: str,
+    fingerprint: str,
+    title: str,
+    sku_count: int,
+    *,
+    draft_id: str = "",
+    leaf_cat_id: int = 0,
+    image: str = "",
+) -> int:
+    """提交前落一笔 pending（先写再提交：请求超时也算「可能已经建了」）。
+
+    ``draft_id`` 是草稿库里的条目 id（``ai:任务:项`` / ``pod:批次:款式``）：
+    成功之后靠它把那条草稿从草稿库里去掉，也从这里生成发布历史。
+    """
     now = time.time()
     with transaction(database_path) as conn:
         cursor = conn.execute(
             f"""
             INSERT INTO {TABLE}
-                (owner_id, fingerprint, title, sku_count, status, created_ts, updated_ts)
-            VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                (owner_id, fingerprint, title, sku_count, status, created_ts, updated_ts,
+                 draft_id, leaf_cat_id, image)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """,
-            (str(owner_id or ""), fingerprint, str(title or "")[:200], int(sku_count), now, now),
+            (
+                str(owner_id or ""),
+                fingerprint,
+                str(title or "")[:200],
+                int(sku_count),
+                now,
+                now,
+                str(draft_id or "")[:160],
+                int(leaf_cat_id or 0),
+                str(image or "")[:500],
+            ),
         )
         return int(cursor.lastrowid)
 
@@ -170,3 +208,85 @@ def goods_id_from_result(result: Any) -> str:
                 if found:
                     return found
     return ""
+
+
+STATUSES = ("success", "failed")
+
+
+def list_history(
+    database_path: Path,
+    owner_id: str,
+    *,
+    status: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """发布历史（成功 / 失败分开取）。status 留空 = 全部。"""
+    wanted = str(status or "").strip()
+    where = "owner_id = ?"
+    params: list[Any] = [str(owner_id or "")]
+    if wanted in STATUSES:
+        where += " AND status = ?"
+        params.append(wanted)
+    else:
+        # pending 不算历史（正在提交的那一条）
+        where += " AND status IN ('success', 'failed')"
+    with transaction(database_path) as conn:
+        total = int(
+            conn.execute(f"SELECT COUNT(*) FROM {TABLE} WHERE {where}", params).fetchone()[0]
+        )
+        rows = conn.execute(
+            f"""
+            SELECT id, title, sku_count, status, gid, error, created_ts,
+                   draft_id, leaf_cat_id, image
+            FROM {TABLE}
+            WHERE {where}
+            ORDER BY created_ts DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, max(1, int(limit)), max(0, int(offset))],
+        ).fetchall()
+    counts = {"success": 0, "failed": 0}
+    with transaction(database_path) as conn:
+        for row in conn.execute(
+            f"SELECT status, COUNT(*) FROM {TABLE} WHERE owner_id = ? GROUP BY status",
+            (str(owner_id or ""),),
+        ).fetchall():
+            if str(row[0]) in counts:
+                counts[str(row[0])] = int(row[1])
+    items = [
+        {
+            "id": int(row["id"]),
+            "title": str(row["title"] or ""),
+            "sku_count": int(row["sku_count"] or 0),
+            "status": str(row["status"] or ""),
+            "goods_id": str(row["gid"] or ""),
+            "error": str(row["error"] or ""),
+            "draft_id": str(row["draft_id"] or ""),
+            "leaf_cat_id": int(row["leaf_cat_id"] or 0),
+            "image": str(row["image"] or ""),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(row["created_ts"] or 0))),
+        }
+        for row in rows
+    ]
+    return {"items": items, "total": total, "counts": counts}
+
+
+def published_draft_ids(database_path: Path, owner_id: str) -> set[str]:
+    """已经成功发布的草稿 id：草稿库要把这些条去掉，别让人重复发同一件。
+
+    表还不存在（这台机器从没发布过）时返回空集合 —— 草稿库不该因为
+    「台账还没建」而报错。
+    """
+    try:
+        with transaction(database_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT draft_id FROM {TABLE}
+                WHERE owner_id = ? AND status = 'success' AND draft_id <> ''
+                """,
+                (str(owner_id or ""),),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(row[0]) for row in rows}
