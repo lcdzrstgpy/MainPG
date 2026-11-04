@@ -890,3 +890,69 @@ html:not([data-ui-mode="apple"]) .topbar-card .tab-strip .page-tab.is-active:hov
   background: transparent !important;
   box-shadow: none !important;
 }/* 樱雾粉紫：粉紫渐变 + 紫描边大圆角 *//* 焦糖：奶油底 + 焦糖描边，柔和圆润 *//* 黑白钻石：黑底银边，冷峻克制 *//* 怪趣贴纸：绿黄粉大渐变 + 粗深紫描边歪头 *//* 水墨青黛：米白纸底 + 青黛描边，偏方正印章感 */
+
+/* 浮层容器（抽屉/弹窗）必须是不透明的：水墨/桃花源等主题的 surface 变量是半透明玻璃色，
+   放进固定浮层后会透出底层内容。这里只在浮层内部把 surface 改成实色，页面卡片仍保留玻璃感。 */
+[data-theme] :is(
+  .profit-source-drawer,
+  .ledger-drawer,
+  .shop-batch-drawer,
+  .pv-temu-sku-drawer,
+  .feedback-drawer,
+  .help-agent-panel,
+  .dimension-modal,
+  .app-update-dialog,
+  .settings-edit-dialog,
+  .profit-products-settings-dialog,
+  .personal-password-dialog,
+  .storage-sweep-confirm-dialog,
+  .combo-drawer,
+  .combo-modal
+) {
+  --theme-module-surface: var(--theme-card-bg-solid, #fff);
+  --theme-module-surface-raised: var(--theme-card-bg-solid, #fff);
+  --theme-module-surface-soft: var(--theme-card-bg-solid, #fff);
+  --theme-card-bg: var(--theme-card-bg-solid, #fff);
+}
+
+/* 其余抽屉 / 弹窗容器同样使用实色表面（图片预览层保持透明，不在此列）。 */
+[data-theme] :is(
+  .collection-settings-drawer,
+  .composition-drawer,
+  .history-drawer,
+  .pod-composition-drawer,
+  .pod-history-drawer,
+  .pod-listing-detail-drawer,
+  .pod-replica-drawer,
+  .pod-spec-card-drawer,
+  .pod-template-drawer,
+  .profit-shipping-drawer,
+  .template-gallery-drawer,
+  .verify-drawer,
+  .pv-source-manual-dialog,
+  .profit-batch-store-dialog,
+  .profit-import-dialog,
+  .profit-import-guidelines-dialog,
+  .profit-modal,
+  .profit-settings-dialog,
+  .temu-batch-dialog,
+  .temu-confirm-dialog,
+  .temu-edit-dialog,
+  .ai-conversation-dialog,
+  .ai-video-modal,
+  .batch-compose-modal,
+  .op-modal,
+  .preset-dialog,
+  .delete-confirm-dialog,
+  .rate-dialog,
+  .personal-upgrade-dialog,
+  .pod-composition-name-dialog,
+  .pod-failed-retry-dialog,
+  .pod-semi-delete-confirm-dialog,
+  .pod-unsaved-confirm-dialog
+) {
+  --theme-module-surface: var(--theme-card-bg-solid, #fff);
+  --theme-module-surface-raised: var(--theme-card-bg-solid, #fff);
+  --theme-module-surface-soft: var(--theme-card-bg-solid, #fff);
+  --theme-card-bg: var(--theme-card-bg-solid, #fff);
+}
