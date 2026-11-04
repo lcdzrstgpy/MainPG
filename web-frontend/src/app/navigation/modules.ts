@@ -352,14 +352,15 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     panels: aiVideoPanels,
   },
   {
-    // 发布商品分组：发布页与草稿库是同级子项，固定在个人中心上方。
+    // 发布商品分组：草稿库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
+    // 而不是一张空表单（空表单没什么可填的，用户得先去挑货）。
     id: "temu_publish_workflow",
     label: "发布商品",
     icon: "",
     iconClass: "iconfont icon-upload",
     description: "Temu 商品发布与草稿库",
-    defaultChildId: "temu_publish",
-    children: [temuPublish, temuDraftLibrary],
+    defaultChildId: "temu_draft_library",
+    children: [temuDraftLibrary, temuPublish],
   },
   {
     // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。
