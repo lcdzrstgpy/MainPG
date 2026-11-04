@@ -4199,3 +4199,52 @@ textarea.temu-input {
   border-color: var(--theme-module-primary-strong, #087bf5);
   color: var(--theme-module-primary-strong, #087bf5);
 }
+
+/* ---- 10. 区块内的「更多选项」折叠 ----
+   选填低频字段（英文标题/货号/产地/外链）收起来，首屏只留真正要看的。 */
+.is-console .temu-more {
+  padding-top: 2px;
+  border-top: 1px dashed var(--theme-module-border, #e8eef4);
+}
+
+.is-console .temu-more > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 0;
+  color: var(--temu-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  list-style: none;
+}
+
+.is-console .temu-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.is-console .temu-more > summary::before {
+  content: "+";
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.is-console .temu-more[open] > summary::before {
+  content: "−";
+}
+
+.is-console .temu-more > summary:hover {
+  color: var(--temu-text);
+}
+
+/* 展开后字段之间要有间距，否则贴着折叠标题 */
+.is-console .temu-more > .temu-two-col,
+.is-console .temu-more > .temu-field {
+  margin-top: 8px;
+}

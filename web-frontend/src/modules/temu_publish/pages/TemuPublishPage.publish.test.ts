@@ -1616,3 +1616,34 @@ test("顶部店铺名后面要有「绑定/切换店铺」入口", () => {
   assert.match(css, /\.temu-shop-switch-panel \{[\s\S]*?background: var\(--theme-card-bg-solid/);
   assert.match(css, /\.temu-shop-switch-item\.is-current \{/);
 });
+
+test("首屏只留必填：低频字段都收进「更多选项」折叠", () => {
+  // 反馈是「字段太多，不知道填哪些」。原则：首屏只露必填项，
+  // 其余（选填/开关/模板/多件装）默认收起 —— 但必须**还渲染着**，
+  // 只是折叠（details 内容仍在 DOM 里），否则表单值会丢。
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+
+  // 装饰性只读字段删掉（店名顶部 pill 已有，站点只有美国一个选项）
+  // 用带标签的完整片段判断：注释里提到这两个词是允许的，字段本身不能还在
+  assert.ok(!page.includes("<span>店铺账号</span>"), "只读的「店铺账号」不该占一行");
+  assert.ok(!page.includes("<span>经营站点</span>"), "禁用的「经营站点」下拉不该占一行");
+  // 「检查必填」只留两处：发布区块一处、右侧检查栏一处。顶栏那份重复的删掉了
+  const mandatoryButtons =
+    page.match(/onClick=\{(?:\(\) => void )?checkMandatory(?:\(\))?\}/g) ?? [];
+  assert.equal(mandatoryButtons.length, 2, "顶栏不该再有第三个「检查必填」");
+
+  // 四处折叠必须在，且内部字段仍被渲染
+  for (const [summary, keep] of [
+    ["更多选项（英文标题、货号、产地、外链、敏感货、定制）", "站外产品链接"],
+    ["载入 / 保存产品模板", "saveProductTemplate"],
+    ["载入 / 保存变种模板", "saveVariantTemplate"],
+    ["每件装数量（多件装才改，默认 1）", "piecesPerPack"],
+  ] as const) {
+    assert.ok(page.includes(summary), `缺少折叠：${summary}`);
+    assert.ok(page.includes(keep), `折叠里把字段弄丢了：${keep}`);
+  }
+
+  // 折叠标题要能看出开关状态：收起来也得知道敏感货/定制开没开
+  assert.match(page, /敏感货已开/);
+  assert.match(page, /定制已开/);
+});

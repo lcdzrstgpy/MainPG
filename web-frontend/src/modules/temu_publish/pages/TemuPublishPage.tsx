@@ -2616,9 +2616,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           <button type="button" className="temu-btn" onClick={verify} disabled={busy !== "" || !ready}>
             验证店铺
           </button>
-          <button type="button" className="temu-btn" onClick={checkMandatory} disabled={busy !== ""}>
-            {busy === "mandatory" ? "校验中…" : "检查必填"}
-          </button>
+          {/* 「检查必填」不在顶栏放第二份：右侧检查栏已经有一个，
+              两个按钮做同一件事只会让人多点一次（提交前的校验也是同一个接口） */}
           <button
             type="button"
             className="temu-btn temu-btn-primary"
@@ -2862,7 +2861,34 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <details className="temu-mandatory-raw">
                 <summary>查看原始返回</summary>
                 <pre className="temu-json">{JSON.stringify(mandatory.result, null, 2)}</pre>
-              </details>
+              <div className="temu-two-col">
+              <div className="temu-field">
+                <span>
+                  敏感货
+                  <em className="temu-muted">带电/液体/粉末等，提交为 isSensitive</em>
+                </span>
+                <label className="temu-check">
+                  <input
+                    type="checkbox"
+                    checked={form.isSensitive}
+                    onChange={(event) => patch({ isSensitive: event.target.checked })}
+                  />
+                  <span>这个是敏感货（填错会被 Temu 拒）</span>
+                </label>
+              </div>
+              <div className="temu-field">
+                <span>
+                  定制 / POD
+                  <em className="temu-muted">提交为 personalizationSwitch</em>
+                </span>
+                <label className="temu-check">
+                  <input type="checkbox" checked={form.isCustom} onChange={(event) => patch({ isCustom: event.target.checked })} />
+                  <span>这是定制商品（需先在卖家中心配好定制模板）</span>
+                </label>
+              </div>
+            </div>
+
+            </details>
             </div>
           )}
 
@@ -2885,18 +2911,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 )
               }
             />
-            <div className="temu-two-col">
-              <label className="temu-field">
-                <span>店铺账号</span>
-                <input className="temu-input" value={tokenInfo?.mall_name || "未连接"} readOnly />
-              </label>
-              <label className="temu-field">
-                <span>经营站点</span>
-                <select className="temu-input" value={String(SITE_ID)} disabled>
-                  <option value="100">美国站（100）</option>
-                </select>
-              </label>
-            </div>
+            {/* 「店铺账号 / 经营站点」两个只读字段已删：
+                店名顶上那颗 pill 就显示着（Little Pony Shop · 剩 N 天）；
+                半托管只有美国站一个选项，摆个禁用的下拉纯占地方。 */}
 
             <div className="temu-field">
               <span>
@@ -3086,36 +3103,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </div>
             </div>
 
-            <div className="temu-template-row">
-              <input
-                className="temu-input"
-                value={templateName}
-                onChange={(event) => setTemplateName(event.target.value)}
-                placeholder="模板名（记分类+属性+物流+开关，批量发布用）"
-                title="产品模板比预设多记了已填属性、尺码表、定制/敏感开关，草稿库批量发布时要套它"
-              />
-              <button
-                type="button"
-                className="temu-btn"
-                onClick={saveProductTemplate}
-                disabled={!categoryPath.length}
-              >
-                存为产品模板
-              </button>
-              <select
-                className="temu-input"
-                value=""
-                onChange={(event) => applyProductTemplate(event.target.value)}
-                disabled={!productTemplates.length}
-              >
-                <option value="">{productTemplates.length ? "引用产品模板…" : "还没有产品模板"}</option>
-                {productTemplates.map((item) => (
-                  <option key={item.name} value={item.name}>
-                    {item.name}（{item.savedAt}）
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* 产品模板是「同类商品重复发」才用得上，收到折叠里，首屏不占位 */}
+            <details className="temu-more">
+              <summary>载入 / 保存产品模板</summary>
+              <div className="temu-template-row">
+                <input
+                  className="temu-input"
+                  value={templateName}
+                  onChange={(event) => setTemplateName(event.target.value)}
+                  placeholder="模板名（记分类+属性+物流+开关，批量发布用）"
+                  title="产品模板比预设多记了已填属性、尺码表、定制/敏感开关，草稿库批量发布时要套它"
+                />
+                <button
+                  type="button"
+                  className="temu-btn"
+                  onClick={saveProductTemplate}
+                  disabled={!categoryPath.length}
+                >
+                  存为产品模板
+                </button>
+                <select
+                  className="temu-input"
+                  value=""
+                  onChange={(event) => applyProductTemplate(event.target.value)}
+                  disabled={!productTemplates.length}
+                >
+                  <option value="">{productTemplates.length ? "引用产品模板…" : "还没有产品模板"}</option>
+                  {productTemplates.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.name}（{item.savedAt}）
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </details>
 
             <div className="temu-field">
               <span>
@@ -3230,6 +3251,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 rows={3}
               />
             </label>
+            {/* 选填的低频项收进折叠：首屏只留「标题 + 图片 + 两个开关」，
+                货号/产地/外链/英文标题大多数品根本不改，摊开只是让人犹豫。 */}
+            <details className="temu-more">
+              <summary>
+                <span>更多选项（英文标题、货号、产地、外链、敏感货、定制）</span>
+                {(form.isSensitive || form.isCustom) && (
+                  <em className="temu-muted">
+                    {[form.isSensitive ? "敏感货已开" : "", form.isCustom ? "定制已开" : ""]
+                      .filter(Boolean)
+                      .join("、")}
+                  </em>
+                )}
+              </summary>
             <div className="temu-two-col">
               <label className="temu-field">
                 <span>
@@ -3291,33 +3325,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 />
               </label>
             </div>
-            <div className="temu-two-col">
-              <div className="temu-field">
-                <span>
-                  敏感货
-                  <em className="temu-muted">带电/液体/粉末等，提交为 isSensitive</em>
-                </span>
-                <label className="temu-check">
-                  <input
-                    type="checkbox"
-                    checked={form.isSensitive}
-                    onChange={(event) => patch({ isSensitive: event.target.checked })}
-                  />
-                  <span>这个是敏感货（填错会被 Temu 拒）</span>
-                </label>
-              </div>
-              <div className="temu-field">
-                <span>
-                  定制 / POD
-                  <em className="temu-muted">提交为 personalizationSwitch</em>
-                </span>
-                <label className="temu-check">
-                  <input type="checkbox" checked={form.isCustom} onChange={(event) => patch({ isCustom: event.target.checked })} />
-                  <span>这是定制商品（需先在卖家中心配好定制模板）</span>
-                </label>
-              </div>
-            </div>
-
+            </details>
             {IMAGE_SLOTS.map((slot) => (
               <div className="temu-img-group" key={slot.key}>
                 <div className="temu-img-group-head">
@@ -3389,24 +3397,28 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               index={2}
               extra={<span className="temu-muted">{rows.length} 个变种</span>}
             />
-            <div className="temu-template-row">
-              <button type="button" className="temu-btn" onClick={saveVariantTemplate}>
-                存为变种模板
-              </button>
-              <select
-                className="temu-input"
-                value=""
-                onChange={(event) => applyVariantTemplate(event.target.value)}
-                disabled={!variantTemplates.length}
-              >
-                <option value="">{variantTemplates.length ? "引用变种模板…" : "还没有变种模板"}</option>
-                {variantTemplates.map((item) => (
-                  <option key={item.name} value={item.name}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* 变种模板同样是重复发同款时才用，收起来 */}
+            <details className="temu-more">
+              <summary>载入 / 保存变种模板</summary>
+              <div className="temu-template-row">
+                <button type="button" className="temu-btn" onClick={saveVariantTemplate}>
+                  存为变种模板
+                </button>
+                <select
+                  className="temu-input"
+                  value=""
+                  onChange={(event) => applyVariantTemplate(event.target.value)}
+                  disabled={!variantTemplates.length}
+                >
+                  <option value="">{variantTemplates.length ? "引用变种模板…" : "还没有变种模板"}</option>
+                  {variantTemplates.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </details>
             {specMismatch.length > 0 && (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
@@ -3549,22 +3561,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   placeholder={DEFAULT_SHIPMENT_DAYS}
                 />
               </label>
-              <label className="temu-field">
-                <span>
-                  每件装数量
-                  <em className="temu-muted">
-                    标题里的 4 Pack / 12Pcs 就填 4 / 12；填 1 表示单件装（单件装不发这个字段）
-                  </em>
-                </span>
-                <input
-                  className="temu-input"
-                  inputMode="numeric"
-                  value={form.piecesPerPack}
-                  onChange={(event) => patch({ piecesPerPack: event.target.value })}
-                  placeholder="1"
-                />
-              </label>
             </div>
+            {/* 每件装数量：只有标题写 4 Pack / 12Pcs 这类多件装才需要，默认 1 单件装 */}
+            <details className="temu-more">
+              <summary>每件装数量（多件装才改，默认 1）</summary>
+                <label className="temu-field">
+                  <span>
+                    每件装数量
+                    <em className="temu-muted">
+                      标题里的 4 Pack / 12Pcs 就填 4 / 12；填 1 表示单件装（单件装不发这个字段）
+                    </em>
+                  </span>
+                  <input
+                    className="temu-input"
+                    inputMode="numeric"
+                    value={form.piecesPerPack}
+                    onChange={(event) => patch({ piecesPerPack: event.target.value })}
+                    placeholder="1"
+                  />
+                </label>
+            </details>
           </section>
 
           {/* 5 校验发布 */}
