@@ -4248,3 +4248,84 @@ textarea.temu-input {
 .is-console .temu-more > .temu-field {
   margin-top: 8px;
 }
+
+/* ---- 11. 「一眼能看见」：类目条与必填属性区加强 ----
+   这两块是「发不出去」的直接原因，之前和普通字段长得一样，扫过去看不见。 */
+
+/* 已选类目：左侧主色竖条 + 主色淡底，类目名放大加粗 */
+.is-console .temu-cat-selected {
+  position: relative;
+  padding: 11px 12px 11px 15px;
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: var(--theme-module-surface-tint, #eef5fb);
+}
+
+.is-console .temu-cat-selected::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+.is-console .temu-cat-selected-label {
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+  font-weight: 600;
+}
+
+.is-console .temu-cat-selected-main strong {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+
+.is-console .temu-cat-selected-id {
+  padding: 0 5px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 4px;
+  background: var(--theme-module-surface, #fff);
+  font-size: 11px;
+}
+
+/* 必填属性：整块加边框 + 淡底，顶部一行说明「几项、缺了会怎样」 */
+.is-console .temu-attr-required {
+  padding: 12px 14px 14px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.is-console .temu-attr-required-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.is-console .temu-attr-required-head strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--temu-text);
+}
+
+.is-console .temu-attr-required-head > span {
+  color: var(--temu-text-muted);
+  font-size: 11.5px;
+}
+
+/* 必填属性的字段名再粗一档，跟选填属性明显区分 */
+.is-console .temu-attr-required .temu-field > span {
+  font-weight: 600;
+  color: var(--temu-text);
+}
+
+/* 未填的必填项：留一条红边，别等点了提交才标出来 */
+.is-console .temu-field.is-required-empty .temu-input {
+  border-color: #d93025;
+}
+
