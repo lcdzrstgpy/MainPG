@@ -18,6 +18,7 @@ import {
   type AutoFillHit,
 } from "../data/attrAutofill";
 import {
+  dedupeProperties,
   missingRequiredNames,
   visibleProperties as visibleAttributeProperties,
   type AttrPick,
@@ -1647,7 +1648,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    */
   const saleValueIndex = useMemo(() => {
     const index = new Map<number, Array<{ name: string; specId: number }>>();
-    for (const prop of attributes?.properties ?? []) {
+    for (const prop of dedupeProperties(attributes?.properties ?? [])) {
       if (!prop.isSale) continue;
       const parentId = Number(prop.parentSpecId ?? 0);
       if (!parentId) continue;
@@ -1879,7 +1880,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
     const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
 
-    const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
+    const attrByPid = new Map(dedupeProperties(attributes?.properties ?? []).map((item) => [item.pid, item]));
     // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
     const visiblePids = new Set(visibleProperties.map((item) => item.pid));
     const properties = Object.entries(attrPicks)
@@ -1888,6 +1889,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       .map(([pid, pick]) => {
         const attr = attrByPid.get(Number(pid));
         const text = pick.text.trim();
+        // Temu 会给无单位属性返回 [""]：空串不能当成「要数值」
+        const unit = String(attr?.valueUnit?.[0] ?? "").trim();
         return {
           pid: Number(pid),
           vid: pick.vid,
@@ -1897,8 +1900,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           template_pid: attr?.templatePid ?? undefined,
           prop_value: text,
           // 数值型属性（带单位）要把数值和单位分开给，否则会被要求「请输入数值」
-          number_input_value: attr?.valueUnit?.length ? text : "",
-          value_unit: attr?.valueUnit?.[0] ?? "",
+          number_input_value: unit ? text : "",
+          value_unit: unit,
         };
       });
 
@@ -2872,8 +2875,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 产品属性<em className="temu-required">*</em>
                 <em className="temu-muted">
                   带 * 必填；不带的收在下面，不填也能发布
-                  {attributes && attributes.properties.length > visibleProperties.length
-                    ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
+                  {attributes && dedupeProperties(attributes.properties).length > visibleProperties.length
+                    ? `（已按上一级选择隐藏 ${dedupeProperties(attributes.properties).length - visibleProperties.length} 项不适用属性）`
                     : ""}
                 </em>
               </span>

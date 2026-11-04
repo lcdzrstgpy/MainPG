@@ -39,5 +39,8 @@ test("product library opens the source drawer and previews ledger source images"
   assert.match(source, /setActiveProduct\(/);
   assert.match(source, /<ProductSourceDrawer/);
   assert.match(source, /<ImagePreviewModal/);
-  assert.match(drawer, /link\.images/);
+  // 抽屉改成按行按需 loadProductImage 取图（不再一次性读 link.images），
+  // 断言跟随实际实现，避免继续守着已下线的字段。
+  assert.match(drawer, /loadProductImage\(/);
+  assert.match(drawer, /setPreviewImage\(\{ url: row\.imagePreview/);
 });

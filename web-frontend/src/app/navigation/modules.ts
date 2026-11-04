@@ -437,9 +437,10 @@ const podWorkflow: WorkspaceNavigationGroup = {
   label: "POD定制",
   icon: "",
   iconClass: "iconfont icon-skin",
-  description: "POD 全款直出、印花创作、自由创意、爆款复刻与爆款裂变",
-  defaultChildId: "pod_customization",
-  children: [podCustomization, podSemiCustomization, podFreeCustomization, podReplica, podFission],
+  description: "POD 自由创意、全款直出、印花创作、爆款复刻与爆款裂变",
+  // 自由创意是 POD 首项，也是点开分组时的默认落地页。
+  defaultChildId: "pod_free_customization",
+  children: [podFreeCustomization, podCustomization, podSemiCustomization, podReplica, podFission],
 };
 
 const aiVideoWorkflow: WorkspaceNavigationGroup = {

@@ -1,12 +1,12 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 /**
- * 悬浮球（积分 + 操作答疑）显示大小偏好（个人中心 → 偏好设置）。
+ * 操作答疑悬浮球的大小偏好（个人中心 → 偏好设置）。
  *
  * 小 / 中 / 大三档，**默认中（88px，即既有大小）**。
- * 结果同步到 <html data-ball-size="sm|md|lg">，尺寸与内部字号由
+ * 结果同步到 <html data-ball-size="sm|md|lg">，尺寸由
  * modules/help_agent/styles/helpAgent.css 用 CSS 变量驱动；
- * 组件侧另有像素值映射（HelpAgentWidget 的 BALANCE_BALL_SIZES）用于拖拽边界夹取。
+ * 组件侧另有像素值映射（HelpAgentWidget 的 PREF_BALL_SIZES）用于拖拽边界夹取。
  */
 
 export type BallSizeId = "sm" | "md" | "lg";

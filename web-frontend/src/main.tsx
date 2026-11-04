@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 // 导致焦糖等下载主题回退成经典蓝青。故所有 CSS import 统一提到 App 之前。
 import "./shared/styles/design-tokens.css";
 import "./shared/styles/global.css";
+import "./shared/styles/auth-apple.css";
 import "./shared/styles/themes.css";
 import "./shared/styles/theme-personality.css";
 import "./shared/styles/fx-preference.css";

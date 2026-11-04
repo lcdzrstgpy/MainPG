@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildAttributeGroups,
+  dedupeProperties,
   missingRequiredNames,
   visibleProperties,
 } from "./attributeModel.ts";
@@ -116,4 +117,54 @@ test("必填判定：带单位的属性只选下拉不算填好", () => {
   ]);
   // 数值也填了才算完整
   assert.deepEqual(missingRequiredNames(visibleProperties(attrs, {}), { 9: { vid: 91, text: "60" } }), []);
+});
+
+test("必填判定：valueUnit 是 [\"\"] 时，下拉选了就不算缺", () => {
+  // Temu 的 attrs.get 会给材质/风格这类无单位属性返回 valueUnit: [""]。
+  // 只看数组长度会把「已选下拉、本来就不需要数值」的必填属性永远判成缺。
+  const attrs = {
+    properties: [
+      prop({
+        pid: 1,
+        name: "材质",
+        required: true,
+        valueUnit: [""],
+        values: [{ vid: 417, value: "橡胶" }],
+      }),
+    ],
+  } as TemuAttributes;
+
+  assert.deepEqual(
+    missingRequiredNames(visibleProperties(attrs, {}), { 1: { vid: 417, text: "" } }),
+    [],
+  );
+});
+
+test("重复 pid：保留 required 的那个，顺序不变", () => {
+  // 真实案例：pid=1 同时是「材质」(required) 和「主体材质」(optional)。
+  const properties = [
+    prop({ pid: 1, name: "材质", required: true, templatePid: 919952, values: [{ vid: 417, value: "橡胶" }] }),
+    prop({ pid: 3, name: "风格", required: false, templatePid: 500 }),
+    prop({
+      pid: 1,
+      name: "主体材质",
+      required: false,
+      templatePid: 1585830,
+      values: [{ vid: 417, value: "橡胶" }],
+    }),
+  ];
+
+  const deduped = dedupeProperties(properties);
+  assert.deepEqual(deduped.map((item) => item.name), ["材质", "风格"]);
+  assert.equal(deduped[0]?.templatePid, 919952);
+  assert.equal(deduped[0]?.required, true);
+});
+
+test("重复 pid：都选填时保留第一个，销售属性优先", () => {
+  const properties = [
+    prop({ pid: 2, name: "普通属性", required: false, templatePid: 1 }),
+    prop({ pid: 2, name: "销售属性", required: false, isSale: true, templatePid: 2 }),
+  ];
+  const deduped = dedupeProperties(properties);
+  assert.deepEqual(deduped.map((item) => item.name), ["销售属性"]);
 });

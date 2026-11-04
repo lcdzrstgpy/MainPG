@@ -5,17 +5,24 @@ import { clearPrivacyConsent, readPrivacyConsent, savePrivacyConsent } from "../
 import { resetMessagesSync, syncMessages } from "../../../shared/api/messagesApi";
 import { httpJson, saveAuthSession } from "../../../transport/http/client";
 import { markPodAgreementPending, clearPodAgreementPending } from "../../../shared/components/PodUsageAgreementModal";
-import {
-  clearSavedPassword,
-  deleteSavedLogin,
-  fetchSavedLogins,
-  revealSavedPassword,
-  saveLogin,
-} from "../loginCredentials";
-import { matchSavedAccount, type SavedLoginAccount } from "../loginCredentialsModel";
+import { useLogoFlip } from "./authLogoTransition";
 
 type AuthPageProps = { onEnter: () => void };
-type AuthMode = "login" | "register" | "forgot";
+type AuthStep = "welcome" | "login" | "register" | "forgot";
+
+type FieldKey =
+  | "identifier"
+  | "password"
+  | "confirmPassword"
+  | "email"
+  | "emailCode"
+  | "invitationCode"
+  | "forgotEmail"
+  | "forgotCode"
+  | "forgotNew"
+  | "forgotConfirm";
+
+type FieldError = { field: FieldKey; message: string } | null;
 
 type LoginResponse = {
   ok?: boolean;
@@ -43,9 +50,29 @@ type AccountInfo = {
   workspace_code?: string;
 };
 
+/** 会话失效提示由 App 层写入 sessionStorage，读一次即清。 */
+function readSessionHintOnce(): string {
+  try {
+    const value = window.sessionStorage.getItem("wh_login_hint");
+    if (value) {
+      window.sessionStorage.removeItem("wh_login_hint");
+      return value;
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
 export function AuthPage({ onEnter }: AuthPageProps) {
-  const [mode, setMode] = useState<AuthMode>("login");
-  const isLogin = mode === "login";
+  // 会话失效原因提示（被顶替/过期）：登录页只消费一次。
+  const [sessionHint] = useState(readSessionHintOnce);
+  // 每次进入都从首屏开始；welcome = 首屏，其余三态共用同一个表单面板。
+  const [step, setStep] = useState<AuthStep>("welcome");
+  const isLogin = step === "login";
+  const isWelcome = step === "welcome";
+  // 只有用户主动切步时才播入场动画：首帧不播，避免打开页面先闪一下。
+  const [entered, setEntered] = useState(false);
 
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -70,37 +97,19 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   const [forgotCodeCooldown, setForgotCodeCooldown] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // 字段级错误：红边 + 字段下方 12px 红字，替代过去「整块红条」的做法。
+  const [fieldError, setFieldError] = useState<FieldError>(null);
+  const [showPassword, setShowPassword] = useState(false);
   // 单端登录被拒时的自救：显示"强制登录"按钮，点击后撤销旧会话放行。
   const [forceLogin, setForceLogin] = useState(false);
-  // 会话失效原因提示（被顶替/过期）：App 层写入 sessionStorage，登录页读一次即清。
-  const [sessionHint, setSessionHint] = useState(() => {
-    try {
-      const value = window.sessionStorage.getItem("wh_login_hint");
-      if (value) {
-        window.sessionStorage.removeItem("wh_login_hint");
-        return value;
-      }
-    } catch {
-      // ignore
-    }
-    return "";
-  });
   // 政策同意：登录与注册均需勾选《界野隐私政策》后才可提交。
   // 首次必须由用户**主动**勾选（不默认勾选同意，合规要求，见 shared/privacyConsent.ts）；
   // 勾过之后本地记住、下次直接回填；取消勾选即撤回记录；协议版本变更会自动失效并重新征求。
   const [agreed, setAgreed] = useState(() => readPrivacyConsent());
-  // 账号管理：本机保存登录过的账号（含可选保存的密码，见 loginCredentials.ts）。
-  // 列表来自本地加密存储；本地服务不可用时静默为空，登录流程不受影响。
-  const [savedAccounts, setSavedAccounts] = useState<SavedLoginAccount[]>([]);
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  // 「记住密码」默认不勾；勾选（或选中已保存密码的账号）时登录成功才保存密码。
-  const [rememberPassword, setRememberPassword] = useState(false);
-  // 用户手动点过「记住密码」后，账号输入框的联动不再覆盖他的选择：
-  // 否则勾选后每输入一个字符都会被 matchSavedAccount 判为「未保存账号」而自动取消。
-  const rememberTouchedRef = useRef(false);
-  const accountFieldRef = useRef<HTMLDivElement | null>(null);
-  const identifierRef = useRef(identifier);
-  const pickSequenceRef = useRef(0);
+  // 账号密码记忆交给浏览器密码管理器（autocomplete），应用内不再自建账号库。
+  // 表单改由 JS 校验（表单加了 noValidate），失败时把焦点送回对应输入框。
+  const fieldRefs = useRef<Partial<Record<FieldKey, HTMLInputElement | null>>>({});
+  const { logoRef, slotRef } = useLogoFlip(step);
 
   useEffect(() => {
     if (codeCooldown <= 0) return;
@@ -118,74 +127,19 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     return () => window.clearInterval(timer);
   }, [forgotCodeCooldown]);
 
-  // 记录最新账号输入值：异步取回密码时用于判断选择是否已被后续操作覆盖。
-  useEffect(() => {
-    identifierRef.current = identifier;
-  }, [identifier]);
+  /** 校验失败：定位到具体字段，并把焦点送回去。 */
+  function fail(field: FieldKey, message: string) {
+    setFieldError({ field, message });
+    fieldRefs.current[field]?.focus();
+  }
 
-  // 登录页加载：拉取本机保存的账号，自动填充最近使用的账号（及其密码），
-  // 让高频用户打开即登录；仅在用户尚未输入时填充，不覆盖手输内容。
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const accounts = await fetchSavedLogins();
-      if (cancelled || accounts.length === 0) return;
-      setSavedAccounts(accounts);
-      const latest = accounts[0];
-      // 只有「用户还没动账号框」或「账号框正好就是最近账号」时才自动填充。
-      // 后者常由浏览器密码管理器在页面加载时抢先回填，若按「非空就放弃」处理，
-      // 已保存的密码就永远不会被填充；而内容不同则必须放弃 —— 否则会把
-      // accounts[0] 的密码填进用户自己敲的另一个账号里，变成「账号 A + 密码 B」。
-      const current = identifierRef.current.trim();
-      const canAutofill = !current || current === latest.identifier;
-      setIdentifier((value) => value || latest.identifier);
-      if (!canAutofill || !latest.has_password) return;
-      // 与 pickSavedAccount 共用同一个序号：两者互相作废，谁后发起谁生效。
-      const sequence = ++pickSequenceRef.current;
-      // 已保存过密码：勾选框回显为「记住」，并尽力取回密码填充。
-      setRememberPassword(true);
-      const pwd = await revealSavedPassword(latest.identifier);
-      if (cancelled || pickSequenceRef.current !== sequence) return;
-      if (identifierRef.current.trim() !== latest.identifier) return;
-      if (pwd) setPassword((current) => current || pwd);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 账号下拉：点击字段以外区域或按 Esc 关闭。
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    function handlePointerDown(event: MouseEvent) {
-      if (!accountFieldRef.current?.contains(event.target as Node)) {
-        setAccountMenuOpen(false);
-      }
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setAccountMenuOpen(false);
-    }
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [accountMenuOpen]);
+  function clearFieldError(field: FieldKey) {
+    setFieldError((current) => (current?.field === field ? null : current));
+  }
 
   function handleIdentifierChange(value: string) {
     setIdentifier(value);
-    // 用户手动改过勾选就不再联动，避免「勾了记住密码，一输入账号又变回未勾」。
-    if (rememberTouchedRef.current) return;
-    // 未手动操作时，仅当输入值与已保存账号精确一致才回显其「记住密码」状态。
-    const match = matchSavedAccount(savedAccounts, value);
-    if (match) setRememberPassword(match.has_password);
-  }
-
-  /** 用户主动勾选 / 取消「记住密码」：从此以用户的选择为准。 */
-  function handleRememberChange(next: boolean) {
-    rememberTouchedRef.current = true;
-    setRememberPassword(next);
+    clearFieldError("identifier");
   }
 
   /** 勾选即记录「已同意」；取消勾选同时撤回该记录（合规要求提供便捷的撤回方式）。 */
@@ -195,62 +149,28 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     else clearPrivacyConsent();
   }
 
-  /** 切换「登录 / 注册」：两者账号框语义不同（登录=用户名或邮箱，注册=用户名），
+  /** 切换步骤：登录 / 注册 / 找回三者账号框语义不同（登录=用户名或邮箱，注册=用户名），
    *  必须一并复位，否则登录页输入的邮箱会被带进注册页当用户名提交。 */
-  function switchAuthMode(next: AuthMode) {
-    setMode(next);
+  function goToStep(next: AuthStep) {
+    setEntered(true);
+    setStep(next);
     setIdentifier("");
     setPassword("");
     setConfirmPassword("");
-    setRememberPassword(false);
-    rememberTouchedRef.current = false;
-    setAccountMenuOpen(false);
+    setShowPassword(false);
     setError("");
     setNotice("");
-  }
-
-  async function pickSavedAccount(account: SavedLoginAccount) {
-    setIdentifier(account.identifier);
-    setAccountMenuOpen(false);
-    // 选中已保存账号属于显式的账号切换：恢复该账号自己的保存状态。
-    rememberTouchedRef.current = false;
-    setRememberPassword(account.has_password);
-    if (!account.has_password) {
-      setPassword("");
-      return;
-    }
-    const sequence = ++pickSequenceRef.current;
-    const pwd = await revealSavedPassword(account.identifier);
-    // 慢响应守卫：期间又选了别的账号或改动了输入框则丢弃本次填充。
-    if (
-      pickSequenceRef.current !== sequence ||
-      identifierRef.current.trim() !== account.identifier
-    ) {
-      return;
-    }
-    setPassword(pwd ?? "");
-  }
-
-  async function removeSavedAccount(target: string) {
-    await deleteSavedLogin(target);
-    const next = savedAccounts.filter((item) => item.identifier !== target);
-    setSavedAccounts(next);
-    if (next.length === 0) setAccountMenuOpen(false);
-    // 删掉的正是当前输入框里的账号时，同步清掉已回填的密码与「记住密码」勾选：
-    // 否则下一次点登录时 saveLogin(identifier, password, rememberPassword) 会把刚
-    // 删掉的账号连密码原样写回本机存储，删除等于白做。
-    if (identifierRef.current.trim() === target) {
-      setPassword("");
-      setRememberPassword(false);
-    }
+    setFieldError(null);
+    setForceLogin(false);
   }
 
   async function handleSendEmailCode() {
     setError("");
     setNotice("");
+    clearFieldError("email");
     const normalizedEmail = email.trim();
     if (!normalizedEmail || !normalizedEmail.includes("@")) {
-      setError("请先输入有效邮箱");
+      fail("email", "请先输入有效邮箱");
       return;
     }
     setCodeBusy(true);
@@ -273,9 +193,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
   async function handleSendForgotCode() {
     setError("");
     setNotice("");
+    clearFieldError("forgotEmail");
     const normalizedEmail = forgotEmail.trim();
     if (!normalizedEmail || !normalizedEmail.includes("@")) {
-      setError("请先输入有效邮箱");
+      fail("forgotEmail", "请先输入有效邮箱");
       return;
     }
     setForgotCodeBusy(true);
@@ -299,10 +220,23 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     event.preventDefault();
     setError("");
     setNotice("");
+    setFieldError(null);
     setForgotBusy(true);
     try {
+      if (!forgotEmail.trim().includes("@")) {
+        fail("forgotEmail", "请输入有效的邮箱地址");
+        return;
+      }
+      if (!/^\d{6}$/.test(forgotCode.trim())) {
+        fail("forgotCode", "请输入 6 位数字验证码");
+        return;
+      }
+      if (!forgotNewPassword) {
+        fail("forgotNew", "请输入新密码");
+        return;
+      }
       if (forgotNewPassword !== forgotConfirmPassword) {
-        setError("两次输入的新密码不一致，请重新确认");
+        fail("forgotConfirm", "两次输入的新密码不一致，请重新确认");
         return;
       }
       const data = await httpJson<{ ok?: boolean; message?: string }>("/api/customer/reset-password", {
@@ -315,13 +249,12 @@ export function AuthPage({ onEnter }: AuthPageProps) {
         token: "",
       });
       if (data.ok === false) throw new Error(data.message ?? "重置失败");
-      // 密码已重置：清掉本机此前保存的该账号旧密码，避免下次自动填入过期密码。
-      void clearSavedPassword(forgotEmail.trim());
-      setMode("login");
+      setStep("login");
       setForgotEmail("");
       setForgotCode("");
       setForgotNewPassword("");
       setForgotConfirmPassword("");
+      setFieldError(null);
       setError("");
       alert("密码重置成功，请用新密码登录");
     } catch (err) {
@@ -359,9 +292,6 @@ export function AuthPage({ onEnter }: AuthPageProps) {
       } else {
         markPodAgreementPending();
       }
-      // 登录成功：记住账号（勾了「记住密码」才连同密码保存）；失败静默，
-      // 不阻塞进入工作台（本地请求毫秒级，页面切换不影响其完成）。
-      void saveLogin(identifier.trim(), password, rememberPassword);
       // 换号后本地消息表还留着上一个账号的定向公告：立刻同步一次，让服务端
       // 在线列表把无关消息撤回。不 await（登录不该被公告服务拖慢），工作台里
       // 的公告弹窗/消息中心会复用同一个在飞请求先等它完成再渲染。
@@ -382,14 +312,38 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     event.preventDefault();
     setError("");
     setNotice("");
+    setFieldError(null);
     setBusy(true);
     try {
+      // 原生校验（required / onInvalid）已由表单的 noValidate 关掉：它设的 customValidity
+      // 是粘性的，「点已保存账号」这类程序化回填不触发 input 事件，清不掉，于是会出现
+      // 框里明明有值、浏览器仍弹「请输入账号」的情况。这里统一按表单顺序自己校验。
+      if (!identifier.trim()) {
+        fail("identifier", isLogin ? "请输入账号" : "请输入用户名");
+        return;
+      }
+      if (!isLogin && !email.trim().includes("@")) {
+        fail("email", "请输入有效的邮箱地址");
+        return;
+      }
+      if (!isLogin && !/^\d{6}$/.test(emailCode.trim())) {
+        fail("emailCode", "请输入 6 位数字验证码");
+        return;
+      }
+      if (!password) {
+        fail("password", "请输入密码");
+        return;
+      }
+      if (!isLogin && !confirmPassword) {
+        fail("confirmPassword", "请再次输入密码");
+        return;
+      }
       if (!agreed) {
         setError("请先阅读并同意《界野隐私政策》");
         return;
       }
       if (!isLogin && password !== confirmPassword) {
-        setError("两次输入的密码不一致，请重新确认");
+        fail("confirmPassword", "两次输入的密码不一致，请重新确认");
         return;
       }
       if (isLogin) {
@@ -410,9 +364,10 @@ export function AuthPage({ onEnter }: AuthPageProps) {
           token: "",
         });
         if (data.ok === false) throw new Error(data.message ?? "注册失败");
-        setMode("login");
+        setStep("login");
         setPassword("");
         setConfirmPassword("");
+        setFieldError(null);
         setError("");
         alert("注册成功，请用新账号登录");
       }
@@ -423,88 +378,426 @@ export function AuthPage({ onEnter }: AuthPageProps) {
     }
   }
 
+  const title = isLogin ? "登录工作台" : step === "register" ? "创建账户" : "找回密码";
+  const subtitle = isLogin
+    ? "使用你的界野账号继续"
+    : step === "register"
+      ? "注册后即可使用界野电商平台"
+      : "通过邮箱验证码重置登录密码";
+  const submitLabel = isLogin ? "登录" : step === "register" ? "注册" : "重置密码";
+  const busyLabel = isLogin ? "登录中…" : step === "register" ? "注册中…" : "处理中…";
+  const invalid = (field: FieldKey) => fieldError?.field === field;
+
+  const accountField = (
+    <div className="auth-field">
+      <label className="auth-field-label" htmlFor="auth-identifier">
+        {isLogin ? "账号（用户名或邮箱）" : "用户名"}
+      </label>
+      <input
+        id="auth-identifier"
+        ref={(el) => {
+          fieldRefs.current.identifier = el;
+        }}
+        type="text"
+        value={identifier}
+        onChange={(e) => handleIdentifierChange(e.target.value)}
+        autoComplete="username"
+        aria-invalid={invalid("identifier")}
+      />
+    </div>
+  );
+
+  const passwordField = (
+    <div className={`auth-field${password ? " has-action" : ""}`}>
+      <label className="auth-field-label" htmlFor="auth-password">
+        {isLogin ? "密码" : "密码（至少 8 位）"}
+      </label>
+      <input
+        id="auth-password"
+        ref={(el) => {
+          fieldRefs.current.password = el;
+        }}
+        // 清空密码后强制回到隐藏态，避免之后重新输入的内容以明文显示。
+        type={showPassword && password ? "text" : "password"}
+        value={password}
+        onChange={(e) => {
+          const next = e.target.value;
+          setPassword(next);
+          if (!next) setShowPassword(false);
+          clearFieldError("password");
+        }}
+        autoComplete={isLogin ? "current-password" : "new-password"}
+        aria-invalid={invalid("password")}
+      />
+      {password && (
+        <button
+          type="button"
+          className="auth-field-action"
+          aria-pressed={showPassword}
+          onClick={() => setShowPassword((value) => !value)}
+        >
+          {showPassword ? "隐藏" : "显示"}
+        </button>
+      )}
+    </div>
+  );
+
+  const privacyCheck = (
+    <label className="auth-check auth-privacy">
+      <input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} />
+      <span>
+        我已阅读并同意{" "}
+        <a
+          className="auth-link"
+          href="/privacy"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          《界野隐私政策》
+        </a>
+      </span>
+    </label>
+  );
+
   return (
-    <main className="auth-screen">
-      <span className="auth-halo auth-halo-a" aria-hidden="true" />
-      <span className="auth-halo auth-halo-b" aria-hidden="true" />
-      <section className="auth-brand-card">
-        <img className="brand-logo-large" src={BRAND_LOGO_URL} alt={BRAND_NAME} />
-        <p className="eyebrow">JIEYE ECOMMERCE PLATFORM</p>
-        <h1>界野电商平台</h1>
-        <p>面向跨境电商团队的本地运营中台。</p>
-        <div className="auth-feature-list"><span>✓ 模块化工作流</span><span>✓ 本地运行时</span></div>
-      </section>
-      <section className="auth-form-card">
-        <div className="auth-tabs"><button type="button" className={isLogin ? "is-selected" : ""} onClick={() => switchAuthMode("login")}>登录</button><button type="button" className={mode === "register" ? "is-selected" : ""} onClick={() => switchAuthMode("register")}>注册</button></div>
-        <p className="eyebrow">{isLogin ? "WELCOME BACK" : mode === "register" ? "CREATE ACCOUNT" : "RESET PASSWORD"}</p>
-        <h2>{isLogin ? "登录工作台" : mode === "register" ? "注册账号" : "找回密码"}</h2>
-        {sessionHint && <p className="auth-notice">{sessionHint}</p>}
-        {mode === "forgot" ? (
-          <form onSubmit={handleForgotSubmit}>
-            <label>邮箱<input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
-            <label>邮箱验证码<div className="auth-code-row"><input type="text" value={forgotCode} onChange={(e) => setForgotCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendForgotCode} disabled={forgotCodeBusy || forgotCodeCooldown > 0}>{forgotCodeBusy ? "发送中…" : forgotCodeCooldown > 0 ? `${forgotCodeCooldown}s 后重发` : "获取验证码"}</button></div></label>
-            <label>新密码<input type="password" value={forgotNewPassword} onChange={(e) => setForgotNewPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入新密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="至少 8 位" autoComplete="new-password" required /></label>
-            <label>确认新密码<input type="password" value={forgotConfirmPassword} onChange={(e) => setForgotConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入新密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入新密码" autoComplete="new-password" required /></label>
-            {error && <p className="auth-error">{error}</p>}
-            {notice && <p className="auth-notice">{notice}</p>}
-            <button className="primary-button" type="submit" disabled={forgotBusy}>{forgotBusy ? "处理中…" : "重置密码"}</button>
-            <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("login"); setForgotConfirmPassword(""); setError(""); setNotice(""); }}>← 返回登录</button></p>
-          </form>
+    <main className="auth-page" data-enter={entered ? "true" : "false"}>
+      <header className="auth-nav">
+        <button type="button" className="auth-nav-brand" onClick={() => goToStep("welcome")}>
+          {BRAND_NAME}
+        </button>
+        <nav className="auth-nav-links" aria-label="帮助与条款">
+          <a className="auth-link" href="/privacy" target="_blank" rel="noopener noreferrer">
+            隐私政策
+          </a>
+          <button type="button" className="auth-link" onClick={() => goToStep("forgot")}>
+            需要帮助？
+          </button>
+        </nav>
+      </header>
+
+      <div className="auth-stage">
+        {isWelcome ? (
+          <section className="auth-hero">
+            <div className="auth-logo-slot auth-logo-slot-hero" ref={slotRef}>
+              <img ref={logoRef} src={BRAND_LOGO_URL} alt={BRAND_NAME} width={1070} height={630} decoding="async" />
+            </div>
+            <div className="auth-hero-copy">
+              <h1>界无界，野有径</h1>
+              <p>商品、店铺与订单数据全部留在本机，敏感信息不出电脑</p>
+            </div>
+            <div className="auth-hero-actions">
+              <button type="button" className="auth-submit auth-hero-cta" onClick={() => goToStep("login")}>
+                登录
+              </button>
+              <p className="auth-hero-links">
+                <button type="button" className="auth-link" onClick={() => goToStep("register")}>
+                  创建账户
+                </button>
+              </p>
+            </div>
+          </section>
         ) : (
-          <>
-            <form onSubmit={handleSubmit}>
-              {isLogin ? (
-                <div className="auth-saved-field" ref={accountFieldRef}>
-                  <label>账号（用户名或邮箱）<input type="text" value={identifier} onChange={(e) => handleIdentifierChange(e.target.value)} onFocus={() => setAccountMenuOpen(true)} onClick={() => setAccountMenuOpen(true)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入账号")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="off" required /></label>
-                  {accountMenuOpen && savedAccounts.length > 0 && (
-                    <div className="auth-saved-menu" role="listbox" aria-label="已保存的账号">
-                      <p className="auth-saved-menu-head">已保存的账号</p>
-                      {savedAccounts.map((account) => (
-                        <div key={account.identifier} role="option" aria-selected={identifier.trim() === account.identifier} tabIndex={0} className="auth-saved-item" onClick={() => void pickSavedAccount(account)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void pickSavedAccount(account); } }}>
-                          <span className="auth-saved-avatar" aria-hidden="true">{account.identifier.slice(0, 1).toUpperCase()}</span>
-                          <span className="auth-saved-name">{account.identifier}</span>
-                          {account.has_password ? <span className="auth-saved-tag is-on">已记密码</span> : <span className="auth-saved-tag">不含密码</span>}
-                          <button type="button" className="auth-saved-remove" title="移除账号" aria-label={`移除账号 ${account.identifier}`} onClick={(e) => { e.stopPropagation(); void removeSavedAccount(account.identifier); }}>×</button>
+          <section className="auth-panel">
+            {entered && (
+              <button type="button" className="auth-link auth-back" onClick={() => goToStep("welcome")}>
+                ← 返回
+              </button>
+            )}
+            <div className="auth-logo-slot auth-logo-slot-form" ref={slotRef}>
+              <img ref={logoRef} src={BRAND_LOGO_URL} alt="" width={1070} height={630} decoding="async" />
+            </div>
+
+            <div className="auth-panel-body" key={step}>
+              <header className="auth-panel-head">
+                <h1>{title}</h1>
+                <p>{subtitle}</p>
+                {sessionHint && <p className="auth-session-hint" role="status">{sessionHint}</p>}
+              </header>
+
+              {step === "forgot" ? (
+                <form className="auth-form" onSubmit={handleForgotSubmit} noValidate>
+                  <div className="auth-field-block">
+                    <div className="auth-field-group" data-invalid={invalid("forgotEmail") || invalid("forgotCode")}>
+                      <div className="auth-field">
+                        <label className="auth-field-label" htmlFor="auth-forgot-email">邮箱</label>
+                        <input
+                          id="auth-forgot-email"
+                          ref={(el) => {
+                            fieldRefs.current.forgotEmail = el;
+                          }}
+                          type="email"
+                          value={forgotEmail}
+                          onChange={(e) => {
+                            setForgotEmail(e.target.value);
+                            clearFieldError("forgotEmail");
+                          }}
+                          autoComplete="email"
+                          aria-invalid={invalid("forgotEmail")}
+                        />
+                      </div>
+                      <div className="auth-field has-action">
+                        <label className="auth-field-label" htmlFor="auth-forgot-code">邮箱验证码</label>
+                        <input
+                          id="auth-forgot-code"
+                          ref={(el) => {
+                            fieldRefs.current.forgotCode = el;
+                          }}
+                          type="text"
+                          value={forgotCode}
+                          onChange={(e) => {
+                            setForgotCode(e.target.value.replace(/\D/g, "").slice(0, 6));
+                            clearFieldError("forgotCode");
+                          }}
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          aria-invalid={invalid("forgotCode")}
+                        />
+                        <button
+                          type="button"
+                          className="auth-field-action"
+                          onClick={handleSendForgotCode}
+                          disabled={forgotCodeBusy || forgotCodeCooldown > 0}
+                        >
+                          {forgotCodeBusy ? "发送中…" : forgotCodeCooldown > 0 ? `${forgotCodeCooldown}s 后重发` : "获取验证码"}
+                        </button>
+                      </div>
+                    </div>
+                    {fieldError && (invalid("forgotEmail") || invalid("forgotCode")) && (
+                      <p className="auth-field-error" role="alert">{fieldError.message}</p>
+                    )}
+                  </div>
+
+                  <div className="auth-field-block">
+                    <div className="auth-field-group" data-invalid={invalid("forgotNew") || invalid("forgotConfirm")}>
+                      <div className="auth-field">
+                        <label className="auth-field-label" htmlFor="auth-forgot-new">新密码（至少 8 位）</label>
+                        <input
+                          id="auth-forgot-new"
+                          ref={(el) => {
+                            fieldRefs.current.forgotNew = el;
+                          }}
+                          type="password"
+                          value={forgotNewPassword}
+                          onChange={(e) => {
+                            setForgotNewPassword(e.target.value);
+                            clearFieldError("forgotNew");
+                          }}
+                          autoComplete="new-password"
+                          aria-invalid={invalid("forgotNew")}
+                        />
+                      </div>
+                      <div className="auth-field">
+                        <label className="auth-field-label" htmlFor="auth-forgot-confirm">确认新密码</label>
+                        <input
+                          id="auth-forgot-confirm"
+                          ref={(el) => {
+                            fieldRefs.current.forgotConfirm = el;
+                          }}
+                          type="password"
+                          value={forgotConfirmPassword}
+                          onChange={(e) => {
+                            setForgotConfirmPassword(e.target.value);
+                            clearFieldError("forgotConfirm");
+                          }}
+                          autoComplete="new-password"
+                          aria-invalid={invalid("forgotConfirm")}
+                        />
+                      </div>
+                    </div>
+                    {fieldError && (invalid("forgotNew") || invalid("forgotConfirm")) && (
+                      <p className="auth-field-error" role="alert">{fieldError.message}</p>
+                    )}
+                  </div>
+
+                  {error && <p className="auth-alert" role="alert">{error}</p>}
+                  {notice && <p className="auth-notice" role="status">{notice}</p>}
+                  <button className="auth-submit" type="submit" disabled={forgotBusy}>
+                    {forgotBusy ? (
+                      <>
+                        <span className="auth-spinner" aria-hidden="true" />
+                        处理中…
+                      </>
+                    ) : (
+                      "重置密码"
+                    )}
+                  </button>
+                </form>
+              ) : (
+                <form className="auth-form" onSubmit={handleSubmit} noValidate>
+                  <div className="auth-field-block">
+                    <div className="auth-field-group" data-invalid={invalid("identifier") || invalid("password") || invalid("email") || invalid("emailCode")}>
+                      {isLogin ? (
+                        <>
+                          {accountField}
+                          {passwordField}
+                        </>
+                      ) : (
+                        <>
+                          {accountField}
+                          <div className="auth-field">
+                            <label className="auth-field-label" htmlFor="auth-email">邮箱</label>
+                            <input
+                              id="auth-email"
+                              ref={(el) => {
+                                fieldRefs.current.email = el;
+                              }}
+                              type="email"
+                              value={email}
+                              onChange={(e) => {
+                                setEmail(e.target.value);
+                                clearFieldError("email");
+                              }}
+                              autoComplete="email"
+                              aria-invalid={invalid("email")}
+                            />
+                          </div>
+                          <div className="auth-field has-action">
+                            <label className="auth-field-label" htmlFor="auth-email-code">邮箱验证码</label>
+                            <input
+                              id="auth-email-code"
+                              ref={(el) => {
+                                fieldRefs.current.emailCode = el;
+                              }}
+                              type="text"
+                              value={emailCode}
+                              onChange={(e) => {
+                                setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6));
+                                clearFieldError("emailCode");
+                              }}
+                              inputMode="numeric"
+                              autoComplete="one-time-code"
+                              aria-invalid={invalid("emailCode")}
+                            />
+                            <button
+                              type="button"
+                              className="auth-field-action"
+                              onClick={handleSendEmailCode}
+                              disabled={codeBusy || codeCooldown > 0}
+                            >
+                              {codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    {fieldError && (invalid("identifier") || invalid("password") || invalid("email") || invalid("emailCode")) && (
+                      <p className="auth-field-error" role="alert">{fieldError.message}</p>
+                    )}
+                  </div>
+
+                  {isLogin ? (
+                    <div className="auth-field-block">
+                      <div className="auth-row">
+                        {privacyCheck}
+                        <button
+                          type="button"
+                          className="auth-link auth-forgot"
+                          onClick={() => goToStep("forgot")}
+                        >
+                          忘记密码
+                          <span className="auth-forgot-arrow" aria-hidden="true">↗</span>
+                        </button>
+                      </div>
+                      {!agreed && <p className="auth-hint">勾选后才能登录</p>}
+                    </div>
+                  ) : (
+                    <div className="auth-field-block">
+                      <div className="auth-field-group" data-invalid={invalid("password") || invalid("confirmPassword") || invalid("invitationCode")}>
+                        {passwordField}
+                        <div className="auth-field">
+                          <label className="auth-field-label" htmlFor="auth-confirm">确认密码</label>
+                          <input
+                            id="auth-confirm"
+                            ref={(el) => {
+                              fieldRefs.current.confirmPassword = el;
+                            }}
+                            type="password"
+                            value={confirmPassword}
+                            onChange={(e) => {
+                              setConfirmPassword(e.target.value);
+                              clearFieldError("confirmPassword");
+                            }}
+                            autoComplete="new-password"
+                            aria-invalid={invalid("confirmPassword")}
+                          />
                         </div>
-                      ))}
-                      <p className="auth-saved-menu-foot">登录成功后会记住新账号</p>
+                        <div className="auth-field">
+                          <label className="auth-field-label" htmlFor="auth-invite">邀请码（选填）</label>
+                          <input
+                            id="auth-invite"
+                            ref={(el) => {
+                              fieldRefs.current.invitationCode = el;
+                            }}
+                            type="text"
+                            value={invitationCode}
+                            onChange={(e) => setInvitationCode(e.target.value)}
+                            autoComplete="off"
+                            aria-invalid={invalid("invitationCode")}
+                          />
+                        </div>
+                      </div>
+                      {fieldError && (invalid("password") || invalid("confirmPassword") || invalid("invitationCode")) && (
+                        <p className="auth-field-error" role="alert">{fieldError.message}</p>
+                      )}
                     </div>
                   )}
-                </div>
-              ) : (
-                <>
-                  <label>用户名<input type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入用户名")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="例如：ops-team-a" autoComplete="username" required /></label>
-                  <label>邮箱<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.typeMismatch ? "请输入有效的邮箱地址" : "请输入邮箱")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="name@example.com" autoComplete="email" required /></label>
-                  <label>邮箱验证码<div className="auth-code-row"><input type="text" value={emailCode} onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onInvalid={(e) => e.currentTarget.setCustomValidity(e.currentTarget.validity.patternMismatch ? "请输入 6 位数字验证码" : "请输入邮箱验证码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="输入 6 位验证码" inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" required /><button type="button" onClick={handleSendEmailCode} disabled={codeBusy || codeCooldown > 0}>{codeBusy ? "发送中…" : codeCooldown > 0 ? `${codeCooldown}s 后重发` : "获取验证码"}</button></div></label>
-                </>
+
+                  {!isLogin && (
+                    <div className="auth-field-block">
+                      {privacyCheck}
+                      {!agreed && <p className="auth-hint">勾选后才能注册</p>}
+                    </div>
+                  )}
+
+                  {error && <p className="auth-alert" role="alert">{error}</p>}
+                  {forceLogin && (
+                    <button type="button" className="auth-force" disabled={busy} onClick={() => doLogin(true)}>
+                      {busy ? "处理中…" : "强制登录（将退出其他设备）"}
+                    </button>
+                  )}
+                  {notice && <p className="auth-notice" role="status">{notice}</p>}
+
+                  <button className="auth-submit" type="submit" disabled={busy || !agreed}>
+                    {busy ? (
+                      <>
+                        <span className="auth-spinner" aria-hidden="true" />
+                        {busyLabel}
+                      </>
+                    ) : (
+                      submitLabel
+                    )}
+                  </button>
+                </form>
               )}
-              {/* 密码框统一 new-password：密码记忆由应用内「账号管理」接管（登录页下拉自动
-                  填充），避免浏览器原生密码管理器重复弹窗、且其自动填充不会同步进受控组件。 */}
-              <label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder={isLogin ? "输入密码" : "至少 8 位"} autoComplete="new-password" required /></label>
-              {isLogin && <label className="auth-agree auth-remember"><input type="checkbox" checked={rememberPassword} onChange={(e) => handleRememberChange(e.target.checked)} /><span>记住密码，下次自动填充</span></label>}
-              {!isLogin && <label>确认密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onInvalid={(e) => e.currentTarget.setCustomValidity("请再次输入密码")} onInput={(e) => e.currentTarget.setCustomValidity("")} placeholder="再次输入密码" autoComplete="new-password" required /></label>}
-              {!isLogin && <label>邀请码<input type="text" value={invitationCode} onChange={(e) => setInvitationCode(e.target.value)} placeholder="选填" autoComplete="off" /></label>}
-              <label className="auth-agree"><input type="checkbox" checked={agreed} onChange={(e) => handleAgreeChange(e.target.checked)} /><span>我已阅读并同意 <a className="link-button" href="/privacy" target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>《界野隐私政策》</a></span></label>
-              {!agreed && <p className="auth-agree-hint">勾选后才能{isLogin ? "登录" : "注册"}</p>}
-              {error && <p className="auth-error">{error}</p>}
-              {forceLogin && (
-                <button
-                  type="button"
-                  className="auth-force-login"
-                  disabled={busy}
-                  onClick={() => doLogin(true)}
-                >
-                  {busy ? "处理中…" : "强制登录（将退出其他设备）"}
-                </button>
+
+              {isLogin && (
+                <p className="auth-footer">
+                  没有账号？
+                  <button type="button" className="auth-link" onClick={() => goToStep("register")}>
+                    创建账户
+                  </button>
+                </p>
               )}
-              {notice && <p className="auth-notice">{notice}</p>}
-              <button className="primary-button" type="submit" disabled={busy || !agreed} title={!agreed ? "请先勾选同意《界野隐私政策》" : undefined}>{busy ? "处理中…" : isLogin ? "登录并进入工作台 →" : "注册并进入工作台 →"}</button>
-            </form>
-            {isLogin && <p className="form-hint"><button type="button" className="link-button" onClick={() => { setMode("forgot"); setForgotConfirmPassword(""); setError(""); setNotice(""); }}>忘记密码？</button></p>}
-            {mode === "register" && <p className="form-hint">注册成功后自动切换到登录页。</p>}
-          </>
+              {step === "register" && (
+                <p className="auth-footer">
+                  已有账号？
+                  <button type="button" className="auth-link" onClick={() => goToStep("login")}>
+                    登录
+                  </button>
+                </p>
+              )}
+              {step === "forgot" && (
+                <p className="auth-footer">
+                  <button type="button" className="auth-link" onClick={() => goToStep("login")}>
+                    ← 返回登录
+                  </button>
+                </p>
+              )}
+            </div>
+          </section>
         )}
-      </section>
+      </div>
     </main>
   );
 }

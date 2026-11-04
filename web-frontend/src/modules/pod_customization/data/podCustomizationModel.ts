@@ -376,7 +376,7 @@ export function podBatchRoundProgress(batch: {
 }
 
 export function groupPodStyleRows(
-  batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles">,
+  batch: Pick<PodBatch, "items" | "style_grid" | "business_fields" | "style_titles"> & { status?: PodBatchStatus },
   resolveStyleProductName?: (styleIndex: number) => string | undefined,
 ): PodStyleRow[] {
   const productName = batch.business_fields?.product_name?.trim() || "未命名商品";
@@ -400,12 +400,19 @@ export function groupPodStyleRows(
     const styleTitle = titlesByStyle.get(index);
     const settled = presentationResults.filter(Boolean);
     const completed = settled.filter((item) => item?.status === "completed").length;
-    const failed = settled.filter((item) => item?.status === "failed").length;
-    const status = completed === 4 ? "completed"
-      : failed === 4 || (!completed && failed > 0) ? "failed"
-      : completed || failed ? "partial_failure"
-      : settled.some((item) => item && isActivePodItemStatus(item.status)) ? "generating"
-      : "queued";
+    // 列式生成按轮推进：主图先出、细节图与素材图还在排队是正常过程。
+    // 批次没结束时，只要还有格子排队/生成中或尚未创建，就不能判部分失败。
+    const batchOpen = !batch.status || !SETTLED_BATCH_STATUSES.has(batch.status);
+    const waiting = batchOpen && (
+      settled.some((item) => item && isActivePodItemStatus(item.status))
+      || presentationResults.some((item) => !item)
+    );
+    const started = settled.some((item) => item && item.status !== "queued");
+    const status = waiting
+      ? started ? "generating" : "queued"
+      : completed === 4 ? "completed"
+      : !completed ? "failed"
+      : "partial_failure";
     const resolvedProductName = resolveStyleProductName?.(index)?.trim() || productName;
     return {
       index,

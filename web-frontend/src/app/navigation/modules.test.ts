@@ -71,18 +71,19 @@ test("image service nests the existing workflows one level deeper", () => {
   ]);
 
   const podWorkflow = findGroup("pod_workflow");
-  assert.equal(podWorkflow?.defaultChildId, "pod_customization");
+  // 自由创意是 POD 首项，点开分组默认落到它。
+  assert.equal(podWorkflow?.defaultChildId, "pod_free_customization");
   assert.deepEqual(podWorkflow?.children.map((child) => child.id), [
+    "pod_free_customization",
     "pod_customization",
     "pod_semi_customization",
-    "pod_free_customization",
     "pod_replica",
     "pod_fission",
   ]);
   assert.deepEqual(podWorkflow?.children.map((child) => child.label), [
+    "自由创意",
     "全款直出",
     "印花创作",
-    "自由创意",
     "爆款复刻",
     "爆款裂变",
   ]);

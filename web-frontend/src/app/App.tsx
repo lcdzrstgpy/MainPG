@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 import { WorkspaceShell } from "./layout/WorkspaceShell";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
-import { HelpAgentWidget } from "../modules/help_agent/components/HelpAgentWidget";
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
@@ -153,12 +152,8 @@ export function App() {
         onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
       />
     ) : (
-      <>
-        <AuthPage onEnter={enterWorkspaceAfterLogin} />
-        {/* 登录前也要能问：新人最容易卡在注册、装插件、连工作台这几步。
-            反馈入口在「个人中心」，未登录点不到，所以这里不提供反馈按钮。 */}
-        <HelpAgentWidget allowFeedback={false} />
-      </>
+      // 登录页不挂答疑悬浮球：未登录时它只会置灰并弹「请先登录」，反而挡住表单。
+      <AuthPage onEnter={enterWorkspaceAfterLogin} />
     )}
     <RuntimeUpdateNotifier />
     <GlobalToast />
