@@ -1261,7 +1261,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                 <table>
                   <thead>
                     <tr>
-                      <th>SKU 货号</th>
                       <th>SKU 属性</th>
                       <th>原申报价</th>
                       <th>调整后</th>
@@ -1271,8 +1270,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                   <tbody>
                     {detail.declared_prices.map((row, index) => (
                       <tr key={row.id || `${row.sku_id}-${index}`} className={row.selected ? "is-selected" : ""}>
-                        <td>{row.sku_merchant_code || row.sku_id || "—"}</td>
-                        <td title={row.sku_attribute_text}>{row.sku_attribute_text || "—"}</td>
+                        <td className="ledger-price-attr" title={row.sku_attribute_text}>{row.sku_attribute_text || "—"}</td>
                         <td>{money(row.original_price_cny)}</td>
                         <td>{money(row.adjusted_price_cny)}</td>
                         <td className="ledger-price-actions">
@@ -1303,7 +1301,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     ))}
                     {!detail.declared_prices.length && (
                       <tr>
-                        <td colSpan={5} className="ledger-empty">还没有采集到申报价</td>
+                        <td colSpan={4} className="ledger-empty">还没有采集到申报价</td>
                       </tr>
                     )}
                   </tbody>

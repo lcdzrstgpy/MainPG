@@ -709,8 +709,8 @@
 }
 
 .ledger-price-table {
-  max-height: 280px;
-  overflow-y: auto;
+  /* 不再做内部滚动：SKU 全部展开，交给抽屉整体滚动 */
+  overflow: visible;
   border: 1px solid var(--theme-module-border, #e6eef4);
   border-radius: 12px;
 }
@@ -736,10 +736,16 @@
   color: var(--theme-text-secondary, #526a82);
 }
 
-.ledger-price-table td:nth-child(2) {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* SKU 属性是核价的关键信息：不截断，允许换行显示完整内容 */
+.ledger-price-table td.ledger-price-attr {
+  min-width: 160px;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.ledger-price-table th:not(:first-child),
+.ledger-price-table td:not(:first-child) {
   white-space: nowrap;
 }
 
