@@ -1661,3 +1661,18 @@ test("首屏只留必填：低频字段都收进「更多选项」折叠", () =>
   assert.match(page, /敏感货已开/);
   assert.match(page, /定制已开/);
 });
+
+test("草稿库带了真规格就自动按多规格发，不用用户再勾", () => {
+  // 默认单 SKU 是为了照顾桌布这类单品；但如果草稿里明明带了「颜色=白」，
+  // 还按单 SKU 发，颜色就被吞了 —— 用户看到填了、发出去却没有，这才是卡点。
+  assert.match(page, /function hasRealSpecValue\(prefill: TemuPublishPrefill\): boolean \{/);
+  // 「默认」是单 SKU 的占位符，不能因为它把开关打开
+  assert.match(page, /return !!text && text !== "默认";/);
+  // 在 applyPrefillMeta 里判断 —— 草稿入口（挂载态与事件态）都会经过它
+  const meta = page.slice(
+    page.indexOf("function applyPrefillMeta(prefill: TemuPublishPrefill)"),
+    page.indexOf("function hasRealSpecValue"),
+  );
+  assert.ok(meta.length > 0, "expected applyPrefillMeta block");
+  assert.match(meta, /if \(hasRealSpecValue\(prefill\)\) setVariantsOn\(true\);/);
+});

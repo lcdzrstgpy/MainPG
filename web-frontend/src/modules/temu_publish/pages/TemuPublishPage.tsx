@@ -1019,6 +1019,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   function applyPrefillMeta(prefill: TemuPublishPrefill) {
     prefillDraftId.current = prefill.draftId || "";
+    // 草稿自带颜色/尺码 → 说明这条是多规格商品，直接按多规格发。
+    // 不然「默认单 SKU」会把草稿里的颜色吞掉（用户看到填了，发出去却没有），
+    // 那才是真正的卡点。占位值「默认」不算（那是单 SKU 的占位符）。
+    if (hasRealSpecValue(prefill)) setVariantsOn(true);
     // 草稿库按类目估好的属性：留给自动填那一步铺（那时才对得上当前类目）
     carriedAttrPicksRef.current =
       prefill.attrPicks && Object.keys(prefill.attrPicks).length
@@ -1041,6 +1045,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       title: prefill.title,
       imageCount: (prefill.images || []).length,
       declaredPrice: prefill.supplierPrice,
+    });
+  }
+
+  /** 草稿里的规格值是不是「真的规格」（排除单 SKU 占位符「默认」）。 */
+  function hasRealSpecValue(prefill: TemuPublishPrefill): boolean {
+    return [prefill.specValue1, prefill.specValue2].some((raw) => {
+      const text = String(raw ?? "").trim();
+      return !!text && text !== "默认";
     });
   }
 
