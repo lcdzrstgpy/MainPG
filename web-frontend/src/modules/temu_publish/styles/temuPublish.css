@@ -3926,42 +3926,6 @@ textarea.temu-input {
   color: #fff;
 }
 
-/* ---- 6. 底部操作条（粘底） ---- */
-
-.temu-actionbar {
-  position: sticky;
-  bottom: 0;
-  z-index: 13;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-  padding: 10px 0;
-  border-top: 1px solid var(--theme-module-border, #edf3f8);
-  background: var(--theme-card-bg-solid, #fff);
-}
-
-.temu-actionbar-status {
-  min-width: 0;
-  font-size: 12.5px;
-  color: var(--temu-text-muted);
-}
-
-.temu-actionbar-status.is-warn {
-  color: var(--temu-warn);
-}
-
-.temu-actionbar-status.is-ok {
-  color: var(--temu-ok);
-}
-
-.temu-actionbar-actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
-
 /* ---- 7. 右侧检查栏：去阴影、缩内边距 ---- */
 
 .is-console .temu-rail-card {
@@ -4132,4 +4096,106 @@ textarea.temu-input {
   display: grid;
   gap: 10px;
   padding-top: 10px;
+}
+
+/* ---- 9. 顶部「绑定/切换店铺」菜单 ----
+   店铺名 pill 只显示当前店；换店/绑新店收进这个小菜单，避免顶栏堆一排按钮。 */
+.is-console .temu-shop-switch {
+  position: relative;
+  display: inline-flex;
+}
+
+/* 点空白处关闭：铺一层透明层，比 window 监听干净，也不会被 iframe/样式影响 */
+.temu-shop-switch-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.temu-shop-switch-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 41;
+  width: 268px;
+  max-width: 86vw;
+  padding: 6px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 10px;
+  /* 浮层用「实体卡片底」：peach/alpine 这类主题的 card-bg 是透明的，裸用会被风景洗掉 */
+  background: var(--theme-card-bg-solid, #fff);
+  box-shadow: 0 10px 28px rgba(15, 35, 55, 0.12);
+}
+
+.temu-shop-switch-title {
+  margin: 4px 8px 6px;
+  color: var(--temu-text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.temu-shop-switch-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--temu-text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-shop-switch-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-shop-switch-item em {
+  flex: 0 0 auto;
+  color: var(--temu-text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.temu-shop-switch-item:hover {
+  background: var(--theme-module-surface-soft, #f5f8fa);
+}
+
+/* 当前店铺：点它不做事，视觉上标出来即可 */
+.temu-shop-switch-item.is-current {
+  color: var(--theme-module-primary-strong, #087bf5);
+  cursor: default;
+}
+
+.temu-shop-switch-item.is-current:hover {
+  background: transparent;
+}
+
+.temu-shop-switch-add {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px dashed var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--temu-text);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.temu-shop-switch-add:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-module-primary-strong, #087bf5);
 }

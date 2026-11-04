@@ -1581,3 +1581,38 @@ test("变种两列不能写死「颜色/尺码」：任意类目都要自适应"
   // 单销售属性类目直接不渲染第二列
   assert.match(panel, /\{sizeParentId > 0 && \(/);
 });
+
+test("底部粘性操作条已去掉：只在右侧检查栏留校验/提交", () => {
+  // 之前加过一条粘在视口底部的操作条（"必填项都齐了，可以提交" + 两个按钮），
+  // 反馈是太吵：右侧已经有一模一样的按钮，底部那条还压住表单最后一行。
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.ok(!page.includes("temu-actionbar"), "页面里不要再渲染底部操作条");
+  assert.ok(!css.includes(".temu-actionbar"), "样式里也不要留残留");
+  // 右栏那两个动作必须还在，别连功能一起删掉
+  assert.match(page, /checkMandatory/);
+  assert.match(page, /publishGoods/);
+  // 说明文案不能再说「页面底部的提交发布」
+  assert.ok(!page.includes("页面底部的「提交发布」"));
+});
+
+test("顶部店铺名后面要有「绑定/切换店铺」入口", () => {
+  // 店铺名 pill 只展示当前店（Little Pony Shop · 剩 83 天）。
+  // 换店以前只能点 pill 进凭证面板翻列表，多一步；绑新店也是。
+  assert.match(page, /className="temu-shop-switch"/);
+  // 只在已绑定时出现：没绑时左边 pill 就是「绑定我的店铺」入口，别搞两个入口
+  assert.match(page, /\{ready && \(\s*<div className="temu-shop-switch">/);
+  assert.match(page, /切换店铺\n/);
+  // 菜单里列出已保存店铺，当前那家点不动，其它家走 switchShop（只切 token，不用重输）
+  assert.match(page, /\(status\?\.shops \?\? \[\]\)\.map\(\(shop\) => \{/);
+  assert.match(page, /const current = shop\.id === status\?\.active_shop_id;/);
+  assert.match(page, /if \(!current\) void switchShop\(shop\.id\);/);
+  // 兜底入口：绑新店
+  assert.match(page, /＋ 绑定新店铺（粘贴 access_token）/);
+  // 点空白处能关掉
+  assert.match(page, /className="temu-shop-switch-backdrop"/);
+
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 浮层必须用实体卡片底色：peach/alpine 的 card-bg 是透明的，裸用会被风景洗掉
+  assert.match(css, /\.temu-shop-switch-panel \{[\s\S]*?background: var\(--theme-card-bg-solid/);
+  assert.match(css, /\.temu-shop-switch-item\.is-current \{/);
+});

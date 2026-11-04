@@ -581,6 +581,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [showFieldErrors, setShowFieldErrors] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 顶部「绑定/切换店铺」的小菜单：不占地方，点开才展开已存店铺
+  const [shopMenuOpen, setShopMenuOpen] = useState(false);
   const [accessToken, setAccessToken] = useState("");
 
   const storageSuffix = useMemo(() => storageScope(), []);
@@ -1596,6 +1598,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       await reloadShopScopedData();
     });
 
+  /** 重读一次凭证状态（打开凭证面板 / 店铺菜单时用，避免显示成旧值）。 */
+  const refreshSettingsStatus = () => {
+    void temuPublishApi
+      .settings()
+      .then((fresh) => {
+        setStatus(fresh);
+        // 凭证齐全就顺手校验一次，面板/菜单里才能显示店铺名与有效期（服务端有 10 分钟缓存）
+        if (!fresh.configured.ready) return undefined;
+        return temuPublishApi
+          .verifyToken()
+          .then(setTokenInfo)
+          .catch(() => undefined);
+      })
+      .catch(() => undefined);
+  };
+
   /** 换店：用已保存的那条 token，不用重新输入。 */
   const switchShop = (shopId: string) =>
     run("shop", async () => {
@@ -2524,26 +2542,77 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               const next = !settingsOpen;
               setSettingsOpen(next);
               // 面板可能是在别处改过凭证后打开的：重读一次，避免显示成「未配置」
-              if (next) {
-                void temuPublishApi
-                  .settings()
-                  .then((fresh) => {
-                    setStatus(fresh);
-                    // 凭证齐全就顺手校验一次，面板里才能显示店铺名/有效期（服务端有 10 分钟缓存）
-                    if (!fresh.configured.ready) return undefined;
-                    return temuPublishApi
-                      .verifyToken()
-                      .then(setTokenInfo)
-                      .catch(() => undefined);
-                  })
-                  .catch(() => undefined);
-              }
+              if (next) refreshSettingsStatus();
             }}
             title="点击查看/修改凭证"
           >
             {ready ? tokenInfo?.mall_name || "我的店铺已连接" : "绑定我的店铺"}
             {tokenInfo?.remaining_days != null ? ` · 剩 ${tokenInfo.remaining_days} 天` : ""}
           </button>
+
+          {/* 切换店铺：只在已绑定时出现（没绑时左边那个 pill 本身就是「绑定我的店铺」入口，
+              再加一个按钮就是两个入口做同一件事）。点开列已存店铺，点一下换店。 */}
+          {ready && (
+            <div className="temu-shop-switch">
+              <button
+                type="button"
+                className="temu-btn"
+                onClick={() => {
+                  const next = !shopMenuOpen;
+                  setShopMenuOpen(next);
+                  if (next) refreshSettingsStatus();
+                }}
+                title="换一家已绑定的店，或绑定新店铺"
+              >
+                切换店铺
+              </button>
+              {shopMenuOpen && (
+                <>
+                  <button
+                    type="button"
+                    className="temu-shop-switch-backdrop"
+                    aria-label="关闭店铺菜单"
+                    onClick={() => setShopMenuOpen(false)}
+                  />
+                  <div className="temu-shop-switch-panel" role="menu">
+                    <p className="temu-shop-switch-title">
+                      已保存的店铺（{status?.shops?.length ?? 0}）
+                    </p>
+                    {(status?.shops ?? []).map((shop) => {
+                      const current = shop.id === status?.active_shop_id;
+                      return (
+                        <button
+                          key={shop.id}
+                          type="button"
+                          role="menuitem"
+                          className={`temu-shop-switch-item${current ? " is-current" : ""}`}
+                          onClick={() => {
+                            setShopMenuOpen(false);
+                            if (!current) void switchShop(shop.id);
+                          }}
+                        >
+                          <span>{shop.mall_name || shop.id}</span>
+                          <em>{current ? "当前" : "切换"}</em>
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="temu-shop-switch-add"
+                      onClick={() => {
+                        setShopMenuOpen(false);
+                        setSettingsOpen(true);
+                        refreshSettingsStatus();
+                      }}
+                    >
+                      ＋ 绑定新店铺（粘贴 access_token）
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <button type="button" className="temu-btn" onClick={verify} disabled={busy !== "" || !ready}>
             验证店铺
           </button>
@@ -3721,38 +3790,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </p>
             ) : null}
             <p className="temu-rail-tip">
-              提交会真的在店铺创建商品，不可撤销。点这里或页面底部的「提交发布」都行，也可以按 Ctrl+Enter。
+              提交会真的在店铺创建商品，不可撤销。也可以按 Ctrl+Enter。
             </p>
           </div>
         </aside>
-      </div>
-
-      {/* 底部操作条：粘在视口底部。表单很长，滚到任何位置都能直接校验/提交，
-          不用再滚回页面顶部或右侧找按钮。 */}
-      <div className="temu-actionbar">
-        <span className={`temu-actionbar-status${remainingContentSteps.length ? " is-warn" : " is-ok"}`}>
-          {remainingContentSteps.length
-            ? `还差 ${remainingContentSteps.length} 项：${remainingContentSteps[0].missing.join("、") || remainingContentSteps[0].label}`
-            : "必填项都齐了，可以提交"}
-        </span>
-        <div className="temu-actionbar-actions">
-          <button
-            type="button"
-            className="temu-btn"
-            onClick={() => void checkMandatory()}
-            disabled={busy !== "" || !ready}
-          >
-            校验必填
-          </button>
-          <button
-            type="button"
-            className="temu-btn temu-btn-primary"
-            onClick={() => void publishGoods()}
-            disabled={submitDisabled}
-          >
-            {publishing ? "提交中…" : "提交发布"}
-          </button>
-        </div>
       </div>
     </div>
   );
