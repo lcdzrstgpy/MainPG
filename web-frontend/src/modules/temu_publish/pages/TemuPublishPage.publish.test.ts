@@ -146,6 +146,34 @@ test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () 
   // 一批草稿共用一个类目：查询按 catId 缓存，30 件不会打 30 次网关
   assert.match(batch, /const apparelCache = new Map<number, Promise<boolean>>\(\);/);
   assert.match(batch, /const cached = apparelCache\.get\(catId\);/);
+  // 必须把来源草稿 id 带上去：后端发布成功后靠它把草稿移出草稿库，
+  // 以前没带 → 「发成功了但刷新草稿还在」，同一件商品很容易再发一遍
+  assert.match(batch, /draft_id: prefill\.draftId \?\? "",/);
+  assert.match(batch, /category_names: productTemplate\.categoryPath\.map\(\(item\) => item\.catName\)\.filter\(Boolean\),/);
+});
+
+test("草稿带入的图也按类目裁比例（不是只有手动上传才裁）", () => {
+  // 以前只有 uploadTo（手动上传）走裁切，composeDraft 里的 resolveImage 是原图直传 ——
+  // 从草稿库带入的图全靠原图比例碰运气，服饰类目必挂。
+  assert.match(page, /const resolveImage = async \(\s*url: string,\s*cateId\?: number,\s*shape\?: \{ width: number; height: number \},\s*\): Promise<string> => \{/);
+  // 缓存 key 必须带比例：同一张图先按 1:1 传过、改类目后按 3:4 传，不能直接还回 1:1 的地址
+  assert.match(page, /const cacheKey = shape \? `\$\{text\}\|\$\{shape\.width\}x\$\{shape\.height\}` : text;/);
+  assert.match(page, /const carouselShape = apparel \? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;/);
+  assert.match(page, /const carousel = await resolveImages\(carouselSource, leaf\.catId, carouselShape\);/);
+  assert.match(page, /const outerImages = await resolveImages\(splitLines\(form\.outerImages\), leaf\.catId, SQUARE_SHAPE\);/);
+  assert.match(page, /await resolveImage\(materialSource, leaf\.catId, SQUARE_SHAPE\)/);
+});
+
+test("批量发布：属性 pid 还原原始 pid，并补齐 refPid / 数值录入", () => {
+  // 模板里存的 attrs 键是「会话键」：同 pid 多属性的类目会变成 refPid。
+  // 以前直接 Number(key) 当 pid 提交 —— 服饰类目会发出一堆根本不存在的 pid。
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  assert.match(batch, /pid: prop\?\.realPid \?\? sessionPid,/);
+  assert.match(batch, /ref_pid: prop\?\.refPid \?\? undefined,/);
+  assert.match(batch, /template_pid: prop\?\.templatePid \?\? undefined,/);
+  assert.match(batch, /number_input_value: hasOptions \? pick\.text : "",/);
+  // 属性表拿不到就别硬发：pid/refPid 还原不出来
+  assert.match(batch, /if \(Object\.keys\(productTemplate\.attrs\)\.length && !attrs\) \{/);
 });
 
 test("属性数值录入：纯数值属性不带 numberInputValue，下拉+数值才带", () => {
@@ -740,6 +768,9 @@ test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => 
   assert.ok(!page.includes('saved.shipmentDays === "1"'), "1 天是合法档位，不能再被拉回 9");
   assert.ok(page.includes("选太短会被判延迟发货"));
   assert.ok(page.includes("Temu 半托管预设"), "界面要说清 9 天是 Temu 预设，不是我们编的");
+  // 自定义档点了没填：要指名道姓，不能只甩一句「发货时效必须大于 0」
+  assert.match(page, /请选择「承诺发货时效」；选了自定义就填一个大于 0 的天数/);
+  assert.match(page, /shipment_limit_seconds: Number\(shipmentDays\) \* 86400,/);
 });
 
 test("变种面板：货号清洗特殊字符 + 批量值没应用要提示", () => {

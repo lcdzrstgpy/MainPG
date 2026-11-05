@@ -15,7 +15,9 @@ import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
 import {
   APPAREL_CAROUSEL_HEIGHT,
+  APPAREL_CAROUSEL_SHAPE,
   APPAREL_CAROUSEL_WIDTH,
+  SQUARE_SHAPE,
   toRatioDataUrl,
   toSquareDataUrl,
 } from "../data/imageShape";
@@ -1989,28 +1991,44 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
   };
 
-  /** 本地媒体路径/外链统一上传到 Temu 图床；已是 Temu 地址则复用。 */
-  const resolveImage = async (url: string, cateId?: number): Promise<string> => {
+  /**
+   * 本地媒体路径/外链统一上传到 Temu 图床；已是 Temu 地址则复用。
+   *
+   * `shape` 给定时先按比例裁一遍再上传 —— **草稿库带入的图也走这条路径**，
+   * 以前它不裁，只有「手动上传」才裁，于是从草稿带入的图在服饰类目下
+   * （要 3:4）和普通类目下（要 1:1）都可能比例不对而被拒。
+   *
+   * 缓存 key 必须带上比例：同一张原图先按 1:1 传过、改类目后又按 3:4 传，
+   * 只按 URL 缓存会直接把 1:1 的图床地址还回来。
+   */
+  const resolveImage = async (
+    url: string,
+    cateId?: number,
+    shape?: { width: number; height: number },
+  ): Promise<string> => {
     const text = url.trim();
     if (!text) throw new Error("存在空图片地址");
     if (/img\.kwcdn\.com/i.test(text)) return text;
-    const cached = imageCache.current.get(text);
+    const cacheKey = shape ? `${text}|${shape.width}x${shape.height}` : text;
+    const cached = imageCache.current.get(cacheKey);
     if (cached) return cached;
+    const shapeIt = (dataUrl: string) =>
+      shape ? toRatioDataUrl(dataUrl, shape.width, shape.height) : Promise.resolve(dataUrl);
     let uploaded: TemuImageUploadResult;
     if (text.startsWith("data:image/")) {
       // 变种行「本地图片」是 FileReader 转的 dataURL，直接交给图床上传
-      uploaded = await temuPublishApi.uploadImage(text, cateId);
+      uploaded = await temuPublishApi.uploadImage(await shapeIt(text), cateId);
     } else if (isPublicHttpUrl(text)) {
-      // 公网外链（如 COS）交给后端代下载，避免浏览器跨域。
+      // 公网外链（如 COS）交给后端代下载，避免浏览器跨域 —— 像素拿不到，裁不了
       uploaded = await temuPublishApi.uploadImageUrl(text, cateId);
     } else {
       // 本地草稿图 / 素材图
       const blob = await readLocalImage(text, "图片");
-      uploaded = await temuPublishApi.uploadImage(await blobToDataUrl(blob), cateId);
+      uploaded = await temuPublishApi.uploadImage(await shapeIt(await blobToDataUrl(blob)), cateId);
     }
     const resolved = pickUploadedUrl(uploaded);
     if (!resolved) throw new Error(`图片上传成功但没有返回地址：${text}`);
-    imageCache.current.set(text, resolved);
+    imageCache.current.set(cacheKey, resolved);
     return resolved;
   };
 
@@ -2071,9 +2089,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return out;
   };
 
-  const resolveImages = async (urls: string[], cateId?: number): Promise<string[]> => {
+  const resolveImages = async (
+    urls: string[],
+    cateId?: number,
+    shape?: { width: number; height: number },
+  ): Promise<string[]> => {
     const resolved: string[] = [];
-    for (const url of urls) resolved.push(await resolveImage(url, cateId));
+    for (const url of urls) resolved.push(await resolveImage(url, cateId, shape));
     return resolved;
   };
 
@@ -2099,6 +2121,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
     if (!form.freightId) throw new Error("请选择运费模板");
     if (!form.warehouseId) throw new Error("请选择默认发货仓库");
+    // 发货时效是四档单选 + 自定义：自定义档点了但没填时值是空串，
+    // 直接甩一句「发货时效必须大于 0」用户看不出是哪里没填
+    const shipmentDays = form.shipmentDays.trim();
+    if (!/^\d+$/.test(shipmentDays) || Number(shipmentDays) <= 0) {
+      throw new Error("请选择「承诺发货时效」；选了自定义就填一个大于 0 的天数（如 12）");
+    }
     // 产品货号会拼进 SKC / SKU 货号，含中文或符号 Temu 直接拒
     const productCode = cleanExtCode(form.productCode);
     if (form.productCode.trim() && !productCode) {
@@ -2120,14 +2148,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
 
     // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
-    const carousel = await resolveImages(carouselSource, leaf.catId);
-    const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId);
+    //
+    // ⚠️ 主图比例按类目定（服饰 3:4、其它 1:1）：草稿库带入的图也走这条路径，
+    // 不在这里裁的话就只有「手动上传」的图是对的，草稿带入的全靠原图碰运气。
+    const apparel = sizeChart.info?.required === true;
+    const carouselShape = apparel ? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;
+    const carousel = await resolveImages(carouselSource, leaf.catId, carouselShape);
+    const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId, SQUARE_SHAPE);
     const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
     // 服饰类目的素材图单独校验「1:1、宽>=800」，而轮播图是 3:4 竖图 ——
     // 留空回退到轮播首图会被 Temu 拒（实测报「素材图[...]校验失败，应符合 1:1，宽>=800」）。
     // 上传轮播时已经自动另裁一张方图填进 material，走到这里还空着说明是草稿带入的竖图，
     // 只能让用户补一张，别默默回退去撞必然失败的校验。
-    const apparel = sizeChart.info?.required === true;
     const materialSource = form.material.trim();
     if (apparel && !materialSource) {
       throw new Error(
@@ -2135,7 +2167,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           "轮播图是 3:4 竖图，直接当素材图会被 Temu 拒。请上传一张或在「产品素材图」里填地址。",
       );
     }
-    const material = materialSource ? await resolveImage(materialSource, leaf.catId) : carousel[0];
+    const material = materialSource
+      ? await resolveImage(materialSource, leaf.catId, SQUARE_SHAPE)
+      : carousel[0];
 
     const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
     // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
@@ -2307,7 +2341,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       detail_image_urls: detailImages.map((item) => item.url),
       material_image_url: material,
       freight_template_id: form.freightId,
-      shipment_limit_seconds: Math.round(parsePositive(form.shipmentDays, "发货时效") * 86400),
+      shipment_limit_seconds: Number(shipmentDays) * 86400,
       outer_goods_url: form.externalUrl.trim(),
       properties,
       skcs,

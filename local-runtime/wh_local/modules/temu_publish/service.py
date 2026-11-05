@@ -1676,46 +1676,49 @@ def _validate_against_catalog(
     if not isinstance(properties, list):
         warnings.append("类目属性返回结构异常，跳过必填校验。")
         return
-    by_pid = {int(item.get("pid") or 0): item for item in properties if isinstance(item, dict)}
     # 已提交的属性按 (pid, refPid) 索引：服装类目同 pid 多条（面料克重1/2、里料克重）
     # 只按 pid 建字典会互相覆盖，等于只校验了最后一条。
     provided = {
         _property_key(int(item.pid), int(item.ref_pid or 0)): item for item in draft.properties
     }
-    provided_pids = {int(item.pid) for item in draft.properties}
+    # 「没写 ref_pid」的提交项来自老版前端，只能按 pid 认。
+    # ⚠️ 不能拿「这个 pid 有没有提交过」当回退依据：新版前端带了 ref_pid 时，
+    # 同 pid 的另一条（面料纹理2）会把「面料纹理1 没填」遮掉。
+    legacy_pids = {int(item.pid) for item in draft.properties if not int(item.ref_pid or 0)}
+    catalog_index = _catalog_property_map(catalog)
     # 联动属性只有在父级取值满足时才算必填（否则「电池属性=不带电池」还会被要求填三种电池）
     applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
 
     missing = []
-    for pid, item in by_pid.items():
-        if not _property_applicable(applicable, pid, int(item.get("refPid") or 0)):
+    # ⚠️ 必须遍历**属性表全表**，不能遍历按 pid 建的字典：
+    # 同 pid 多条属性时字典只剩最后一条（面料纹理1 被面料纹理2 顶掉），
+    # 「面料纹理1 必填」就永远查不出来。
+    for item in properties:
+        if not isinstance(item, dict):
+            continue
+        pid = int(item.get("pid") or 0)
+        ref_pid = int(item.get("refPid") or 0)
+        if not _property_applicable(applicable, pid, ref_pid):
             continue
         # 销售属性（isSale）会被组装阶段从商品属性里剔除，改由「销售规格」承载，
         # 所以这里不能再按商品属性校验，否则会误报「缺少必填属性：颜色」。
         if not (item.get("required") and not item.get("isSale")):
             continue
-        key = _property_key(pid, int(item.get("refPid") or 0))
-        # refPid 对不上时退回「按 pid 有值就算填了」—— 老版前端不带 ref_pid，
-        # 不能因为升级一瞬间把用户已经填好的属性全判成缺失。
-        if key not in provided and pid not in provided_pids:
+        key = _property_key(pid, ref_pid)
+        # refPid 对不上时，只在「这条提交项没带 ref_pid」（老版前端）的情况下按 pid 认；
+        # 不能因为「同 pid 有另一条填了」就放过 —— 那正是面料纹理1/2 会互相遮住的原因。
+        if key not in provided and pid not in legacy_pids:
             missing.append(_property_label(item))
     if missing:
         raise ValueError("缺少必填属性：" + "、".join(missing))
 
     for (pid, ref_pid), item in provided.items():
-        catalog_item = by_pid.get(pid)
+        # 同 pid 多条属性时按 refPid 精确取，否则会拿「里料克重」的规则校验「面料克重1」
+        catalog_item = _catalog_property_of(catalog_index, pid, ref_pid)
         if catalog_item is None:
             warnings.append(f"属性 pid={pid} 不在当前类目属性表中，请确认是否误填。")
             continue
-        # 同一个 pid 有多条同名不同 refPid 的属性时，按属性表里的名称报错更有指向性
         label = _property_label(catalog_item)
-        if ref_pid:
-            for candidate in properties:
-                if not isinstance(candidate, dict):
-                    continue
-                if int(candidate.get("pid") or 0) == pid and int(candidate.get("refPid") or 0) == ref_pid:
-                    label = _property_label(candidate)
-                    break
         values = catalog_item.get("values") or []
         allowed = {
             int(value.get("vid"))
@@ -2304,7 +2307,9 @@ def _missing_required_properties(draft: GoodsDraftInput, catalog: dict[str, Any]
         for item in draft.properties
         if int(item.vid) > 0 or item.prop_value.strip()
     }
-    filled_pids = {int(item.pid) for item in draft.properties}
+    legacy_filled_pids = {
+        int(item.pid) for item in draft.properties if not int(item.ref_pid or 0)
+    }
     applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
     missing: list[dict[str, Any]] = []
     for item in (catalog or {}).get("properties") or []:
@@ -2315,7 +2320,7 @@ def _missing_required_properties(draft: GoodsDraftInput, catalog: dict[str, Any]
         # 联动属性在当前父级取值下不适用 → 不必填
         if pid and not _property_applicable(applicable, pid, key[1]):
             continue
-        if pid and (key in filled or pid in filled_pids):
+        if pid and (key in filled or pid in legacy_filled_pids):
             continue
         missing.append(
             {

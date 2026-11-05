@@ -259,14 +259,41 @@ export async function buildDraftForPublish(
     return resolved;
   };
 
-  const properties = Object.entries(productTemplate.attrs).map(([pid, pick]) => ({
-    pid: Number(pid),
-    vid: pick.vid,
-    prop_value: pick.text,
-  }));
+  // 属性表拿不到就别硬发：属性是全类目必填项，没有它连 pid/refPid 都还原不了
+  if (Object.keys(productTemplate.attrs).length && !attrs) {
+    throw new Error("类目属性表没取到，无法组装属性（批量发布要靠它确认 pid/refPid），请重试");
+  }
+  /**
+   * 属性 payload。
+   *
+   * `productTemplate.attrs` 的键是**页面上的会话键**：普通类目就是 pid，但「同一个 pid
+   * 挂多条属性」的类目（服饰：面料纹理1/2 = 2054、面料克重1/2/里料克重 = 2052）
+   * 已经在 api 层被换成了 refPid。网关只认原始 pid，所以这里要按当前类目属性表映射回去，
+   * 顺便把 refPid / templatePid / 数值录入一起补齐 —— 少一个都会被判「属性不合法」
+   * 或「属性数值录入不能为空」。
+   */
+  const properties = Object.entries(productTemplate.attrs).map(([key, pick]) => {
+    const sessionPid = Number(key);
+    const prop = attrs?.properties.find((item) => item.pid === sessionPid);
+    // 有预设可选值 = 「下拉 + 数值」属性（成分 60%），要额外带 numberInputValue；
+    // 纯数值属性（面料克重 200）只能走 propValue，带上反而被判「数值录入信息必须为空」
+    const hasOptions = (prop?.values?.length ?? 0) > 0;
+    return {
+      pid: prop?.realPid ?? sessionPid,
+      vid: pick.vid,
+      prop_name: prop?.name || prop?.propertyName || "",
+      ref_pid: prop?.refPid ?? undefined,
+      template_pid: prop?.templatePid ?? undefined,
+      prop_value: pick.text,
+      number_input_value: hasOptions ? pick.text : "",
+      value_unit: String(prop?.valueUnit?.[0] ?? "").trim(),
+    };
+  });
 
   const finishDraft = (): TemuGoodsDraft => ({
     category_ids: categoryIds,
+    // 类目路径名：发布历史里显示「女装 > 连衣裙」而不是一串 cat id（纯展示字段）
+    category_names: productTemplate.categoryPath.map((item) => item.catName).filter(Boolean),
     title: prefill.title,
     title_en: "",
     carousel_image_urls: carousel,
@@ -283,6 +310,9 @@ export async function buildDraftForPublish(
     outer_goods_url: prefill.sourceUrl ?? "",
     properties,
     skcs,
+    // 来源草稿 id：后端发布成功后靠它把这条从草稿库移出，发布历史里也能显示来源。
+    // 批量发布以前没带，结果「发成功了但刷新草稿还在」，同一件商品很容易再发一次。
+    draft_id: prefill.draftId ?? "",
     site_ids: [SITE_ID],
     size_template_ids: splitList(productTemplate.sizeTemplates.replace(/[\s,，]+/g, ",")).map(Number).filter((n) => n > 0),
     personalization: productTemplate.isCustom,

@@ -1540,6 +1540,37 @@ def test_same_pid_multiple_refpid_not_confused() -> None:
     assert "面料克重2（g/m²)" in dropped
 
 
+def test_required_check_covers_every_property_with_same_pid() -> None:
+    """必填校验要遍历属性表全表，不能遍历「按 pid 建的字典」。
+
+    同 pid 多条时字典只剩最后一条：面料纹理1（required）被面料纹理2（选填）顶掉，
+    「面料纹理1 必填但没填」就查不出来，一路走到网关才被拒。
+    """
+    from wh_local.modules.temu_publish.service import _validate_against_catalog
+
+    catalog: dict[str, Any] = {
+        "properties": [
+            {"pid": 2054, "refPid": 6926, "name": "面料纹理1", "required": True,
+             "values": [{"vid": 31, "value": "光面"}]},
+            {"pid": 2054, "refPid": 6927, "name": "面料纹理2", "required": False,
+             "values": [{"vid": 31, "value": "光面"}]},
+        ]
+    }
+    # 什么都没填 → 必须点名「面料纹理1」
+    draft = GoodsDraftInput.model_construct(properties=[])
+    with pytest.raises(ValueError) as empty_exc:
+        _validate_against_catalog(draft, catalog, [])
+    assert "面料纹理1" in str(empty_exc.value)
+
+    # 只填了面料纹理2（同 pid 的另一条）→ 面料纹理1 仍算没填
+    draft = GoodsDraftInput.model_construct(
+        properties=[GoodsPropertyInput(pid=2054, ref_pid=6927, vid=31)]
+    )
+    with pytest.raises(ValueError) as partial_exc:
+        _validate_against_catalog(draft, catalog, [])
+    assert "面料纹理1" in str(partial_exc.value)
+
+
 def test_inapplicable_property_is_dropped_from_payload(tmp_path: Path) -> None:
     """填了不适用属性的值也不能进 payload，并给出 warning（Temu 会判属性不合法）。"""
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=LinkedCatalogClient())
