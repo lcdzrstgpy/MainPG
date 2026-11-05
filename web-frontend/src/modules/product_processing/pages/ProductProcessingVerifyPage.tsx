@@ -678,7 +678,7 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
               <div className="verify-batch-mask" onClick={() => setBatchesOpen(false)} />
               <div className="verify-batch-popover" role="dialog" aria-label="采集批次">
                 <div className="verify-batch-popover-head">
-                  <div><strong>采集批次</strong><span>{draftBatches.length} 个 · 按来源标注，超过 24 小时的批次自动清理</span>{batchesLoading && <i className="app-spinner is-sm" aria-label="正在加载批次" />}</div>
+                  <div><strong>采集批次</strong><span>{draftBatches.length} 个 · 按来源标注，超过 3 天的批次自动清理</span>{batchesLoading && <i className="app-spinner is-sm" aria-label="正在加载批次" />}</div>
                   <div className="verify-batch-actions">
                     <button type="button" onClick={selectAllBatches} disabled={batchBusy || !draftBatches.length}>全选批次</button>
                     <button type="button" className="is-danger" onClick={() => void deleteSelectedBatches()} disabled={batchBusy || selectedBatchIds.size === 0}>

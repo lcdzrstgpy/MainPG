@@ -1045,9 +1045,9 @@ class ProductProcessingRepository:
             return len(rows)
 
     def purge_expired_draft_batches(
-        self, *, retention_hours: int = 24, workspace_id: str = "local"
+        self, *, retention_hours: int = 72, workspace_id: str = "local"
     ) -> int:
-        """软删超过保留时长（默认 24h）仍未处理的采集候选草稿。
+        """软删超过保留时长（默认 72h / 3 天）仍未处理的采集候选草稿。
 
         清理目标只限草稿池内待处理的草稿（``status='draft'``）：已提交处理的
         草稿（processing / processed）是任务预检页与最终店小秘表格导出的数据
