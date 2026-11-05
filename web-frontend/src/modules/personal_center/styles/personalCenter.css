@@ -2819,11 +2819,12 @@
 
 /* 体验卡上的基础版到期提示 */
 .personal-plan-expire {
+  /* 写死的深粉字在深色主题下 2.4:1，改用语义色（diamond 下自动换成亮粉） */
+  color: var(--theme-danger, #b03a55);
+  background: var(--theme-danger-soft, rgba(217, 93, 120, 0.09));
   margin: 10px 0 0;
   padding: 7px 10px;
   border-radius: 8px;
-  background: rgba(217, 93, 120, 0.09);
-  color: var(--theme-primary-strong, #b03a55);
   font-size: 0.78rem;
   font-weight: 700;
   text-align: center;
@@ -3470,7 +3471,8 @@
 }
 
 .preferences-segment button.is-active {
-  color: #fff;
+  /* diamond 的 accent 是 #aeb8c6（中灰），配白字只有 2:1 → 跟主按钮一样用 on-primary */
+  color: var(--theme-on-primary, #fff);
   background: var(--theme-accent, #16a34a);
 }
 

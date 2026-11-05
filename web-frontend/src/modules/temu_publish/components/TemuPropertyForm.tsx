@@ -143,8 +143,16 @@ export function TemuPropertyForm({
   return (
     <>
       {groups.required.length > 0 && (
-        <div className="temu-attr-grid">
-          {groups.required.map((item) => attrGroup(item, true))}
+        // 必填属性单独圈出来：这块是「发不出去」的唯一原因，
+        // 原来和选填混在一个平面网格里，一眼看不出哪些必须填。
+        <div className="temu-attr-required">
+          <div className="temu-attr-required-head">
+            <strong>必填属性 {groups.required.length} 项</strong>
+            <span>带 <em className="temu-required">*</em> 的都要选，缺一个 Temu 会直接拒</span>
+          </div>
+          <div className="temu-attr-grid">
+            {groups.required.map((item) => attrGroup(item, true))}
+          </div>
         </div>
       )}
       {groups.optional.length > 0 && (

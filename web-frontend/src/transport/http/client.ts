@@ -387,6 +387,11 @@ export function toUserMessage(raw: string): string {
   if (/\bforbidden\b|permission denied|no permission|not authorized|insufficient permission|permission required/i.test(message)) {
     return "没有权限执行此操作，请确认账号权限后重试";
   }
+  // 后端已经用中文把原因说清楚了（典型是 temu 那层包装的
+  // 「Temu 拒绝了这次提交：The requested content does not exist or has been deleted（错误码 2000000）」），
+  // 就原样返回，别被下面按英文关键词做的通用映射盖掉 —— 一盖掉，用户只剩
+  // 「请求的内容不存在或已被删除」这一句，既看不到上游原话也看不到错误码，无从下手。
+  if (/[\u4e00-\u9fa5]/.test(message) && /not found|does not exist/i.test(message)) return message;
   // 内容不存在
   if (/not found|does not exist/i.test(message)) return "请求的内容不存在或已被删除";
   // 服务器繁忙
@@ -606,13 +611,43 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
   return payload as T;
 }
 
+/**
+ * 媒体资源地址里的 `expires` / `signature` 只活 ~2 小时（后端 `_preview_url()` 签的）。
+ *
+ * 草稿库、发布页表单会把当时的地址原样存下来，过几小时再拿它读图必然 404 ——
+ * 记录还在、文件也在，纯粹是签名过期，用户却只看到「请求的内容不存在或已被删除」，
+ * 重传图也只能好两小时。
+ *
+ * httpBlob 自带 `Authorization`，后端对「不带签名 + 已登录」的请求直接放行，
+ * 所以这里把过期签名剥掉，只留路径和 workspace_id。
+ * **保留 workspace_id**：图片是按工作区目录存的，后端要靠它定位。
+ */
+function stripMediaSignature(path: string): string {
+  if (!/\/media-assets\/[^/]+\/content(?:[?#]|$)/.test(path)) return path;
+  if (!/[?&]signature=/.test(path)) return path;
+  try {
+    const url = new URL(path, window.location.origin);
+    url.searchParams.delete("signature");
+    url.searchParams.delete("expires");
+    return `${url.pathname}${url.search}`;
+  } catch {
+    // 解析不了就原样发：让后端按签名分支给出真实结果，别在这里吞错
+    return path;
+  }
+}
+
 export async function httpBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
   const headers: Record<string, string> = {};
   const token = authToken(options.token);
   if (token) headers.authorization = `Bearer ${token}`;
 
+  // 绝对地址直接用：有些调用方（缩略图）拿到的是 `http://127.0.0.1:8010/api/...`
+  // 这种指回本地后端的完整地址，再拼一次 apiBaseUrl 会变成
+  // `http://127.0.0.1:8010http://127.0.0.1:8010/api/...`。
+  const target = stripMediaSignature(path);
+  const url = /^https?:\/\//i.test(target) ? target : `${apiBaseUrl()}${target}`;
   const response = await fetchWithTimeout(
-    `${apiBaseUrl()}${path}`,
+    url,
     {
       method: options.method ?? "GET",
       headers,
@@ -629,7 +664,10 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
     if (isBackendUnreachable(response, detail)) notifyBackendOffline();
     else noteBackendReachable();
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
-    throw new Error(toUserMessage(detail || "请求失败"));
+    // 404 把请求路径带上：不然「请求的内容不存在或已被删除」完全看不出是哪个资源没的
+    // （草稿图 / 素材 / 商品 / 路由写错，四种情况文案一模一样）。
+    const brief = response.status === 404 ? `（${path}）` : "";
+    throw new Error(toUserMessage(detail || "请求失败") + brief);
   }
 
   const blob = await response.blob();

@@ -24,6 +24,29 @@ PRODUCT_ROUTER = "https://yingluan-api.qibang-global.vip/api/temu-product/openap
 # 「改动当天能看到」的折中。
 CACHE_TTL_CATEGORIES = 60 * 60
 CACHE_TTL_ATTRIBUTES = 60 * 60
+
+# 类目树 / 类目匹配 / 属性表是 **Temu 全网统一**的，跟哪家店、哪个账号无关。
+# 这三类缓存放在模块级而不是实例级，原因很实在：清缓存的地方（router._handle）
+# 拿不到「当前店铺的 client 实例」，只能拿到一个按默认凭证构造的实例 ——
+# 实例级缓存下它清的是自己那份空缓存，真正在用的那份纹丝不动，
+# 于是出现「点了刷新、错误照旧」的死循环（2026-11-03 实测踩到）。
+# 注意：parent-specs / freight / warehouse 是**店铺级**的，绝不能共享（会串店）。
+_SHARED_CATALOG_CACHE: dict[str, tuple[float, Any]] = {}
+_SHARED_CATALOG_LOCK = Lock()
+_SHARED_CATALOG_PREFIXES = ("cats:", "cat-match:", "attrs:")
+
+
+def _is_shared_catalog_key(key: str) -> bool:
+    return key.startswith(_SHARED_CATALOG_PREFIXES)
+
+
+def clear_shared_catalog_cache() -> int:
+    """清掉全网统一的类目/属性缓存，返回清掉的条数。任何时刻、任何实例调都生效。"""
+    with _SHARED_CATALOG_LOCK:
+        keys = [key for key in _SHARED_CATALOG_CACHE if _is_shared_catalog_key(key)]
+        for key in keys:
+            _SHARED_CATALOG_CACHE.pop(key, None)
+    return len(keys)
 CACHE_TTL_LOGISTICS = 30 * 60
 
 
@@ -234,6 +257,8 @@ class TemuProductClient:
             "bindSiteIds": sorted({int(value) for value in bind_site_ids if int(value) > 0}),
             "configItems": [1, 2, 3],
         }
+        if not body["bindSiteIds"]:
+            raise ValueError("必填项校验需要至少一个站点 id（bindSiteIds 不能为空）")
         # 同一个签名 bug：空数组会让网关算出的 sign 对不上，
         # 所以没有属性时整个字段不发（这个接口长期 `sign is invalid` 就是这个原因）。
         # 实测（2026-11-03）：空数组不发之后签名错误消失，但这类目会回
@@ -263,6 +288,95 @@ class TemuProductClient:
         """新建规格后清掉父规格缓存，否则最长要等一个 TTL 才看得到新规格。"""
         self._cache_drop("parent-specs")
 
+    def ensure_default_spec(
+        self,
+        spec_name: str = "",
+        catalog: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """拿一个**真实存在**的规格值兜底（父规格「颜色」下的一条真实值），带缓存。
+
+        为什么需要它（2026-11-03 实测）：
+
+        桌布 / 桌旗 / 化妆包这一整片类目 `attrs.get` 返回的属性里 ``isSale`` 全是 false，
+        而 Temu 又要求「规格列表不能为空」。以前发的是 id 全 0 的假规格 ``款式 / 默认``
+        —— 规格校验能过，但 ``goods.add`` 会一直回
+
+            6000002 货品类目属性更新，请刷新页面后重新创建货品
+
+        而且**跟发了哪个属性无关**（12 个必填逐个单发，全是 6000002）。
+
+        第二个坑：值不能随便起。类目把「颜色」当**商品属性**时（化妆包 30988 有 116 个
+        预设值），规格值必须落在那份列表里，否则回
+
+            属性[颜色]校验错误:关键词属性 默认 不是有效值。
+
+        所以这里优先用 `spec_name`（调用方传商品自己的颜色值），不在合法列表里才退回
+        列表第一个；类目没有「颜色」属性时才用「默认」。
+
+        返回 ``{"parentSpecId", "parentSpecName", "specId", "specName"}``。
+        """
+        # ① 父规格：优先「颜色」
+        parent_id, parent_name = 1001, "颜色"
+        try:
+            specs = self.parent_specs()
+            items = specs.get("parentSpecDTOS") or specs.get("parentSpecList") or []
+            hit = next(
+                (
+                    item
+                    for item in items
+                    if isinstance(item, dict) and "颜色" in str(item.get("parentSpecName") or "")
+                ),
+                None,
+            )
+            if hit:
+                parent_id = int(hit.get("parentSpecId") or parent_id)
+                parent_name = str(hit.get("parentSpecName") or parent_name)
+        except Exception:  # noqa: BLE001 - 拿不到就用默认的 1001/颜色
+            pass
+
+        # ② 值：类目把「颜色」当商品属性时，只能从它的预设值里取
+        allowed: list[str] = []
+        color_prop: dict[str, Any] | None = None
+        for item in (catalog or {}).get("properties") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "") == "颜色":
+                color_prop = item
+                allowed = [
+                    str(value.get("value") or "")
+                    for value in (item.get("values") or [])
+                    if value.get("value")
+                ]
+                break
+
+        name = str(spec_name or "").strip()
+        if allowed and name not in allowed:
+            name = allowed[0]
+        if not name:
+            name = allowed[0] if allowed else "默认"
+        # 商品属性「颜色」存在时，规格也复用它自己的父规格 id（认不出就用 1001）
+        if color_prop and int(color_prop.get("parentSpecId") or 0) > 0:
+            parent_id = int(color_prop["parentSpecId"])
+
+        cache_key = f"default-spec:v2:{parent_id}:{name}"
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, dict) and cached.get("specId"):
+            return dict(cached)
+
+        result = self.create_spec(parent_id, name)
+        spec_id = int((result or {}).get("specId") or 0)
+        if spec_id <= 0:
+            raise RuntimeError("Temu 没有返回新建规格的 specId")
+        spec = {
+            "parentSpecId": parent_id,
+            "parentSpecName": parent_name,
+            "specId": spec_id,
+            "specName": name,
+        }
+        # 规则值长期有效，缓存 30 天，避免每次发布都调一次写接口
+        self._cache_put(cache_key, spec, 30 * 24 * 3600)
+        return dict(spec)
+
     def invalidate_categories(self) -> int:
         """清掉类目树、类目匹配、类目属性的读缓存，返回清掉的条数。
 
@@ -277,24 +391,32 @@ class TemuProductClient:
         特意不碰 ``freight:`` / ``parent-specs`` / ``warehouse`` 这些：它们跟
         类目改动无关，一起清等于每次刷新都白打几轮网关。
         """
+        # 类目/属性走共享缓存：必须清那份，否则「另一个实例清了、这个实例还在用旧表」
+        dropped = clear_shared_catalog_cache()
         with self._cache_lock:
-            keys = [
-                key
-                for key in self._cache
-                if key.startswith(("cats:", "cat-match:", "attrs:"))
-            ]
+            keys = [key for key in self._cache if _is_shared_catalog_key(key)]
             for key in keys:
                 self._cache.pop(key, None)
-        return len(keys)
+        return dropped + len(keys)
 
     def goods_list(self, **filters: Any) -> dict[str, Any]:
         """商品列表查询（bg.glo.goods.list.get）。
 
         用途：发布请求超时/网络中断时反查「到底建没建」，以及按 SKC 货号查重。
         常用过滤：skcExtCode / productName / productSkcIds / bindSiteIds / createdAtStart(秒)。
+
+        ⚠️ 分页参数两种写法都收：调用方既有传 `pageSize` 的，也有传 `page_size` 的。
+        只 pop 一个的话，另一个会被下面那段「其余键原样透传」塞进请求体 ——
+        请求里同时出现 `pageSize` 和 `page_size`，网关要么当未知字段、要么直接判参数非法。
         """
-        payload: dict[str, Any] = {"page": int(filters.pop("page", 1) or 1)}
-        payload["pageSize"] = int(filters.pop("pageSize", 20) or 20)
+        page = filters.pop("page", 1)
+        page_size = filters.pop("pageSize", None)
+        if page_size is None:
+            page_size = filters.pop("page_size", None)
+        payload: dict[str, Any] = {
+            "page": int(page or 1),
+            "pageSize": int(page_size or 20),
+        }
         for key, value in filters.items():
             if value in (None, "", [], {}):
                 continue
@@ -312,6 +434,35 @@ class TemuProductClient:
             max_attempts=1,
         )
 
+    def size_chart_class(self, cat_id: int) -> dict[str, Any]:
+        """类目对应的尺码组（bg.glo.goods.sizecharts.class.get）。
+
+        服装/鞋类是「有尺码组」的类目；宠物、家居这类类目调这个会返回空或报错。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.class.get", {"catId": int(cat_id)}, max_attempts=1
+        )
+
+    def size_chart_meta(self, cat_id: int) -> dict[str, Any]:
+        """尺码表的测量项定义（bg.glo.goods.sizecharts.meta.get）。
+
+        返回 `sizeSpecMeta.elementList`（肩宽/胸围全围/裙长…，带 necessary）与 `groupList`。
+        类目没有尺码组时网关报「没有找到当前类目对应的尺码组」—— 这正是「不需要尺码表」的信号。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.meta.get", {"catId": int(cat_id)}, max_attempts=1
+        )
+
+    def size_chart_settings(self, cat_id: int) -> dict[str, Any]:
+        """系统默认尺码映射（bg.glo.goods.sizecharts.settings.get）。
+
+        返回 `sizeList`（该尺码组所有可选尺码名）+ `mappingContent`（每个尺码档的完整数值）。
+        体积较大（20KB+），调用方只取需要的字段。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.settings.get", {"catId": int(cat_id)}, max_attempts=1
+        )
+
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情（bg.glo.goods.detail.get）。注意：个别商品会返回「无权访问」。"""
         return self.call("bg.glo.goods.detail.get", {"productId": int(product_id)})
@@ -320,24 +471,45 @@ class TemuProductClient:
         self,
         image_url: str,
         *,
-        mall_id: str,
+        mall_id: str = "",
         cat_id: int | None = None,
         class_id: int | None = None,
     ) -> dict[str, Any]:
-        """尺寸图检测提交（CN 网关方法，异步，返回 uniqueId 后轮询 result）。"""
-        request: dict[str, Any] = {"imageUrl": str(image_url).strip(), "mallId": str(mall_id).strip()}
+        """尺寸图检测提交（CN 网关方法，异步，返回 **uniqueId** 后再轮询 result）。
+
+        实测（2026-11-05）：
+        - `mallId` **不是必填** —— 只传 imageUrl 也能提交成功并拿到 uniqueId
+          （`bg.mall.info.get` 虽然在 scope 里，但实际回「Client is not allowed」，
+           所以别指望能自动拿到 mallId）
+        - 返回的字段名是 `uniqueId`，轮询时必须原样传 `uniqueId`（见 result 的注释）
+        """
+        request: dict[str, Any] = {"imageUrl": str(image_url).strip()}
+        if str(mall_id or "").strip():
+            request["mallId"] = str(mall_id).strip()
         if cat_id:
             request["catId"] = int(cat_id)
         if class_id:
             request["classId"] = int(class_id)
         return self.call("bg.algo.dimension.image.check", request, gateway="CN")
 
-    def dimension_image_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
-        return self.call(
-            "bg.algo.dimension.image.check.result",
-            {"taskId": str(task_id).strip(), "mallId": str(mall_id).strip()},
-            gateway="CN",
-        )
+    def dimension_image_check_result(
+        self, unique_id: str, *, mall_id: str = ""
+    ) -> dict[str, Any]:
+        """查尺寸图检测结果。
+
+        ⚠️ 参数名必须是 **`uniqueId`**（提交接口返回的那个字段）：
+        传 `taskId` 网关不报错，而是永远回
+        `errorCode: 5000000 / 图片检测中，请重试` —— 这就是长期「结果停在检测中」的真因
+        （2026-11-05 同一张图分别用两个名字查，对比确认）。
+
+        另：实测同一个 uniqueId 换 4 种图源（Temu 图床 / 阿里 CDN / 公网 PNG / base64）
+        结果都是 `4000000 图片md5获取失败`，说明**服务商侧这条链路还没打通**，
+        不是我们参数的问题。所以前端暂不接入口。
+        """
+        request: dict[str, Any] = {"uniqueId": str(unique_id).strip()}
+        if str(mall_id or "").strip():
+            request["mallId"] = str(mall_id).strip()
+        return self.call("bg.algo.dimension.image.check.result", request, gateway="CN")
 
     def accessories(self, page: int = 1, page_size: int = 20, fuzzy_value: str = "") -> dict[str, Any]:
         payload: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}
@@ -347,6 +519,10 @@ class TemuProductClient:
 
     def freight_templates(self, site_ids: list[int]) -> dict[str, Any]:
         normalized = sorted({int(value) for value in site_ids if int(value) > 0})
+        # 顶层空数组会让网关签名对不上（回 7000015 sign is invalid），
+        # 与其让用户看到「签名无效」，不如直接说清是站点 id 没给
+        if not normalized:
+            raise ValueError("取运费模板需要至少一个站点 id（siteIds 不能为空）")
         return self.call(
             "bg.glo.logistics.template.get",
             {"siteIds": normalized},
@@ -356,6 +532,8 @@ class TemuProductClient:
 
     def warehouses(self, site_ids: list[int], supplier_id: int | None = None) -> dict[str, Any]:
         normalized = sorted({int(value) for value in site_ids if int(value) > 0})
+        if not normalized:
+            raise ValueError("取仓库列表需要至少一个站点 id（siteIdList 不能为空）")
         payload: dict[str, Any] = {"siteIdList": normalized}
         if supplier_id:
             payload["supplierId"] = int(supplier_id)
@@ -397,28 +575,44 @@ class TemuProductClient:
 
     def _cache_get(self, key: str) -> Any | None:
         now = time.monotonic()
-        with self._cache_lock:
-            item = self._cache.get(key)
+        store, lock = (
+            (_SHARED_CATALOG_CACHE, _SHARED_CATALOG_LOCK)
+            if _is_shared_catalog_key(key)
+            else (self._cache, self._cache_lock)
+        )
+        with lock:
+            item = store.get(key)
             if item is None:
                 return None
             expires_at, value = item
             if expires_at <= now:
-                self._cache.pop(key, None)
+                store.pop(key, None)
                 return None
             return value
 
     def _cache_drop(self, key: str) -> None:
         """只清某一条缓存（写完数据后让对应读缓存立即失效）。"""
-        with self._cache_lock:
-            self._cache.pop(key, None)
+        store, lock = (
+            (_SHARED_CATALOG_CACHE, _SHARED_CATALOG_LOCK)
+            if _is_shared_catalog_key(key)
+            else (self._cache, self._cache_lock)
+        )
+        with lock:
+            store.pop(key, None)
 
     def _cache_put(self, key: str, value: Any, ttl: int) -> None:
-        with self._cache_lock:
-            self._cache[key] = (time.monotonic() + max(1, int(ttl)), value)
+        store, lock = (
+            (_SHARED_CATALOG_CACHE, _SHARED_CATALOG_LOCK)
+            if _is_shared_catalog_key(key)
+            else (self._cache, self._cache_lock)
+        )
+        with lock:
+            store[key] = (time.monotonic() + max(1, int(ttl)), value)
 
     def clear_cache(self) -> None:
         with self._cache_lock:
             self._cache.clear()
+        clear_shared_catalog_cache()
 
 
 def _response_json(response: Any, api_type: str) -> dict[str, Any]:

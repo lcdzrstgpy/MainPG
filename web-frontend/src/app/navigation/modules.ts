@@ -10,6 +10,7 @@ export type WorkspaceModuleId =
   | "product_processing_tasks"
   | "temu_publish"
   | "temu_draft_library"
+  | "temu_publish_history"
   | "combo_generate"
   | "combo_prompt_preset"
   | "combo_history"
@@ -206,6 +207,14 @@ const temuDraftLibrary: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-database",
   description: "汇总 AI 处理与 POD 成品，一键带入发布商品",
+};
+
+const temuPublishHistory: WorkspaceModule = {
+  id: "temu_publish_history",
+  label: "发布历史",
+  icon: "",
+  iconClass: "iconfont icon-reloadtime",
+  description: "成功与失败的发布记录分开看",
 };
 
 const productProcessingSourcing: WorkspaceModule = {
@@ -496,7 +505,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     iconClass: "iconfont icon-upload",
     description: "Temu 商品发布与草稿库",
     defaultChildId: "temu_publish",
-    children: [temuPublish, temuDraftLibrary],
+    children: [temuPublish, temuDraftLibrary, temuPublishHistory],
   },
   {
     id: "data_insights",
@@ -543,6 +552,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessingSourcing,
   temuPublish,
   temuDraftLibrary,
+  temuPublishHistory,
   comboGenerate,
   comboPromptPreset,
   comboHistory,

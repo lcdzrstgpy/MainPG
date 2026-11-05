@@ -298,7 +298,7 @@
 .verify-empty-title {
   font-size: 1.35rem;
   line-height: 1.4;
-  color: #24425e;
+  color: var(--theme-text-primary, #24425e);
   letter-spacing: -0.01em;
 }
 
@@ -3585,14 +3585,15 @@
   align-items: center;
   gap: 8px;
   padding: 7px 12px;
-  border: 1px solid #d8e7f2;
+  /* 原来写死浅蓝底 + 浅蓝边：深色主题下变成一块白，里面的浅色字直接消失 */
+  border: 1px solid var(--theme-module-border, #d8e7f2);
   border-radius: 999px;
-  background: #f7fbfe;
+  background: var(--theme-module-surface-soft, #f7fbfe);
 }
 
 .processing-history-filter-label {
   padding-right: 3px;
-  color: #4a6983;
+  color: var(--theme-text-muted, #4a6983);
   font-size: .76rem;
   font-weight: 800;
   white-space: nowrap;
@@ -3623,7 +3624,7 @@
 
 .processing-history-date-divider {
   margin-top: 0;
-  color: #9bb0c1;
+  color: var(--theme-text-muted, #9bb0c1);
   font-size: .9rem;
 }
 

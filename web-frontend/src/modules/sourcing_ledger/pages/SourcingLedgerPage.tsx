@@ -232,7 +232,11 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   }, []);
 
   useEffect(() => {
-    void sourcingLedgerApi.listSites().then(setSites).catch(() => setSites([]));
+    // 接口回空对象时不要把它塞进 state：后面 `sites.map` 会当场抛错、整页变错误页
+    void sourcingLedgerApi
+      .listSites()
+      .then((rows) => setSites(Array.isArray(rows) ? rows : []))
+      .catch(() => setSites([]));
   }, []);
 
   const changeSite = async (siteCode: string) => {
@@ -691,7 +695,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
             }}
           >
             <option value="">全部站点</option>
-            {sites.map((option) => (
+            {(sites ?? []).map((option) => (
               <option key={option.site_code} value={option.site_code}>{option.display_name}</option>
             ))}
           </select>
@@ -956,7 +960,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                       onChange={(event) => void changeSite(event.target.value)}
                     >
                       <option value="">按采集自动</option>
-                      {detail.sites.map((option) => (
+                      {(detail.sites ?? []).map((option) => (
                         <option key={option.site_code} value={option.site_code}>
                           {option.display_name}
                         </option>

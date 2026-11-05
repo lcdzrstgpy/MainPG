@@ -5,16 +5,27 @@ import { httpBlob } from "../../../transport/http/client";
 
 /** 公网地址直接用；本地媒体（/api/product-processing/media/...）要带鉴权取 blob。 */
 function isPublicHttp(url: string): boolean {
-  return /^https?:\/\//i.test(url);
+  if (!/^https?:\/\//i.test(url)) return false;
+  // 指回本地后端的绝对地址同样不能直接丢给 <img>：它带不了 Authorization，
+  // 而地址里的 signature 两小时就过期 —— 过期后 <img> 永远加载不出来。
+  return !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url);
 }
 
 export function TemuThumb({ path, onOpen }: { path: string; onOpen: (src: string) => void }) {
   const [src, setSrc] = useState("");
+  /**
+   * 读文件失败（404 / 素材文件已被清掉）。
+   *
+   * 以前失败也只是 `setSrc("")`，界面继续显示「…」——用户会以为在加载，
+   * 一直等下去；实际这张图永远出不来，提交时才报「图片读不到」。
+   */
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let alive = true;
     let objectUrl = "";
     setSrc("");
+    setFailed(false);
     if (!path) return;
     if (isPublicHttp(path)) {
       setSrc(path);
@@ -27,7 +38,7 @@ export function TemuThumb({ path, onOpen }: { path: string; onOpen: (src: string
         setSrc(objectUrl);
       })
       .catch(() => {
-        if (alive) setSrc("");
+        if (alive) setFailed(true);
       });
     return () => {
       alive = false;
@@ -36,11 +47,32 @@ export function TemuThumb({ path, onOpen }: { path: string; onOpen: (src: string
   }, [path]);
 
   // 没有图（比如变种没单独设预览图）就给个占位框，别把加载中的「…」当成空图
-  if (!path) return <span className="temu-img-empty" title="暂无图片" />;
+  if (!path)
+    return (
+      <span className="temu-img-empty" title="暂无图片">
+        无图
+      </span>
+    );
+  if (failed) {
+    return (
+      <span className="temu-img-failed" title={`这张图读不到，文件可能已经不在：${path}`}>
+        失效
+      </span>
+    );
+  }
   if (!src) return <span className="temu-img-strip-loading">…</span>;
   return (
     <button type="button" className="temu-img-thumb" onClick={() => onOpen(src)} title="点击放大">
-      <img src={src} alt="" loading="lazy" />
+      {/* referrerPolicy=no-referrer：alicdn（1688 图床）校验 Referer，带
+          http://127.0.0.1:5173 会被直接 403，缩略图就永远是空白。
+          顺带 onError 落到「失效」，不要留一个裂图。 */}
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
     </button>
   );
 }
@@ -124,7 +156,12 @@ export function TemuImageStrip({
             aria-label="图片预览"
             onClick={() => setPreview(null)}
           >
-            <img src={preview} alt="" onClick={(event) => event.stopPropagation()} />
+            <img
+              src={preview}
+              alt=""
+              referrerPolicy="no-referrer"
+              onClick={(event) => event.stopPropagation()}
+            />
             <button
               type="button"
               className="temu-image-preview-close"

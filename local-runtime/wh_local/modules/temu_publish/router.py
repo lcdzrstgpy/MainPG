@@ -11,9 +11,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...session import Actor, actor_from_authorization
-from .client import TemuCredentialMissing, TemuGatewayError
+from .client import TemuCredentialMissing, TemuGatewayError, clear_shared_catalog_cache
+from . import submissions as submission_ledger
 from .submissions import DuplicateSubmission
-from .gateway_sync import sync_provider_credentials
+from .gateway_sync import mark_provider_credentials_stale, sync_provider_credentials
 from .library import collect_all_draft_entries, paginate_draft_library
 from .schemas import (
     DetailImageUploadRequest,
@@ -44,11 +45,24 @@ _GATEWAY_HINTS = {
         "服务商网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
     ),
     "7000006": "这个 access_token 没和商务应用绑定：回店铺后台重新授权，再把新 token 填进来",
+    # Temu 校验「属性 + 规格」两套定义，任一对不上都回这个码。
+    # 2026-11-03 实测：桌布 / 化妆包这类 **没有销售属性** 的类目，真正原因是补的规格
+    # 不是该类目的合法值（id 全 0 的占位、或值不在「颜色」预设值里），跟缓存新旧无关。
+    # 所以文案别再一口咬定「属性表过时」，先让用户看 Temu 给没给具体字段。
+    "6000002": (
+        "Temu 说这个类目的属性/规格定义跟它对不上。"
+        "如果上面的原话里点名了具体属性（如「属性[颜色]校验错误」），改那一项；"
+        "没点名就把必填属性/规格重新选一遍再提交"
+        "（没有销售属性的类目会自动补一条真实规格占位，不用自己造）"
+    ),
     "NETWORK_ERROR": (
         "连不上服务商网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
         "程序默认不走系统代理，确实需要走代理时用环境变量 WH_TEMU_PROXY 指定"
     ),
 }
+
+# 类目属性定义在 Temu 侧变过的错误码（实测 2026-11-03，桌布类目 10498）。
+_CATEGORY_ATTRS_CHANGED = "6000002"
 
 
 def _gateway_message(error_code: str, message: str) -> str:
@@ -70,6 +84,13 @@ _UPSTREAM_ERROR_CODES = {
     "INVALID_RESPONSE",
 }
 
+# 「服务商凭据本身不对」的错误码子集：命中后自动去服务器拉最新的那一对。
+# CLIENT_TOKEN_REQUIRED / INVALID 是客户端凭据缺/错；PERMISSION_DENIED 是
+# 服务商把这对凭据停了（重置 token 后旧值就会变成这个），都必须触发换新。
+_PROVIDER_CREDENTIAL_ERRORS = frozenset(
+    {"CLIENT_TOKEN_REQUIRED", "CLIENT_TOKEN_INVALID", "CLIENT_PERMISSION_DENIED"}
+)
+
 
 # 草稿库聚合结果短缓存：进页面/切页签回来不必重新扫 8 个任务 + 6 个批次。
 # key = (账号, limit)；发布/刷新会带 refresh=1 绕过。
@@ -89,19 +110,29 @@ def create_temu_publish_router(
     router = APIRouter(prefix="/api/temu-publish", tags=["temu-publish"])
     service = TemuPublishService(database_path)
 
-    def _sync_gateway(actor: Actor) -> None:
+    def _sync_gateway(actor: Actor, *, force: bool = False) -> bool:
         """本地没有服务商凭据时，从客户中心拉一次（静默失败，退回随包兜底）。
 
         服务商 YL client/token 是整个系统共用的一对，不该让用户手填；
         装好的包登录一次就自动配好，换机器也不用重来。
+
+        ``force=True``：网关刚说凭据失效，跳过 5 分钟核对节流立刻重拉 ——
+        服务商重置 token 后，老用户重试一次就能自动换成新值。
         """
         if not customer_auth_base_url or remote_token_resolver is None:
-            return
-        sync_provider_credentials(
+            return False
+        return sync_provider_credentials(
             database_path,
             actor.id,
             base_url=customer_auth_base_url,
             token_resolver=lambda: remote_token_resolver(actor),
+            force=force,
+        )
+
+    def _is_provider_credential_error(exc: Exception) -> bool:
+        """网关因为「client/token 不对」拒绝时返回 True（和参数错区分开）。"""
+        return isinstance(exc, TemuGatewayError) and str(exc.error_code or "").upper() in (
+            _PROVIDER_CREDENTIAL_ERRORS
         )
 
     def _service(actor: Actor) -> TemuPublishService:
@@ -137,6 +168,19 @@ def create_temu_publish_router(
                 status = 502
             else:
                 status = 400
+            # 6000002 = Temu 说「货品类目属性更新」。本地类目/属性表缓存有 1 小时 TTL，
+            # 这段时间里组出来的 pid/vid 全是旧的，提交必被拒 —— 而且用户刷新页面也还是
+            # 命中同一份缓存，会一直卡在同一个错上。这里直接清掉，让下一次请求拿到新表。
+            if str(exc.error_code or "") == _CATEGORY_ATTRS_CHANGED:
+                # ⚠️ 不能用 service.client()：_handle 是模块级闭包，拿不到当前 actor，
+                # 那会构造出一个「按默认凭证」的实例，清的是它自己的空缓存 ——
+                # 真正在用的那份纹丝不动，于是「点了刷新、错误照旧」。
+                # 类目/属性缓存已经放到模块级共享，这里直接清那份。
+                try:
+                    dropped = clear_shared_catalog_cache()
+                    logger.warning("类目属性已更新，清掉共享类目/属性缓存 %s 条", dropped)
+                except Exception:  # noqa: BLE001 - 清缓存失败不能盖掉原始错误
+                    logger.warning("清类目缓存失败", exc_info=True)
             # 把上游原话打进日志：access log 只有状态码，出问题时无从下手
             logger.warning(
                 "Temu 拒绝请求 api_type=%s error_code=%s http=%s message=%s",
@@ -262,7 +306,48 @@ def create_temu_publish_router(
             with _LIBRARY_CACHE_LOCK:
                 _LIBRARY_CACHE[key] = (now, cached)
 
-        return paginate_draft_library(cached, source=source, query=q, page=page, page_size=page_size)
+        # 已经成功发布过的草稿从库里去掉：同一件商品不该让人再发一次。
+        # 这里每次实时查（draft_id 有索引、量很小），发布完刷新就能立刻消失，
+        # 不受上面 60 秒聚合缓存的影响。
+        published = submission_ledger.published_draft_ids(database_path, actor.id)
+        entries = [item for item in cached.get("entries", []) if item.get("id") not in published]
+        view = {**cached, "entries": entries}
+        return paginate_draft_library(view, source=source, query=q, page=page, page_size=page_size)
+
+    # ---------- 发布历史 ----------
+
+    @router.get("/publish-history")
+    def publish_history(
+        status: str = Query(default="", description="success / failed，留空=全部"),
+        q: str = Query(default="", description="搜标题 / 商品 id / 草稿 id / 类目名"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=30, ge=1, le=200),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """成功与失败的发布记录分开取：成功看商品 id，失败看原因。"""
+        submission_ledger.ensure_table(database_path)
+        data = submission_ledger.list_history(
+            database_path,
+            actor.id,
+            status=status,
+            q=q,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+        )
+        return {**data, "page": page, "page_size": page_size}
+
+    @router.post("/publish-history/backfill")
+    def backfill_publish_history(
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """补齐老记录的主图/类目名（2026-11-04 之前发布的记录没有这两列）。
+
+        历史页发现有「有商品 id 但没图」的记录时才调；补到就写回台账，不会每次都打网关。
+        """
+        try:
+            return _service(actor).backfill_history_display()
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
 
     # ---------- 发布配套查询 ----------
 
@@ -496,14 +581,15 @@ def create_temu_publish_router(
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 
-    @router.get("/dimension-check/{task_id}")
+    @router.get("/dimension-check/{unique_id}")
     def dimension_check_result(
-        task_id: str,
+        unique_id: str,
         mall_id: str = Query(default=""),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
+        """查尺寸图检测结果。路径参数就是提交返回的 uniqueId（不是 taskId）。"""
         try:
-            return _service(actor).dimension_check_result(task_id, mall_id=mall_id)
+            return _service(actor).dimension_check_result(unique_id, mall_id=mall_id)
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 
@@ -520,8 +606,26 @@ def create_temu_publish_router(
         用户确认要重复上架时带 force=true。
         """
         try:
+            # 发布前顺手核对一次服务商凭据（5 分钟内核对过就跳过，不额外耗时）：
+            # 服务商换过 token 的话，这里会先换成新的，避免用户撞一次 403。
+            _sync_gateway(actor)
             return _service(actor).publish_goods(payload, force=force)
         except Exception as exc:  # noqa: BLE001
+            if _is_provider_credential_error(exc):
+                # 本地存的那份被服务商作废了（重置 token / 停用 client）：
+                # 忘掉指纹、立刻按服务器上的最新值覆盖，然后让用户重试一次。
+                mark_provider_credentials_stale(database_path, actor.id)
+                if _sync_gateway(actor, force=True):
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error_code": "TEMU_CREDENTIAL_REFRESHED",
+                            "message": (
+                                "服务商凭据已过期，已自动更新为服务器上的最新值 —— "
+                                "请再点一次「提交发布」。若仍失败，联系管理员确认服务商凭据是否已更换。"
+                            ),
+                        },
+                    ) from exc
             raise _handle(exc) from exc
 
     return router

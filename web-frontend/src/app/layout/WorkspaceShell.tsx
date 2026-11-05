@@ -51,6 +51,7 @@ const ComboKitHistoryPage = lazy(() => import("../../modules/combo_kit/pages/Com
 const DimensionCanvasPage = lazy(() => import("../../modules/product_processing/pages/DimensionCanvasPage").then((m) => ({ default: m.DimensionCanvasPage })));
 const TemuPublishPage = lazy(() => import("../../modules/temu_publish/pages/TemuPublishPage").then((m) => ({ default: m.TemuPublishPage })));
 const TemuDraftLibraryPage = lazy(() => import("../../modules/temu_publish/pages/TemuDraftLibraryPage").then((m) => ({ default: m.TemuDraftLibraryPage })));
+const TemuPublishHistoryPage = lazy(() => import("../../modules/temu_publish/pages/TemuPublishHistoryPage").then((m) => ({ default: m.TemuPublishHistoryPage })));
 const PodCustomizationPage = lazy(() => import("../../modules/pod_customization/pages/PodCustomizationPage").then((m) => ({ default: m.PodCustomizationPage })));
 const PodSemiCustomizationPage = lazy(() => import("../../modules/pod_semi_customization/pages/PodSemiCustomizationPage").then((m) => ({ default: m.PodSemiCustomizationPage })));
 const PodFreeCustomizationPage = lazy(() => import("../../modules/pod_free_customization/pages/PodFreeCustomizationPage").then((m) => ({ default: m.PodFreeCustomizationPage })));
@@ -64,6 +65,7 @@ import type { ProfitActivityPrefill } from "../../modules/profit_activity/types/
 import type { DimensionCanvasItem, DimensionNotification } from "../../modules/product_processing/types/dimensionCanvas";
 import { DimensionNotificationRefreshFence } from "../../modules/product_processing/data/dimensionNotificationRefresh";
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
+import { WorkspaceErrorBoundary } from "../../shared/components/WorkspaceErrorBoundary";
 import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
 import type { BrandLogoRect } from "../../shared/brand";
 import {
@@ -163,7 +165,14 @@ function navigationPathForModule(id: WorkspaceModuleId, groups: WorkspaceNavigat
 }
 
 function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): WorkspaceTab {
-  const module = flatModules.find((item) => item.id === id)!;
+  const module = flatModules.find((item) => item.id === id);
+  // 兜底而不是 `!`：workspacePageModules 里漏登记某个子模块 id 时（发布历史就这么漏过），
+  // 解构 undefined.label 会把这个 WorkspaceShell 抛崩 —— 用户看到的是整页白屏，
+  // 而真正的原因只是一行注册表少了一项。缺了就退回「用 id 当标题」并留一条告警。
+  if (!module) {
+    console.warn(`[workspace] 模块 ${id} 没有在 workspacePageModules 里登记，已按占位页签打开`);
+    return { key: id, moduleId: id, label: id, icon: "", iconClass: "" };
+  }
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
 }
 
@@ -1149,6 +1158,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = (
           <TemuDraftLibraryPage
             onCreateProduct={() => openModule("temu_publish")}
+            onOpenHistory={() => openModule("temu_publish_history")}
             onUseDraft={(prefill) => {
               // 草稿库 → 发布商品：挂载态走事件（页签已开时 openModule 只切不重建），
               // 首次挂载走 sessionStorage 兜底。
@@ -1157,6 +1167,11 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
               openModule("temu_publish");
             }}
           />
+        );
+        break;
+      case "temu_publish_history":
+        content = (
+          <TemuPublishHistoryPage onOpenDraftLibrary={() => openModule("temu_draft_library")} />
         );
         break;
       case "pod_customization":
@@ -1228,9 +1243,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <PersonalCenterPage feedbackPrefill={feedbackPrefill} panel={personalPanel} onPanelChange={setPersonalPanel} />;
         break;
       default:
-        content = <EmptyModulePage module={modulesById.get(tab.moduleId)!} />;
+        content = <EmptyModulePage module={modulesById.get(tab.moduleId)} moduleId={tab.moduleId} />;
     }
-    return <Suspense fallback={<ModuleFallback />}>{content}</Suspense>;
+    // 一个模块崩了不该拖垮整个工作台：按页签 key 兜住，切走再切回自动重试。
+    return (
+      <WorkspaceErrorBoundary resetKey={tab.key} scope={tab.label}>
+        <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
+      </WorkspaceErrorBoundary>
+    );
   };
 
   const sidebarIsCollapsed = sidebarCollapsed || isNarrowDesktop;

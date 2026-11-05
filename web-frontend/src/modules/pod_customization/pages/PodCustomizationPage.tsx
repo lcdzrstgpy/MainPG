@@ -326,10 +326,15 @@ export function PodCustomizationPage({ isActive = true }: Props) {
       if (stopped || requestGenerationRef.current !== generation) return;
 
       if (templateResult.status === "fulfilled") {
-        setTemplates(templateResult.value.templates);
+        // 接口回空对象（换版/网关抽风）时 `templates` 会是 undefined：
+        // 直接 setTemplates 再 .some()/.map() 会让整页报错。统一收敛成数组。
+        const list = Array.isArray(templateResult.value?.templates)
+          ? templateResult.value.templates
+          : [];
+        setTemplates(list);
         setSelectedTemplateId((current) => {
-          const fallback = templateResult.value.templates[0]?.id || "";
-          return current && templateResult.value.templates.some((template) => template.id === current) ? current : fallback;
+          const fallback = list[0]?.id || "";
+          return current && list.some((template) => template.id === current) ? current : fallback;
         });
       }
       if (historyResult.status === "fulfilled") {
@@ -1124,7 +1129,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
               </button>
               <span className={composition ? "pod-composition-entry-summary" : "pod-composition-entry-summary is-empty"}>
                 {composition
-                  ? `当前生效模板：${composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图")}`
+                  ? `当前生效模板：${composition.is_builtin ? "系统默认模板（默认机位）" : ((composition.name ?? "").trim() || "未命名构图")}`
                   : "未配置：使用系统默认模板"}
               </span>
               <label className="pod-structure-toggle">
@@ -1379,7 +1384,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         onActiveChanged={(active) => {
           setComposition(active);
           if (!active) setNotice("已无生效模板，四张图将使用系统默认模板。");
-          else setNotice(active.is_builtin ? "当前使用系统默认模板（默认机位）。" : `当前生效模板：${active.name.trim() || "未命名构图"}。`);
+          else setNotice(active.is_builtin ? "当前使用系统默认模板（默认机位）。" : `当前生效模板：${(active.name ?? "").trim() || "未命名构图"}。`);
         }}
       />
     </section>
