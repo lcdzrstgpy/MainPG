@@ -160,6 +160,9 @@ class GoodsDraftInput(BaseModel):
     # 也用来在发布历史里显示「这条是从哪来的」。手填/无来源时留空。
     draft_id: str = Field(default="", max_length=160)
     category_ids: list[int] = Field(min_length=1, max_length=10)
+    # 类目路径名（和 category_ids 一一对应，只用于发布历史展示）。
+    # 只存 id 的话历史页只能显示「类目 31035」，用户对不上自己卖的是什么。
+    category_names: list[str] = Field(default_factory=list, max_length=10)
     title: str = Field(min_length=1, max_length=255)
     # 英文标题（选填）：填了就作为 productI18nReqs 的 en 标题，不填则按标题内容自动判断。
     title_en: str = Field(default="", max_length=255)

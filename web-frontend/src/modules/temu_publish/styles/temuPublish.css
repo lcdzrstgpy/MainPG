@@ -115,7 +115,7 @@
 
 .temu-btn-primary {
   border-color: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
   background: var(--theme-module-primary-strong, #087bf5);
 }
 
@@ -558,7 +558,7 @@ textarea.temu-input {
 
 .temu-draft-tab.is-active {
   border-color: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
   background: var(--theme-module-primary-strong, #087bf5);
 }
 
@@ -797,7 +797,7 @@ textarea.temu-input {
 .temu-draft-table th {
   padding: 10px;
   border-bottom: 1px solid #dfe9f0;
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
   font-size: 0.72rem;
   font-weight: 850;
   letter-spacing: 0.02em;
@@ -807,7 +807,7 @@ textarea.temu-input {
 .temu-draft-table td {
   padding: 12px 10px;
   border-bottom: 1px solid #eef3f7;
-  color: #2c4759;
+  color: var(--theme-text-secondary, #2c4759);
   vertical-align: middle;
 }
 .temu-draft-table tbody tr:hover {
@@ -823,7 +823,8 @@ textarea.temu-input {
   width: 19%;
 }
 .temu-draft-table .col-image {
-  width: 62px;
+  /* 缩略图放到 76px，列不能再是 62px */
+  width: 88px;
 }
 /* 类目：发布前必须选到叶子类目，独立成列，不再挤在「站点」里 */
 .temu-draft-table .col-cat {
@@ -851,7 +852,7 @@ textarea.temu-input {
 }
 .temu-draft-table .col-time {
   width: 80px;
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
   font-size: 0.74rem;
   white-space: nowrap;
 }
@@ -888,7 +889,7 @@ textarea.temu-input {
   display: -webkit-box;
   overflow: hidden;
   margin: 0 0 5px;
-  color: #1f3b50;
+  color: var(--theme-text-primary, #1f3b50);
   font-size: 0.82rem;
   font-weight: 700;
   line-height: 1.45;
@@ -1039,7 +1040,7 @@ textarea.temu-input {
   height: 30px;
   border: 1px solid #e0e9f0;
   border-radius: 8px;
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
   background: #fff;
   font-size: 1.1rem;
   cursor: pointer;
@@ -1183,7 +1184,7 @@ textarea.temu-input {
 }
 .temu-bulk-section p {
   margin: 0 0 6px;
-  color: #7b93a8;
+  color: var(--theme-text-muted, #7b93a8);
   font-size: 0.7rem;
   font-weight: 850;
   letter-spacing: 0.02em;
@@ -1197,7 +1198,7 @@ textarea.temu-input {
   padding: 5px 10px;
   border: 1px solid #e2ecf3;
   border-radius: 7px;
-  color: #2c4759;
+  color: var(--theme-text-secondary, #2c4759);
   background: #fbfdfe;
   font-size: 0.75rem;
   cursor: pointer;
@@ -1218,7 +1219,7 @@ textarea.temu-input {
 }
 .temu-bulk-tip {
   margin: 0;
-  color: #7b93a8;
+  color: var(--theme-text-muted, #7b93a8);
   font-size: 0.72rem;
 }
 .temu-bulk-apply {
@@ -1271,7 +1272,7 @@ textarea.temu-input {
   padding: 7px 9px;
   border: 0;
   border-radius: 6px;
-  color: #2c4759;
+  color: var(--theme-text-secondary, #2c4759);
   background: transparent;
   font-size: 0.78rem;
   text-align: left;
@@ -1335,7 +1336,7 @@ textarea.temu-input {
   gap: 12px;
   flex-wrap: wrap;
   padding: 12px 4px 2px;
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
   font-size: 0.75rem;
 }
 .temu-draft-pager-ctrl {
@@ -1348,7 +1349,7 @@ textarea.temu-input {
   height: 28px;
   border: 1px solid #d9e6ee;
   border-radius: 7px;
-  color: #2c4759;
+  color: var(--theme-text-secondary, #2c4759);
   background: #fff;
   cursor: pointer;
 }
@@ -1459,7 +1460,7 @@ textarea.temu-input {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
   background: #eef3f7;
   font-size: 0.7rem;
   font-weight: 900;
@@ -1539,7 +1540,7 @@ textarea.temu-input {
   margin-bottom: 10px;
 }
 .temu-recent-row > span {
-  color: #7b93a8;
+  color: var(--theme-text-muted, #7b93a8);
   font-size: 0.72rem;
   font-weight: 850;
 }
@@ -1547,7 +1548,7 @@ textarea.temu-input {
   padding: 5px 11px;
   border: 1px solid #d7e8f1;
   border-radius: 999px;
-  color: #2c4759;
+  color: var(--theme-text-secondary, #2c4759);
   background: #f7fbfd;
   font-size: 0.74rem;
   font-weight: 700;
@@ -1605,8 +1606,8 @@ textarea.temu-input {
 }
 .temu-img-thumb {
   display: block;
-  width: 72px;
-  height: 72px;
+  width: 88px;
+  height: 88px;
   padding: 0;
   overflow: hidden;
   border: 1px solid #dde9f1;
@@ -1647,7 +1648,7 @@ textarea.temu-input {
   padding: 0 3px;
   border: 1px solid #e0ebf2;
   border-radius: 5px;
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
   background: #fff;
   font-size: 0.66rem;
   line-height: 1;
@@ -2280,19 +2281,20 @@ textarea.temu-input {
 .is-console .temu-variant-table {
   display: grid;
   gap: 6px;
-  min-width: 720px;
+  min-width: 756px;
 }
 
 .is-console .temu-variant-row {
   display: grid;
-  grid-template-columns: 46px 96px 62px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+  /* 第一列是预览图：留够 72px，否则图被容器压成 34px 看不清 */
+  grid-template-columns: 72px 96px 62px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
   align-items: center;
   gap: 6px;
 }
 
 /* 无销售属性的类目（如桌布/亚麻布）：没有颜色/尺码变种，这两列不渲染 */
 .is-console .temu-variant-row.is-single {
-  grid-template-columns: 46px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+  grid-template-columns: 72px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
 }
 
 .is-console .temu-variant-row.is-head {
@@ -2319,8 +2321,30 @@ textarea.temu-input {
 .is-console .temu-variant-thumb {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 68px;
+  height: 68px;
+}
+
+/* 变种行里的图单独定尺寸：全局 .temu-img-thumb 是 72px（图片条用），
+   这里给 64px，配合 68px 的格子留 2px 余量 */
+.is-console .temu-variant-row .temu-img-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+}
+
+/* 变种行里的空图占位必须撑满 64px 格子：父级没有固定宽度时 width:100%
+   会算成 0，只剩 2px 边框 —— 看起来就是「一根竖线」，用户以为图挂了 */
+.is-console .temu-variant-row .temu-img-empty,
+.is-console .temu-variant-row .temu-img-strip-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11px;
 }
 
 .temu-img-empty {
@@ -2332,9 +2356,11 @@ textarea.temu-input {
 }
 
 .is-console .temu-variant-thumb .temu-img-thumb {
-  width: 34px;
-  height: 34px;
-  border-radius: 6px;
+  /* 这里原来是 34px，把图压成小方块（用户反馈「图太小」的直接原因）；
+     和 .is-console .temu-variant-row .temu-img-thumb 保持一致 */
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
 }
 
 .is-console .temu-variant-thumb-url {
@@ -2568,7 +2594,7 @@ textarea.temu-input {
 }
 
 .temu-template-picker > button em {
-  color: #7b93a8;
+  color: var(--theme-text-muted, #7b93a8);
   font-style: normal;
   font-size: 11px;
 }
@@ -2752,7 +2778,7 @@ textarea.temu-input {
 }
 
 .temu-confirm-title span {
-  color: #7b93a8;
+  color: var(--theme-text-muted, #7b93a8);
   font-size: 0.72rem;
   line-height: 1.5;
 }
@@ -2776,14 +2802,14 @@ textarea.temu-input {
 }
 
 .temu-confirm-grid dt {
-  color: #7b93a8;
+  color: var(--theme-text-muted, #7b93a8);
   font-size: 0.68rem;
 }
 
 .temu-confirm-grid dd {
   margin: 0;
   overflow: hidden;
-  color: #2c4759;
+  color: var(--theme-text-secondary, #2c4759);
   font-size: 0.78rem;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -3136,7 +3162,7 @@ textarea.temu-input {
 }
 /* 草稿自带的分类（POD 模板自由文本 / AI 采集路径）：中性色，别当错误 */
 .temu-draft-table .col-cat small.is-draft {
-  color: #6b8296;
+  color: var(--theme-text-muted, #6b8296);
 }
 /* 按标题自动匹配出来的 Temu 类目：是「有」但不是人工确认过，用橙色提醒看一眼 */
 .temu-draft-table .col-cat small.is-auto {
@@ -3317,7 +3343,7 @@ textarea.temu-input {
 }
 
 .is-console .temu-sec-head.is-active .temu-sec-num {
-  color: #ffffff;
+  color: var(--theme-on-primary, #ffffff);
   background: var(--theme-module-primary-strong, #087bf5);
 }
 
@@ -3428,7 +3454,7 @@ textarea.temu-input {
 /* 主按钮：实心主色 + 顶部一道内高光 + 柔和下沉阴影，比单纯 brightness 有质感 */
 .temu-btn-primary {
   border-color: transparent;
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 58%),
     var(--theme-module-primary-strong, #087bf5);
@@ -3782,7 +3808,7 @@ textarea.temu-input {
 .is-console .temu-sec-head.is-active .temu-sec-num {
   border-color: transparent;
   background: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
 }
 
 /* ---- 3. 表单字段 ---- */
@@ -3841,13 +3867,13 @@ textarea.temu-input {
 .is-console .temu-btn-primary {
   border-color: var(--theme-module-primary-strong, #087bf5);
   background: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
   background-image: none;
 }
 
 .is-console .temu-btn-primary:hover:not(:disabled) {
   background: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
   filter: brightness(1.06);
   box-shadow: none;
   transform: none;
@@ -3881,8 +3907,9 @@ textarea.temu-input {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--temu-text-muted);
-  font-size: 12.5px;
+  /* 五个区块名是导航主力，别用弱化灰：深色主题（diamond）下灰字几乎看不见 */
+  color: var(--temu-text);
+  font-size: 13.5px;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
@@ -3897,11 +3924,11 @@ textarea.temu-input {
 .temu-stepbar-num {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: 19px;
+  height: 19px;
   border: 1px solid var(--theme-module-border-strong, #cfdae4);
   border-radius: 5px;
-  font-size: 10.5px;
+  font-size: 11.5px;
   line-height: 1;
 }
 
@@ -3923,7 +3950,7 @@ textarea.temu-input {
 .temu-stepbar-item.is-active .temu-stepbar-num {
   border-color: transparent;
   background: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
 }
 
 /* ---- 7. 右侧检查栏：去阴影、缩内边距 ---- */
@@ -4273,7 +4300,7 @@ textarea.temu-input {
 
 .is-console .temu-cat-selected-label {
   background: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
   font-weight: 600;
 }
 
@@ -4426,38 +4453,101 @@ textarea.temu-input {
 .temu-history-page {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 20px 22px 28px;
-  max-width: 1080px;
+  gap: 16px;
+  padding: 22px 24px 32px;
+  max-width: 1180px;
   color: var(--theme-text-primary, #1f2d3d);
 }
+
+/* ---------- 标题 + 统计 ---------- */
 
 .temu-history-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 12px;
-  padding-bottom: 12px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--theme-module-border, #e4ecf3);
 }
 
-.temu-history-head h1 {
+.temu-history-title h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
+  letter-spacing: 0.2px;
 }
 
-.temu-history-head p {
-  margin: 4px 0 0;
+.temu-history-title p {
+  margin: 6px 0 0;
   color: var(--theme-text-muted, #7c8fa3);
   font-size: 12.5px;
   line-height: 1.5;
 }
 
+.temu-history-stats {
+  display: flex;
+  gap: 8px;
+}
+
+.temu-history-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 82px;
+  padding: 9px 15px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 12px;
+  background: var(--theme-module-surface-raised, var(--theme-module-surface, #fff));
+  box-shadow: var(--theme-shadow-soft, 0 1px 2px rgba(16, 40, 66, 0.05));
+}
+
+.temu-history-stat span {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}
+
+.temu-history-stat strong {
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+
+.temu-history-stat.is-success strong {
+  color: #1f7a4c;
+}
+
+.temu-history-stat.is-warn {
+  border-color: rgba(214, 69, 69, 0.35);
+  background: rgba(214, 69, 69, 0.06);
+}
+
+.temu-history-stat.is-warn strong {
+  color: #c0392b;
+}
+
+.temu-history-stat.is-rate strong {
+  color: var(--theme-primary, #087bf5);
+}
+
+/* ---------- 工具条：状态页签 + 搜索 ---------- */
+
+.temu-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
 .temu-history-tabs {
   display: flex;
   gap: 6px;
-  margin-left: auto;
+  padding: 3px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft, #f2f6fa);
 }
 
 .temu-history-tab {
@@ -4465,145 +4555,1714 @@ textarea.temu-input {
   align-items: center;
   gap: 6px;
   min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  padding: 0 14px;
+  border: 1px solid transparent;
   border-radius: 8px;
-  background: var(--theme-module-surface, #fff);
-  color: var(--theme-text-primary, #1f2d3d);
+  background: transparent;
+  color: var(--theme-text-muted, #7c8fa3);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.temu-history-tab:hover {
+  color: var(--theme-text-primary, #1f2d3d);
 }
 
 .temu-history-tab em {
-  padding: 0 5px;
+  padding: 0 6px;
   border-radius: 999px;
-  background: var(--theme-module-surface-soft, #f2f6fa);
-  color: var(--theme-text-muted, #7c8fa3);
+  background: var(--theme-module-surface, #fff);
+  color: inherit;
   font-size: 11px;
   font-style: normal;
   font-variant-numeric: tabular-nums;
 }
 
 .temu-history-tab.is-active {
-  border-color: var(--theme-primary, #087bf5);
-  color: var(--theme-primary, #087bf5);
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #1f2d3d);
+  box-shadow: var(--theme-shadow-soft, 0 1px 2px rgba(16, 40, 66, 0.08));
 }
 
 .temu-history-tab.is-active em {
   background: var(--theme-primary, #087bf5);
-  color: #fff;
+  color: var(--theme-on-primary, #fff);
 }
+
+.temu-history-tab.is-active.is-danger em {
+  background: #d64545;
+}
+
+.temu-history-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 260px;
+  max-width: 380px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.temu-history-search:focus-within {
+  border-color: var(--theme-primary, #087bf5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #087bf5) 14%, transparent);
+}
+
+.temu-history-search-icon {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 15px;
+}
+
+.temu-history-search input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.temu-history-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.temu-history-search-clear {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.temu-history-search-clear:hover {
+  color: var(--theme-primary, #087bf5);
+}
+
+/* ---------- 空态 / 错误 ---------- */
 
 .temu-history-empty,
 .temu-history-error {
   margin: 0;
-  padding: 18px;
+  padding: 26px;
   border: 1px dashed var(--theme-module-border-strong, #d5e0e9);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--theme-text-muted, #7c8fa3);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.7;
+  text-align: center;
 }
 
 .temu-history-error {
   border-style: solid;
   border-color: #d93025;
   color: #a5342f;
+  text-align: left;
 }
+
+/* ---------- 列表 ---------- */
 
 .temu-history-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.temu-history-row {
-  padding: 10px 12px;
-  border: 1px solid var(--theme-module-border, #e4ecf3);
-  border-radius: 10px;
-  background: var(--theme-module-surface, #fff);
+.temu-history-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.temu-history-main {
+.temu-history-day {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding-left: 2px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+}
+
+.temu-history-day-count {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.temu-history-row {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-left: 4px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 12px;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: var(--theme-shadow-soft, 0 1px 2px rgba(16, 40, 66, 0.05));
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.temu-history-row:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--theme-shadow-raised, 0 8px 22px rgba(16, 40, 66, 0.1));
+}
+
+.temu-history-row.is-success {
+  border-left-color: #2f9e63;
+}
+
+.temu-history-row.is-failed {
+  border-left-color: #d64545;
+}
+
+.temu-history-thumb {
+  flex: 0 0 auto;
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--theme-module-surface-soft, #f2f6fa);
+}
+
+.temu-history-thumb.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--theme-module-border-strong, #d5e0e9);
+  background:
+    repeating-linear-gradient(
+      45deg,
+      transparent 0 6px,
+      color-mix(in srgb, var(--theme-text-muted, #7c8fa3) 8%, transparent) 6px 12px
+    ),
+    var(--theme-module-surface-soft, #f2f6fa);
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+}
+
+.temu-history-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.temu-history-row-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.temu-history-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .temu-history-badge {
   flex: 0 0 auto;
-  padding: 2px 8px;
+  padding: 2px 10px;
   border-radius: 999px;
   font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 /* 成功用绿、失败用红（国内习惯：红=异常，不是涨跌语义） */
 .temu-history-badge.is-success {
-  background: #e8f8ef;
-  color: #146c43;
+  background: var(--theme-success-soft);
+  color: var(--theme-success);
 }
 
 .temu-history-badge.is-failed {
-  background: #fdeceb;
-  color: #a5342f;
+  background: var(--theme-danger-soft);
+  color: var(--theme-danger);
 }
 
-.temu-history-text {
+.temu-history-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.temu-history-tag {
+  max-width: 320px;
+  overflow: hidden;
+  padding: 2px 9px;
+  border-radius: 6px;
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-history-tag.is-source {
+  background: color-mix(in srgb, var(--theme-primary, #087bf5) 12%, transparent);
+  color: var(--theme-primary, #087bf5);
+  font-weight: 600;
+}
+
+.temu-history-tag.is-price {
+  background: var(--theme-warning-soft);
+  color: var(--theme-warning);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.temu-history-tag.is-shop {
+  /* 店铺标签：深色主题下 #4f46b8 在 10% 靛蓝底上几乎看不见 → 跟主色走 */
+  background: color-mix(in srgb, var(--theme-primary, #087bf5) 10%, transparent);
+  color: var(--theme-primary, #4f46b8);
+}
+
+.temu-history-row-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.temu-history-time {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+}
+
+.temu-history-gid {
+  padding: 1px 8px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-history-gid b {
+  font-weight: 600;
+}
+
+.temu-history-copy,
+.temu-history-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-primary, #087bf5);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.temu-history-copy:hover,
+.temu-history-link:hover {
+  text-decoration: underline;
+}
+
+/* 复制按钮紧跟商品 id：放行尾会跟 id 隔一大片空白，反而像另一个字段 */
+.temu-history-row-foot > .temu-history-copy {
+  margin-left: 2px;
+}
+
+/* ---------- 失败块 ---------- */
+
+.temu-history-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 10px 12px;
+  border: 1px solid rgba(214, 69, 69, 0.18);
+  border-radius: 10px;
+  background: rgba(214, 69, 69, 0.06);
+}
+
+.temu-history-failure-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.temu-history-code {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(214, 69, 69, 0.14);
+  color: #a5342f;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-history-reason {
+  margin: 0;
+  color: #a5342f;
+  font-size: 12.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* 长原因先折三行，点「展开全文」看全 */
+.temu-history-reason.is-clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.temu-history-retry {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 8px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.temu-history-retry:hover {
+  border-color: var(--theme-primary, #087bf5);
+  color: var(--theme-primary, #087bf5);
+}
+
+.temu-history-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 6px;
+}
+
+@media (max-width: 720px) {
+  .temu-history-page {
+    padding: 16px 14px 24px;
+  }
+
+  .temu-history-stats {
+    width: 100%;
+  }
+
+  .temu-history-stat {
+    flex: 1;
+  }
+
+  .temu-history-search {
+    max-width: none;
+    margin-left: 0;
+  }
+
+  .temu-history-thumb {
+    width: 54px;
+    height: 54px;
+  }
+}
+
+/* ================================================================
+   草稿库改版（2026-11-04）
+   —— 头部换成与「发布历史」同一套语言：白底标题 + 可点的统计卡 + 右侧动作；
+      三个并列下拉收成一个批量入口，选中后直接出一排快捷动作。
+   ================================================================ */
+
+.temu-library-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 2px 16px;
+  border-bottom: 1px solid var(--theme-module-border, #e4ecf3);
+}
+
+.temu-library-title .eyebrow {
+  margin: 0 0 4px;
+  color: var(--theme-primary, #087bf5);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.temu-library-title h1 {
+  margin: 0;
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.temu-library-title p:not(.eyebrow) {
+  margin: 6px 0 0;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* ---------- 统计卡（同时是来源筛选） ---------- */
+
+.temu-library-stats {
+  display: flex;
+  gap: 8px;
+}
+
+.temu-library-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 86px;
+  padding: 8px 15px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 12px;
+  background: var(--theme-module-surface-raised, var(--theme-module-surface, #fff));
+  box-shadow: var(--theme-shadow-soft, 0 1px 2px rgba(16, 40, 66, 0.05));
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.temu-library-stat:hover {
+  transform: translateY(-1px);
+  border-color: var(--theme-module-border-strong, #d5e0e9);
+}
+
+.temu-library-stat span {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}
+
+.temu-library-stat strong {
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+
+.temu-library-stat.is-ai strong {
+  color: #087bf5;
+}
+
+.temu-library-stat.is-pod strong {
+  color: #7c5cff;
+}
+
+.temu-library-stat.is-active {
+  border-color: var(--theme-primary, #087bf5);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #087bf5) 14%, transparent);
+}
+
+.temu-library-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------- 工具条：批量入口 + 搜索 ---------- */
+
+.temu-library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.temu-library-toolbar .temu-draft-search {
+  flex: 0 1 300px;
+  margin-left: auto;
+}
+
+.temu-library-toolbar .temu-draft-search .temu-input {
+  width: 100%;
+  min-height: 32px;
+}
+
+/* 批量条在工具条里：不要它自己那条分隔线和上下留白 */
+.temu-library-toolbar .temu-bulk-bar {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+  padding: 0;
+  border-bottom: 0;
+}
+
+/* ---------- 批量条：选中态变成一排动作 ---------- */
+
+.temu-bulk-bar {
+  position: relative;
+}
+
+.temu-bulk-bar.has-selection {
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--theme-primary, #087bf5) 26%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--theme-primary, #087bf5) 6%, transparent);
+}
+
+.temu-bulk-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 12px;
+}
+
+.temu-bulk-count b {
+  color: var(--theme-primary, #087bf5);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-bulk-count em {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-style: normal;
+}
+
+.temu-bulk-action {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+  border-radius: 9px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #1f2d3d);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+
+.temu-bulk-action:hover:not(:disabled) {
+  border-color: var(--theme-primary, #087bf5);
+  color: var(--theme-primary, #087bf5);
+}
+
+.temu-bulk-action:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.temu-bulk-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.temu-bulk-action.is-primary {
+  border-color: var(--theme-primary, #087bf5);
+  background: var(--theme-primary, #087bf5);
+  color: var(--theme-on-primary, #fff);
+}
+
+.temu-bulk-action.is-primary:hover:not(:disabled) {
+  color: var(--theme-on-primary, #fff);
+  filter: brightness(1.04);
+}
+
+.temu-bulk-action.is-danger {
+  border-color: rgba(214, 69, 69, 0.35);
+  color: #c0392b;
+}
+
+.temu-bulk-action.is-danger:hover:not(:disabled) {
+  border-color: #d64545;
+  color: #d64545;
+}
+
+.temu-bulk-hint {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+}
+
+.temu-bulk-trigger.is-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-weight: 500;
+}
+
+.temu-bulk-trigger.is-ghost:hover,
+.temu-bulk-trigger.is-ghost.is-open {
+  border-color: var(--theme-module-border, #e4ecf3);
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  color: var(--theme-text-primary, #1f2d3d);
+}
+
+.temu-bulk-back {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-muted, #7c8fa3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.temu-bulk-back:hover {
+  color: var(--theme-primary, #087bf5);
+}
+
+.temu-bulk-panel {
+  border-color: var(--theme-module-border, #e4ecf3);
+  background: var(--theme-card-bg-solid, var(--theme-module-surface, #fff));
+  color: var(--theme-text-primary, #1f2d3d);
+}
+
+.temu-bulk-section p {
+  color: var(--theme-text-muted, #7c8fa3);
+}
+
+.temu-bulk-items button {
+  border-color: var(--theme-module-border, #e4ecf3);
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #1f2d3d);
+}
+
+.temu-bulk-items button.is-danger {
+  border-color: rgba(214, 69, 69, 0.3);
+  color: #c0392b;
+}
+
+.temu-bulk-items button.is-danger:hover:not(:disabled) {
+  border-color: #d64545;
+  background: rgba(214, 69, 69, 0.06);
+}
+
+.temu-bulk-tip {
+  color: var(--theme-text-muted, #7c8fa3);
+}
+
+/* ---------- 表格：行更高、缩略图更大、选中更明显 ---------- */
+
+.temu-draft-table {
+  font-size: 0.82rem;
+}
+
+.temu-draft-table th {
+  padding: 9px 10px 11px;
+  border-bottom: 1px solid var(--theme-module-border, #e4ecf3);
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.temu-draft-table td {
+  padding: 13px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-module-border, #e4ecf3) 70%, transparent);
+  color: var(--theme-text-primary, #1f2d3d);
+  vertical-align: middle;
+}
+
+.temu-draft-table tbody tr {
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.temu-draft-table tbody tr:hover {
+  background: var(--theme-module-surface-soft, #f7fbfd);
+}
+
+.temu-draft-table tbody tr.is-selected {
+  background: color-mix(in srgb, var(--theme-primary, #087bf5) 7%, transparent);
+  box-shadow: inset 3px 0 0 var(--theme-primary, #087bf5);
+}
+
+.temu-draft-thumb-wrap img,
+.temu-draft-thumb-wrap .temu-draft-thumb {
+  width: 76px;
+  height: 76px;
+  border-color: var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+}
+
+.temu-draft-table .temu-draft-title {
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.temu-draft-table .col-actions {
+  width: 128px;
+  white-space: nowrap;
+}
+
+.temu-draft-table .col-actions .temu-btn {
+  min-height: 26px;
+  margin-left: 4px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
+.temu-draft-table .col-actions .temu-btn:first-child {
+  margin-left: 0;
+}
+
+/* 分页条与卡片底部对齐 */
+.temu-draft-pager {
+  border-top: 1px solid var(--theme-module-border, #e4ecf3);
+  padding-top: 10px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+}
+
+.temu-bulk-action.is-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-weight: 500;
+}
+
+.temu-bulk-action.is-ghost:hover:not(:disabled) {
+  border-color: var(--theme-module-border, #e4ecf3);
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-primary, #1f2d3d);
+}
+
+/* 批次说明跟在表格下面，别被旧的 margin-left:auto 顶到右边 */
+.temu-card > .temu-draft-meta {
+  margin-left: 0;
+}
+
+/* 站点做成一枚小标签：原来跟类目文字挤在同一段里，两行看着像一句话 */
+.temu-draft-table .col-cat .temu-draft-site {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 10.5px;
+  font-style: normal;
+  line-height: 1.7;
+}
+
+.temu-draft-table .col-time {
+  width: 92px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 批次说明当表格脚注：放在表尾、分页条上面，别在工具栏下面空占一行 */
+.temu-draft-meta.is-foot {
+  margin: 0;
+  padding-top: 2px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}
+
+/* 草稿字段列的两枚小芯片：给多一点宽度，别折成三行 */
+.temu-draft-table .col-ready {
+  width: 104px;
+}
+
+/* 复制失败提示：贴在列表上方，几秒后自己消失 */
+.temu-history-toast {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(230, 126, 34, 0.35);
+  border-radius: 10px;
+  background: rgba(230, 126, 34, 0.1);
+  color: #b45309;
+  font-size: 12.5px;
+}
+
+/* 组合已经对齐时按钮变灰：它不是「生成」，点下去不会有任何变化 */
+.temu-variant-generate.is-synced,
+.temu-variant-generate.is-synced:disabled {
+  border-color: var(--theme-module-border-strong, #d5e0e9);
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  color: var(--theme-text-muted, #7c8fa3);
+  cursor: default;
+  opacity: 1;
+}
+
+/* 合规开关（敏感货 / 定制产品）：平铺成两张卡片，别藏进折叠 */
+.temu-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.temu-flag {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.temu-flag:hover {
+  border-color: var(--theme-module-border-strong, #d5e0e9);
+}
+
+.temu-flag.is-on {
+  border-color: rgba(230, 126, 34, 0.45);
+  background: rgba(230, 126, 34, 0.07);
+}
+
+.temu-flag input {
+  margin-top: 2px;
+  accent-color: var(--theme-primary, #087bf5);
+}
+
+.temu-flag span {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
 }
 
-.temu-history-text strong {
-  overflow: hidden;
-  font-size: 13px;
+.temu-flag strong {
+  font-size: 12.5px;
   font-weight: 600;
+}
+
+.temu-flag em {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+/* 轮播图下方的一行硬性要求（对齐店小秘那种说明） */
+.temu-image-rules {
+  margin: 6px 0 0;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* ================= 从成品库挑图 ================= */
+.temu-picker-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 94vw);
+  max-height: 86vh;
+  overflow: hidden;
+}
+
+.temu-picker-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px 10px;
+}
+
+.temu-picker-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.temu-picker-tab {
+  padding: 5px 12px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 999px;
+  background: var(--theme-module-surface, #fff);
+  color: var(--theme-text-secondary, #3b5f7d);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-picker-tab.is-active {
+  border-color: var(--theme-primary, #087bf5);
+  background: var(--theme-primary, #087bf5);
+  color: var(--theme-on-primary, #fff);
+}
+
+.temu-picker-toolbar .temu-input {
+  flex: 1 1 200px;
+  min-height: 32px;
+}
+
+.temu-picker-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 16px 12px;
+  border-top: 1px solid var(--theme-module-border, #e4ecf3);
+}
+
+.temu-picker-group {
+  margin-top: 12px;
+}
+
+.temu-picker-group header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.temu-picker-group header strong {
+  overflow: hidden;
+  font-size: 12.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.temu-history-meta {
+.temu-picker-group header span {
+  flex: 0 0 auto;
   color: var(--theme-text-muted, #7c8fa3);
   font-size: 11.5px;
 }
 
-.temu-history-gid {
-  flex: 0 0 auto;
-  margin-left: auto;
-  padding: 2px 7px;
-  border: 1px solid var(--theme-module-border-strong, #d5e0e9);
+.temu-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+}
+
+.temu-picker-thumb {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f2f6fa);
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+}
+
+.temu-picker-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.temu-picker-thumb.is-picked {
+  border-color: var(--theme-primary, #087bf5);
+}
+
+.temu-picker-thumb.is-added,
+.temu-picker-thumb:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.temu-picker-thumb em {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 2px 0;
+  background: rgba(8, 123, 245, 0.86);
+  color: #fff;
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 600;
+  text-align: center;
+}
+
+.temu-picker-thumb.is-added em {
+  background: rgba(60, 80, 100, 0.8);
+}
+
+.temu-picker-error {
+  margin: 0 16px 8px;
+  color: #c0392b;
+  font-size: 12px;
+}
+
+.temu-picker-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(230, 126, 34, 0.35);
+  border-radius: 10px;
+  background: rgba(230, 126, 34, 0.1);
+  color: #b45309;
+  font-size: 12.5px;
+}
+
+/* ============ 变种行：可编辑的预览图 ============ */
+.temu-variant-thumb {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.temu-thumb-trigger {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  line-height: 0;
+}
+
+/* 换图入口是图右下角那枚小铅笔：整块图点下去是「看大图」，
+   两个动作挤在同一个热区里，之前会同时弹菜单和预览层 */
+.temu-variant-thumb:hover .temu-thumb-edit,
+.temu-thumb-edit:focus-visible {
+  opacity: 1;
+}
+
+.temu-thumb-edit {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
   border-radius: 6px;
+  background: rgba(24, 60, 88, 0.86);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.temu-thumb-menu {
+  /* fixed + 坐标由 JS 算：变种表是 overflow 容器，absolute 会被裁成一条缝 */
+  position: fixed;
+  z-index: 200;
+  display: grid;
+  gap: 2px;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+  background: var(--theme-card-bg-solid, var(--theme-module-surface, #fff));
+  box-shadow: 0 14px 32px rgba(10, 36, 54, 0.18);
+}
+
+.temu-thumb-menu > button {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--theme-text-primary, #1f2d3d);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-thumb-menu > button:hover:not(:disabled) {
+  background: var(--theme-module-surface-soft, #f2f6fa);
+}
+
+.temu-thumb-menu > button:disabled {
+  color: var(--theme-text-muted, #7c8fa3);
+  cursor: not-allowed;
+}
+
+.temu-thumb-menu > button.is-danger {
+  color: #c0392b;
+}
+
+.temu-thumb-url {
+  display: grid;
+  gap: 4px;
+  padding: 2px;
+}
+
+.temu-thumb-url .temu-input {
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.temu-thumb-url button {
+  padding: 5px 8px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 7px;
+  background: var(--theme-module-surface, #fff);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.temu-thumb-carousel {
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  gap: 4px;
+}
+
+.temu-thumb-carousel button {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  aspect-ratio: 1 / 1;
+}
+
+.temu-thumb-carousel img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.temu-thumb-scope {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 8px;
+  padding: 4px;
+  align-items: start;
+}
+
+.temu-thumb-scope > img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+}
+
+.temu-thumb-scope p {
+  margin: 0 0 4px;
+  color: var(--theme-text-muted, #7c8fa3);
   font-size: 11.5px;
+}
+
+.temu-thumb-scope div {
+  display: grid;
+  gap: 2px;
+}
+
+/* =====================================================================
+   发布页「呼吸感」：模块之间的缝隙（2026-11-05）
+   ---------------------------------------------------------------------
+   用户反馈「每个模块挤在一起，信息太多」。原来：
+     区块之间 14px、卡片内 padding 20/22、卡内行距 16、字段行距 12/14。
+   十几行字段连成一片，读起来像一面信息墙。
+   这里只动间距，不动任何字段/功能：
+     · 区块之间        14 → 24px   （最主要的一刀）
+     · 顶栏↔步骤条↔正文 14 → 18px
+     · 正文↔右侧检查栏  14 → 24px
+     · 卡片内边距     20/22 → 24/24，卡内行距 16 → 18
+     · 字段行距       12/14 → 16/18，标签↔输入 6 → 7
+   ===================================================================== */
+
+.temu-publish-page.is-console {
+  gap: 18px;
+}
+
+.is-console .temu-console-body {
+  gap: 24px;
+}
+
+.is-console .temu-console-main {
+  gap: 24px;
+}
+
+.is-console .temu-sec {
+  padding: 24px 24px 26px;
+  gap: 18px;
+}
+
+/* 区块头与内容之间留一口气，标题下面不要再紧贴第一个字段 */
+.is-console .temu-sec-head {
+  padding-bottom: 14px;
+}
+
+.is-console .temu-sec .temu-two-col,
+.is-console .temu-sec .temu-three-col {
+  gap: 16px 18px;
+}
+
+.is-console .temu-sec .temu-field {
+  gap: 7px;
+}
+
+/* 窄屏两列会变成一列，行距再松一档（单列时上下相邻更挤） */
+@media (max-width: 900px) {
+  .is-console .temu-sec .temu-two-col,
+  .is-console .temu-sec .temu-three-col {
+    gap: 18px;
+  }
+}
+
+/* =====================================================================
+   基本信息区块「内部的」结构（2026-11-05）
+   ---------------------------------------------------------------------
+   用户反馈：这一块内部还是挤。原来三件事（选类目 / 规格开关+折叠 / 9 个属性）
+   全铺在同一张卡里，中间没有任何分界；属性还套了第二层边框（卡里套卡）。
+     · 类目段 ↔ 属性段 之间加分隔线 + 22px 留白
+     · 属性说明从标题行里拆出来，单独一行、更小更淡
+     · 必填属性去掉第二层边框（只留淡底），内边距加大
+     · 属性网格 220px → 260px（宽屏 4 列变 3 列，下拉不再被压窄）
+     · 规格开关勾上时整卡描边点亮，长说明强制换行
+   ===================================================================== */
+
+.is-console .temu-sec > .temu-field-attrs {
+  margin-top: 2px;
+  padding-top: 20px;
+  border-top: 1px solid var(--theme-module-border, #e4ecf3);
+  gap: 6px;
+}
+
+.is-console .temu-field-note {
+  color: var(--temu-text-muted);
+  font-size: 11.5px;
+  font-style: normal;
+  line-height: 1.55;
+}
+
+/* 说明和下面那块属性卡之间留一口气 */
+.is-console .temu-field-attrs > .temu-attr-required,
+.is-console .temu-field-attrs > .temu-empty,
+.is-console .temu-field-attrs > .temu-autofill-bar {
+  margin-top: 8px;
+}
+
+/* 必填属性：卡里不套卡 —— 去掉这层 1px 边框，只保留淡底区分 */
+.is-console .temu-attr-required {
+  padding: 16px 18px 18px;
+  border: 0;
+  border-radius: 12px;
+}
+
+/* 3 列之后每个下拉宽出来 ~90px，「请选择」不再被挤到换行 */
+.is-console .temu-attr-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px 16px;
+}
+
+.is-console .temu-attr-children {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px 16px;
+}
+
+/* 规格开关（类目能按颜色/尺码发时）：勾上 = 整卡描边点亮，
+   说明那句「不勾＝单 SKU…」强制换行，别和标题挤在一行里折来折去 */
+.is-console .temu-variant-toggle em {
+  flex-basis: 100%;
+}
+
+.is-console .temu-variant-toggle:has(input:checked) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(
+    in srgb,
+    var(--theme-module-primary-strong, #087bf5) 7%,
+    var(--theme-module-surface-soft, #f7fafc)
+  );
+}
+
+/* ---- 「按规格发（多色/多码）」收成标题行右侧的小胶囊 ----
+   原来它是一整行大卡：一行标题 + 一行说明 + 内边距，把类目条和属性区硬生生隔开，
+   而它只是「发单 SKU 还是多规格」的一个开关。说明进 title，正文只留一枚胶囊。 */
+.is-console .temu-sec > .temu-field > span:has(.temu-spec-switch) {
+  flex-wrap: wrap;
+}
+
+.is-console .temu-spec-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--temu-text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background 0.16s ease;
+}
+
+.is-console .temu-spec-switch b {
+  font-weight: 600;
+}
+
+.is-console .temu-spec-switch input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.is-console .temu-spec-switch:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--temu-text);
+}
+
+/* 勾上：整枚胶囊点亮，一眼能看出现在是多规格 */
+.is-console .temu-spec-switch:has(input:checked) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(
+    in srgb,
+    var(--theme-module-primary-strong, #087bf5) 8%,
+    var(--theme-module-surface-soft, #f7fafc)
+  );
+  color: var(--temu-text);
+}
+
+/* =====================================================================
+   「来源」条：从「提示条」改成「入口卡」（2026-11-05）
+   ---------------------------------------------------------------------
+   原来是虚线边 + 3px 左侧竖条 + 淡蓝底 + 淡蓝「来源」块：
+   虚线让它看起来像“这里缺东西”的警告，竖条和别的卡片都不一致，
+   而它其实是首屏唯一的行动点（去草稿库挑一个）。
+     · 虚线 → 实线，左竖条去掉，跟普通卡片同一套边框
+     · 「来源」改描边小标签（去掉实心淡蓝块）
+     · 标题 13 → 13.5，副标题 11.5 更淡，两行之间留 4px
+     · 右侧按钮改实心主色（首屏唯一点击目标）
+   ===================================================================== */
+
+.is-console .temu-source-bar {
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-left-width: 1px;
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.is-console .temu-source-bar.is-empty {
+  border-style: solid;
+  border-left-width: 1px;
+  border-left-color: var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.is-console .temu-source-bar.is-warn {
+  border-color: color-mix(in srgb, var(--theme-warning, #e0a800) 45%, var(--theme-module-border, #d8e5ee));
+  background: var(--theme-warning-soft, #fffdf5);
+}
+
+.is-console .temu-source-bar .temu-prefill-source {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border: 1px solid var(--theme-module-border-strong, #bcd6ec);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-muted, #0d6b93);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.is-console .temu-source-main {
+  gap: 4px;
+}
+
+.is-console .temu-source-main strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.is-console .temu-source-main > .temu-muted {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* 入口按钮用「描边主色」而不是实心：
+   页面里已经有一个实心主按钮（右上「提交发布」），两个实心蓝在首屏互相抢，
+   提交才是终点。hover 才填充，既有吸引力又不越级。 */
+.is-console .temu-source-cta,
+.is-console .temu-source-cta.temu-btn-primary {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding-inline: 14px;
+  border: 1px solid var(--theme-module-primary-strong, #087bf5);
+  background: transparent;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.is-console .temu-source-cta:hover:not(:disabled) {
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-on-primary, #ffffff);
+}
+
+/* =====================================================================
+   发布页结构收口（2026-11-05 第二轮）
+   —— 变种信息的批量编辑分组 / 产品信息的图片子卡 / 右栏指标块
+   ===================================================================== */
+
+/* ---- 1. 批量编辑：7 个字段挤一行时每格只有 ~100px，改成分两组 ---- */
+.is-console .temu-batch {
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.is-console .temu-batch-group {
+  display: grid;
+  gap: 8px;
+}
+
+.is-console .temu-batch-group-label {
+  color: var(--temu-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.is-console .temu-batch-grid {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px 12px;
+}
+
+.is-console .temu-batch-grid label {
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+/* ---- 2. 产品信息的三个图片槽位：从「一行文字」变成子卡 ---- */
+.is-console .temu-img-group {
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.is-console .temu-img-group-head {
+  gap: 10px;
+  padding-bottom: 2px;
+}
+
+.is-console .temu-img-group-head strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 槽位里那句「Temu 要求…」跟着子卡走，别掉到卡片外面 */
+.is-console .temu-img-group .temu-image-rules {
+  margin: 0;
+}
+
+/* ---- 3. 右栏指标：三个数字做成小卡，别只是一排文字 ---- */
+.is-console .temu-rail-stats {
+  gap: 8px;
+  padding-top: 12px;
+  border-top-style: solid;
+}
+
+.is-console .temu-rail-stats div {
+  flex: 1 1 0;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  text-align: center;
+}
+
+.is-console .temu-rail-stats dt {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.is-console .temu-rail-stats dd {
+  font-size: 15px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
-.temu-history-detail {
+/* ---- 承诺发货时效：Temu 后台同款档位单选（1/2/7/9 + 自定义） ----
+   原来是一个裸数字框，看不出有固定档位。改成四个圆角胶囊横排，
+   选中态整枚点亮（和「按规格发」那枚胶囊同一套语言）；自定义档位展开一个小数字框。
+   整行铺开，自定义框限宽，不跟着拉成一米长。
+
+   ⚠️ 不加 `.is-console` 前缀：批量发布弹窗（草稿库页）不在 is-console 作用域里，
+   选择器带前缀那边就完全没样式，胶囊会退化成浏览器默认的 radio 竖排。 */
+.temu-ship-pick {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--theme-module-border, #e8eef4);
+  align-items: center;
+  gap: 8px;
 }
 
-.temu-history-reason {
-  flex: 1 1 320px;
-  margin: 0;
-  color: #a5342f;
+.temu-ship-pick-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 10px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--temu-text);
   font-size: 12.5px;
-  line-height: 1.55;
-  word-break: break-word;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
 }
 
-.temu-history-more {
-  display: flex;
-  justify-content: center;
-  padding-top: 4px;
+.temu-ship-pick-opt b {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-ship-pick-opt input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-ship-pick-opt:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-ship-pick-opt:has(input:checked) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(
+    in srgb,
+    var(--theme-module-primary-strong, #087bf5) 9%,
+    var(--theme-module-surface-soft, #f7fafc)
+  );
+  font-weight: 600;
+}
+
+.temu-ship-pick-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.temu-ship-pick-input .temu-input {
+  max-width: 90px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-ship-pick-input em {
+  color: var(--temu-text-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+/* 发布页：整行独占（原来是 two-col 的半边，右半边空着看着像没填完） */
+.is-console .temu-field-shipment {
+  margin-top: 4px;
+}
+
+/* 批量弹窗里那一行是三列 grid，发货时效四个胶囊塞不进 150px 的格子里，占满整行 */
+.temu-batch-manual-row .temu-batch-shipment {
+  grid-column: 1 / -1;
+}
+
+/* 校验发布：两个辅助动作留在左边，主按钮「提交发布」推到右边，
+   两者之间自然形成一条分界，不用再加分隔线 */
+.is-console .temu-publish-actions {
+  gap: 10px;
+}
+
+.is-console .temu-publish-actions .temu-btn-primary {
+  margin-left: auto;
+}
+
+/* ---- 步骤条右侧的「从草稿库带入」入口 ----
+   未带入草稿时不再单占一行：挂在步骤条右边的空白里，省掉约 84px 首屏高度。
+   带入之后才恢复成整行的摘要条（那条要显示标题/图数/申报价/需核对项）。 */
+.is-console .temu-stepbar {
+  flex-wrap: wrap;
+}
+
+.is-console .temu-stepbar-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 3px 11px 3px 3px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background 0.16s ease;
+}
+
+.is-console .temu-stepbar-source-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-on-primary, #ffffff);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.is-console .temu-stepbar-source:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: var(--theme-module-surface, #ffffff);
+  color: var(--theme-text-primary, #1f2d3d);
+}
+
+/* 变种表脚注：库存 0 的橙色提醒（提交前就让人知道自己发的是「售罄」商品） */
+.is-console .temu-variant-zerohint {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--theme-warning, #b45309) 38%, transparent);
+  border-radius: 9px;
+  background: var(--theme-warning-soft, rgba(230, 126, 34, 0.1));
+  color: var(--theme-warning, #b45309);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.is-console .temu-variant-zerohint strong {
+  font-weight: 700;
+}
+
+/* 服装类目「必须有尺码表但店里还没建」：橙色提醒，说明必填测量项与去哪建 */
+.is-console .temu-sizechart-warn {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--theme-warning, #b45309) 38%, transparent);
+  border-radius: 9px;
+  background: var(--theme-warning-soft, rgba(230, 126, 34, 0.1));
+  color: var(--theme-warning, #b45309);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.is-console .temu-sizechart-warn strong {
+  font-weight: 700;
 }

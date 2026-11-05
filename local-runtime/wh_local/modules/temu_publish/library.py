@@ -235,7 +235,7 @@ def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dic
                     "category_name": category_name,
                     # 建议售价：导出表这一列留空，这里也只取显式填过的值，不拿成本冒充
                     "suggested_price": core.get("suggested_price"),
-                    "stock": core.get("stock"),
+                    "stock": _trusted_stock(core.get("stock")),
                     "weight_g": core.get("weight_g"),
                     "length_cm": core.get("length_cm"),
                     "width_cm": core.get("width_cm"),
@@ -370,7 +370,12 @@ def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[d
                     "category_name": category_name,
                     # 导出模板里建议售价统一留空；这里也留空，避免把 USD 金额当成分
                     "suggested_price": None,
-                    "stock": first_sku.get("stock") or listing.get("stock"),
+                    # 0 是合法库存（先建品后补货），不能用 `or` 兜成 listing 的值
+                    "stock": (
+                        first_sku.get("stock")
+                        if first_sku.get("stock") is not None
+                        else listing.get("stock")
+                    ),
                     "weight_g": first_sku.get("weight_g") or listing.get("weight_g"),
                     "length_cm": dim_length
                     or first_sku.get("length_cm")
@@ -452,6 +457,22 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
+# 上游「库存」超过这个数就当它没给：1688 上大量商家把库存填成
+# 99999999 / 100005820 这种占位值，原样带到 Temu 后台毫无意义（半托管也吃不下）。
+MAX_TRUSTED_STOCK = 99999
+
+
+def _trusted_stock(value: Any) -> int | None:
+    """把上游库存收敛成「可信整数」：超范围/负数/非数字一律当没给。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number < 0 or number > MAX_TRUSTED_STOCK:
+        return None
+    return number
+
+
 def _declared_price_cny(
     explicit: Any = None, suggested: Any = None, cost: Any = None
 ) -> tuple[float | None, bool]:
@@ -493,30 +514,65 @@ def _draft_extra_fields(draft: dict[str, Any] | None) -> dict[str, Any]:
     导出时就是靠它填「变种属性名称一/值一、名称二/值二」。
     """
     if not draft:
-        return {}
+        # 结构保持一致：下游（前端 draft-library → 发布页）按固定字段读，
+        # 少几个键会在别处炸成 undefined.map / undefined.length
+        return {"spec_values_1": [], "spec_values_2": [], "variants": []}
     raw = draft.get("raw_payload") or {}
     if not isinstance(raw, dict):
         raw = {}
     variants = raw.get("source_variant_records") or []
-    attributes: dict[str, str] = {}
+    # 一条草稿往往对应多个 SKU（一个颜色一条），价格/库存/图都按条不同。
+    # 以前这里只取「第一条记录的第一个值」，11 个颜色只剩 1 个 —— 用户进发布页
+    # 还得手填其余 10 个，而数据明明就在 raw_payload 里。
+    name_order: list[str] = []
+    values_by_name: dict[str, list[str]] = {}
+    variant_rows: list[dict[str, Any]] = []
     if isinstance(variants, list):
         for record in variants:
             if not isinstance(record, dict):
                 continue
             attrs = record.get("attributes")
-            if isinstance(attrs, dict) and attrs:
+            pairs: list[tuple[str, str]] = []
+            if isinstance(attrs, dict):
                 for key, value in attrs.items():
-                    name = _text(key)
-                    if name and name not in attributes:
-                        attributes[name] = _text(value)
-            if len(attributes) >= 2:
-                break
-    pairs = list(attributes.items())[:2]
+                    name, text_value = _text(key), _text(value)
+                    if not name:
+                        continue
+                    if name not in values_by_name:
+                        values_by_name[name] = []
+                        name_order.append(name)
+                    if text_value and text_value not in values_by_name[name]:
+                        values_by_name[name].append(text_value)
+                    if text_value:
+                        pairs.append((name, text_value))
+            cost = record.get("price_cny")
+            price: float | None = None
+            if _parse_money(cost) not in (None, 0):
+                # 每个变体的成本可能不同（13.20 / 16.90），申报价按同一套规则各自推算
+                price, _estimated = _declared_price_cny(cost=cost)
+            quantity = _trusted_stock(record.get("quantity"))
+            variant_rows.append(
+                {
+                    "sku": _text(record.get("sku_id")),
+                    "color": pairs[0][1] if len(pairs) > 0 else "",
+                    "size": pairs[1][1] if len(pairs) > 1 else "",
+                    "price": price,
+                    "stock": quantity if isinstance(quantity, int) else None,
+                    "image": _text(record.get("image_url")),
+                }
+            )
+    names = name_order[:2]
+    first_values = values_by_name.get(names[0], []) if names else []
+    second_values = values_by_name.get(names[1], []) if len(names) > 1 else []
     return {
         "description": _text(draft.get("description")),
         "source_url": _text(raw.get("source_url") or draft.get("source_ref")),
-        "spec_name_1": pairs[0][0] if len(pairs) > 0 else "",
-        "spec_value_1": pairs[0][1] if len(pairs) > 0 else "",
-        "spec_name_2": pairs[1][0] if len(pairs) > 1 else "",
-        "spec_value_2": pairs[1][1] if len(pairs) > 1 else "",
+        "spec_name_1": names[0] if len(names) > 0 else "",
+        "spec_value_1": first_values[0] if first_values else "",
+        "spec_name_2": names[1] if len(names) > 1 else "",
+        "spec_value_2": second_values[0] if second_values else "",
+        # 整列表：发布页要按这些值铺满变种，而不是只铺第一行
+        "spec_values_1": first_values[:20],
+        "spec_values_2": second_values[:20],
+        "variants": variant_rows[:20],
     }

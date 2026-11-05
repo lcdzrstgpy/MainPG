@@ -319,6 +319,7 @@ def create_temu_publish_router(
     @router.get("/publish-history")
     def publish_history(
         status: str = Query(default="", description="success / failed，留空=全部"),
+        q: str = Query(default="", description="搜标题 / 商品 id / 草稿 id / 类目名"),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=30, ge=1, le=200),
         actor: Actor = Depends(actor_from_authorization),
@@ -329,10 +330,24 @@ def create_temu_publish_router(
             database_path,
             actor.id,
             status=status,
+            q=q,
             limit=page_size,
             offset=(page - 1) * page_size,
         )
         return {**data, "page": page, "page_size": page_size}
+
+    @router.post("/publish-history/backfill")
+    def backfill_publish_history(
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """补齐老记录的主图/类目名（2026-11-04 之前发布的记录没有这两列）。
+
+        历史页发现有「有商品 id 但没图」的记录时才调；补到就写回台账，不会每次都打网关。
+        """
+        try:
+            return _service(actor).backfill_history_display()
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
 
     # ---------- 发布配套查询 ----------
 

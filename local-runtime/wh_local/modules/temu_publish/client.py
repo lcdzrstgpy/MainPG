@@ -422,6 +422,35 @@ class TemuProductClient:
             max_attempts=1,
         )
 
+    def size_chart_class(self, cat_id: int) -> dict[str, Any]:
+        """类目对应的尺码组（bg.glo.goods.sizecharts.class.get）。
+
+        服装/鞋类是「有尺码组」的类目；宠物、家居这类类目调这个会返回空或报错。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.class.get", {"catId": int(cat_id)}, max_attempts=1
+        )
+
+    def size_chart_meta(self, cat_id: int) -> dict[str, Any]:
+        """尺码表的测量项定义（bg.glo.goods.sizecharts.meta.get）。
+
+        返回 `sizeSpecMeta.elementList`（肩宽/胸围全围/裙长…，带 necessary）与 `groupList`。
+        类目没有尺码组时网关报「没有找到当前类目对应的尺码组」—— 这正是「不需要尺码表」的信号。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.meta.get", {"catId": int(cat_id)}, max_attempts=1
+        )
+
+    def size_chart_settings(self, cat_id: int) -> dict[str, Any]:
+        """系统默认尺码映射（bg.glo.goods.sizecharts.settings.get）。
+
+        返回 `sizeList`（该尺码组所有可选尺码名）+ `mappingContent`（每个尺码档的完整数值）。
+        体积较大（20KB+），调用方只取需要的字段。
+        """
+        return self.call(
+            "bg.glo.goods.sizecharts.settings.get", {"catId": int(cat_id)}, max_attempts=1
+        )
+
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情（bg.glo.goods.detail.get）。注意：个别商品会返回「无权访问」。"""
         return self.call("bg.glo.goods.detail.get", {"productId": int(product_id)})

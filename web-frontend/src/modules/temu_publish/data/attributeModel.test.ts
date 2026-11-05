@@ -5,7 +5,9 @@ import {
   attributeDiffText,
   buildAttributeGroups,
   describeAttributeDiff,
+  migrateLegacyPicks,
   missingRequiredNames,
+  normalizeDuplicatePids,
   pruneStaleAttrPicks,
   remapAttrPicks,
   visibleProperties,
@@ -211,6 +213,73 @@ test("pruneStaleAttrPicks：属性表还没拿到时不误杀（返回空但不�
   assert.deepEqual(picks, {});
   // null 属性表下无法判断有效性 → 记为丢弃，由调用方决定不展示提示
   assert.deepEqual(dropped, ["pid=41"]);
+});
+
+/**
+ * 服装类目的真实结构（女装连衣裙 39107，2026-11-05 实测）：
+ * 面料纹理1/2 都是 pid 2054，面料克重1/2/里料克重都是 pid 2052，只有 refPid 不同。
+ */
+function apparelCatalog(): TemuAttributes {
+  return {
+    properties: [
+      prop({ pid: 2054, refPid: 6926, templatePid: 1292401, name: "面料纹理1", required: true,
+        values: [{ vid: 161198, value: "光面" }, { vid: 161199, value: "绒面/PU" }] }),
+      prop({ pid: 2054, refPid: 6927, templatePid: 1293592, name: "面料纹理2",
+        values: [{ vid: 161198, value: "光面" }] }),
+      prop({ pid: 2052, refPid: 6930, templatePid: 1296028, name: "面料克重1（g/m²)",
+        required: true, values: [], valueUnit: ["g/㎡"],
+        showCondition: [{ parentRefPid: 6926, parentVids: [161198] }] }),
+      prop({ pid: 2052, refPid: 6931, templatePid: 1297215, name: "面料克重2（g/m²)",
+        required: true, values: [], valueUnit: ["g/㎡"],
+        showCondition: [{ parentRefPid: 6927, parentVids: [161198] }] }),
+    ],
+  } as TemuAttributes;
+}
+
+test("normalizeDuplicatePids：同 pid 的多条属性换成 refPid 键，并记住原始 pid", () => {
+  const attrs = normalizeDuplicatePids(apparelCatalog())!;
+  const keys = attrs.properties.map((item) => item.pid);
+  // 四条 pid 全不一样了（2054/2054/2052/2052 → 6926/6927/6930/6931）
+  assert.equal(new Set(keys).size, 4);
+  assert.deepEqual(keys, [6926, 6927, 6930, 6931]);
+  // 原始 pid 留在 realPid 上，提交 payload 时要还原（网关只认原始 pid）
+  assert.deepEqual(attrs.properties.map((item) => item.realPid), [2054, 2054, 2052, 2052]);
+  // 不重复的类目原样返回（同一个对象），别把老存档的键全改掉
+  const plain = { properties: [prop({ pid: 1 }), prop({ pid: 2 })] } as TemuAttributes;
+  assert.equal(normalizeDuplicatePids(plain), plain);
+});
+
+test("normalize 之后：填面料克重1 不会带着面料克重2 一起变", () => {
+  const attrs = normalizeDuplicatePids(apparelCatalog())!;
+  // 只填「面料纹理1=光面」+「面料克重1=200」
+  const picks = { 6926: { vid: 161198, text: "光面" }, 6930: { vid: 0, text: "200" } };
+  const visible = visibleProperties(attrs, picks);
+  const names = visible.map((item) => item.name);
+  // 面料纹理2 没选 → 面料克重2 不该出现（这是原来 pid 冲突时最容易错的一步）
+  assert.ok(names.includes("面料克重1（g/m²)"));
+  assert.ok(!names.includes("面料克重2（g/m²)"), `不该出现面料克重2：${names.join("/")}`);
+  // 必填校验同理：只差没填的那些，不会把被隐藏的子属性算成缺
+  assert.deepEqual(missingRequiredNames(visible, picks), []);
+});
+
+test("migrateLegacyPicks：老存档的原始 pid 键翻译到 refPid 上", () => {
+  // ① 一个原始 pid 对上多条 → 判断不了用户当初填的是哪条，不猜（留给 prune 报失效）
+  const attrs = normalizeDuplicatePids(apparelCatalog())!;
+  const ambiguous = migrateLegacyPicks(
+    { 2054: { vid: 161198, text: "光面" }, 2052: { vid: 0, text: "200" } },
+    attrs,
+  );
+  assert.equal(ambiguous.migrated, 0, "两条都是「一 pid 对多条」，不能猜");
+  // 翻译不了的键原样留着，交给 pruneStaleAttrPicks 报失效
+  assert.ok(2054 in ambiguous.picks && 2052 in ambiguous.picks);
+
+  // ② 唯一对应（Temu 把同 pid 的多条收敛成一条）→ 直接翻译，用户不用重填
+  const single = {
+    properties: [prop({ pid: 6930, name: "面料克重1（g/m²)", realPid: 2052 })],
+  } as TemuAttributes;
+  const migrated = migrateLegacyPicks({ 2052: { vid: 0, text: "200" } }, single);
+  assert.equal(migrated.migrated, 1);
+  assert.deepEqual(migrated.picks, { 6930: { vid: 0, text: "200" } });
 });
 
 test("describeAttributeDiff：只报真正变了的项，没变就说没变", () => {

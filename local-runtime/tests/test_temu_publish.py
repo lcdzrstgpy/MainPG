@@ -441,10 +441,20 @@ class PublishStubClient(StubCatalogClient):
     def __init__(self) -> None:
         super().__init__()
         self.submitted: list[dict[str, Any]] = []
+        # 商品列表（bg.glo.goods.list.get）用的假数据，按页返回
+        self.goods_pages: list[list[dict[str, Any]]] = []
+        self.goods_list_calls: int = 0
 
     def add_goods(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.submitted.append(payload)
         return {"goodsId": "G-1", "goodsName": payload.get("productName")}
+
+    def goods_list(self, **filters: Any) -> dict[str, Any]:
+        page = int(filters.get("page") or 1)
+        self.goods_list_calls += 1
+        rows = self.goods_pages[page - 1] if 0 <= page - 1 < len(self.goods_pages) else []
+        total = sum(len(items) for items in self.goods_pages)
+        return {"data": rows, "totalCount": total}
 
 
 def test_add_goods_never_retries(  ) -> None:
@@ -1479,15 +1489,55 @@ def test_linked_properties_follow_parent_selection() -> None:
     applicable, dropped = _resolve_applicable_properties(
         catalog, [GoodsPropertyInput(pid=2001, vid=1)]
     )
-    assert 2002 in applicable and 2003 not in applicable
+    # 适用集合按 (pid, refPid) 索引：同 pid 挂多条属性时只按 pid 会互相覆盖
+    assert (2002, 0) in applicable and (2003, 0) not in applicable
     assert dropped == ["不可充电电池"]
 
     # 父级没选 → 两个子属性都不出现
     applicable, dropped = _resolve_applicable_properties(catalog, [])
-    assert 2002 not in applicable and 2003 not in applicable
+    assert (2002, 0) not in applicable and (2003, 0) not in applicable
     assert set(dropped) == {"可充电电池", "不可充电电池"}
     # 无联动规则的属性永远在
-    assert 2001 in applicable and 2004 in applicable
+    assert (2001, 0) in applicable and (2004, 0) in applicable
+
+
+def test_same_pid_multiple_refpid_not_confused() -> None:
+    """同一个 pid 挂多条属性时，联动判断不能互相顶掉。
+
+    真实样例（女装连衣裙 39107）：面料纹理1 / 面料纹理2 都是 pid 2054、refPid 6926/6927；
+    面料克重1 / 面料克重2 / 里料克重 都是 pid 2052、refPid 6930/6931/6934。
+    只按 pid 索引时，选了「面料纹理1=光面」会让「面料纹理2」也被当成光面，
+    面料克重2 被误判成必填 —— 而它父属性根本没选。
+    """
+    from wh_local.modules.temu_publish.schemas import GoodsPropertyInput
+    from wh_local.modules.temu_publish.service import (
+        _property_applicable,
+        _resolve_applicable_properties,
+    )
+
+    catalog = {
+        "properties": [
+            {"pid": 2054, "refPid": 6926, "name": "面料纹理1", "templatePid": 1001,
+             "required": True, "values": [{"vid": 161198, "value": "光面"}]},
+            {"pid": 2054, "refPid": 6927, "name": "面料纹理2", "templatePid": 1002,
+             "required": False, "values": [{"vid": 161198, "value": "光面"}]},
+            {"pid": 2052, "refPid": 6930, "name": "面料克重1（g/m²)", "templatePid": 1003,
+             "required": True, "values": [], "valueUnit": ["g/㎡"],
+             "parentTemplatePid": 1001,
+             "showCondition": [{"parentRefPid": 6926, "parentVids": [161198]}]},
+            {"pid": 2052, "refPid": 6931, "name": "面料克重2（g/m²)", "templatePid": 1004,
+             "required": True, "values": [], "valueUnit": ["g/㎡"],
+             "parentTemplatePid": 1002,
+             "showCondition": [{"parentRefPid": 6927, "parentVids": [161198]}]},
+        ]
+    }
+    # 只选了「面料纹理1=光面」：面料克重1 适用，面料克重2 不适用
+    applicable, dropped = _resolve_applicable_properties(
+        catalog, [GoodsPropertyInput(pid=2054, ref_pid=6926, vid=161198)]
+    )
+    assert _property_applicable(applicable, 2052, 6930) is True
+    assert _property_applicable(applicable, 2052, 6931) is False
+    assert "面料克重2（g/m²)" in dropped
 
 
 def test_inapplicable_property_is_dropped_from_payload(tmp_path: Path) -> None:
@@ -1912,12 +1962,37 @@ def test_multi_pack_only_sent_when_more_than_one(tmp_path: Path) -> None:
 
 
 class SizeChartClient(StubCatalogClient):
-    """size_charts 按开关返回空/非空，记录调用次数（验证缓存）。"""
+    """size_charts 按开关返回空/非空，记录调用次数（验证缓存）。
 
-    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+    `elements` 非空 = 这个类目属于服装/鞋类（需要尺码表）；
+    空 = 宠物/家居这类（网关回「没有找到当前类目对应的尺码组」）。
+    """
+
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        elements: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__()
         self.rows = rows or []
+        self.elements = elements or []
         self.calls = 0
+
+    def size_chart_meta(self, cat_id: int) -> dict[str, Any]:
+        if not self.elements:
+            raise TemuGatewayError(
+                "bg.glo.goods.sizecharts.meta.get", "没有找到当前类目对应的尺码组"
+            )
+        return {
+            "allowRange": False,
+            "sizeSpecMeta": {
+                "elementList": self.elements,
+                "groupList": [{"id": 1, "name": "尺码", "unnecessary": False}],
+            },
+        }
+
+    def size_chart_settings(self, cat_id: int) -> dict[str, Any]:
+        return {"sizeList": ["S", "M", "L"], "mappingContent": {"records": [], "meta": {}}}
 
     def size_charts(self, cat_id: int, offset: int = 0, page_size: int = 20) -> dict[str, Any]:
         self.calls += 1
@@ -1930,25 +2005,57 @@ class SizeChartClient(StubCatalogClient):
 
 
 def test_size_charts_reports_whether_category_needs_one(tmp_path: Path) -> None:
-    """类目没有尺码表（宠物用品这类）→ has_size_chart=False，前端据此隐藏字段。"""
+    """宠物/家居这类：网关回「没有找到尺码组」→ required=False，前端据此隐藏字段。"""
     empty = SizeChartClient()
     service = TemuPublishService(tmp_path / "a.sqlite3", client=empty)
     info = service.size_charts(1634)
     assert info["cat_id"] == 1634
+    assert info["required"] is False
     assert info["has_size_chart"] is False
     assert info["count"] == 0
 
-    # 同一类目第二次走缓存，不再打网关
+    # 同一类目第二次直接命中负缓存，不再打网关
     service.size_charts(1634)
-    assert empty.calls == 1
+    assert empty.calls == 0  # meta 就判定完了，根本没走到 size_charts
 
-    with_rows = SizeChartClient([{"businessId": 1}, {"businessId": 2}])
+    with_rows = SizeChartClient(
+        [{"businessId": 1}, {"businessId": 2}],
+        elements=[{"id": 10002, "name": "胸围全围", "necessary": True}],
+    )
     service2 = TemuPublishService(tmp_path / "b.sqlite3", client=with_rows)
     info2 = service2.size_charts(24376)
+    assert info2["required"] is True
     assert info2["has_size_chart"] is True
     assert info2["count"] == 2
     # 结构未知：原样带回去，不猜字段名
     assert info2["raw"][0] == {"businessId": 1}
+
+
+def test_size_charts_clothing_category_without_table(tmp_path: Path) -> None:
+    """服装类目「需要尺码表」但店里一张都没建 —— 这正是新店的真实状态。
+
+    以前只看 `sizecharts.get` 有没有返回，会把这种情况判成「不需要尺码表」，
+    于是发布时不带 sizeTemplateIds，服装商品发出去缺尺码表。
+    """
+    client = SizeChartClient(
+        rows=[],
+        elements=[
+            {"id": 10002, "name": "胸围全围", "necessary": True},
+            {"id": 10010, "name": "裙长", "necessary": True},
+            {"id": 10001, "name": "肩宽", "necessary": False},
+        ],
+    )
+    service = TemuPublishService(tmp_path / "d.sqlite3", client=client)
+    info = service.size_charts(39107)
+
+    assert info["required"] is True
+    assert info["has_size_chart"] is False
+    assert info["required_elements"] == ["胸围全围", "裙长"]
+    assert [item["name"] for item in info["elements"]] == ["胸围全围", "裙长", "肩宽"]
+    # 可选尺码来自 settings，建表/选码时要用
+    assert info["sizes"] == ["S", "M", "L"]
+    # 建表接口参数结构还没打通，前端据此提示「去后台建」
+    assert info["can_create"] is False
 
 
 def test_size_charts_without_category_short_circuits(tmp_path: Path) -> None:
@@ -3164,6 +3271,101 @@ def test_publish_history_splits_success_and_failure(tmp_path: Path) -> None:
     assert ledger.list_history(db, "cust_other")["total"] == 0
 
 
+def test_publish_history_carries_display_fields_and_search(tmp_path: Path) -> None:
+    """历史页要「看得懂」：类目路径名/价格区间/店铺名/错误码都要落库，且支持搜索。
+
+    以前只记 cat id 和一个错误码数字，用户在历史列表里既认不出是哪件商品、
+    也看不出错在哪一步。这几个字段专门给列表展示用，不参与任何判定。
+    """
+    from wh_local.modules.temu_publish import submissions as ledger
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    ledger.ensure_table(db)
+
+    ok_id = ledger.begin(
+        db, "cust_h", "fp-1", "Cosmetic Bag", 3,
+        draft_id="ai:t1:i1", leaf_cat_id=19669,
+        image="https://img/1.jpg",
+        cat_name="美妆个护 > 化妆包 > 手拿包",
+        price_min=1250, price_max=1899,
+        shop_name="WIG Mall US",
+    )
+    ledger.finish(db, ok_id, "success", gid="50210594175")
+    bad_id = ledger.begin(db, "cust_h", "fp-2", "Storage Basket", 1, cat_name="家居 > 收纳桶")
+    ledger.finish(db, bad_id, "failed", error="货品类目属性更新失败", error_code="6000002")
+
+    item = ledger.list_history(db, "cust_h", status="success")["items"][0]
+    assert item["cat_name"] == "美妆个护 > 化妆包 > 手拿包"
+    assert (item["price_min"], item["price_max"]) == (1250, 1899)
+    assert item["shop_name"] == "WIG Mall US"
+    assert item["created_ts"] > 0
+
+    failed = ledger.list_history(db, "cust_h", status="failed")["items"][0]
+    assert failed["error_code"] == "6000002"
+    # 老记录（没这两列的值）不能崩，取空值即可
+    assert failed["price_min"] == 0 and failed["shop_name"] == ""
+
+    # 搜索：标题 / 商品 id / 草稿 id / 类目名都能命中
+    assert ledger.list_history(db, "cust_h", q="Cosmetic")["total"] == 1
+    assert ledger.list_history(db, "cust_h", q="50210594175")["total"] == 1
+    assert ledger.list_history(db, "cust_h", q="ai:t1")["total"] == 1
+    assert ledger.list_history(db, "cust_h", q="收纳桶")["total"] == 1
+    assert ledger.list_history(db, "cust_h", q="不存在的词")["total"] == 0
+    # 搜索和状态过滤同时生效
+    assert ledger.list_history(db, "cust_h", status="success", q="收纳桶")["total"] == 0
+
+
+def test_backfill_history_display_fills_old_records(tmp_path: Path) -> None:
+    """老记录没有主图/类目名：按商品 id 去店铺列表认一遍补上，补完不再重复处理。
+
+    `image`/`cat_name` 是 2026-11-04 加的列，之前的记录打开就是一片「无图」。
+    商品详情接口不返回图片，只有列表接口带 mainImageUrl —— 所以只能翻列表按
+    productId 认。失败记录没有商品 id，不该被当成「补不到」反复尝试。
+    """
+    from wh_local.modules.temu_publish import submissions as ledger
+
+    db = tmp_path / "runtime.sqlite3"
+    init_db(db)
+    ledger.ensure_table(db)
+
+    ok_id = ledger.begin(db, "cust_b", "fp-1", "化妆包 A", 1)
+    ledger.finish(db, ok_id, "success", gid="48396983649")
+    failed_id = ledger.begin(db, "cust_b", "fp-2", "化妆包 B", 1)
+    ledger.finish(db, failed_id, "failed", error="属性校验错误")
+    gone_id = ledger.begin(db, "cust_b", "fp-3", "已被后台删掉的商品", 1)
+    ledger.finish(db, gone_id, "success", gid="99999999999")
+
+    client = PublishStubClient()
+    client.goods_pages = [
+        [
+            {
+                "productId": 48396983649,
+                "productName": "化妆包 A",
+                "mainImageUrl": "https://img.kwcdn.com/a-goods.jpeg",
+                "leafCat": {"catName": "化妆包"},
+                "createdAt": 1793758384000,
+            }
+        ]
+    ]
+    service = TemuPublishService(db, client=client, owner_id="cust_b")
+
+    result = service.backfill_history_display()
+    # 只有「有商品 id 且能在店铺里认出来」的那条能补
+    assert result["updated"] == 1
+    item = ledger.list_history(db, "cust_b", status="success")["items"]
+    by_gid = {row["goods_id"]: row for row in item}
+    assert by_gid["48396983649"]["image"] == "https://img.kwcdn.com/a-goods.jpeg"
+    assert by_gid["48396983649"]["cat_name"] == "化妆包"
+    # 店铺里没有了的那条：保持空，不写脏值（前端继续显示占位）
+    assert by_gid["99999999999"]["image"] == ""
+
+    # 再调一次：已补好的不再进候选（只会剩下那条查不到的）
+    again = service.backfill_history_display()
+    assert again["checked"] == 1
+    assert again["updated"] == 0
+
+
 def test_published_draft_ids_only_counts_success(tmp_path: Path) -> None:
     """只有「成功且带 draft_id」的草稿才算已发布；失败/手填的不算。"""
     from wh_local.modules.temu_publish import submissions as ledger
@@ -3226,3 +3428,106 @@ def test_draft_library_drops_published_entries(tmp_path: Path, monkeypatch) -> N
     history = http.get("/api/temu-publish/publish-history?status=success").json()
     assert history["total"] == 1
     assert history["items"][0]["draft_id"] == "pod:b:1"
+
+
+def test_draft_extra_fields_keeps_every_variant(tmp_path: Path) -> None:
+    """一条草稿里的多个 SKU 要全部带出来，不能只取第一条。
+
+    真实数据（product_processing_drafts.raw_payload_json.source_variant_records）
+    是一组「一个颜色一条」的记录，每条有自己的 sku_id、price_cny、quantity、image_url。
+    以前只读第一条的属性值 → 11 个颜色进发布页只剩 1 个，用户还得手填其余 10 个。
+    """
+    from wh_local.modules.temu_publish.library import _draft_extra_fields
+
+    draft = {
+        "description": "帆布托特包",
+        "raw_payload": {
+            "source_url": "https://detail.1688.com/offer/1.html",
+            "source_variant_records": [
+                {
+                    "sku_id": "S1",
+                    "attributes": {"颜色": "黑茶色-性价比版"},
+                    "price_cny": "13.20",
+                    "quantity": 304,
+                    "image_url": "https://img/1.jpg",
+                },
+                {
+                    "sku_id": "S2",
+                    "attributes": {"颜色": "米黄色-性价比版"},
+                    "price_cny": "16.90",
+                    "quantity": 0,
+                    "image_url": "https://img/2.jpg",
+                },
+                {
+                    "sku_id": "S3",
+                    "attributes": {"颜色": "灰色-性价比版", "尺码": "M"},
+                    "price_cny": "15.20",
+                    "quantity": 12,
+                    "image_url": "https://img/3.jpg",
+                },
+            ],
+        },
+    }
+    fields = _draft_extra_fields(draft)
+
+    assert fields["spec_name_1"] == "颜色"
+    assert fields["spec_values_1"] == ["黑茶色-性价比版", "米黄色-性价比版", "灰色-性价比版"]
+    assert fields["spec_name_2"] == "尺码"
+    assert fields["spec_values_2"] == ["M"]
+    assert len(fields["variants"]) == 3
+    first, second, third = fields["variants"]
+    assert first["sku"] == "S1" and first["color"] == "黑茶色-性价比版" and first["stock"] == 304
+    assert first["image"] == "https://img/1.jpg"
+    # 成本 13.20 × 4 < 下限 150 → 申报价按导出规则兜到 150
+    assert first["price"] == 150.0
+    # 库存 0 是合法值（先建品后补货），不能被当成「没值」
+    assert second["stock"] == 0
+    assert third["size"] == "M"
+
+
+def test_draft_extra_fields_tolerates_empty_payload() -> None:
+    """草稿没有变体记录时不要炸，返回空列表即可。"""
+    from wh_local.modules.temu_publish.library import _draft_extra_fields
+
+    for draft in (None, {}, {"raw_payload": None}, {"raw_payload": {"source_variant_records": "bad"}}):
+        fields = _draft_extra_fields(draft)
+        assert fields.get("spec_values_1") == []
+        assert fields.get("variants") == []
+
+
+def test_untrusted_upstream_stock_is_dropped() -> None:
+    """上游把库存填成 99999999 这种占位值时，不能原样当 Temu 库存带出去。
+
+    1688 大量商家把「库存」填成 100005820 / 99999999 表示无限量。原样带到
+    Temu 半托管后台毫无意义（用户看到的就是「库存 100005820」这种鬼数字），
+    而且这些值也不是真的可售数量。超过上限一律当「上游没给」。
+    """
+    from wh_local.modules.temu_publish.library import MAX_TRUSTED_STOCK, _trusted_stock
+
+    assert _trusted_stock(0) == 0
+    assert _trusted_stock("304") == 304
+    assert _trusted_stock(MAX_TRUSTED_STOCK) == MAX_TRUSTED_STOCK
+    # 占位值 / 超范围 / 负数 / 非数字 → 当没给
+    assert _trusted_stock(MAX_TRUSTED_STOCK + 1) is None
+    assert _trusted_stock(99999999) is None
+    assert _trusted_stock(100005820) is None
+    assert _trusted_stock(-5) is None
+    assert _trusted_stock(None) is None
+    assert _trusted_stock("abc") is None
+
+
+def test_variants_stock_uses_trusted_value_only() -> None:
+    """变体里的库存也要过同一道闸：99999999 不带，真实 304 照带。"""
+    from wh_local.modules.temu_publish.library import _draft_extra_fields
+
+    draft = {
+        "raw_payload": {
+            "source_variant_records": [
+                {"sku_id": "A", "attributes": {"颜色": "黑"}, "price_cny": "8", "quantity": 100005820},
+                {"sku_id": "B", "attributes": {"颜色": "白"}, "price_cny": "8", "quantity": 304},
+                {"sku_id": "C", "attributes": {"颜色": "灰"}, "price_cny": "8", "quantity": 0},
+            ]
+        }
+    }
+    variants = _draft_extra_fields(draft)["variants"]
+    assert [item["stock"] for item in variants] == [None, 304, 0]

@@ -10,7 +10,9 @@ import {
   withFreshRowKeys,
 } from "../components/PublishSkuPanel";
 import type { VariantRow } from "../components/PublishSkuPanel";
+import { DraftImagePicker } from "../components/DraftImagePicker";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
+import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
 import {
   autoFillAttributePicks,
   autoFillSourceTexts,
@@ -21,6 +23,7 @@ import { pickSpecPair } from "../data/specPair";
 import {
   attributeDiffText,
   describeAttributeDiff,
+  migrateLegacyPicks,
   missingRequiredNames,
   pruneStaleAttrPicks,
   remapAttrPicks,
@@ -58,6 +61,7 @@ import type {
   TemuPublishPrefill,
   TemuSettingsStatus,
   TemuShop,
+  TemuSizeChartInfo,
   TemuSkuDraft,
   TemuSkuSpec,
   TemuSpecCreated,
@@ -68,16 +72,6 @@ import type {
 import "../styles/temuPublish.css";
 
 const SITE_ID = 100;
-/**
- * 默认发货时效（天）。
- *
- * 用 **9 天**，就是 Temu 半托管的预设值（`shipmentLimitSecond = 777600`）。
- * 依据（2026-11-03 扫店铺 230 件商品）：213 件历史商品全是 777600，服务商文档里的
- * 发布成功案例也是 777600。之前我们默认 7 天（604800）是自己拍的，跟店里其他商品不一致。
- *
- * 别再往下调：1 天等于向 Temu 承诺 24 小时发货，POD/定制做不到，会被判延迟发货。
- */
-const DEFAULT_SHIPMENT_DAYS = "9";
 
 /**
  * 换类目后变种行里不合法的规格值（只提示，不自动改）。
@@ -439,41 +433,52 @@ function saveJsonLocal(key: string, value: unknown) {
 }
 
 /**
- * 把图片裁成 1:1 并缩放到 800×800。
+ * 把图片居中裁成指定比例并缩放。
  *
- * Temu 非服饰类目轮播图强制「宽高比 1:1、宽高 ≥800px、≤2MB」，
- * 原图直传会被拒（实测报「非服饰类目货品轮播图……校验失败」）。
+ * Temu 对主图有两种硬要求（都是实测报错文案）：
+ *   · 非服饰类目轮播图「1:1、宽高 ≥800px、≤2MB」
+ *   · 服饰类目轮播图「3:4，宽 >=1340，高 >=1785」
+ * 原图直传会被拒，所以上传前在浏览器里裁一次。
+ *
+ * PNG 透明区域转 JPEG 会变黑，先铺白底。
  */
-function toSquareDataUrl(dataUrl: string, size = 800): Promise<string> {
+function toRatioDataUrl(dataUrl: string, width: number, height: number): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const side = Math.min(img.naturalWidth, img.naturalHeight);
-      if (!side) {
+      const naturalWidth = img.naturalWidth;
+      const naturalHeight = img.naturalHeight;
+      if (!naturalWidth || !naturalHeight) {
         resolve(dataUrl);
         return;
       }
       const canvas = document.createElement("canvas");
-      canvas.width = size;
-      canvas.height = size;
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext("2d");
       if (!ctx) {
         resolve(dataUrl);
         return;
       }
-      // PNG 透明区域转 JPEG 会变黑，先铺白底
+      // 居中裁到目标比例：原图更宽就裁左右，更高就裁上下，不拉伸变形
+      const targetRatio = width / height;
+      const sourceRatio = naturalWidth / naturalHeight;
+      let sourceWidth = naturalWidth;
+      let sourceHeight = naturalHeight;
+      if (sourceRatio > targetRatio) sourceWidth = Math.round(naturalHeight * targetRatio);
+      else sourceHeight = Math.round(naturalWidth / targetRatio);
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, size, size);
+      ctx.fillRect(0, 0, width, height);
       ctx.drawImage(
         img,
-        (img.naturalWidth - side) / 2,
-        (img.naturalHeight - side) / 2,
-        side,
-        side,
+        (naturalWidth - sourceWidth) / 2,
+        (naturalHeight - sourceHeight) / 2,
+        sourceWidth,
+        sourceHeight,
         0,
         0,
-        size,
-        size,
+        width,
+        height,
       );
       resolve(canvas.toDataURL("image/jpeg", 0.9));
     };
@@ -481,6 +486,20 @@ function toSquareDataUrl(dataUrl: string, size = 800): Promise<string> {
     img.src = dataUrl;
   });
 }
+
+/** 非服饰类目主图：1:1 / 800×800（实测下限 800）。 */
+function toSquareDataUrl(dataUrl: string, size = 800): Promise<string> {
+  return toRatioDataUrl(dataUrl, size, size);
+}
+
+/**
+ * 服饰类目轮播图尺寸：3:4、宽 ≥1340、高 ≥1785。
+ *
+ * 直接用 1340×1785 差一点点不是精确 3:4（0.7507），取 **1344×1792** 两个下限都满足
+ * 且比例精确等于 3:4，省掉被「应符合 3:4」二次拒的风险。
+ */
+const APPAREL_CAROUSEL_WIDTH = 1344;
+const APPAREL_CAROUSEL_HEIGHT = 1792;
 
 function isPublicHttpUrl(url: string): boolean {
   if (!/^https?:\/\//i.test(url)) return false;
@@ -581,8 +600,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [showFieldErrors, setShowFieldErrors] = useState(false);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 类目没有预设销售属性、但允许自定义规格时（化妆包这类），由用户决定单 SKU 还是多规格
-  const [variantsOn, setVariantsOn] = useState(false);
+  // 类目没有预设销售属性、但允许自定义规格时（化妆包这类），由用户决定单 SKU 还是多规格。
+  // 默认勾上：绝大多数商品都有颜色/尺码，默认单 SKU 会让人填完才发现规格没生效。
+  const [variantsOn, setVariantsOn] = useState(true);
   // 顶部「绑定/切换店铺」的小菜单：不占地方，点开才展开已存店铺
   const [shopMenuOpen, setShopMenuOpen] = useState(false);
   const [accessToken, setAccessToken] = useState("");
@@ -595,11 +615,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const [form, setForm] = useState<PublishForm>(() => {
     const saved = loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {});
-    // 老版本默认值是 1 天，已存在本机的也纠正过来，否则一进来还是承诺 24 小时发货
-    // 1 天 = 承诺 24 小时发货（更早的坏默认）；7 天是我们上一版的旧默认。
-    // 两个都不是用户主动选的，统一拉回 Temu 预设的 9 天。
-    if (saved.shipmentDays === "1" || saved.shipmentDays === "7") {
-      saved.shipmentDays = DEFAULT_SHIPMENT_DAYS;
+    // 这里**不再**把存档里的 1 天 / 7 天拉回 9 天：
+    // 发货时效改成 Temu 后台那四个档位单选（1/2/7/9 + 自定义）之后，1 和 7 是
+    // 用户可能主动选的合法值，再清洗一遍会把用户刚选的档位每次刷新都改回去。
+    // 旧默认值的影响只剩「一进来看到选中了 1 个工作日」，眼就能发现并改。
+    const raw = saved.shipmentDays;
+    if (typeof raw === "string" && raw && !/^\d+$/.test(raw.trim())) {
+      // 历史存过 "9天" / " 9 " 这类脏值（换算出秒会被 parsePositive 拦下）
+      saved.shipmentDays = raw.replace(/[^\d]/g, "") || DEFAULT_SHIPMENT_DAYS;
     }
     return { ...EMPTY_FORM, ...saved };
   });
@@ -665,11 +688,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [parentSpecs, setParentSpecs] = useState<TemuParentSpec[]>([]);
   const [colorParentId, setColorParentId] = useState(0);
   const [sizeParentId, setSizeParentId] = useState(0);
-  // 当前类目要不要尺码表：false 就把「尺码表模板 ID」整块藏掉（宠物用品类目全是 false）
-  const [sizeChart, setSizeChart] = useState<{ loading: boolean; has: boolean | null }>({
-    loading: false,
-    has: null,
-  });
+  // 当前类目要不要尺码表。`has` 只是「店里有没有现成的表」，
+  // 真正决定字不显示的是 `info.required`（服装类目必须有，哪怕店里一张都没建）。
+  const [sizeChart, setSizeChart] = useState<{
+    loading: boolean;
+    has: boolean | null;
+    info: TemuSizeChartInfo | null;
+  }>({ loading: false, has: null, info: null });
+  /**
+   * 是不是「服饰 / 量体」类目 —— 用「这个类目必须有尺码表」当判据。
+   *
+   * 来源是 `sizecharts.meta.get`：有测量项（胸围/裙长…）就 required=true。
+   * 实测 2026-11-05：女装连衣裙 39107 = true；假发 31035 / 女包 29164 / 女鞋 29183 都
+   * 回「没有找到当前类目对应的尺码组」= false。
+   * 这类类目的主图要求竖图 3:4，非服饰要求 1:1，两者互斥，所以必须区分。
+   */
+  const isApparelCategory = sizeChart.info?.required === true;
+  /**
+   * 尺码表信息的最新值（给「上传图片」那种异步流程用）。
+   *
+   * 上传回调里读到的是**点击那一刻的快照**：用户刚选完类目、尺码表还在路上时点上传，
+   * 快照里 `info` 还是 null，就会按非服饰裁成 1:1 —— 传完再发现是服装类目，
+   * 图已经在图床上了，只能全部重传。所以用 ref 轮询等它落地。
+   */
+  const sizeChartRef = useRef(sizeChart);
+  useEffect(() => {
+    sizeChartRef.current = sizeChart;
+  }, [sizeChart]);
   // 店铺切换版本号：运费模板/发货仓库/尺码表都是「每家店各自一套」，
   // 换店后必须重新取一遍，否则会拿着上一家店的 id 去发新店的商品。
   const [shopEpoch, setShopEpoch] = useState(0);
@@ -859,6 +904,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const carried = carriedAttrPicksRef.current;
     carriedAttrPicksRef.current = null;
     let base = attrPicksRef.current;
+    // 本机存档里的键是「原始 pid」。服装类目同一个 pid 挂多条属性时，会话里的键
+    // 已经换成 refPid（见 normalizeDuplicatePids），不翻译的话刷新后已填的
+    // 面料纹理 / 克重会全部对不上、变成空的。
+    const legacy = migrateLegacyPicks(base, attributes);
+    if (legacy.migrated) {
+      base = legacy.picks;
+      setAttrPicks(base);
+    }
     // 类目对不上就丢掉：不同类目的属性 pid 完全不同，铺进去等于给 Temu 塞无效 pid
     if (carried && carried.catId && carried.catId === leafCatId) {
       // 存的是「估填那一刻」的 pid/vid，Temu 调过类目属性表之后这些值就查不到了。
@@ -990,12 +1043,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 第二次就拿到 null，草稿的尺码/价格全部落不到变种行上。
         const prefill = prefillRef.current;
         prefillRef.current = null;
-        const seedRow = prefill
-          ? prefillToRow(createVariantRow(whId, "", "均码", EMPTY_BATCH, 0), prefill)
-          : null;
+        const seedRows = prefill ? buildRowsFromPrefill(prefill, whId) : null;
         setRows((current) => {
-          // 带草稿进来：整表按这条草稿重建，别把上一条的颜色/价格/尺寸留在后面几行
-          if (seedRow) return [seedRow];
+          // 带草稿进来：整表按这条草稿重建，别把上一条的颜色/价格/尺寸留在后面几行。
+          // 一条草稿往往有多个 SKU（一个颜色一条），全部铺出来，不用用户再点生成。
+          if (seedRows && seedRows.length) return seedRows;
           if (current.length) return current;
           return [createVariantRow(whId, "", "均码", EMPTY_BATCH, 0)];
         });
@@ -1062,8 +1114,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       title: prefill.title || current.title,
       // Temu 的变种属性值一/值二
       // 草稿里的「变种属性值一/二」= 颜色列表 / 尺码列表
-      colorsText: prefill.specValue1 || current.colorsText,
-      sizesText: prefill.specValue2 || current.sizesText,
+      // 有全量取值就用全量（11 个颜色都要铺出来），否则退回单个值
+      colorsText:
+        (prefill.specValues1?.length ? prefill.specValues1.join(",") : prefill.specValue1) ||
+        current.colorsText,
+      sizesText:
+        (prefill.specValues2?.length ? prefill.specValues2.join(",") : prefill.specValue2) ||
+        current.sizesText,
       carousel: (prefill.images || []).join("\n") || current.carousel,
       detailImages: (prefill.detailImages || []).join("\n") || current.detailImages,
       description: prefill.description || current.description,
@@ -1089,6 +1146,47 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     };
   }
 
+  /**
+   * 草稿 → 变种行：一个 SKU 一行。
+   *
+   * AI 处理采到的草稿 `source_variant_records` 本来就是「一个颜色一条」，
+   * 价格、库存、图都各不相同。以前只读第一条，进发布页只剩一行，剩下 10 个颜色
+   * 要用户手填 —— 数据明明都在，没理由让人再录一遍。
+   */
+  function buildRowsFromPrefill(prefill: TemuPublishPrefill, whId: string): VariantRow[] {
+    const variants = (prefill.variants ?? []).filter(
+      (item) => item && (item.color || item.size || item.sku),
+    );
+    if (variants.length <= 1) {
+      return [prefillToRow(createVariantRow(whId, "", "均码", EMPTY_BATCH, 0), prefill)];
+    }
+    const fallbackSize = prefill.specValue2 || "均码";
+    return variants.map((variant, index) => {
+      const base = createVariantRow(
+        whId,
+        variant.color || "",
+        variant.size || fallbackSize,
+        EMPTY_BATCH,
+        index,
+      );
+      const merged = prefillToRow(base, prefill);
+      return {
+        ...merged,
+        extCode: variant.sku || merged.extCode,
+        colorName: variant.color || merged.colorName,
+        sizeName: variant.size || merged.sizeName,
+        // 每个变体自己的申报价（已按导出规则按成本算过）；没有才用草稿主价
+        supplierPrice:
+          typeof variant.price === "number" && variant.price > 0
+            ? String(variant.price)
+            : merged.supplierPrice,
+        // 库存 0 是合法值（先建品后补货），不能用 || 兜掉
+        stock: typeof variant.stock === "number" ? String(variant.stock) : merged.stock,
+        thumbUrl: variant.image || merged.thumbUrl,
+      };
+    });
+  }
+
   /** 把草稿库带入的数据直接铺到表单（用于「页签已打开」的情况）。 */
   const applyPrefillNow = (prefill: TemuPublishPrefill) => {
     // 同一条草稿再点一次（改了价格回来）→ 保留手改；换了一条 → 整表重建
@@ -1101,8 +1199,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         return current;
       }
       if (sameDraft) return [prefillToRow(current[0], prefill), ...current.slice(1)];
-      const seed = createVariantRow(current[0].warehouseId, "", "均码", EMPTY_BATCH, 0);
-      return [prefillToRow(seed, prefill)];
+      // 换了一条草稿：按这条草稿的全部变体重建整表
+      return buildRowsFromPrefill(prefill, current[0].warehouseId);
     });
     // 同样不能写在 updater 里（StrictMode 会跑两次）
     prefillRef.current = prefill;
@@ -1330,18 +1428,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   useEffect(() => {
     const leafId = categoryPath.length ? Number(categoryPath[categoryPath.length - 1].catId) : 0;
     if (!leafId) {
-      setSizeChart({ loading: false, has: null });
+      setSizeChart({ loading: false, has: null, info: null });
       return;
     }
     let alive = true;
-    setSizeChart((current) => ({ loading: true, has: current.has }));
+    setSizeChart((current) => ({ ...current, loading: true }));
     void temuPublishApi
       .sizeCharts(leafId)
       .then((info) => {
-        if (alive) setSizeChart({ loading: false, has: !!info.has_size_chart });
+        if (alive) setSizeChart({ loading: false, has: !!info.has_size_chart, info });
       })
       .catch(() => {
-        if (alive) setSizeChart({ loading: false, has: null });
+        if (alive) setSizeChart({ loading: false, has: null, info: null });
       });
     return () => {
       alive = false;
@@ -1464,12 +1562,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     patch({
       freightId: form.freightId || template.freightId,
       warehouseId: form.warehouseId || template.warehouseId,
+      // 发货时效只有「用户改过」才保留：停在默认 9 天说明没动过，这时套模板
+      // 应该跟随模板里的档位（模板也可能是 2 天 / 自定义 12 天）。
+      // 别再用 `!== "1"` 当「没填」的判据了 —— 1 天现在是合法档位。
       shipmentDays:
-        form.shipmentDays && form.shipmentDays !== "1"
+        form.shipmentDays && form.shipmentDays !== DEFAULT_SHIPMENT_DAYS
           ? form.shipmentDays
-          : template.shipmentDays && template.shipmentDays !== "1"
-            ? template.shipmentDays
-            : DEFAULT_SHIPMENT_DAYS,
+          : template.shipmentDays || DEFAULT_SHIPMENT_DAYS,
       origin: form.origin || template.origin,
       sizeTemplates: form.sizeTemplates || template.sizeTemplates,
       isCustom: template.isCustom,
@@ -1689,6 +1788,35 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     else patch({ detailImages: text });
   };
 
+  /** 「从成品库挑图」：当前在给哪个槽位挑 */
+  const [pickerSlot, setPickerSlot] = useState<ImageSlot | null>(null);
+  /** 图片放大预览（变种图 / 轮播图点开看大图） */
+  const [imagePreview, setImagePreview] = useState<{ src: string; alt?: string } | null>(null);
+  /** 挑图超出上限时的一句话提示（几秒后自己消失） */
+  const [pickerNotice, setPickerNotice] = useState("");
+
+  /**
+   * 从成品库挑回来的图追加到槽位。
+   *
+   * 只做「去重 + 截到上限」：图片地址本身不用管，提交时 `resolveImage` 会把
+   * 本地媒体路径 / 公网 URL 统一转存到 Temu 图床。
+   */
+  const appendSlotImages = (slot: ImageSlot, urls: string[]) => {
+    const current = splitLines(slotText(slot));
+    const merged = [...current];
+    for (const url of urls) {
+      const text = url.trim();
+      if (text && !merged.includes(text)) merged.push(text);
+    }
+    const limit = IMAGE_LIMITS[slot];
+    if (merged.length > limit) {
+      const label = IMAGE_SLOTS.find((item) => item.key === slot)?.label ?? "图片";
+      setPickerNotice(`${label}最多 ${limit} 张，多出的 ${merged.length - limit} 张没有加进来`);
+      window.setTimeout(() => setPickerNotice(""), 4000);
+    }
+    setSlotText(slot, merged.slice(0, limit).join("\n"));
+  };
+
   /**
    * 上传图片：轮播/外包装裁 1:1 再传（Temu 主图要求方图），
    * 详情图**不能裁方** —— 商详楼层是长图，裁成 1:1 会把内容切掉；
@@ -1709,18 +1837,52 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         );
       }
       const leaf = categoryPath[categoryPath.length - 1];
+      // 主图比例是**按类目**决定的（服饰 3:4 / 其它 1:1），没选类目就上传等于赌一把：
+      // 传成 1:1 之后再选服装类目，图已经上了图床、比例改不了，只能全部重传。
+      if (!leaf?.catId) {
+        throw new Error("请先选到叶子类目再上传图片：主图比例按类目决定（服饰 3:4、其它 1:1）。");
+      }
+      /**
+       * 服饰类目（必须有尺码表 = 量体类目）主图要竖图 3:4，
+       * 非服饰要方图 1:1 —— 实测报错分别是
+       * 「服饰类目skc轮播图校验失败，应符合 3:4，宽>=1340，高>=1785」
+       * 「非服饰类目货品轮播图……1:1、≥800px」。
+       */
+      // 尺码表还在读就等它一下（最多 4 秒）：读的是快照的话会把服装类目按 1:1 裁。
+      let chart = sizeChartRef.current;
+      const deadline = Date.now() + 4000;
+      while (chart.loading && Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+        chart = sizeChartRef.current;
+      }
+      const apparel = chart.info?.required === true;
+      const shapeCarousel = (raw: string) =>
+        apparel
+          ? toRatioDataUrl(raw, APPAREL_CAROUSEL_WIDTH, APPAREL_CAROUSEL_HEIGHT)
+          : toSquareDataUrl(raw);
       // 并发 3 张：串行传 6 张要等 6~18 秒，并发后基本等于最慢那张
       const uploadedUrls = await mapWithConcurrency(files, 3, async (file) => {
         const raw = await blobToDataUrl(file);
         const uploaded =
           slot === "detail"
             ? await temuPublishApi.uploadDetailImage(raw, 0, leaf?.catId)
-            : await temuPublishApi.uploadImage(await toSquareDataUrl(raw), leaf?.catId);
+            : await temuPublishApi.uploadImage(
+                slot === "carousel" ? await shapeCarousel(raw) : await toSquareDataUrl(raw),
+                leaf?.catId,
+              );
         return pickUploadedUrl(uploaded);
       });
       const urls = uploadedUrls.filter(Boolean);
       if (!urls.length) throw new Error("图片上传成功但没有返回图片地址");
       setSlotText(slot, [...splitLines(slotText(slot)), ...urls].join("\n"));
+      // 服饰类目的素材图单独校验「1:1、宽>=800」，而轮播图已经被裁成 3:4 竖图，
+      // 素材图留空时默认回退到轮播首图 → 直接被拒（实测第 4 关）。
+      // 这里用同一张原图另裁一张 800×800 方图传上去填进素材图，省掉用户再传一遍。
+      if (slot === "carousel" && apparel && !form.material.trim() && files[0]) {
+        const square = await toSquareDataUrl(await blobToDataUrl(files[0]));
+        const materialUrl = pickUploadedUrl(await temuPublishApi.uploadImage(square, leaf?.catId));
+        if (materialUrl) patch({ material: materialUrl });
+      }
     });
 
   /**
@@ -1898,7 +2060,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const cached = imageCache.current.get(text);
     if (cached) return cached;
     let uploaded: TemuImageUploadResult;
-    if (isPublicHttpUrl(text)) {
+    if (text.startsWith("data:image/")) {
+      // 变种行「本地图片」是 FileReader 转的 dataURL，直接交给图床上传
+      uploaded = await temuPublishApi.uploadImage(text, cateId);
+    } else if (isPublicHttpUrl(text)) {
       // 公网外链（如 COS）交给后端代下载，避免浏览器跨域。
       uploaded = await temuPublishApi.uploadImageUrl(text, cateId);
     } else {
@@ -2021,7 +2186,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const carousel = await resolveImages(carouselSource, leaf.catId);
     const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId);
     const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
-    const material = form.material.trim() ? await resolveImage(form.material, leaf.catId) : carousel[0];
+    // 服饰类目的素材图单独校验「1:1、宽>=800」，而轮播图是 3:4 竖图 ——
+    // 留空回退到轮播首图会被 Temu 拒（实测报「素材图[...]校验失败，应符合 1:1，宽>=800」）。
+    // 上传轮播时已经自动另裁一张方图填进 material，走到这里还空着说明是草稿带入的竖图，
+    // 只能让用户补一张，别默默回退去撞必然失败的校验。
+    const apparel = sizeChart.info?.required === true;
+    const materialSource = form.material.trim();
+    if (apparel && !materialSource) {
+      throw new Error(
+        "服饰类目的产品素材图要单独填一张 1:1（宽 ≥800px）的方图：" +
+          "轮播图是 3:4 竖图，直接当素材图会被 Temu 拒。请上传一张或在「产品素材图」里填地址。",
+      );
+    }
+    const material = materialSource ? await resolveImage(materialSource, leaf.catId) : carousel[0];
 
     const attrByPid = new Map((attributes?.properties ?? []).map((item) => [item.pid, item]));
     // 联动隐藏的属性不能带进 payload（留着上次填的值会被判「属性不合法」）
@@ -2032,18 +2209,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       .map(([pid, pick]) => {
         const attr = attrByPid.get(Number(pid));
         const text = pick.text.trim();
+        const unit = String(attr?.valueUnit?.[0] ?? "").trim();
+        // 「下拉 + 数值」属性（成分 60%）要额外给数值；纯数值属性（面料克重 200）
+        // 只能走 propValue，带上 numberInputValue 会被判「数值录入信息必须为空」。
+        // 两者的区别是有没有预设可选值 —— 实测服装类目：成分有 values，
+        // 面料克重 / 里料克重 values 是空数组。
+        const hasOptions = (attr?.values?.length ?? 0) > 0;
         return {
-          pid: Number(pid),
+          // 同一个 pid 挂多条属性时会话里用的是 refPid 当键，网关只认原始 pid
+          pid: attr?.realPid ?? Number(pid),
           vid: pick.vid,
           // 类目属性表里的名称/模板 id 必须带上，否则 Temu 判「属性不合法」
           prop_name: attr?.name || attr?.propertyName || "",
           ref_pid: attr?.refPid ?? undefined,
           template_pid: attr?.templatePid ?? undefined,
           prop_value: text,
-          // 数值型属性（带单位）要把数值和单位分开给，否则会被要求「请输入数值」
-          // 同样不能用 valueUnit.length：[""] 是「无单位」，不是「有单位」
-          number_input_value: String(attr?.valueUnit?.[0] ?? "").trim() ? text : "",
-          value_unit: attr?.valueUnit?.[0] ?? "",
+          number_input_value: hasOptions ? text : "",
+          value_unit: unit,
         };
       });
 
@@ -2177,6 +2359,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
     return {
       category_ids: categoryPath.map((item) => item.catId),
+      // 类目路径名跟着一起发：发布历史里能直接显示「美妆个护 > 化妆包」，
+      // 而不是一串 cat id（纯展示字段，服务端不参与任何校验）
+      category_names: categoryPath.map((item) => item.catName).filter(Boolean),
       title: form.title.trim(),
       title_en: form.titleEn.trim(),
       carousel_image_urls: carousel,
@@ -2195,7 +2380,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       site_ids: [SITE_ID],
       // 类目明确不需要尺码表（sizeChart.has === false）时不要带旧的模板 id：
       // 字段被藏起来了，用户看不到也改不掉，带上去只会让 Temu 回一句莫名其妙的话
-      size_template_ids: sizeChart.has === false ? [] : sizeTemplates,
+      // 类目不需要尺码表 → 清空（避免带旧 id 换来莫名报错）；
+      // 需要时按用户填的走 —— 哪怕店里暂时还没有现成的表。
+      size_template_ids: sizeChart.info?.required === false ? [] : sizeTemplates,
       // 定制/POD 商品要显式打开，否则前台看不到定制入口
       personalization: form.isCustom,
       validate_catalog: true,
@@ -2819,6 +3006,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <span className="temu-stepbar-label">{step.label}</span>
           </button>
         ))}
+        {/* 还没带入草稿时，把入口挂在步骤条右侧的空白里：
+            原来它单独占一整行（「来源」大条），首屏白白少看两个字段。
+            带入之后摘要信息多（标题/图数/申报价/需核对项），才恢复成整行。 */}
+        {!prefillInfo && onOpenDraftLibrary && (
+          <button
+            type="button"
+            className="temu-stepbar-source"
+            onClick={onOpenDraftLibrary}
+            title="草稿库里的 AI 处理 / POD 成品可以一键带入标题、图片和变种"
+          >
+            <span className="temu-stepbar-source-tag">来源</span>
+            从草稿库带入
+          </button>
+        )}
       </nav>
 
       <div className="temu-console-body">
@@ -2867,20 +3068,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </button>
               )}
             </div>
-          ) : (
-            <div className="temu-source-bar is-empty">
-              <span className="temu-prefill-source">来源</span>
-              <div className="temu-source-main">
-                <strong>从草稿库带入，标题/图片/变种一次填好</strong>
-                <span className="temu-muted">也可以直接在下面手工填，草稿库里的 AI / POD 成品都能一键带入</span>
-              </div>
-              {onOpenDraftLibrary && (
-                <button type="button" className="temu-btn" onClick={onOpenDraftLibrary}>
-                  去草稿库挑一个
-                </button>
-              )}
-            </div>
-          )}
+          ) : null}
 
           {mandatory && (
             <div className="temu-mandatory-result" role="status">
@@ -2905,33 +3093,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <details className="temu-mandatory-raw">
                 <summary>查看原始返回</summary>
                 <pre className="temu-json">{JSON.stringify(mandatory.result, null, 2)}</pre>
-              <div className="temu-two-col">
-              <div className="temu-field">
-                <span>
-                  敏感货
-                  <em className="temu-muted">带电/液体/粉末等，提交为 isSensitive</em>
-                </span>
-                <label className="temu-check">
-                  <input
-                    type="checkbox"
-                    checked={form.isSensitive}
-                    onChange={(event) => patch({ isSensitive: event.target.checked })}
-                  />
-                  <span>这个是敏感货（填错会被 Temu 拒）</span>
-                </label>
-              </div>
-              <div className="temu-field">
-                <span>
-                  定制 / POD
-                  <em className="temu-muted">提交为 personalizationSwitch</em>
-                </span>
-                <label className="temu-check">
-                  <input type="checkbox" checked={form.isCustom} onChange={(event) => patch({ isCustom: event.target.checked })} />
-                  <span>这是定制商品（需先在卖家中心配好定制模板）</span>
-                </label>
-              </div>
-            </div>
-
             </details>
             </div>
           )}
@@ -2963,6 +3124,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <span>
                 产品分类<em className="temu-required">*</em>
                 <em className="temu-muted">会记住上次用过的分类</em>
+                {/* 「能不能按颜色/尺码发」是选完类目才成立的开关，但它只是一个小决定，
+                    原来占掉一整行（一张带说明的大卡），把类目条和属性区隔开。
+                    收成一枚小胶囊挂在标题行右侧，说明进 title。 */}
+                {leaf?.isLeaf && attributes && !hasPresetSaleProps && canCustomSpecs && (
+                  <label
+                    className="temu-spec-switch"
+                    title={`不勾＝单 SKU（只需价格库存）；勾上＝填颜色/尺码，提交时自动建对应规格值（最多 ${specDimLimit} 个维度）`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={variantsOn}
+                      onChange={(event) => setVariantsOn(event.target.checked)}
+                    />
+                    <b>按规格发（多色 / 多码）</b>
+                  </label>
+                )}
               </span>
 
               {/* 类目选择区：以前是「预设 + 标题推荐 + 搜索 + 结果列表 + 面包屑 + 刷新 +
@@ -3076,27 +3253,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   </>
                 )}
 
-                {leaf?.isLeaf && attributes && !hasPresetSaleProps && (
-                  canCustomSpecs ? (
-                    <label className="temu-variant-toggle">
-                      <input
-                        type="checkbox"
-                        checked={variantsOn}
-                        onChange={(event) => setVariantsOn(event.target.checked)}
-                      />
-                      <span>
-                        这个类目可以按规格发（最多 {specDimLimit} 个维度）：
-                        <strong>多种颜色/尺码就勾上</strong>
-                        <em className="temu-muted">
-                          不勾＝单 SKU（只需价格库存）；勾上＝填颜色/尺码，提交时自动建对应规格值
-                        </em>
-                      </span>
-                    </label>
-                  ) : (
-                    <p className="temu-cat-hint">
-                      该类目在 Temu 没有销售属性，也没有自定义规格入口 —— 只能按单 SKU 发布。
-                    </p>
-                  )
+                {leaf?.isLeaf && attributes && !hasPresetSaleProps && !canCustomSpecs && (
+                  <p className="temu-cat-hint">
+                    该类目在 Temu 没有销售属性，也没有自定义规格入口 —— 只能按单 SKU 发布。
+                  </p>
                 )}
 
                 <details className="temu-cat-advanced">
@@ -3199,16 +3359,19 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </div>
             </details>
 
-            <div className="temu-field">
+            {/* 属性是「填完类目之后」的第二步，和上面的类目选择不是同一件事。
+                加一条分隔线 + 把说明挪到标题下面单独一行，
+                否则标题、说明、9 个下拉挤在一起，看不出这里是新的一段。 */}
+            <div className="temu-field temu-field-attrs">
               <span>
                 产品属性<em className="temu-required">*</em>
-                <em className="temu-muted">
-                  带 * 必填；不带的收在下面，不填也能发布
-                  {attributes && attributes.properties.length > visibleProperties.length
-                    ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
-                    : ""}
-                </em>
               </span>
+              <em className="temu-field-note">
+                带 * 必填；不带的收在下面，不填也能发布
+                {attributes && attributes.properties.length > visibleProperties.length
+                  ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
+                  : ""}
+              </em>
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
@@ -3316,7 +3479,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 货号/产地/外链/英文标题大多数品根本不改，摊开只是让人犹豫。 */}
             <details className="temu-more">
               <summary>
-                <span>更多选项（英文标题、货号、产地、外链、敏感货、定制）</span>
+                <span>更多选项（英文标题、货号、产地、外链）</span>
                 {(form.isSensitive || form.isCustom) && (
                   <em className="temu-muted">
                     {[form.isSensitive ? "敏感货已开" : "", form.isCustom ? "定制已开" : ""]
@@ -3329,7 +3492,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <label className="temu-field">
                 <span>
                   英文标题
-                  <em className="temu-muted">选填，需全英文；填了会随标题一起提交</em>
+                  <em className="temu-muted">
+                    {form.titleEn.length}/250，选填；填了会随标题一起提交
+                  </em>
                 </span>
                 <input
                   className="temu-input"
@@ -3387,14 +3552,21 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </label>
             </div>
             </details>
-            {IMAGE_SLOTS.map((slot) => (
+            {IMAGE_SLOTS.map((slot) => {
+              // 服饰类目（必须有尺码表 = 量体类目）主图要 3:4 竖图，文案跟着变，
+              // 否则界面写着「1:1」、实际裁成 3:4，用户会以为被裁坏了
+              const apparelSlot = slot.key === "carousel" && isApparelCategory;
+              const slotHint = apparelSlot
+                ? "服饰类目要竖图 3:4（≥1344×1792），上传自动裁切"
+                : slot.hint;
+              return (
               <div className="temu-img-group" key={slot.key}>
                 <div className="temu-img-group-head">
                   <strong>
                     {slot.label}
                     {slot.required && <em className="temu-required">*</em>}
                   </strong>
-                  <span className="temu-muted">{slot.hint}</span>
+                  <span className="temu-muted">{slotHint}</span>
                   <label className="temu-btn is-small">
                     + 添加图片
                     <input
@@ -3406,6 +3578,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       disabled={busy !== ""}
                     />
                   </label>
+                  <button
+                    type="button"
+                    className="temu-btn is-small"
+                    title="从「AI 处理 / POD 定制」的成品里直接挑，不用先存成本地文件"
+                    onClick={() => setPickerSlot(slot.key)}
+                  >
+                    从成品库挑图
+                  </button>
                 </div>
                 <TemuImageStrip
                   urls={splitLines(slotText(slot.key))}
@@ -3413,17 +3593,28 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   firstBadge={slot.key === "carousel" ? "主图" : undefined}
                   emptyHint={
                     slot.key === "carousel"
-                      ? "草稿带入的图会显示在这里；上传会自动裁成 1:1"
+                      ? `草稿带入的图会显示在这里；上传会自动裁成 ${apparelSlot ? "3:4" : "1:1"}`
                       : "可选，从草稿库带入或上传"
                   }
                 />
+                {slot.key === "carousel" ? (
+                  <p className="temu-image-rules">
+                    {apparelSlot
+                      ? "服饰类目要求：至少 3 张、最多 10 张 · 比例 3:4 · 宽 ≥1340、高 ≥1785 · 单张 ≤2MB"
+                      : "Temu 要求：至少 3 张、最多 10 张 · 比例 1:1 · 宽高 ≥800px · 单张 ≤2MB"}
+                    （上传时自动裁切压缩，按顺序提交，第一张是主图）
+                  </p>
+                ) : null}
               </div>
-            ))}
+              );
+            })}
 
             <div className="temu-field">
                 <span>
                   产品素材图
-                  <em className="temu-muted">留空＝自动取轮播第一张</em>
+                  <em className="temu-muted">
+                    {isApparelCategory ? "服饰类目必填：1:1 方图，不能沿用 3:4 轮播图" : "留空＝自动取轮播第一张"}
+                  </em>
                 </span>
                 <div className="temu-material-row">
                   <TemuThumb path={effectiveMaterial} onOpen={() => undefined} />
@@ -3434,7 +3625,46 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     placeholder="覆盖素材图地址（可选）"
                   />
                 </div>
+                {isApparelCategory ? (
+                  <em className="temu-field-note">
+                    Temu 单独校验素材图「1:1、宽 ≥800」；上传轮播图时会自动另裁一张方图填进来，
+                    从草稿库带入的竖图需要在这里换一张
+                  </em>
+                ) : null}
             </div>
+            {/* 合规开关平铺：藏在「校验发布」的原始返回折叠里等于让人漏填，
+                敏感货/定制填错的后果是直接被 Temu 拒或被判违规。 */}
+            <div className="temu-flags">
+              <label className={`temu-flag${form.isSensitive ? " is-on" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={form.isSensitive}
+                  onChange={(event) => patch({ isSensitive: event.target.checked })}
+                />
+                <span>
+                  <strong>敏感货</strong>
+                  <em>带电 / 液体 / 粉末等，提交为 isSensitive</em>
+                </span>
+              </label>
+              <label className={`temu-flag${form.isCustom ? " is-on" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={form.isCustom}
+                  onChange={(event) => patch({ isCustom: event.target.checked })}
+                />
+                <span>
+                  <strong>定制产品</strong>
+                  <em>需先在卖家中心配好定制模板，否则无法正常上架</em>
+                </span>
+              </label>
+            </div>
+
+            {pickerNotice ? (
+              <p className="temu-picker-notice" role="status" aria-live="polite">
+                {pickerNotice}
+              </p>
+            ) : null}
+
             <details className="temu-advanced">
               <summary>备注（不提交，只留档）</summary>
               <textarea
@@ -3536,18 +3766,41 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               onSizesTextChange={(value) => patch({ sizesText: value })}
               extCodePrefix={productCode}
               fallbackThumb={effectiveMaterial}
+              carouselImages={splitLines(form.carousel)}
+              onPreviewImage={(src, alt) => setImagePreview({ src, alt })}
               singleSku={singleSkuMode}
             />
-            {sizeChart.has !== false && (
+            {/* 显示条件用 required（类目要不要），不是 has（店里有没有）：
+                服装类目新店一张表都没有，用 has 判会把整个字段藏掉，
+                用户连填 ID 的地方都看不到。 */}
+            {(sizeChart.info?.required || sizeChart.has) && (
               <div className="temu-field">
                 <span>
                   尺码表模板 ID
                   <em className="temu-muted">
                     {sizeChart.has
-                      ? "这个类目需要尺码表：填 Temu 后台建好的模板 ID，多个用逗号"
-                      : "服装/鞋类必填，多个用逗号；需先在 Temu 后台建好（无关类目会自动隐藏）"}
+                      ? `这个类目需要尺码表（店里已有 ${sizeChart.info?.count ?? 0} 张）：填模板 ID，多个用逗号`
+                      : "这个类目必须绑尺码表：先在 Temu 后台建好，再把模板 ID 填这里"}
                   </em>
                 </span>
+                {sizeChart.info?.required && !sizeChart.has ? (
+                  <p className="temu-sizechart-warn">
+                    <strong>店里还没有可用的尺码表。</strong>
+                    {sizeChart.info.required_elements?.length
+                      ? `Temu 要求必填测量项：${sizeChart.info.required_elements.join("、")}。`
+                      : ""}
+                    去卖家后台「商品管理 → 尺码表模板」建一张，再把模板 ID 填到这里
+                    （接口建表 sizecharts.create 的参数结构还没打通，暂时只能后台建）。
+                  </p>
+                ) : null}
+                {sizeChart.info?.sizes?.length ? (
+                  <p className="temu-field-note">
+                    该尺码组可选尺码：{sizeChart.info.sizes.slice(0, 14).join(" / ")}
+                    {sizeChart.info.sizes.length > 14
+                      ? ` 等 ${sizeChart.info.sizes.length} 个`
+                      : ""}
+                  </p>
+                ) : null}
                 <input
                   className="temu-input"
                   value={form.sizeTemplates}
@@ -3605,23 +3858,25 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </select>
               </label>
             </div>
-            <div className="temu-two-col">
-              <label className="temu-field">
-                <span>
-                  发货时效（天）<em className="temu-required">*</em>
-                  <em className="temu-muted">
-                    承诺给 Temu 的备货发货时限。默认 9 天（Temu 半托管预设 777600 秒，
-                    店里历史商品也都是这个值）；填太短会被判延迟发货，可以改大
-                  </em>
-                </span>
-                <input
-                  className="temu-input"
-                  inputMode="numeric"
-                  value={form.shipmentDays}
-                  onChange={(event) => patch({ shipmentDays: event.target.value })}
-                  placeholder={DEFAULT_SHIPMENT_DAYS}
-                />
-              </label>
+            {/* 发货时效原来是 two-col 的左半边，右半边空着、说明又占两行，
+                整块看着像「填了一半」。改成占满一行。
+                2026-11-05：从数字输入框改成 Temu 后台同款档位单选（1/2/7/9 + 自定义），
+                radio 之间互斥要 label 包多个 input —— 外层不能再用 <label>，
+                否则点标题会命中第一个 radio（1 个工作日）。 */}
+            <div className="temu-field temu-field-shipment">
+              <span>
+                承诺发货时效<em className="temu-required">*</em>
+              </span>
+              {/* 这段说明原来塞在 label 里，占了三行小字，把输入框挤到下面去；
+                  拆成字段下方的一行注释，label 只留标题。 */}
+              <em className="temu-field-note">
+                默认 9 个工作日（Temu 半托管预设 777600 秒）；Temu 限选 1/2/7/9 工作日或自定义，
+                选太短会被判延迟发货
+              </em>
+              <ShipmentDaysPicker
+                value={form.shipmentDays}
+                onChange={(next) => patch({ shipmentDays: next })}
+              />
             </div>
             {/* 每件装数量：只有标题写 4 Pack / 12Pcs 这类多件装才需要，默认 1 单件装 */}
             <details className="temu-more">
@@ -3872,6 +4127,44 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </div>
         </aside>
       </div>
+
+      {imagePreview ? (
+        <div
+          className="temu-image-preview"
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片预览"
+          onClick={() => setImagePreview(null)}
+        >
+          <img
+            src={imagePreview.src}
+            alt={imagePreview.alt || ""}
+            referrerPolicy="no-referrer"
+            onClick={(event) => event.stopPropagation()}
+          />
+          <button
+            type="button"
+            className="temu-image-preview-close"
+            onClick={() => setImagePreview(null)}
+            aria-label="关闭预览"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
+      {pickerSlot ? (
+        <DraftImagePicker
+          slotLabel={IMAGE_SLOTS.find((item) => item.key === pickerSlot)?.label ?? "图片"}
+          existing={splitLines(slotText(pickerSlot))}
+          limit={IMAGE_LIMITS[pickerSlot]}
+          onClose={() => setPickerSlot(null)}
+          onPick={(urls) => {
+            appendSlotImages(pickerSlot, urls);
+            setPickerSlot(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -47,7 +47,12 @@ export function TemuThumb({ path, onOpen }: { path: string; onOpen: (src: string
   }, [path]);
 
   // 没有图（比如变种没单独设预览图）就给个占位框，别把加载中的「…」当成空图
-  if (!path) return <span className="temu-img-empty" title="暂无图片" />;
+  if (!path)
+    return (
+      <span className="temu-img-empty" title="暂无图片">
+        无图
+      </span>
+    );
   if (failed) {
     return (
       <span className="temu-img-failed" title={`这张图读不到，文件可能已经不在：${path}`}>
@@ -58,7 +63,16 @@ export function TemuThumb({ path, onOpen }: { path: string; onOpen: (src: string
   if (!src) return <span className="temu-img-strip-loading">…</span>;
   return (
     <button type="button" className="temu-img-thumb" onClick={() => onOpen(src)} title="点击放大">
-      <img src={src} alt="" loading="lazy" />
+      {/* referrerPolicy=no-referrer：alicdn（1688 图床）校验 Referer，带
+          http://127.0.0.1:5173 会被直接 403，缩略图就永远是空白。
+          顺带 onError 落到「失效」，不要留一个裂图。 */}
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
     </button>
   );
 }
@@ -142,7 +156,12 @@ export function TemuImageStrip({
             aria-label="图片预览"
             onClick={() => setPreview(null)}
           >
-            <img src={preview} alt="" onClick={(event) => event.stopPropagation()} />
+            <img
+              src={preview}
+              alt=""
+              referrerPolicy="no-referrer"
+              onClick={(event) => event.stopPropagation()}
+            />
             <button
               type="button"
               className="temu-image-preview-close"

@@ -13,6 +13,107 @@ export type AttrPickMap = Record<number, AttrPick>;
 export const EMPTY_ATTR: AttrPick = { vid: 0, text: "" };
 
 /**
+ * 把「同一个 pid 挂了多条属性」的条目拆成唯一键。
+ *
+ * 服装类目实测（2026-11-05，女装连衣裙 39107）：
+ *
+ * | 属性 | pid | refPid | templatePid |
+ * |---|---|---|---|
+ * | 面料纹理1（必填） | 2054 | 6926 | 1292401 |
+ * | 面料纹理2 | 2054 | 6927 | 1293592 |
+ * | 面料克重1（必填，父=面料纹理1） | 2052 | 6930 | 1296028 |
+ * | 面料克重2（必填，父=面料纹理2） | 2052 | 6931 | 1297215 |
+ * | 里料克重（必填，父=里料纹理） | 2052 | 6934 | 1298785 |
+ * | 成分 / 里衬成分 / 基布成分 | 2 | 15 / 6547 / 7639 | … |
+ *
+ * `attrPicks` 是按 pid 索引的，pid 一撞就出三个连锁问题：
+ * 1. 填「面料克重1」时三行克重一起变（共用一个输入值）；
+ * 2. 「面料纹理1」选了光面 → 同 pid 的「面料纹理2」也被当成选了光面 →
+ *    面料克重2 被误判为可见且必填，用户被要求填一个根本不该出现的属性；
+ * 3. 组装 payload 时按 pid 只能取到**最后一条**（面料纹理2），
+ *    于是「面料纹理1」压根没提交 → Temu 回「缺少父属性值」。
+ *
+ * 所以这里把重复 pid 的条目改成用 **refPid** 当键（refPid 是 Temu 属性实例的唯一标识），
+ * 原始 pid 存进 `realPid`，提交时还原。
+ *
+ * 只在 pid 真的重复时才替换：绝大多数类目 pid 本来唯一，替换会破坏本机存档里
+ * 已有的属性值（表现为「必填属性全变成空的」）。
+ */
+export function normalizeDuplicatePids(attributes: TemuAttributes | null): TemuAttributes | null {
+  const props = attributes?.properties;
+  if (!attributes || !Array.isArray(props) || !props.length) return attributes;
+
+  const counts = new Map<number, number>();
+  for (const prop of props) {
+    const pid = Number(prop.pid ?? 0);
+    counts.set(pid, (counts.get(pid) ?? 0) + 1);
+  }
+  let changed = false;
+  const used = new Set<number>();
+  const properties = props.map((prop) => {
+    const pid = Number(prop.pid ?? 0);
+    if ((counts.get(pid) ?? 0) <= 1) {
+      used.add(pid);
+      return prop;
+    }
+    // 同一个 pid 的多条：refPid 通常各不相同，拿它当键；万一 refPid 也撞，
+    // 再退回 templatePid（也是属性实例级的 id），最后才用序号兜底。
+    const candidates = [Number(prop.refPid ?? 0), Number(prop.templatePid ?? 0)];
+    const key = candidates.find((item) => item > 0 && !used.has(item));
+    if (!key) return prop;
+    used.add(key);
+    changed = true;
+    return { ...prop, pid: key, realPid: pid };
+  });
+  return changed ? { ...attributes, properties } : attributes;
+}
+
+/**
+ * 老存档（键是原始 pid）→ 新键（重复 pid 已换成 refPid）的兼容映射。
+ *
+ * 存档是在 normalize 之前写的，键是 2054 / 2052。如果不翻译，
+ * 服饰类目里已经填好的纹理/克重会在刷新后全部变空（表现为「必填属性又没了」）。
+ * 只在「这个原始 pid 只对应一条属性」时翻译 —— 一条 pid 对上多条时无法判断
+ * 用户当初填的是哪一条，宁可清空让他重填。
+ */
+export function migrateLegacyPicks(
+  picks: AttrPickMap,
+  attributes: TemuAttributes | null,
+): { picks: AttrPickMap; migrated: number } {
+  const properties = attributes?.properties ?? [];
+  const byRealPid = new Map<number, TemuProperty[]>();
+  const keys = new Set<number>();
+  for (const prop of properties) {
+    const key = Number(prop.pid ?? 0);
+    keys.add(key);
+    const real = Number(prop.realPid ?? 0);
+    if (!real) continue;
+    const list = byRealPid.get(real) ?? [];
+    list.push(prop);
+    byRealPid.set(real, list);
+  }
+  let migrated = 0;
+  const out: AttrPickMap = {};
+  for (const [rawKey, pick] of Object.entries(picks ?? {})) {
+    const key = Number(rawKey);
+    if (keys.has(key)) {
+      out[key] = pick;
+      continue;
+    }
+    const targets = byRealPid.get(key) ?? [];
+    if (targets.length === 1 && pick) {
+      out[Number(targets[0].pid)] = pick;
+      migrated += 1;
+      continue;
+    }
+    // 翻译不了就原样留着：上层（pruneStaleAttrPicks）会把它报成「失效」，
+    // 这里悄悄吞掉会让用户看不出哪一项没了。
+    out[key] = pick;
+  }
+  return { picks: out, migrated };
+}
+
+/**
  * 当前选择下「适用」的属性（Temu 属性联动）。
  *
  * 子属性带 `templatePropertyValueParentList`，`parentTemplatePid` 指向父属性的 `templatePid`：
@@ -132,11 +233,14 @@ export function pruneStaleAttrPicks(
   picks: AttrPickMap,
   attributes: TemuAttributes | null,
 ): { picks: AttrPickMap; dropped: string[] } {
+  // 老存档的键是原始 pid；服装类目「同 pid 多条」的键已被换成 refPid。
+  // 先按「唯一对应」翻译一遍，否则草稿里填好的纹理/克重会全部变成失效值。
+  const migrated = migrateLegacyPicks(picks, attributes).picks;
   const byPid = new Map<number, TemuProperty>();
   for (const item of attributes?.properties ?? []) byPid.set(Number(item.pid), item);
   const next: AttrPickMap = {};
   const dropped: string[] = [];
-  for (const [key, pick] of Object.entries(picks ?? {})) {
+  for (const [key, pick] of Object.entries(migrated ?? {})) {
     const pid = Number(key);
     const prop = byPid.get(pid);
     const name = prop ? prop.name || prop.propertyName || `pid=${pid}` : `pid=${pid}`;

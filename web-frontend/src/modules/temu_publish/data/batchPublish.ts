@@ -190,17 +190,10 @@ export async function buildDraftForPublish(
     detail_images: detailImages,
     material_image_url: carousel[0],
     freight_template_id: productTemplate.freightId,
-    // 模板里存的 1 天（更早的坏默认）/ 7 天（上一版默认）都不是用户主动选的，
-    // 统一按 9 天兜底 —— 这是 Temu 半托管的预设值（777600 秒，与发布页一致）
-    shipment_limit_seconds:
-      Math.max(
-        1,
-        Number(
-          ["1", "7"].includes(productTemplate.shipmentDays)
-            ? "9"
-            : productTemplate.shipmentDays || "9",
-        ) || 9,
-      ) * 86400,
+    // 发货时效：1/2/7/9 个工作日与自定义都是合法档位（发布页同一套单选），
+    // 不再把 1 天 / 7 天当坏值改写成 9 —— 那会让用户选的档位静默失效。
+    // 空值才兜底到 Temu 预设 9 天（777600 秒）。
+    shipment_limit_seconds: Math.max(1, Number(productTemplate.shipmentDays) || 9) * 86400,
     outer_goods_url: prefill.sourceUrl ?? "",
     properties,
     skcs,

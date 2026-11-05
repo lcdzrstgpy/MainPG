@@ -19,6 +19,7 @@ import type {
   TemuTokenInfo,
   TemuWarehouseGroup,
 } from "../types";
+import { normalizeDuplicatePids } from "../data/attributeModel";
 
 const BASE = "/api/temu-publish";
 
@@ -63,8 +64,18 @@ export const temuPublishApi = {
       method: "POST",
       body: { search_text: searchText, site_id: siteId },
     }),
+  /**
+   * 类目属性表。
+   *
+   * 出来先过一遍 `normalizeDuplicatePids`：服装类目有「同一个 pid 挂多条属性」的情况
+   * （面料纹理1/2 都是 2054，面料克重1/2/里料克重都是 2052）。不拆开的话前端按 pid
+   * 索引会互相覆盖 —— 填一个三行一起变、payload 只能发出一条、父属性值还会丢。
+   * 放在 api 层做，页面 / 批量弹窗 / 估填拿到的就是同一份规范数据，不会有人漏调。
+   */
   attributes: (catId: number) =>
-    httpJson<TemuAttributes>(`${BASE}/categories/${catId}/attributes`),
+    httpJson<TemuAttributes>(`${BASE}/categories/${catId}/attributes`).then(
+      (attrs) => normalizeDuplicatePids(attrs) ?? attrs,
+    ),
   parentSpecs: () =>
     httpJson<{ parentSpecDTOS: TemuParentSpec[] }>(`${BASE}/parent-specs`),
   createSpec: (parentSpecId: number, specName: string) =>
@@ -123,15 +134,22 @@ export const temuPublishApi = {
   removeShop: (shopId: string) =>
     httpJson<TemuSettingsStatus>(`${BASE}/settings/shops/${shopId}`, { method: "DELETE" }),
 
-  /** 发布历史：成功与失败分开取（status 留空=全部） */
-  publishHistory: (params: { status?: "success" | "failed" | ""; page?: number; pageSize?: number } = {}) =>
+  /** 发布历史：成功与失败分开取（status 留空=全部；q 搜标题/商品 id/草稿 id/类目名） */
+  publishHistory: (params: { status?: "success" | "failed" | ""; q?: string; page?: number; pageSize?: number } = {}) =>
     httpJson<TemuPublishHistory>(
       `${BASE}/publish-history?${new URLSearchParams({
         status: params.status ?? "",
+        q: params.q ?? "",
         page: String(params.page ?? 1),
         page_size: String(params.pageSize ?? 30),
       })}`,
     ),
+
+  /** 补齐老记录的主图/类目名（加这两列之前发布的记录没有，补到就写回台账） */
+  backfillHistory: () =>
+    httpJson<{ checked: number; updated: number; pages: number }>(`${BASE}/publish-history/backfill`, {
+      method: "POST",
+    }),
 
   goodsDetail: (productId: string | number) =>
     httpJson<Record<string, unknown>>(`${BASE}/goods/${productId}`),
