@@ -1742,12 +1742,52 @@ def test_search_goods_compacts_items_and_caches(tmp_path: Path) -> None:
     assert len(client.filters) == 1
 
 
-def test_dimension_check_requires_mall_id(tmp_path: Path) -> None:
-    """尺寸图检测要 mallId；缺了要给出中文提示，而不是发一个必然失败的请求。"""
-    client = SearchClient()
-    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=client)
-    with pytest.raises(ValueError, match="mallId"):
-        service.dimension_check("https://img.example.com/a.jpg", mall_id="")
+def test_dimension_check_works_without_mall_id(tmp_path: Path) -> None:
+    """尺寸图检测不再强制要 mallId（2026-11-05 实测：只传 imageUrl 就能提交）。
+
+    以前强制要求 mallId，而 mallId 根本拿不到（`bg.mall.info.get` 在 scope 里
+    但实际回「Client is not allowed」），等于这个接口永远用不起来。
+    """
+    captured: dict[str, Any] = {}
+
+    class DimClient(SearchClient):
+        def dimension_image_check(
+            self, image_url: str, *, mall_id: str = "", cat_id: int | None = None, class_id: int | None = None
+        ) -> dict[str, Any]:
+            captured["image_url"] = image_url
+            captured["mall_id"] = mall_id
+            return {"errorCode": 0, "uniqueId": "123", "errorMsg": "success"}
+
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=DimClient())
+    result = service.dimension_check("https://img.example.com/a.jpg")
+    assert result["uniqueId"] == "123"
+    assert captured["mall_id"] == ""
+
+
+def test_dimension_result_polls_with_unique_id_not_task_id() -> None:
+    """轮询参数必须是 uniqueId。
+
+    传 taskId 网关不报错，而是永远回「5000000 图片检测中，请重试」——
+    这就是长期看不到结果的真因（同一张图两个名字各查一次对比确认）。
+    """
+    from wh_local.modules.temu_publish.client import TemuProductClient
+
+    captured: dict[str, Any] = {}
+
+    def fake_call(api_type: str, payload: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+        captured["api"] = api_type
+        captured["payload"] = payload
+        captured["gateway"] = kwargs.get("gateway")
+        return {"errorCode": 0}
+
+    client = TemuProductClient.__new__(TemuProductClient)
+    client.call = fake_call  # type: ignore[method-assign]
+
+    client.dimension_image_check_result("999")
+    assert captured["api"] == "bg.algo.dimension.image.check.result"
+    assert captured["payload"] == {"uniqueId": "999"}
+    assert captured["gateway"] == "CN"
+    assert "taskId" not in (captured["payload"] or {})
 
 
 def test_goods_detail_router_returns_payload(tmp_path: Path) -> None:

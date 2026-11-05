@@ -471,24 +471,45 @@ class TemuProductClient:
         self,
         image_url: str,
         *,
-        mall_id: str,
+        mall_id: str = "",
         cat_id: int | None = None,
         class_id: int | None = None,
     ) -> dict[str, Any]:
-        """尺寸图检测提交（CN 网关方法，异步，返回 uniqueId 后轮询 result）。"""
-        request: dict[str, Any] = {"imageUrl": str(image_url).strip(), "mallId": str(mall_id).strip()}
+        """尺寸图检测提交（CN 网关方法，异步，返回 **uniqueId** 后再轮询 result）。
+
+        实测（2026-11-05）：
+        - `mallId` **不是必填** —— 只传 imageUrl 也能提交成功并拿到 uniqueId
+          （`bg.mall.info.get` 虽然在 scope 里，但实际回「Client is not allowed」，
+           所以别指望能自动拿到 mallId）
+        - 返回的字段名是 `uniqueId`，轮询时必须原样传 `uniqueId`（见 result 的注释）
+        """
+        request: dict[str, Any] = {"imageUrl": str(image_url).strip()}
+        if str(mall_id or "").strip():
+            request["mallId"] = str(mall_id).strip()
         if cat_id:
             request["catId"] = int(cat_id)
         if class_id:
             request["classId"] = int(class_id)
         return self.call("bg.algo.dimension.image.check", request, gateway="CN")
 
-    def dimension_image_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
-        return self.call(
-            "bg.algo.dimension.image.check.result",
-            {"taskId": str(task_id).strip(), "mallId": str(mall_id).strip()},
-            gateway="CN",
-        )
+    def dimension_image_check_result(
+        self, unique_id: str, *, mall_id: str = ""
+    ) -> dict[str, Any]:
+        """查尺寸图检测结果。
+
+        ⚠️ 参数名必须是 **`uniqueId`**（提交接口返回的那个字段）：
+        传 `taskId` 网关不报错，而是永远回
+        `errorCode: 5000000 / 图片检测中，请重试` —— 这就是长期「结果停在检测中」的真因
+        （2026-11-05 同一张图分别用两个名字查，对比确认）。
+
+        另：实测同一个 uniqueId 换 4 种图源（Temu 图床 / 阿里 CDN / 公网 PNG / base64）
+        结果都是 `4000000 图片md5获取失败`，说明**服务商侧这条链路还没打通**，
+        不是我们参数的问题。所以前端暂不接入口。
+        """
+        request: dict[str, Any] = {"uniqueId": str(unique_id).strip()}
+        if str(mall_id or "").strip():
+            request["mallId"] = str(mall_id).strip()
+        return self.call("bg.algo.dimension.image.check.result", request, gateway="CN")
 
     def accessories(self, page: int = 1, page_size: int = 20, fuzzy_value: str = "") -> dict[str, Any]:
         payload: dict[str, Any] = {"page": int(page), "pageSize": int(page_size)}

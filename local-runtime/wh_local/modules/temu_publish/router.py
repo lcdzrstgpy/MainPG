@@ -581,14 +581,15 @@ def create_temu_publish_router(
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 
-    @router.get("/dimension-check/{task_id}")
+    @router.get("/dimension-check/{unique_id}")
     def dimension_check_result(
-        task_id: str,
+        unique_id: str,
         mall_id: str = Query(default=""),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
+        """查尺寸图检测结果。路径参数就是提交返回的 uniqueId（不是 taskId）。"""
         try:
-            return _service(actor).dimension_check_result(task_id, mall_id=mall_id)
+            return _service(actor).dimension_check_result(unique_id, mall_id=mall_id)
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 

@@ -199,11 +199,12 @@ class GoodsDraftInput(BaseModel):
 class DimensionCheckRequest(BaseModel):
     """尺寸图检测（bg.algo.dimension.image.check，CN 网关，异步）。
 
-    mallId 是 Temu 店铺 id（卖家后台可见），接口必填，这里不做默认值猜测。
+    实测 2026-11-05：`mallId` **不是必填**，只传 image_url 也能提交并拿到 uniqueId。
+    （`bg.mall.info.get` 虽然在 scope 列表里，实际回「Client is not allowed」，拿不到 mallId）
     """
 
     image_url: str = Field(min_length=8)
-    mall_id: str = Field(default="", description="Temu 店铺 id；留空会报错")
+    mall_id: str = Field(default="", description="Temu 店铺 id；实测可以不传")
     cat_id: int | None = Field(default=None, ge=1)
     class_id: int | None = Field(default=None, ge=1)
 

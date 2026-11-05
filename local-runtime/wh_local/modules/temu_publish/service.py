@@ -1195,19 +1195,23 @@ class TemuPublishService:
         )
 
     def dimension_check(
-        self, image_url: str, *, mall_id: str, cat_id: int | None = None, class_id: int | None = None
+        self,
+        image_url: str,
+        *,
+        mall_id: str = "",
+        cat_id: int | None = None,
+        class_id: int | None = None,
     ) -> dict[str, Any]:
-        """提交尺寸图检测（异步）：返回 uniqueId，再用 dimension_check_result 查结果。"""
-        if not str(mall_id or "").strip():
-            raise ValueError("尺寸图检测需要 mallId（Temu 店铺 id），请在卖家后台查到后填入")
+        """提交尺寸图检测（异步）：返回 uniqueId，再用 dimension_check_result 查结果。
+
+        `mallId` 不是必填（2026-11-05 实测只传 imageUrl 也能提交）。
+        """
         return self.client().dimension_image_check(
             image_url, mall_id=mall_id, cat_id=cat_id, class_id=class_id
         )
 
-    def dimension_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
-        if not str(mall_id or "").strip():
-            raise ValueError("查询尺寸图检测结果需要 mallId")
-        return self.client().dimension_image_check_result(task_id, mall_id=mall_id)
+    def dimension_check_result(self, unique_id: str, *, mall_id: str = "") -> dict[str, Any]:
+        return self.client().dimension_image_check_result(unique_id, mall_id=mall_id)
 
     def find_published_goods(self, draft: GoodsDraftInput, *, within_seconds: int = 1800) -> dict[str, Any] | None:
         """在店铺里按 SKC 货号反查这件商品（发布后核对用）。
