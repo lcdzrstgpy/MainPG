@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+/**
+ * 页面健壮性守护：接口回空对象 / 缺字段时不能把整页打崩。
+ *
+ * 背景（2026-11-04 全模块冒烟）：用「接口返回 {}」模拟网关抽风，41 个模块里有
+ * 5 个直接抛错 —— 模板列表、站点列表、构图名。真实环境里接口 5xx、换版、
+ * 本地后端重启间隙都会走到这条路径，用户看到的就是「这个页面没能显示出来」。
+ * 这类问题只有肉眼点才能发现，所以在这里钉住写法。
+ */
+
+const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+test("POD 定制：模板列表回空对象时不能崩在 templates[0]", () => {
+  const page = read("../modules/pod_customization/pages/PodCustomizationPage.tsx");
+  assert.match(page, /const list = Array\.isArray\(templateResult\.value\?\.templates\)/);
+  assert.match(page, /setTemplates\(list\);/);
+  assert.doesNotMatch(page, /setTemplates\(templateResult\.value\.templates\)/);
+});
+
+test("爆款复刻：productName 缺失时 trim 不能抛", () => {
+  const page = read("../modules/pod_replica/pages/PodReplicaPage.tsx");
+  assert.match(page, /targets\[styleIndex - 1\]\?\.productName\?\.trim\(\)/);
+  assert.doesNotMatch(page, /targets\[styleIndex - 1\]\?\.productName\.trim\(\)/);
+});
+
+test("构图名的 trim 要有空值兜底（定制页 + 复刻页）", () => {
+  for (const rel of [
+    "../modules/pod_customization/pages/PodCustomizationPage.tsx",
+    "../modules/pod_replica/pages/PodReplicaPage.tsx",
+  ]) {
+    const page = read(rel);
+    assert.doesNotMatch(page, /composition\.name\.trim\(\)/, `${rel} 还有裸的 composition.name.trim()`);
+    assert.match(page, /\(composition\.name \?\? ""\)\.trim\(\)/);
+  }
+});
+
+test("货源与利润：站点列表要是数组，渲染前再兜一次空", () => {
+  const page = read("../modules/sourcing_ledger/pages/SourcingLedgerPage.tsx");
+  assert.match(page, /\.then\(\(rows\) => setSites\(Array\.isArray\(rows\) \? rows : \[\]\)\)/);
+  assert.match(page, /\{\(sites \?\? \[\]\)\.map/);
+  assert.match(page, /\{\(detail\.sites \?\? \[\]\)\.map/);
+});
+
+test("利润活动：loadSites 里 data.sites 缺失时不能 map 崩", () => {
+  const page = read("../modules/profit_activity/pages/ProfitActivityTestPage.tsx");
+  assert.match(page, /\(Array\.isArray\(data\?\.sites\) \? data\.sites : \[\]\)\.map/);
+});

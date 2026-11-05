@@ -112,3 +112,29 @@ test("system admin module is not registered in user-visible workspace navigation
   assert.equal(workspaceModules.some((item) => item.id === "system_admin"), false);
   assert.equal(workspacePageModules.some((item) => item.id === "system_admin"), false);
 });
+
+// 侧栏能点到的每个子模块都必须在 workspacePageModules 里有一份完整定义。
+// 2026-11-04 发布历史（temu_publish_history）只加进了分组 children、漏了扁平表，
+// 点一下就在 moduleTab 里解构 undefined 抛错 → 整个工作台白屏。这条断言把这类
+// 「加了一半」的漏项挡在提交前。
+test("every sidebar child module has a full page definition (no half-registered entries)", () => {
+  const pageById = new Map(workspacePageModules.map((module) => [module.id, module]));
+  const missing: string[] = [];
+  for (const group of workspaceModules) {
+    for (const child of group.children ?? []) {
+      const page = pageById.get(child.id);
+      if (!page) {
+        missing.push(`${group.id} → ${child.id}`);
+        continue;
+      }
+      assert.equal(page.label, child.label, `${child.id} 的 label 在分组和扁平表里不一致`);
+    }
+    if (group.defaultChildId) {
+      assert.ok(
+        pageById.has(group.defaultChildId),
+        `默认子页面 ${group.id} → ${group.defaultChildId} 没有登记到 workspacePageModules`,
+      );
+    }
+  }
+  assert.deepEqual(missing, []);
+});

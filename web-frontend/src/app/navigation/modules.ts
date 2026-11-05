@@ -394,6 +394,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessingSourcing,
   temuPublish,
   temuDraftLibrary,
+  temuPublishHistory,
   comboGenerate,
   comboPromptPreset,
   comboHistory,

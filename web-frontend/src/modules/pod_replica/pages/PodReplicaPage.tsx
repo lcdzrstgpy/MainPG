@@ -636,12 +636,15 @@ export function PodReplicaPage({ isActive = true }: Props) {
 
   const openSelectedItem = (item: PodBatchItem, _styleIndex: number) => setSelectedItemId(item.id);
 
-  const resolveStyleProductName = (styleIndex: number) => targets[styleIndex - 1]?.productName.trim() || undefined;
+  // `?.` 只保护到 productName 这一层：它本身是 undefined 时 `.trim()` 照样抛
+  // （复刻页在目标还没就绪时会走这里）。要么整条可选，要么给空串。
+  const resolveStyleProductName = (styleIndex: number) =>
+    targets[styleIndex - 1]?.productName?.trim() || undefined;
   const specCardBatchContext: SpecCardBatchContext | null = activeBatch ? { id: activeBatch.id, status: activeBatch.status, count: activeBatch.count } : null;
   const specCardStyleIndex = specCardTarget ? targets.findIndex((target) => target.clientId === specCardTarget.clientId) + 1 : undefined;
   const canSubmit = Boolean(source) && replicaAnalysesReady(targets) && targets.every((target) => !target.mainPromptDirty) && !busyAction;
   const compositionName = composition
-    ? (composition.is_builtin ? "系统默认模板（默认机位）" : (composition.name.trim() || "未命名构图"))
+    ? (composition.is_builtin ? "系统默认模板（默认机位）" : ((composition.name ?? "").trim() || "未命名构图"))
     : "系统默认模板（默认机位）";
 
   return (
