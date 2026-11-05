@@ -3,6 +3,13 @@ import { httpBlob } from "../../../transport/http/client";
 import type { TemuGoodsDraft, TemuPublishPrefill, TemuSkuDraft } from "../types";
 import { matchPresetValue } from "../utils/specMatch";
 import { yuanToCents } from "../utils/price";
+import {
+  APPAREL_CAROUSEL_SHAPE,
+  SQUARE_SHAPE,
+  toRatioDataUrl,
+  toSquareDataUrl,
+  type ImageShape,
+} from "./imageShape";
 import type { ProductTemplate, VariantTemplate } from "./localStore";
 
 const SITE_ID = 100;
@@ -41,15 +48,65 @@ function isPublicHttp(url: string): boolean {
   return /^https?:\/\//i.test(url) && !/^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url);
 }
 
-/** 图片转成 Temu 图床地址：本地媒体先取 blob 再上传，公网外链交给后端代下载。 */
-async function toTemuImage(path: string, cateId?: number): Promise<string> {
+/**
+ * 图片转成 Temu 图床地址，并按类目裁好比例。
+ *
+ * 三种来源能做的事不一样：
+ *   · 已经是图床地址（img.kwcdn.com）→ 直接复用；像素拿不到，比例改不了
+ *   · 公网外链 → 后端代下载，浏览器同样拿不到像素
+ *   · 本地媒体（AI/POD 成品）→ 先取 blob，再在 canvas 里裁，**只有这一种能裁**
+ *
+ * 裁不了的照原样上传，让 Temu 自己去拒（失败原因会写进批量结果），
+ * 总比拿一张 16:9 的图硬塞进「1:1」校验里强。
+ */
+async function toTemuImage(
+  path: string,
+  cateId: number | undefined,
+  shape: ImageShape,
+): Promise<string> {
   if (/img\.kwcdn\.com/i.test(path)) return path;
   if (isPublicHttp(path)) {
     const uploaded = await temuPublishApi.uploadImageUrl(path, cateId);
     return pickUrl(uploaded);
   }
-  const uploaded = await temuPublishApi.uploadImage(await blobToDataUrl(await httpBlob(path)), cateId);
-  return pickUrl(uploaded);
+  const raw = await blobToDataUrl(await httpBlob(path));
+  const shaped = await toRatioDataUrl(raw, shape.width, shape.height);
+  return pickUrl(await temuPublishApi.uploadImage(shaped, cateId));
+}
+
+/**
+ * 本地媒体图取原始像素，给「另裁一张方图」用。
+ *
+ * 外链 / 已经是图床的图取不到像素（会污染 canvas），返回 null 让调用方决定怎么说。
+ */
+async function localDataUrl(path: string): Promise<string | null> {
+  if (/img\.kwcdn\.com/i.test(path) || isPublicHttp(path)) return null;
+  try {
+    return await blobToDataUrl(await httpBlob(path));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 这个类目要不要尺码表 = 是不是服饰/量体类目（主图要 3:4 而不是 1:1）。
+ *
+ * 批量发布是「一批草稿共用一个产品模板类目」，所以按 catId 缓存一次即可，
+ * 不然 30 件草稿要打 30 次同一个查询。查询失败按「不是服饰」处理：
+ * 一次网关抖动不该让整批发布全挂。
+ */
+const apparelCache = new Map<number, Promise<boolean>>();
+
+function isApparelCategory(catId: number): Promise<boolean> {
+  if (!catId) return Promise.resolve(false);
+  const cached = apparelCache.get(catId);
+  if (cached) return cached;
+  const pending = temuPublishApi
+    .sizeCharts(catId)
+    .then((info) => info?.required === true)
+    .catch(() => false);
+  apparelCache.set(catId, pending);
+  return pending;
 }
 
 function pickUrl(result: { imageUrl?: string; image_url?: string; url?: string }): string {
@@ -81,8 +138,37 @@ export async function buildDraftForPublish(
 
   const carouselSource = splitList(prefill.images.join("\n"));
   if (!carouselSource.length) throw new Error("草稿没有轮播图");
+  /**
+   * 主图比例按类目走：服饰（= 必须有尺码表）3:4，其它 1:1。
+   *
+   * 以前这里是「原图直接传」，靠草稿图恰好是方图蒙对；发服装类目必然撞
+   * 「服饰类目skc轮播图校验失败，应符合 3:4」。
+   */
+  const apparel = await isApparelCategory(leaf);
+  const carouselShape = apparel ? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;
   const carousel: string[] = [];
-  for (const path of carouselSource.slice(0, 10)) carousel.push(await toTemuImage(path, leaf));
+  // 第一张的原始像素留着：素材图要从它另裁一张方图（轮播传上去之后已经是裁好的图床图了）
+  let firstRaw: string | null = null;
+  for (const [index, path] of carouselSource.slice(0, 10).entries()) {
+    if (index === 0) firstRaw = await localDataUrl(path);
+    carousel.push(await toTemuImage(path, leaf, carouselShape));
+  }
+  /**
+   * 素材图：Temu 对所有类目都单独校验「1:1、宽 ≥800」。
+   *
+   * 非服饰下轮播本来就是 1:1，直接复用首图没问题；服饰下轮播被裁成了 3:4 竖图，
+   * 拿它当素材图会被拒（实测第 4 关），必须用同一张原图另裁一张方图。
+   */
+  let material = carousel[0];
+  if (apparel) {
+    if (!firstRaw) {
+      throw new Error(
+        "服饰类目的素材图必须单独是 1:1 方图，而这张轮播图不是本地成品图（外链 / 已是图床地址），没法另裁。" +
+          "请在草稿库换成本地成品图，或用「发布商品」页单件发。",
+      );
+    }
+    material = pickUrl(await temuPublishApi.uploadImage(await toSquareDataUrl(firstRaw), leaf));
+  }
   // 详情图必须走 uploadDetailImage：后端会统一缩放到 DETAIL_WIDTH 并回传真实尺寸。
   // 直接传原图链接（之前那样）会因为各图宽度不同被判
   // 「Detail graphic article N floor image width is incorrect」（2000306）。
@@ -188,7 +274,7 @@ export async function buildDraftForPublish(
     detail_image_urls: detailImages.map((item) => item.url),
     // 带真实宽高的详情图（后端优先用这个）：宽度统一到 800，尺寸来自实际上传结果
     detail_images: detailImages,
-    material_image_url: carousel[0],
+    material_image_url: material,
     freight_template_id: productTemplate.freightId,
     // 发货时效：1/2/7/9 个工作日与自定义都是合法档位（发布页同一套单选），
     // 不再把 1 天 / 7 天当坏值改写成 9 —— 那会让用户选的档位静默失效。

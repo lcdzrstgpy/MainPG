@@ -7,6 +7,8 @@ const api = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "
 // 属性表单与可见性规则已抽成共享实现（发布页和批量发布弹窗共用）
 const propertyForm = readFileSync(new URL("../components/TemuPropertyForm.tsx", import.meta.url), "utf8");
 const attrModel = readFileSync(new URL("../data/attributeModel.ts", import.meta.url), "utf8");
+// 图片比例裁切抽成共用模块了：单件发布和批量发布必须用同一套尺寸
+const imageShape = readFileSync(new URL("../data/imageShape.ts", import.meta.url), "utf8");
 
 test("发布商品：提交前必须人工确认（外部副作用，不允许自动触发）", () => {
   // 真提交会在这个店铺里创建商品，必须先 confirm 再发请求
@@ -90,7 +92,7 @@ test("提交发布：币种 CNY、图片裁 1:1、仓库避开 type=3", () => {
   assert.match(page, /currency_type: "CNY"/);
   assert.doesNotMatch(page, /currency_type: "USD"/);
   // 非服饰类目轮播图强制 1:1 ≥800px，上传前必须裁（详情图例外，见详情图那条测试）
-  assert.match(page, /function toSquareDataUrl\(dataUrl: string, size = 800\)/);
+  assert.match(imageShape, /export function toSquareDataUrl\(dataUrl: string, size = SQUARE_IMAGE_SIZE\)/);
   assert.match(page, /toSquareDataUrl\(raw\)/);
   // 仓库：managementType=3 的仓发部分商品会被拒，默认要避开并在下拉里标注
   assert.match(types, /managementType\?: string;/);
@@ -102,15 +104,15 @@ test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", ()
   // 实测报错：「服饰类目skc轮播图校验失败，应符合 3:4，宽>=1340，高>=1785」
   //          「素材图[...]校验失败，应符合 1:1，宽>=800」
   // 2026-11-05 真机发布女装连衣裙时卡在这两关。
-  assert.match(page, /const APPAREL_CAROUSEL_WIDTH = 1344;/);
-  assert.match(page, /const APPAREL_CAROUSEL_HEIGHT = 1792;/);
+  assert.match(imageShape, /export const APPAREL_CAROUSEL_WIDTH = 1344;/);
+  assert.match(imageShape, /export const APPAREL_CAROUSEL_HEIGHT = 1792;/);
   // 通用按比例居中裁切（1:1 只是它的特例），原图不拉伸
-  assert.match(page, /function toRatioDataUrl\(dataUrl: string, width: number, height: number\): Promise<string>/);
-  assert.match(page, /function toSquareDataUrl\(dataUrl: string, size = 800\): Promise<string> \{\s*\n\s*return toRatioDataUrl\(dataUrl, size, size\);/);
+  assert.match(imageShape, /export function toRatioDataUrl\(dataUrl: string, width: number, height: number\): Promise<string>/);
+  assert.match(imageShape, /export function toSquareDataUrl\(dataUrl: string, size = SQUARE_IMAGE_SIZE\): Promise<string> \{\s*\n\s*return toRatioDataUrl\(dataUrl, size, size\);/);
 
   // 判据：这个类目必须有尺码表 = 量体类目（连衣裙 39107 required=true，假发/女包/女鞋 false）
   assert.match(page, /const isApparelCategory = sizeChart\.info\?\.required === true;/);
-  assert.match(page, /const apparel = sizeChart\.info\?\.required === true;/);
+  assert.match(page, /const apparel = chart\.info\?\.required === true;/);
   // 轮播按类目分支裁切
   assert.match(
     page,
@@ -124,6 +126,26 @@ test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", ()
   // 界面文案也要跟着类目变，不能写着 1:1 实际裁 3:4
   assert.match(page, /服饰类目要竖图 3:4（≥1344×1792）/);
   assert.match(page, /比例 3:4 · 宽 ≥1340、高 ≥1785/);
+});
+
+test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () => {
+  // 批量发布走的是草稿库里的 AI/POD 成品图，不经过发布页的上传流程。
+  // 以前这里「原图直接传 + 素材图 = 轮播首图」，发服饰类目必撞两条校验。
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  // 和单件发布共用同一套尺寸常量/裁切函数，不能各写一份
+  assert.match(batch, /from "\.\/imageShape";/);
+  assert.match(batch, /const apparel = await isApparelCategory\(leaf\);/);
+  assert.match(batch, /const carouselShape = apparel \? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;/);
+  assert.match(batch, /carousel\.push\(await toTemuImage\(path, leaf, carouselShape\)\);/);
+  // 本地成品图才裁得了：取 blob → canvas 裁 → 再传
+  assert.match(batch, /const shaped = await toRatioDataUrl\(raw, shape\.width, shape\.height\);/);
+  // 服饰素材图不能拿 3:4 的轮播首图，用第一张原图另裁 800×800
+  assert.match(batch, /material = pickUrl\(await temuPublishApi\.uploadImage\(await toSquareDataUrl\(firstRaw\), leaf\)\);/);
+  assert.match(batch, /material_image_url: material,/);
+  assert.doesNotMatch(batch, /material_image_url: carousel\[0\],/);
+  // 一批草稿共用一个类目：查询按 catId 缓存，30 件不会打 30 次网关
+  assert.match(batch, /const apparelCache = new Map<number, Promise<boolean>>\(\);/);
+  assert.match(batch, /const cached = apparelCache\.get\(catId\);/);
 });
 
 test("属性数值录入：纯数值属性不带 numberInputValue，下拉+数值才带", () => {
