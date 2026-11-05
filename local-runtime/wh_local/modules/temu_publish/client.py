@@ -257,6 +257,8 @@ class TemuProductClient:
             "bindSiteIds": sorted({int(value) for value in bind_site_ids if int(value) > 0}),
             "configItems": [1, 2, 3],
         }
+        if not body["bindSiteIds"]:
+            raise ValueError("必填项校验需要至少一个站点 id（bindSiteIds 不能为空）")
         # 同一个签名 bug：空数组会让网关算出的 sign 对不上，
         # 所以没有属性时整个字段不发（这个接口长期 `sign is invalid` 就是这个原因）。
         # 实测（2026-11-03）：空数组不发之后签名错误消失，但这类目会回
@@ -402,9 +404,19 @@ class TemuProductClient:
 
         用途：发布请求超时/网络中断时反查「到底建没建」，以及按 SKC 货号查重。
         常用过滤：skcExtCode / productName / productSkcIds / bindSiteIds / createdAtStart(秒)。
+
+        ⚠️ 分页参数两种写法都收：调用方既有传 `pageSize` 的，也有传 `page_size` 的。
+        只 pop 一个的话，另一个会被下面那段「其余键原样透传」塞进请求体 ——
+        请求里同时出现 `pageSize` 和 `page_size`，网关要么当未知字段、要么直接判参数非法。
         """
-        payload: dict[str, Any] = {"page": int(filters.pop("page", 1) or 1)}
-        payload["pageSize"] = int(filters.pop("pageSize", 20) or 20)
+        page = filters.pop("page", 1)
+        page_size = filters.pop("pageSize", None)
+        if page_size is None:
+            page_size = filters.pop("page_size", None)
+        payload: dict[str, Any] = {
+            "page": int(page or 1),
+            "pageSize": int(page_size or 20),
+        }
         for key, value in filters.items():
             if value in (None, "", [], {}):
                 continue
@@ -486,6 +498,10 @@ class TemuProductClient:
 
     def freight_templates(self, site_ids: list[int]) -> dict[str, Any]:
         normalized = sorted({int(value) for value in site_ids if int(value) > 0})
+        # 顶层空数组会让网关签名对不上（回 7000015 sign is invalid），
+        # 与其让用户看到「签名无效」，不如直接说清是站点 id 没给
+        if not normalized:
+            raise ValueError("取运费模板需要至少一个站点 id（siteIds 不能为空）")
         return self.call(
             "bg.glo.logistics.template.get",
             {"siteIds": normalized},
@@ -495,6 +511,8 @@ class TemuProductClient:
 
     def warehouses(self, site_ids: list[int], supplier_id: int | None = None) -> dict[str, Any]:
         normalized = sorted({int(value) for value in site_ids if int(value) > 0})
+        if not normalized:
+            raise ValueError("取仓库列表需要至少一个站点 id（siteIdList 不能为空）")
         payload: dict[str, Any] = {"siteIdList": normalized}
         if supplier_id:
             payload["supplierId"] = int(supplier_id)

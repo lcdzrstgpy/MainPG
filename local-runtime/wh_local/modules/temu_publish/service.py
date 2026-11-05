@@ -991,7 +991,7 @@ class TemuPublishService:
             result = self._read_cached(
                 cache_key,
                 lambda p=page: self.client().goods_list(
-                    page=p, page_size=20, createdAtStart=oldest_start
+                    page=p, pageSize=20, createdAtStart=oldest_start
                 ),
             )
             items = [row for row in result.get("data") or [] if isinstance(row, dict)]
@@ -1056,7 +1056,7 @@ class TemuPublishService:
         while page <= max(1, int(max_pages)) and len(items) < want:
             cache_key = f"goods:page={page}|pageSize={size}"
             result = self._read_cached(
-                cache_key, lambda p=page: self.client().goods_list(page=p, page_size=size)
+                cache_key, lambda p=page: self.client().goods_list(page=p, pageSize=size)
             )
             rows = [row for row in result.get("data") or [] if isinstance(row, dict)]
             if not rows:

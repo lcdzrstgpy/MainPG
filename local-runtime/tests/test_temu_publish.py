@@ -1540,6 +1540,38 @@ def test_same_pid_multiple_refpid_not_confused() -> None:
     assert "面料克重2（g/m²)" in dropped
 
 
+def test_goods_list_accepts_both_page_size_spellings_without_leaking() -> None:
+    """分页参数两种写法都收，但请求体里只能出现 pageSize。
+
+    调用方既有传 `pageSize` 的也有传 `page_size` 的；以前只 pop pageSize，
+    `page_size` 会被「其余键原样透传」塞进请求体 —— 同一个请求里两个分页字段，
+    网关要么当未知字段、要么直接判参数非法。
+    """
+    from wh_local.modules.temu_publish.client import TemuProductClient
+
+    captured: dict[str, Any] = {}
+
+    def fake_call(api_type: str, payload: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        captured["api"] = api_type
+        captured["payload"] = payload
+        return {"data": [], "totalCount": 0}
+
+    client = TemuProductClient.__new__(TemuProductClient)
+    client.call = fake_call  # type: ignore[method-assign]
+
+    client.goods_list(page=2, page_size=50, skcExtCode="A1")
+    payload = captured["payload"] or {}
+    assert captured["api"] == "bg.glo.goods.list.get"
+    assert payload["page"] == 2
+    assert payload["pageSize"] == 50
+    assert "page_size" not in payload, f"别名漏进请求体了：{payload}"
+    assert payload["skcExtCode"] == "A1"
+
+    # camelCase 写法同样生效
+    client.goods_list(page=1, pageSize=10)
+    assert (captured["payload"] or {})["pageSize"] == 10
+
+
 def test_required_check_covers_every_property_with_same_pid() -> None:
     """必填校验要遍历属性表全表，不能遍历「按 pid 建的字典」。
 
