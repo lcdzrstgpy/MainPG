@@ -34,6 +34,7 @@ import {
 import { SystemVersionPanel } from "../components/SystemVersionPanel";
 import { PreferencesPanel } from "../components/PreferencesPanel";
 import { FeedbackPanel } from "../components/FeedbackPanel";
+import { PluginSettingsPanel } from "../components/PluginSettingsPanel";
 import { PromotionPlanPanel } from "../components/PromotionPlanPanel";
 import { StorageSpacePanel } from "../components/StorageSpacePanel";
 import { DataMigrationPanel } from "../components/DataMigrationPanel";
@@ -2108,6 +2109,8 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
           <SystemVersionPanel />
         ) : activePanel === "storage" ? (
           <StorageSpacePanel />
+        ) : activePanel === "plugin" ? (
+          <PluginSettingsPanel />
         ) : activePanel === "migration" ? (
           <DataMigrationPanel />
         ) : activePanel === "promo" ? (

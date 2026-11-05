@@ -1,0 +1,228 @@
+/* ================================================================
+   工作台推广位（侧栏底部 / 内容页脚）
+   内容来自 shared/ads/adConfig.ts，观感跟随主题 token，不写死颜色。
+   ================================================================ */
+
+.ad-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: 12px 14px;
+  border: 1px solid var(--theme-card-border, rgba(184, 209, 230, .82));
+  border-radius: var(--radius-lg, 16px);
+  background: var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
+  box-shadow: var(--shadow-sm);
+  color: var(--theme-text-primary, #13233a);
+}
+
+.ad-slot-tag {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--theme-text-muted, #7b8fa2);
+  background: color-mix(in srgb, var(--theme-text-muted, #7b8fa2) 12%, transparent);
+  font-size: var(--text-xs, .75rem);
+  font-weight: var(--weight-semibold, 600);
+  letter-spacing: .04em;
+}
+
+.ad-slot-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.ad-slot-title {
+  font-size: var(--text-base, .875rem);
+  font-weight: var(--weight-bold, 700);
+  line-height: 1.3;
+}
+
+.ad-slot-desc {
+  margin: 0;
+  color: var(--theme-text-muted, #8296ab);
+  font-size: var(--text-xs, .75rem);
+  line-height: 1.5;
+}
+
+.ad-slot-cta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 14px;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: 0 6px 14px var(--theme-primary-button-shadow, rgba(11, 147, 220, .21));
+  font-size: var(--text-xs, .75rem);
+  font-weight: var(--weight-bold, 700);
+  white-space: nowrap;
+  transition: transform var(--duration-fast, .16s) var(--ease-out), box-shadow var(--duration-fast, .16s) ease;
+}
+
+.ad-slot-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 9px 18px var(--theme-primary-button-shadow, rgba(11, 147, 220, .26));
+}
+
+.ad-slot-dismiss {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--theme-text-muted, #9aa9ba);
+  background: transparent;
+  font-size: .95rem;
+  line-height: 1;
+  opacity: .5;
+  transition: opacity var(--duration-fast, .16s) ease, background var(--duration-fast, .16s) ease;
+}
+
+.ad-slot-dismiss:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--theme-text-muted, #9aa9ba) 14%, transparent);
+}
+
+/* 有 banner 图时关闭按钮压在图上，给一层半透明底保证可见。 */
+.ad-slot.has-image .ad-slot-dismiss {
+  color: var(--theme-on-primary, #fff);
+  background: rgba(15, 30, 48, .42);
+  opacity: .85;
+}
+
+.ad-slot.has-image .ad-slot-dismiss:hover {
+  opacity: 1;
+  background: rgba(15, 30, 48, .62);
+}
+
+/* ---- banner 图（联盟/直投素材） ---- */
+.ad-slot-image-button {
+  flex: 0 0 auto;
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md, 10px);
+  overflow: hidden;
+  background: transparent;
+}
+
+.ad-slot-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+}
+
+.ad-slot--sidebar.has-image .ad-slot-image {
+  aspect-ratio: 16 / 6;
+}
+
+.ad-slot--footer .ad-slot-image-button {
+  width: 96px;
+}
+
+.ad-slot--footer .ad-slot-image {
+  height: 56px;
+}
+
+/* ---- 第三方广告代码位 ---- */
+.ad-slot--code {
+  align-items: flex-start;
+  padding: 16px 14px 12px;
+}
+
+.ad-slot--code .ad-slot-tag {
+  align-self: flex-start;
+}
+
+.ad-slot-code {
+  flex: 1;
+  min-width: 0;
+}
+
+.ad-slot--code .ad-slot-dismiss {
+  top: 2px;
+  right: 2px;
+}
+
+/* ---- 侧栏底部：竖排小卡，靠 margin-top:auto 贴底 ---- */
+.ad-slot--sidebar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin: auto 2px 2px;
+  padding: 12px;
+  border-radius: 14px;
+}
+
+.ad-slot--sidebar .ad-slot-desc {
+  padding-right: 10px;
+}
+
+/* 竖排时角标不要被拉伸成整条色带。 */
+.ad-slot--sidebar .ad-slot-tag {
+  align-self: flex-start;
+}
+
+.ad-slot--sidebar .ad-slot-cta {
+  justify-content: center;
+  margin-top: 2px;
+}
+
+/* 收起态只剩图标条，窄屏导航是横条：两种形态都不适合塞推广卡。 */
+.sidebar-card.is-collapsed .ad-slot--sidebar {
+  display: none;
+}
+
+@media (max-width: 800px) {
+  .ad-slot--sidebar {
+    display: none;
+  }
+}
+
+/* ---- 内容页脚：横排条，跟随内容滚动 ---- */
+.ad-slot--footer {
+  margin: 18px 0 4px;
+  padding: 12px 18px 12px 14px;
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--theme-primary, #0877d3) 6%, transparent), transparent 62%),
+    var(--theme-card-bg-solid, var(--theme-card-bg, #fff));
+}
+
+.ad-slot--footer .ad-slot-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .ad-slot--footer {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .ad-slot--footer .ad-slot-cta {
+    margin-left: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ad-slot-cta {
+    transition: none;
+  }
+
+  .ad-slot-cta:hover {
+    transform: none;
+  }
+}

@@ -164,7 +164,8 @@ class PluginBridgeService:
         status: str,
         result: Mapping[str, Any],
     ) -> PluginCommandRecord:
-        safe_result = _safe_mapping(result, "result")
+        # 插件回传的是只读证据，里面可能出现 order/accept 等平台词，不做写操作扫描。
+        safe_result = _safe_mapping(result, "result", reject_write_actions=False)
         session = self._session_for_token(session_token)
         command_id = _required_text(command_id, "command_id")
         if status not in _RESULT_STATUSES:
@@ -223,10 +224,15 @@ def _actor(value: PriceVerificationActor) -> PriceVerificationActor:
     return value
 
 
-def _safe_mapping(value: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+def _safe_mapping(
+    value: Mapping[str, Any],
+    name: str,
+    *,
+    reject_write_actions: bool = True,
+) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise PriceVerificationContractError(f"{name} must be a mapping")
-    safe = safe_json_value(value)
+    safe = safe_json_value(value, reject_write_actions=reject_write_actions)
     if not isinstance(safe, Mapping):
         raise PriceVerificationContractError(f"{name} must be a mapping")
     return safe

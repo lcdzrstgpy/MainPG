@@ -58,10 +58,22 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const STATUS_OPTIONS = [
+  { value: "all", label: "全部状态" },
   { value: "draft", label: "待处理" },
   { value: "processing", label: "处理中" },
   { value: "processed", label: "已完成" },
 ];
+
+const STATUS_LABELS: Record<string, string> = {
+  draft: "待处理",
+  processing: "处理中",
+  processed: "已完成",
+  deleted: "已删除",
+};
+
+function statusLabel(status: string): string {
+  return STATUS_LABELS[status] || status || "—";
+}
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
@@ -325,7 +337,9 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
   const [batches, setBatches] = useState<DraftCollectionBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [status, setStatus] = useState("draft");
+  // 默认「全部状态」：这是货源成本总览，不是草稿池。处理完成后草稿只是变成
+  // processed，若默认只查 draft，用户会以为成本数据被清空了。
+  const [status, setStatus] = useState("all");
   const [platform, setPlatform] = useState("");
   const [channel, setChannel] = useState("");
   const [batchId, setBatchId] = useState("");
@@ -733,6 +747,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                 />
               </th>
               <th>商品</th>
+              <th>状态</th>
               <th>平台</th>
               <th>店铺</th>
               <th>采集渠道</th>
@@ -776,6 +791,9 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                         </small>
                       </div>
                     </td>
+                    <td>
+                      <span className={`psc-status is-${row.status || "unknown"}`}>{statusLabel(row.status)}</span>
+                    </td>
                     <td>{platformLabel(row.platform)}</td>
                     <td>{row.shopName || "—"}</td>
                     <td>{channelLabel(row.channel)}</td>
@@ -817,7 +835,7 @@ export function ProductSourcingCostPage({ isActive = true, onOpenProfitActivity 
                   </tr>
                   {expanded && (
                     <tr className="psc-sku-detail-row">
-                      <td colSpan={11}>
+                      <td colSpan={12}>
                         <table className="psc-sku-table">
                           <thead>
                             <tr>

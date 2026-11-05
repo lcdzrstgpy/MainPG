@@ -12,28 +12,54 @@ from typing import Any
 
 
 GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
-- Output one 2048 x 2048 square 2x2 transport grid using the supplied fixed-layout scaffold as a structural constraint.
-- Keep the vertical separator at x=1016..1031 and the horizontal separator at y=1016..1031. Preserve both as continuous neutral light-gray bands, straight, uniform, and uninterrupted from edge to edge. This separator is mandatory and is validated before splitting. Draw no second full-height or full-width divider, inset frame, nested collage border, split-panel line, or internal grid inside any quadrant.
-- Keep Panel 1 inside x=0..1015, y=0..1015; Panel 2 inside x=1032..2047, y=0..1015; Panel 3 inside x=0..1015, y=1032..2047; Panel 4 inside x=1032..2047, y=1032..2047. Do not render these coordinates, panel numbers, instructions, guides, or any other text into the image.
-- Each quadrant is a complete standalone product photo with its own background and lighting. No subject, prop, shadow, surface, background shape, or typography may cross a cut boundary, touch a panel edge, or continue across two panels. Never build one continuous poster: do not share lighting, shadows, surfaces, props, or backgrounds across panels.
-- COMPLETENESS & FRAME FILL: show the complete sellable product or verified complete set in every quadrant (a detail panel may go smaller only when it also carries an inset close-up). No pure macro crop without the complete sellable product is forbidden - keep the whole product or the verified complete set readable, with no hidden or invented parts. Frame fill: the white-background marketplace hero (Panel 1 in every set whose pillar rules make Panel 1 a seamless studio hero) must fill 78%-85% of its panel - a listing thumbnail shows the product small, and a 55%-65% hero wastes the click. Panels 2-3 hold the product at about 52%-65% so scene and props still read, Panel 4 follows the orthographic clear-space rule below, and a set whose pillar rules deliberately make Panel 1 scene-dominant keeps its own stated fill. Keep a 7% inner safe margin on the hero panel and a 10% inner safe margin on the others, always including the center divider, and let no product or prop touch a panel edge or cross the divider.
-- PRODUCT FIDELITY (red line; overrides any style direction that follows): the reference image(s) are the ONLY source of truth. Lock silhouette, proportions, color, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, printed text, digits, and visible quantity; never add, remove, replace, redraw, recolor, resize, stretch, compress, merge, or invent structure or accessories. Do not guess details the reference cannot confirm. You may only redesign placement, camera angle, composition, background, props, lighting, and scene; the product body itself must never change.
-- GEOMETRY INTEGRITY (hard rule, checked before finishing): keep the product's real curved surfaces, radii and smooth transitions; never polygonise, facet, bevel or flatten a curved body into hard-edged planes. Reproduce every structural feature exactly as the reference shows it - handles, spouts, hinges, lids, rims, bases, feet, seams and joints - with the same count, position, thickness, curvature, attachment points and opening shape; never turn a handle into a flat bar, a square hole or an extra plate, and never merge two separate parts into one. Do not add stepped layers, inset panels, double walls, stacked bases, raised rims, floating pieces, ghosted second edges or any structure the reference does not have. Straight lines stay straight, circles stay circular, and ellipse perspective stays physically consistent; never stretch, squash, shear, warp, mirror, melt or bend the product, and never use fisheye or extreme wide-angle distortion. Avoid fragments, notches, pin-holes, cracks, torn or jagged edges, misaligned joints and duplicated outlines. The same product must keep identical geometry and proportions in all four panels, and every prop follows the same real-world geometry and physics. If a feature is unclear in the reference, render it conservatively instead of inventing a new shape.
-- FRAME VARIATION MATRIX (hard rule): the four panels must read as four genuinely different photographs, not one photograph with four swapped backdrops. Lock these nine parameters and give each panel its own value: (1) camera angle and camera eye height; (2) where the product sits in the frame and how much of the frame it fills; (3) shot scale (macro / medium / full); (4) key-light direction; (5) light ratio; (6) colour temperature; (7) surface and backdrop material class; (8) prop count and role; (9) composition rule. Keeping one camera position, one eye level, one centred placement and one light direction while only swapping the backdrop, props or colour is the most common failure and is FORBIDDEN.
-- PRODUCT ORIENTATION (hard rule): keep the product in its normal in-use orientation - upright, the way a buyer would use it. Never tip it over, lay it on its side, turn it upside down or suspend it, unless that is genuinely how the product is used or the panel's stated purpose is to reveal its interior, base or mechanism. A tipped-over product reads as damaged goods and is a listing-quality defect (observed in a real render: a mug lying on its side in the macro panel).
-- HANDS-FREE (hard rule): never render a hand, wrist, arm, finger, partial figure or person anywhere in any panel. The product must stand on its own; use an A4 sheet, phone, standard mug or coin for scale instead. No exceptions for held, worn or handheld products - stage them resting on a surface in their real shape; a wrong hand is the fastest credibility loss in product photography.
-- DIFFERENTIATION FLOORS (judge pairwise, not "it looks different to me"): Panel 1 is the straight-on hero; each of Panels 2-4 must differ from Panel 1 by at least 15 degrees of camera angle, and Panels 2-4 must differ from EACH OTHER in at least 6 of the 9 parameters above, including at least one shot-scale difference and at least 30 degrees of key-light-direction difference. Across the four panels: at least two light ratios, at least two colour temperatures, all three shot scales present, at most two panels may place the product dead centre, and no two panels may share the same surface material class.
-- POST-GENERATION SELF-CHECK (run before finishing; if a check fails, re-render that panel): (1) does each of Panels 2-4 differ from Panel 1 by 15 degrees or more of camera angle? (2) do Panels 2-4 differ from each other in 6 or more of the nine parameters, including shot scale and key-light direction? (3) are at least two panels off-centre? (4) are macro, medium and full scale all present? (5) are at least two colour temperatures present? (6) have I kept a single camera position and a single light direction and only changed backdrop, props or colour? If any answer is wrong, re-render that panel.
-- REALISM & LIGHT PHYSICS (the shared quality floor - it defines how real each panel must look, never a shared lighting setup): render like a real full-frame or mirrorless product shoot, not an illustration, a 3D render or a CAD hard-surface model. Every panel needs volume and highlight roll-off, fill that lifts the shadow side without flattening it, a rim that separates the product from its background, and one weak ambient layer; give speculars a shape instead of clipping them and keep shadow detail open. Materials must respond like the real thing - brushed metal takes anisotropic streaks, polished metal a sharp mirror highlight carrying environmental colour (flat grey metal is forbidden), matte surfaces scatter softly, glass shows refraction, an edge highlight and an inner glow, fabric shows fibre. Physical grounding is mandatory: (a) an ambient-occlusion contact shadow where the product meets its surface, with a direction matching the key-light azimuth and a length inversely proportional to the light ratio; (b) a reflection anchor - on a glossy surface the product's base appears as a flattened mirror image that fades with the surface reflectivity; (c) for transparent bodies all three of background refraction displacement, an edge highlight and a caustic pool under the base; (d) highlight colour and shadow colour must encode the key's colour temperature (a warm key gives a warm highlight and a cooler shadow), never one colour for both. Naturalness: shallow depth of field defocuses the backdrop softly, corners fall off a little and a little real grain survives. The product must sit ON its surface - never floating, never pasted flat - and keep clean breathing space with no prop crowding or cropping it.
-- ANTI-AI-TELL (run before finishing): reject HDR halos, crushed blacks, over-sharpening, a perfectly symmetrical frame, one uniform brightness across the whole panel, waxy or plastic surfaces with no noise, impossible flawless gradients and repeated identical props. Each panel must read as photographed, not generated.
-- ART DIRECTION LOCK (the only layer the four panels ARE allowed to share): the grid is four photographs from ONE campaign, so exactly these five things are shared and nothing else - (1) colour grade: one white-balance anchor, one black point, one contrast curve and one grain level; (2) lens family: one focal-length character, never mixing a phone-wide look with a long-lens look; (3) light quality: one source-softness class, so shadow edges share one hardness; (4) palette family: one hero colour drawn from the product plus two neutrals; (5) retouch level. The colour grade here is a grading-and-imaging baseline - how neutrals, grain, contrast and retouch read - and NOT the scene's lighting colour: the per-panel lighting colour temperature still varies as DIFFERENTIATION FLOORS requires, and that is not a contradiction. Where the two could be read as conflicting, the grade wins for neutrals, grain, contrast and retouch, and the lighting colour temperature still differs per panel. Sharing these five is what makes the carousel read as one advertisement. Camera position, camera eye level, product placement in frame, shot scale, key-light direction, light ratio, colour temperature, surface material class, prop count and composition rule are NOT in this layer and must still differ per panel exactly as DIFFERENTIATION FLOORS requires; unifying any of those ten is a failure, not a style choice.
-- QUALITY FLOOR vs STYLE UNITY: this contract and any style section unify QUALITY ONLY (plus the five art-direction items listed in ART DIRECTION LOCK) - realism, sharpness, product fidelity, geometry integrity, no rendered text. They never unify camera position, camera eye level, product placement, shot scale, light direction, light ratio or colour temperature; those must differ per panel exactly as specified above.
-- PANEL ROLES (hard rules): Panel 4 (bottom-right) is ALWAYS the dimension-annotation background - a clean TRUE orthographic projection, front, side or top view with no perspective convergence and never a 45-degree three-quarter view, of the complete product on a plain calm surface with 12%-18% clear space and clear silhouette separation; never render measurements, numbers, units, dimension lines, arrows, rulers, scales, size claims or labels. Panels 1-3 must be THREE genuinely different framings of the exact same product: no two of them may share a camera position, framing or background, and Panel 1 (top-left) is the marketplace hero (the first carousel image). This template's own pillar rules define what each of the four panels depicts. Cosmetically swapping the backdrop while keeping the same camera position is the single most common failure and is FORBIDDEN: if any two panels share a camera position, re-render the later one before finishing.
-- PANEL 2 SCALE ANCHOR (hard rule): Panel 2 must carry one culture-neutral, universally recognised size reference reading in the same focal plane as the product and at true relative scale, so an overseas buyer can judge size without any text - preferably an A4 sheet or a phone, since neither carries lettering that could be mistaken for added copy. A coin or a standard mug is acceptable, but never invent, redraw or embellish lettering on them. Never use a hand, palm, finger or person as the scale reference - a wrong hand costs more trust than a missing scale cue. This anchor is its own category and is EXEMPT from the prop-limitation rule below: it must never be dropped for a prop budget, and it must still never occlude, crop or out-shout the product.
-- PANEL 3 BENEFIT PROOF (hard rule): Panel 3 must show the single strongest physical selling point of this exact product actually working, chosen only from what the reference image can prove - a lid seal seating, fibres drawing in water, a wall-thickness cross-section, a buckle engaging, a base gripping a surface. Judge it before finishing with this test: can I name the one benefit this panel proves, in one sentence, AND point at exactly where in the frame it is visible? If either answer fails, re-render the panel. Decorative texture is never a substitute for evidence.
-- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, UI, or measurement marks anywhere in the image, and add no copy after splitting either. Preserve only markings physically printed on the real sellable product; if the product itself carries decorative characters, symbols, or patterns, keep them only as product design.
-- Marketplace authenticity: the product must be complete, sharp, prominent, and unobstructed in every panel. Do not crop away key attributes, hide important parts behind props/text/hands, make the product tiny or blurry, use an unrelated background, or apply deceptive retouching.
-- Final text rule: zero AI-added visible text. Realistic, bright, sharp, clean, marketplace-ready for US/EU shoppers."""
+- GRID & SEPARATOR: one 2048x2048 2x2 transport grid on the supplied scaffold. Keep the vertical separator at x=1016..1031 and the horizontal separator at y=1016..1031: continuous neutral light-gray bands, straight, uniform, and uninterrupted from edge to edge; this separator is mandatory and is validated before splitting. Each panel is a 1016px square: P1 top-left, P2 top-right, P3 bottom-left, P4 bottom-right. Never render coordinates, panel numbers, guides or text.
+- PANEL INDEPENDENCE: every quadrant is a standalone photo with its own background and light; nothing crosses a cut boundary, and no shadow, surface, prop or backdrop is shared.
+- BACKGROUND FAMILY: Panel 1 is pure white seamless (marketplace hero) with only the four neutral props named in the scene plan. Panels 2-4 use three DIFFERENT places (wood or textile, stone or marble, wall with real light, outdoor or architectural); a re-used backdrop with another crop or prop is a failure.
+- PROP BUDGET: at least four separate props per panel, source-compatible and subordinate to the product; never zero, one or two, and never the same prop set twice.
+- SET IS INVENTED, NOT COPIED: the reference images define the product only; never reuse a backdrop, room, surface, prop arrangement, camera position or scene from them - build every set from the scene plan.
+- COMPLETENESS & FRAME FILL: show the complete sellable product (or verified complete set) in every panel; a pure macro crop without the complete sellable product is forbidden, and a detail panel may crop closer only with an inset of the whole product. The white hero fills 78%-85% with a 7% inner safe margin; Panels 2-3 hold 52%-65% with a 10% margin, unless this template's own region plan sets an establishing (wide) scale, in which case the template value wins. Place Panels 2-3 on golden-section points (38% or 62% of width or height) and never on the centre lines; only Panel 1 and the orthographic Panel 4 may be centred. Nothing touches a panel edge or the divider.
+- PRODUCT FIDELITY (red line; outranks every style direction): the reference images are the ONLY source of truth. Lock silhouette, proportions, colour, material, transparency, structure, layers, thickness, corners, edges, texture, pattern, printed text, digits and visible quantity; never add, remove, replace, redraw, recolour, resize, stretch, compress, merge or invent structure or accessories. Only composition, camera angle, background, props and lighting may change.
+- GEOMETRY INTEGRITY (hard rule): keep real curves curved - never polygonise or flatten a curved body; straight stays straight, circles stay circular, ellipse perspective stays consistent. Reproduce every handle, spout, hinge, lid, rim, base, foot, seam and joint with the same count, position, thickness, curvature and attachment; never turn a handle into a flat bar or a square hole, never merge two parts, never add stepped layers, double walls, floating pieces or ghosted second edges; no fisheye distortion. If a feature is unclear, render it conservatively.
+- FRAME VARIATION MATRIX (hard rule): four genuinely different photographs, not one photo with swapped backdrops. Each panel takes its own value for all nine parameters: camera angle and eye height, product placement and frame fill, shot scale, key-light direction, light ratio, colour temperature, surface and backdrop material class, prop count and role, composition rule.
+- DIFFERENTIATION FLOORS (judge pairwise): each of Panels 2-4 differs from Panel 1 by at least 15 degrees of camera angle; Panels 2-4 differ from each other in at least 6 of the nine parameters, including one shot-scale change and at least 30 degrees of key-light direction; across the set use at least two light ratios, two colour temperatures, all three shot scales, no more than two centred panels, and no two panels sharing a surface material class. Swapping only backdrop, props or colour while keeping one camera position is FORBIDDEN.
+- POST-GENERATION SELF-CHECK (re-render the failing panel): all three shot scales present, at least two panels off-centre, two light ratios and two colour temperatures, and no two panels sharing a camera position or surface class.
+- PRODUCT ORIENTATION: keep the product upright in its normal in-use orientation; never tip, lay, invert or suspend it unless that is genuinely how it is used.
+- HANDS-FREE (hard rule): never render a hand, wrist, arm, finger, partial figure or person in any panel, including worn or handheld products - stage them resting on a surface in their real shape. Use an A4 sheet, phone, standard mug or coin for scale instead. A wrong hand is the fastest credibility loss in product photography.
+- REALISM & LIGHT PHYSICS (shared quality floor, never a shared lighting setup): render like a real full-frame product shoot, not an illustration, 3D render or CAD model. Each panel needs volume and highlight roll-off, fill lifting the shadow side, a rim separating product from background, and one weak ambient layer; give speculars a shape. Materials respond physically: anisotropic streaks on brushed metal, a sharp environmental highlight on polished metal, soft scatter on matte, refraction plus edge highlight plus inner glow on glass, visible fibre on fabric. Ground the product with an ambient-occlusion contact shadow matching the key azimuth, a reflection anchor on glossy surfaces, and refraction displacement plus edge highlight plus a caustic pool under transparent bodies; highlights and shadows encode the key's colour temperature. flat grey metal is forbidden; the product sits on its surface, never floats, and shallow focus falloff plus light grain keep it photographic.
+- ANTI-AI-TELL (run before finishing): reject HDR halos, crushed blacks, over-sharpening, a perfectly symmetrical frame, one uniform brightness, waxy or plastic surfaces, impossible gradients and repeated identical props.
+- ART DIRECTION LOCK (the only layer the four panels may share): one white-balance anchor, black point, contrast curve, grain level, focal-length character, light-softness class, one palette of a product hero colour plus two neutrals, and one retouch level. This colour grade is a grading baseline, NOT the scene's lighting colour - per-panel colour temperature still varies. Camera position, eye level, placement, shot scale, light direction, light ratio, colour temperature, surface class, prop count and composition rule are NOT in this layer: never unify camera position, eye level, placement, shot scale, light direction or light ratio, and unifying any of those ten is a failure. QUALITY FLOOR vs STYLE UNITY: this contract and any style section unify quality only.
+- PANEL ROLES (hard rules): Panel 4 (bottom-right) is ALWAYS the dimension-annotation background - a clean true orthographic front, side or top view of the complete product on a plain calm surface with 12%-18% clear space, never a 45-degree three-quarter view; never render measurements, numbers, units, arrows, rulers, scales or labels. Panel 1 is the straight-on marketplace hero, and Panels 1-3 must be three genuinely different framings of the same product.
+- PANEL 2 SCALE ANCHOR (hard rule): carry one culture-neutral, universally recognised size reference in the same focal plane at true relative scale - preferably an A4 sheet or a phone (a coin or standard mug is acceptable), never lettering that could be mistaken for added copy. Never use a hand, palm, finger or person as the scale reference. It is exempt from the prop budget and must never occlude, crop or out-shout the product.
+- PANEL 3 BENEFIT PROOF (hard rule): show the single strongest physical selling point of this exact product actually working, provable from the reference - a lid seal seating, fibres drawing in water, a wall-thickness cross-section, a buckle engaging, a base gripping. Name the one benefit it proves, AND point at exactly where in the frame it is visible; if either answer fails, re-render the panel.
+- NO RENDERED TEXT: render zero AI-added visible text - no added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, UI or measurement marks, and add no copy after splitting. The only exception is the small decorative sticker or kraft tag allowed in Panels 2-4 by the scene plan: one or two short generic English words such as NEW, HANDMADE or SAMPLE, never on the product, never a brand name, price, rating, claim, slogan or logo. Panel 1 stays completely text-free. Preserve only markings physically printed on the real sellable product."""
+
+
+GRID_PROMPT_PRIORITY = """PROMPT PRIORITY (weights; on conflict the higher weight wins):
+P0 35% product fidelity, grid and separator geometry, hands-free.
+P1 25% panel roles and the SCENE PLAN places.
+P2 20% per-panel camera, light direction, light ratio and colour temperature.
+P3 15% prop budget (at least four per panel) and set dressing.
+P4 5% decorative stickers and labels, one short generic English word only.
+TEMPLATE LOCK: the selected template's photographic type (studio / lifestyle / flat-lay / environment) is mandatory - never fall back to a generic centred studio product shot."""
+
+
+GRID_TEMPLATE_GATES = {
+    "": "studio only - seamless or plinth backdrop, no room, no horizon, no furniture; product fills 55%-80%.",
+    "_b": "real lived-in surface with room depth behind the product; product fills 50%-75%.",
+    "_c": "strict 90-degree overhead flat surface seen from directly above; props aligned in even rows; no wall, no vertical object.",
+    "_d": "wide establishing shot - product fills only 18%-28% and the whole room reads.",
+}
+
+# 约束的收尾闸门：放在整段提示词的最后（模型对末尾权重最高）。
+# 每条都是可判定的「通过/不通过」，比前面叙述式规则更容易被执行。
+GRID_FINAL_GATE = """FINAL GATE - check every line before returning the image; any FAIL means re-render that panel:
+1 Separator: continuous bands at x=1016..1031 and y=1016..1031, no break, no skew.
+2 Panel 1: pure white seamless, 78%-85%, no text, no room.
+3 Panels 2-4: three different places, at least four props each - FAIL on a repeated set, an empty table or two crops of one room.
+4 Panels 2-3: product centre on the 38% or 62% golden lines - FAIL if it sits on the centre lines.
+5 Hands and text: no hand, finger, arm or person; one small sticker with one English word per panel 2-4 only, never on the product.
+6 Fidelity: same silhouette, colour, material, structure and visible quantity as the reference.
+7 Template check: {template_check}"""
 
 
 # ── 方舟（Seedream）专用四宫格模板 ──────────────────────────────────────────
@@ -47,170 +73,159 @@ GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
 #   2) 【区域规划】：逐格写清机位、构图、背景、场景道具、光影与景深。
 # 界面选的 A/B/C/D 由 service._generate_grid_images 按 _template_suffix 映射生效。
 ARK_GRID_IMAGE_PROMPT = """本套是「影棚无缝主图」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+一眼识别：纯白或色纸无缝背景 + 硬光投影，没有房间、没有地平线、没有家具。
 
 【画面风格与技法】
-- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；但每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光。
-- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、统一对比曲线与颗粒量、统一镜头焦段的成像质感（不得混用手机广角与长焦的观感）、统一修图力度与配色家族（从商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面材质与景别仍必须按下方逐格参数矩阵各不相同；neutrals/颗粒/对比/修图 统一，照明色温 仍各格不同，两者不冲突。
-- 整体调性：干净、通透、高级的影棚感——无缝背景、不要房间、不要地平线、不要杂乱堆叠；每格用不同的色纸与台面。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
+- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；每一格的灯位方向、光比与色温仍按下方逐格参数矩阵执行，四格不得沿用同一套布光。
+- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、对比曲线与颗粒量、镜头焦段的成像质感、修图力度与配色家族（商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面与景别仍各不相同。
+- 整体调性：干净、通透、高级的影棚感；只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
 - 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
-  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
-  · ②（45°三视角）：俯视 35°-45°（相机高于产品）｜三分线右侧 1/3｜中近景｜后侧逆光｜光比 5:1｜暖 4000-4500K｜深色木台｜2-3 件道具｜三分构图
-  · ③（微距特写）：微距同高（等效 100mm）｜局部充满 80%-100%｜极特写｜顶光/侧顶光｜光比 6:1｜偏冷 6000K｜亚麻或毡｜1-2 件道具｜对角线填充
-  · ④（正投影）：俯视 90° 正投影｜正中、四周留白 15%-18%｜全景｜正上方大柔光箱｜光比 1.5:1｜5200K｜石或玻璃｜0-1 件道具｜正投影留白
-- 背景色纸：避免单调的死白或一整片浅灰；每格换用不同的柔和色纸或渐变（暖灰、鼠尾草绿、藕粉、炭黑到石墨渐变等），与商品同色系但不抢主体。
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜道具=SCENE PLAN 第①格（4 件极简道具）｜居中对称
+  · ②（45°三视角）：俯视 35°-45°｜黄金分割点（主体中心 x≈62%）｜中近景｜后侧逆光｜光比 5:1｜暖 4000-4500K｜背景与道具=SCENE PLAN 第②格（≥4 件）｜黄金分割构图
+  · ③（微距特写）：微距同高（等效 100mm）｜局部充满 80%-100%｜极特写｜顶光/侧顶光｜光比 6:1｜偏冷 6000K｜背景与道具=SCENE PLAN 第③格（≥4 件）｜对角线填充
+  · ④（正投影）：俯视 90° 正投影｜正中、四周留白 15%-18%｜全景｜正上方大柔光箱｜光比 1.5:1｜5200K｜背景与道具=SCENE PLAN 第④格（≥4 件）｜正投影留白
 
 【区域规划（四格机位必须互不相同，不得只是换背景）】
 【第①格 · 左上 · 平台主图（纯白合规）】
-- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**（商品在缩略图里才有分量），四周留白均衡、不顶边。
-- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
-- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
-- 清晰度：整格清晰，商品边缘锐利。
-【第②格 · 右上 · 45° 三视角（换色纸 + 配套道具）】
-- 尺度锚（本格硬要求）：同框必须出现一件文化中立、尺寸公认的参照物——**A4 纸或手机优先（自身不带文字，不会被误判为 AI 加字）**，硬币、常见马克杯次之（其上文字必须是真实印刷的，不得臆造），**不要用手**（手是 AI 穿帮高发点，画错比不画更糟）；与商品在同一焦平面、比例真实、不遮挡商品。它不算道具，不得因为道具数量或"道具只做配角"的限制而省略；仅当本品本身就是手持/穿戴类时，才可用局部手替代，且必须五指正常、关节与腕部连续。
-- 机位与构图：离开正面中轴，同时看到正面、一个侧面与顶缘的透视；与①在“背景色调、台面材质、机位、排列、道具、光向”中至少 3 项不同。
-- 背景与道具：换一套色纸与哑光台面，配 2-3 件该商品真实配套的日常道具（马克杯配茶包/托盘/书；保温杯配钥匙/运动水壶；餐具配餐布/餐垫；灯具配小物/绿植），道具只做配角并略靠后。
-- 光影：侧逆主光，台面出现方向性投影与材质边缘高光。
-- 景深：商品全清晰，道具轻微虚化形成前后层次。
+- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（#FFFFFF 到 #FAFAFA，不得偏灰偏黄偏蓝，除极轻微渐变外无纹理）；只允许 SCENE PLAN 第①格的 4 件极简中性道具，不得出现台面、布景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光，接地阴影清晰，整格锐利。
+【第②格 · 右上 · 45° 三视角】
+- 尺度锚（本格硬要求）：同框放一件 A4 纸或手机优先（不带文字），同一焦平面、比例真实、不遮挡商品；不要用手。
+- 机位与构图：离开正面中轴，同时看到正面、一个侧面与顶缘；与①在背景色调、台面材质、机位、排列、道具、光向中至少 3 项不同。
+- 背景与道具：按 SCENE PLAN 第②格执行，配饰物铺足（≥4 件），道具只做配角并略靠后。
+- 光影与景深：侧逆主光，方向性投影与边缘高光；商品全清晰，道具轻微虚化。
 【第③格 · 左下 · 微距细节 / 使用中特写】
-- 卖点证据（本格硬要求）：必须拍出本品**唯一最强**的物理卖点在"正在工作"的样子（密封圈贴合 / 纤维吸水 / 内壁厚度剖面 / 卡扣咬合 / 底部抓地之类），不允许用装饰性纹理顶替；收尾前自问两件事——① 这一格证明了哪个卖点？② 这个证据在画面里的**具体位置**在哪（哪一处局部、哪一处结构）？——任一答不出就重拍本格。
-- 机位与构图：近距离特写，放大真实工艺细节（纹理、织法、缝线、镀层、釉面、雕花、边缘抛光、内壁厚度）。
-- 背景与道具：再用一套不同色纸，1-2 件道具作陪衬与景深层次。
-- 光影：贴近的柔光加局部高光，把材质微观起伏打出来；细节不能被虚化吃掉。
-- 人或手：若商品可穿戴或手持，可只出现局部手部正在使用它（自然手部、五指正常、比例正确；不要整人、不要复杂人脸、不要完整模特）。
+- 卖点证据（本格硬要求）：必须拍到最强卖点“正在工作”的一个可指认局部，并能在画面里指出具体位置。
+- 机位与构图：近距离特写，放大真实工艺细节（纹理、缝线、镀层、釉面、边缘抛光、内壁厚度）。
+- 背景与道具：按 SCENE PLAN 第③格执行，配饰物 ≥4 件作陪衬与景深。
+- 光影：贴近柔光加局部高光，细节不被虚化吃掉。
 【第④格 · 右下 · 正投影留白图】
-- 正交硬要求：相机必须完全正交——无透视收缩、不得三个面同时可见、不得是 45° 视角；商品以真实比例平铺呈现，轮廓与尺寸关系可被直接量取，四周留白 12%-18%。
-- 机位与构图：侧视或俯视正投影，与前三格机位再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
-- 背景与道具：简洁色纸或哑光台面，可放 1 件道具。
-- 光影：均匀柔光，轮廓干净利落，接地阴影清晰。
+- 正交硬要求：相机完全正交——无透视收缩、不得三个面同时可见、不得是 45° 视角；商品按真实比例平铺，尺寸关系可直接量取。
+- 机位与构图：侧视或俯视正投影，与前三格再次不同；商品完整，四周留白 12%-18%。
+- 背景与道具：按 SCENE PLAN 第④格执行，配饰物 ≥4 件但不侵占留白。
+- 光影：均匀柔光，轮廓干净，接地阴影清晰。
 - 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
 
-【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
-道具只做配角：体积明显小于商品、低饱和、并与商品同色系，绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现整人、人脸、宠物或与商品无关的杂物；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+【道具与场景硬性限制（②③④ 通用）】
+道具只做配角：体积明显小于商品、低饱和、同色系，绝不遮挡、切割、压盖商品；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现整人、人脸、宠物或杂物；不得堆成杂乱堆叠。"""
 
 
 ARK_GRID_IMAGE_PROMPT_B = """本套是「人景叙事」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+一眼识别：真实生活台面 + 窗光侧逆 + 浅景深，像博主随手拍的生活照，背景必须有房间纵深。
 
 【画面风格与技法】
-- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；但每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光。
-- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、统一对比曲线与颗粒量、统一镜头焦段的成像质感（不得混用手机广角与长焦的观感）、统一修图力度与配色家族（从商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面材质与景别仍必须按下方逐格参数矩阵各不相同；neutrals/颗粒/对比/修图 统一，照明色温 仍各格不同，两者不冲突。
+- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；每一格的灯位方向、光比与色温仍按下方逐格参数矩阵执行，四格不得沿用同一套布光。
+- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、对比曲线与颗粒量、镜头焦段的成像质感、修图力度与配色家族（商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面与景别仍各不相同。
 - 整体调性：像真人生活里拍到的画面——不对称构图、留白有呼吸、有人的痕迹但不出现完整模特；彻底避开千篇一律的白底摆拍。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
 - 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
-  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
-  · ②（45°三视角）：俯视 35°-45°｜三分线左侧 1/3｜中近景｜侧窗侧逆光｜光比 5:1｜暖 4000-4500K｜木质书桌或石材台面｜1-2 件大件简单道具（不要手部）｜三分构图
-  · ③（使用瞬间/细节）：与细节同高、贴近（等效 100mm）｜局部充满｜极特写｜顶光/侧顶光｜光比 6:1｜偏冷 6000K｜亚麻或布｜0-2 件大件简单道具｜对角线
-  · ④（正投影）：俯视 90° 或侧视正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜石材或木｜0-1 件大件简单道具｜正投影留白
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜道具=SCENE PLAN 第①格（4 件极简道具）｜居中对称
+  · ②（45°三视角）：俯视 35°-45°｜黄金分割点（主体中心 x≈38%）｜中近景｜侧窗侧逆光｜光比 5:1｜暖 4000-4500K｜背景=SCENE PLAN 第②格｜道具=SCENE PLAN 第②格（≥4 件，不要手部）｜黄金分割构图
+  · ③（使用瞬间/细节）：与细节同高、贴近（等效 100mm）｜局部充满｜极特写｜顶光/侧顶光｜光比 6:1｜偏冷 6000K｜背景=SCENE PLAN 第③格｜道具=SCENE PLAN 第③格（≥4 件）｜对角线
+  · ④（正投影）：俯视 90° 或侧视正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜背景=SCENE PLAN 第④格｜道具=SCENE PLAN 第④格（≥4 件）｜正投影留白
 - 叙事方向：先在心里设定“谁在什么场合用它”，再据此选空间、台面、道具与光线；同一个商品在四格里讲四个不同的使用时刻。
 
 【区域规划（四格机位必须互不相同，不得只是换背景）】
 【第①格 · 左上 · 平台主图（纯白合规）】
-- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**（商品在缩略图里才有分量），四周留白均衡、不顶边。
-- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
-- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
-- 清晰度：整格清晰，商品边缘锐利。
+- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（#FFFFFF 到 #FAFAFA，不得偏灰偏黄偏蓝，除极轻微渐变外无纹理）；只允许 SCENE PLAN 第①格的 4 件极简中性道具，不得出现台面、布景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光，接地阴影清晰，整格锐利。
 【第②格 · 右上 · 45° 三视角 + 真实生活空间】
-- 尺度锚（本格硬要求）：同框必须出现一件文化中立、尺寸公认的参照物——**A4 纸或手机优先（自身不带文字，不会被误判为 AI 加字）**，硬币、常见马克杯次之（其上文字必须是真实印刷的，不得臆造），**绝对不要用手**（手和手指是 AI 穿帮高发点，画错比不画更糟）；与商品在同一焦平面、比例真实、不遮挡商品。它不算道具，不得因为道具数量或"道具只做配角"的限制而省略；本品即使是手持/穿戴类也不要用局部手替代。
+- 尺度锚（本格硬要求）：同框放一件 A4 纸或手机优先（不带文字），同一焦平面、比例真实、不遮挡商品；不要用手。
 - 机位与构图：离开正面中轴，同时看到正面、一个侧面与顶缘的透视；与①在「背景色调、台面材质、机位、排列、道具、光向」中至少 3 项不同。
-- 场景与道具：与该商品真实配套的生活空间（书桌、床头柜、厨房台面、梳妆台、玄关台），铺 1-2 件大件简单道具；不要出现人物、手部、手指或侧影。
-- 光影：柔和方向光（侧窗光或暖台灯），有光影方向与空间纵深，背景不要全虚化消失。
-- 景深：商品全清晰，背景自然轻微虚化，保留三层空间感。
+- 场景与道具：按 SCENE PLAN 第②格布置，配饰物铺足（≥4 件）；不要出现人物、手部、手指或侧影。
+- 光影与景深：柔和方向光（侧窗光或暖台灯），有方向与空间纵深；商品全清晰，背景轻微虚化，保留三层空间。
 【第③格 · 左下 · 使用中的真实瞬间 / 细节特写】
-- 卖点证据（本格硬要求）：必须拍出本品**唯一最强**的物理卖点在"正在工作"的样子（密封圈贴合 / 纤维吸水 / 内壁厚度剖面 / 卡扣咬合 / 底部抓地之类），不允许用装饰性纹理顶替；收尾前自问两件事——① 这一格证明了哪个卖点？② 这个证据在画面里的**具体位置**在哪（哪一处局部、哪一处结构）？——任一答不出就重拍本格。
-- 机位与构图：相机再换一次——贴近的使用瞬间或局部特写，放大真实工艺与真实使用关系。
-- 场景与道具：保留 0-2 件大件简单道具；不要出现手部、手指或人物。
-- 光影：故事感的侧光或窗光，高光落在材质关键处。
+- 卖点证据（本格硬要求）：拍到最强卖点“正在工作”的一个可指认局部，并指出具体位置。
+- 机位与构图：再换一次机位——贴近的使用瞬间或局部特写，放大真实工艺与使用关系。
+- 场景与道具：按 SCENE PLAN 第③格执行，保留 ≥4 件该格配饰物；不要出现手部、手指或人物。
+- 光影：故事感侧光或窗光，高光落在材质关键处。
 【第④格 · 右下 · 正投影留白图】
-- 正交硬要求：相机必须完全正交——无透视收缩、不得三个面同时可见、不得是 45° 视角；商品以真实比例平铺呈现，轮廓与尺寸关系可被直接量取，四周留白 12%-18%。
-- 机位与构图：侧视或俯视正投影，与前三格机位再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
-- 背景与道具：简洁台面，可放 1 件道具，不要堆叠。
+- 正交硬要求：相机完全正交——无透视收缩、不得三个面同时可见、不得是 45° 视角；商品按真实比例平铺，尺寸关系可直接量取；与前三格再次不同，四周留白 12%-18%。
+- 背景与道具：严格正交向下看，≥4 件该格配饰物但排列整齐、不堆叠、不压盖商品。
 - 光影：均匀柔光，轮廓干净，接地阴影清晰。
 - 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
 
 【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
-道具只做配角：体积明显小于商品、低饱和、并与商品同色系，绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现任何人物、手部、手指、宠物或与商品无关的杂物；不得出现尺子、笔、餐具、刷子等细长精细道具；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+道具只做配角：体积小于商品、低饱和、同色系，绝不遮挡、切割、压盖商品；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现人物、手部、手指、宠物或杂物；不得出现尺子、笔、餐具、刷子等细长道具；不得堆成杂乱堆叠。"""
 
 
 ARK_GRID_IMAGE_PROMPT_C = """本套是「静物平铺俯拍」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+一眼识别：正俯视 knolling 平铺，只有平面、没有墙，物体按行列对齐，像杂志静物版。
 
 【画面风格与技法】
-- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；但每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光。
-- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、统一对比曲线与颗粒量、统一镜头焦段的成像质感（不得混用手机广角与长焦的观感）、统一修图力度与配色家族（从商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面材质与景别仍必须按下方逐格参数矩阵各不相同；neutrals/颗粒/对比/修图 统一，照明色温 仍各格不同，两者不冲突。
+- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；每一格的灯位方向、光比与色温仍按下方逐格参数矩阵执行，四格不得沿用同一套布光。
+- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、对比曲线与颗粒量、镜头焦段的成像质感、修图力度与配色家族（商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面与景别仍各不相同。
 - 整体调性：整齐、克制、目录级的俯拍——台面就是整个画面，商品与道具按 knolling 方式对齐排列，间距均匀、朝向一致。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。（本套 ②③④ 都是俯视，差异靠景别、光位、光比与台面材质拉开）
 - 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
-  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
-  · ②（铺开全貌）：俯视 90°｜正中或三分｜**全景（商品+道具铺开）**｜大顶光（投影短而柔）｜光比 2:1｜5500K｜木桌或牛皮纸｜1-2 件大件简单道具｜居中对称
-  · ③（俯视特写）：俯视 90° 贴近｜局部充满｜**极特写（材质/内容物）**｜**侧顶光（制造方向性投影与纹理）**｜光比 6:1｜偏冷 6000K｜亚麻或毡｜0-2 件大件简单道具｜对角线
-  · ④（俯视正投影）：俯视 90° 正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜石或玻璃｜0-1 件大件简单道具｜正投影留白
-- 俯拍专门要求：相机垂直于台面、近似正交透视，不要眼平/四分之三/低角度；不要竖立的物件、家具或房间；景深要整格清晰（不要靠虚化做层次，用间距与大小差做层次）。
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜道具=SCENE PLAN 第①格（4 件极简道具）｜居中对称
+  · ②（铺开全貌）：俯视 90°｜黄金分割点（主体中心 x≈62% 或 38%，不得正中）｜**全景（商品+道具铺开）**｜大顶光（投影短而柔）｜光比 2:1｜5500K｜背景=SCENE PLAN 第②格｜道具=SCENE PLAN 第②格（≥4 件）｜黄金分割构图
+  · ③（俯视特写）：俯视 90° 贴近｜局部充满｜**极特写（材质/内容物）**｜**侧顶光（制造方向性投影与纹理）**｜光比 6:1｜偏冷 6000K｜背景=SCENE PLAN 第③格｜道具=SCENE PLAN 第③格（≥4 件）｜对角线
+  · ④（俯视正投影）：俯视 90° 正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜背景=SCENE PLAN 第④格｜道具=SCENE PLAN 第④格（≥4 件）｜正投影留白
+- 俯拍要求：相机垂直台面、近似正交；不要眼平/四分之三/低角度，不要竖立物件、家具或房间；整格清晰，用间距与大小差做层次。
 
 【区域规划（四格俯拍但每格台面与排列都不同）】
 【第①格 · 左上 · 平台主图（纯白合规）】
-- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**（商品在缩略图里才有分量），四周留白均衡、不顶边。
-- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
-- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
-- 清晰度：整格清晰，商品边缘锐利。
+- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（#FFFFFF 到 #FAFAFA，不得偏灰偏黄偏蓝，除极轻微渐变外无纹理）；只允许 SCENE PLAN 第①格的 4 件极简中性道具，不得出现台面、布景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光，接地阴影清晰，整格锐利。
 【第②格 · 右上 · 90° 俯视 knolling 主体】
-- 尺度锚（本格硬要求）：同框必须出现一件文化中立、尺寸公认的参照物——**A4 纸或手机优先（自身不带文字，不会被误判为 AI 加字）**，硬币次之（其上文字必须是真实印刷的，不得臆造），**绝对不要用手**（手和手指是 AI 穿帮高发点，画错比不画更糟）；与商品在同一焦平面、比例真实、不遮挡商品。它不算道具，不得因为道具数量或"道具只做配角"的限制而省略；本品即使是手持/穿戴类也不要用局部手替代。
-- 机位与构图：真正 90° 俯视，商品居中并占画幅 55%-68%，四周等距留白、不顶边。
-- 台面与道具：换一种台面（木桌、亚麻、浅色大理石、牛皮纸、哑光板）；商品与道具按行列对齐、间距均匀、旋转角一致地铺开。
-- 光影：大面积均匀顶光，投影短而柔。
-- 清晰度：整格清晰，商品与道具都在同一焦平面。
+- 尺度锚（本格硬要求）：同框放一件 A4 纸或手机优先（不带文字），同一焦平面、比例真实、不遮挡商品；不要用手。
+- 机位与构图：真正 90° 俯视，商品压在黄金分割点（x≈62% 或 38%，不得正中）并占画幅 55%-68%，另一侧留出等距呼吸区、不顶边。
+- 台面与道具：按 SCENE PLAN 第②格执行；商品与道具按行列对齐、间距均匀、旋转角一致地铺开。
+- 光影：大面积均匀顶光，投影短而柔；整格清晰，商品与道具同焦平面。
 【第③格 · 左下 · 俯视使用情境 / 内容物陈列】
-- 卖点证据（本格硬要求）：必须拍出本品**唯一最强**的物理卖点在"正在工作"的样子（密封圈贴合 / 内容物承装状态 / 内壁厚度剖面 / 卡扣咬合 / 底部防滑之类），不允许用装饰性纹理顶替；收尾前自问两件事——① 这一格证明了哪个卖点？② 这个证据在画面里的**具体位置**在哪（哪一处局部、哪一处结构）？——任一答不出就重拍本格。
-- 机位与构图：仍是 90° 俯视，但换成另一种排列（例如商品与它配套使用的物件并排、或打开状态的内容物）。
-- 台面与道具：再换一种台面材质与配色，1-2 件大件简单道具，间距均匀。
-- 光影：均匀顶光加轻微侧向补光，让材质纹理可辨。
-- 人或手：不要出现任何人物、手部、手指或侧影。
+- 卖点证据（本格硬要求）：拍到最强卖点“正在工作”的一个可指认局部，并指出具体位置。
+- 机位与构图：仍是 90° 俯视，换成另一种排列（商品与配套物件并排，或打开状态的内容物）。
+- 台面与道具：按 SCENE PLAN 第③格执行，该格配饰物 ≥4 件，间距均匀。
+- 光影与人：均匀顶光加轻微侧向补光，让纹理可辨；不要出现人物、手部、手指或侧影。
 【第④格 · 右下 · 俯视正投影留白图】
-- 正交硬要求：相机必须垂直台面、完全正交——无透视收缩、不得出现侧面、不得是 45° 视角；商品以真实比例平铺呈现，轮廓与尺寸关系可被直接量取，四周留白 12%-18%。
-- 机位与构图：正俯视（或干净的正视/侧视），与前三格排列方式再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
-- 台面与道具：简洁台面，可放 1 件道具。
+- 正交硬要求：相机垂直台面、完全正交——无透视收缩、不得出现侧面、不得是 45° 视角；商品按真实比例平铺，尺寸关系可直接量取；与前三格排列再次不同，留白 12%-18%。
+- 台面与道具：按 SCENE PLAN 第④格执行，该格配饰物 ≥4 件但排列整齐、不侵占四周留白。
 - 光影：均匀柔光，轮廓干净，接地阴影清晰。
 - 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
 
 【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
-道具只做配角：体积明显小于商品、低饱和、并与商品同色系，绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现任何人物、手部、手指、宠物或与商品无关的杂物；不得出现尺子、笔、餐具、刷子等细长精细道具；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+道具只做配角：体积小于商品、低饱和、同色系，绝不遮挡、切割、压盖商品；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现人物、手部、手指、宠物或杂物；不得出现尺子、笔、餐具、刷子等细长道具；不得堆成杂乱堆叠。"""
 
 
 ARK_GRID_IMAGE_PROMPT_D = """本套是「环境远景」风格的四宫格商品图。上方的运行时契约固定优先，下面只描述本套的画面方向与区域规划。
+一眼识别：广角建立镜头，商品很小、空间很大，前中后三层纵深，像空间实拍而不是产品特写。
 
 【画面风格与技法】
-- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；但每一格的灯位方向、光比与色温必须按下方逐格参数矩阵执行，四格不得沿用同一套布光。
-- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、统一对比曲线与颗粒量、统一镜头焦段的成像质感（不得混用手机广角与长焦的观感）、统一修图力度与配色家族（从商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面材质与景别仍必须按下方逐格参数矩阵各不相同；neutrals/颗粒/对比/修图 统一，照明色温 仍各格不同，两者不冲突。
+- 布光与真实感：按上方运行时契约的 REALISM & LIGHT PHYSICS / ANTI-AI-TELL 执行（材质真实响应、接地阴影与环境光遮蔽、反射锚、玻璃折射与焦散、金属各向异性、反 AI 痕迹）；每一格的灯位方向、光比与色温仍按下方逐格参数矩阵执行，四格不得沿用同一套布光。
+- 调色与成像底座（本套四格**共享**）：统一白平衡锚点与黑位、对比曲线与颗粒量、镜头焦段的成像质感、修图力度与配色家族（商品取 1 个主色 + 2 个中性色）。这是**调色与成像的底座，不是场景照明色**——每格的灯位方向、光比、色温、台面与景别仍各不相同。
 - 整体调性：商品作为真实空间里的一件物品被远远拍下来——环境主导画面、商品小而清晰，有真实的纵深与生活气息。只统一品质下限（真实、锐利、保真、无 AI 感、无文字），**不统一机位、光位、景别与色温**——四格必须是四张不同的照片。
 - 逐格参数矩阵（四格不得复用同一套参数；同一维度四格两两不同）：
-  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜0 道具｜居中对称
-  · ②（客厅远景）：广角、平视略低、机位离远｜商品在三分线｜中远景｜自然窗光侧逆｜光比 4:1｜暖 4000-4500K｜客厅木桌或边柜｜3-5 件家具软装｜三分构图
-  · ③（另一空间远景）：换空间换时段、机位改为略俯或略仰｜商品在右下 1/3｜中远景｜天光（冷、通透）｜光比 2:1｜偏冷 6000K｜阳台石台或庭院石板｜3-5 件环境元素｜对角线
-  · ④（正投影）：俯视 90° 或侧视正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜简洁台面｜0-1 件大件简单道具｜正投影留白
-- 远景专门要求：广角建立镜头、机位离远，前景/中景/远景三层清晰可辨，背景不要全虚化；商品约占画幅 18%-38%，但必须完整、锐利、不被遮挡。
+  · ①（主图）：平视 0°、视线=产品中腰｜正中对称｜中景｜前侧 45° 主光｜光比 3:1｜5500K｜纯白无缝｜道具=SCENE PLAN 第①格（4 件极简道具）｜居中对称
+  · ②（客厅远景）：广角、平视略低、机位离远｜商品在黄金分割线（x≈38% 或 62%）｜中远景｜自然窗光侧逆｜光比 4:1｜暖 4000-4500K｜背景=SCENE PLAN 第②格｜道具=SCENE PLAN 第②格（≥4 件家具软装）｜黄金分割构图
+  · ③（另一空间远景）：换空间换时段、机位改为略俯或略仰｜商品在黄金分割交点（x≈62% y≈38% 或 x≈38% y≈62%）｜中远景｜天光（冷、通透）｜光比 2:1｜偏冷 6000K｜背景=SCENE PLAN 第③格｜道具=SCENE PLAN 第③格（≥4 件真实环境元素）｜对角线
+  · ④（正投影）：俯视 90° 或侧视正投影｜正中、四周留白 15%｜全景｜正上方柔光｜光比 1.5:1｜5200K｜背景=SCENE PLAN 第④格｜道具=SCENE PLAN 第④格（≥4 件）｜正投影留白
+- 远景要求：广角、机位离远，前中后三层可辨，背景不全虚化；商品占 18%-38%，必须完整、锐利、不被遮挡。
 
 【区域规划（四格机位必须互不相同，不得只是换房间）】
 【第①格 · 左上 · 平台主图（纯白合规）】
-- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**（商品在缩略图里才有分量），四周留白均衡、不顶边。
-- 背景：纯白无缝影棚（必须是 #FFFFFF 到 #FAFAFA 之间的纯白，不得偏灰、偏黄或偏蓝，除极轻微渐变外不得有任何纹理）；本格严禁道具、台面、布景、生活场景、地平线、房间元素。
-- 光影：柔光箱主光加顶部轮廓光；清晰接地阴影与柔和渐变投影。
-- 清晰度：整格清晰，商品边缘锐利。
+- 机位与构图：0° 正视平视，商品居中，**首图必须做大——约占画幅 78%-85%**，四周留白均衡、不顶边。
+- 背景：纯白无缝影棚（#FFFFFF 到 #FAFAFA，不得偏灰偏黄偏蓝，除极轻微渐变外无纹理）；只允许 SCENE PLAN 第①格的 4 件极简中性道具，不得出现台面、布景、地平线、房间元素。
+- 光影：柔光箱主光加顶部轮廓光，接地阴影清晰，整格锐利。
 【第②格 · 右上 · 广角远景（客厅 / 卧室 / 餐厅一类）】
-- 尺度锚（本格硬要求）：同框必须出现一件文化中立、尺寸公认的参照物——与商品同处一个台面上的一件已知尺寸物（**A4 纸或手机优先**，自身不带文字、不会被误判为 AI 加字；常见马克杯次之）；与商品在同一焦平面、比例真实、不遮挡商品。它不算道具，不得因为道具数量或"道具只做配角"的限制而省略；任何情况下都不要用手、手指或人物替代尺度锚。
-- 机位与构图：广角、机位离远，商品自然地放在它真实会出现的家具或台面上，占画幅 18%-38%；与①在「房间、家具、色调、机位、光向、时段」中至少 3 项不同。
-- 场景与道具：一个完整的真实空间（沙发/床/餐桌/边柜/地毯/窗帘/绿植/挂画等 3-5 件家具软装），商品只是其中一件物品。
-- 光影：自然光为主（窗光、午后斜射、柔和天光），有方向性长投影与空间明暗层次。
-- 景深：前景清晰、商品清晰、远处房间自然轻微虚化，保留完整纵深。
+- 尺度锚（本格硬要求）：同框放一件 A4 纸或手机优先（不带文字），同一焦平面、比例真实、不遮挡商品；不要用手。
+- 机位与构图：广角、机位离远，商品放在它真实会出现的家具或台面上，占画幅 18%-38%；与①在房间、家具、色调、机位、光向、时段中至少 3 项不同。
+- 场景与道具：按 SCENE PLAN 第②格布置（≥4 件家具软装），商品只是其中一件物品。
+- 光影与景深：自然光（窗光、午后斜射、天光）带方向性长投影；前景与商品清晰，远处房间轻微虚化，保留纵深。
 【第③格 · 左下 · 户外或另一空间的使用情境远景】
-- 卖点证据（本格硬要求）：远景格里必须让本品**唯一最强**的物理卖点"正在工作"且能被看清（例如杯中盛满热饮冒热气、织物被风鼓起、提手悬挂承重），不允许只是把商品摆在场景里；收尾前自问两件事——① 这一格证明了哪个卖点？② 这个证据在画面里的**具体位置**在哪（哪一处局部、哪一处结构）？——任一答不出就重拍本格。
+- 卖点证据（本格硬要求）：拍到最强卖点“正在工作”的一个可指认局部，并指出具体位置。
 - 机位与构图：再换一个空间与时段（阳台、庭院、露台、门厅、厨房岛台），机位再次不同，商品依旧小而清晰。
-- 场景与道具：3-5 件真实环境元素，构成可信的生活场景。
-- 光影：自然光与新时段（例如傍晚暖光或阴天柔光），与环境一致。
-- 人或手：不要出现任何人物、手部、手指或侧影。
+- 场景与道具：按 SCENE PLAN 第③格执行，≥4 件真实环境元素构成可信的生活场景。
+- 光影与人：自然光与新时段（傍晚暖光或阴天柔光），与环境一致；不要出现人物、手部、手指或侧影。
 【第④格 · 右下 · 正投影留白图】
-- 正交硬要求：相机必须完全正交——无透视收缩、不得三个面同时可见、不得是 45° 视角；商品以真实比例平铺呈现，轮廓与尺寸关系可被直接量取，四周留白 12%-18%。
-- 机位与构图：侧视或俯视正投影，与前三格机位再次不同；商品清晰完整，四周留白 12%-18%，便于后期标注尺寸。
-- 背景与道具：简洁台面，可放 0-1 件大件简单道具。
+- 正交硬要求：相机完全正交——无透视收缩、不得三个面同时可见、不得是 45° 视角；商品按真实比例平铺，尺寸关系可直接量取；与前三格再次不同，四周留白 12%-18%。
+- 背景与道具：按 SCENE PLAN 第④格执行，该格配饰物 ≥4 件但四周留白 12%-18%。
 - 光影：均匀柔光，轮廓干净，接地阴影清晰。
 - 严禁：尺寸线、数字、单位、箭头、尺子或任何标注。
 
 【道具与场景硬性限制（②③④ 通用，违反即视为废图）】
-环境与道具只做配角：绝不遮挡、切割、压盖商品或抢走视觉焦点；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现任何人物、手部、手指、可辨认人脸或与商品无关的杂物；不得出现尺子、笔、餐具、刷子等细长精细道具；不得堆成杂乱堆叠；商品四周留出干净呼吸空间。"""
+环境与道具只做配角：绝不遮挡、切割、压盖商品；不得出现其他品牌、商标、包装文字、价格牌、广告语；不得出现人物、手部、手指、可辨认人脸或杂物；不得出现尺子、笔、餐具、刷子等细长道具；不得堆成杂乱堆叠。"""
 
 
 SINGLE_IMAGE_RUNTIME_CONTRACT = """NON-OVERRIDABLE SINGLE-IMAGE RUNTIME CONTRACT:

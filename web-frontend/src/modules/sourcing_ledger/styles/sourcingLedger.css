@@ -115,6 +115,12 @@
   margin-left: auto;
 }
 
+.ledger-total {
+  font-size: 12px;
+  color: var(--theme-text-secondary, #526a82);
+  white-space: nowrap;
+}
+
 .ledger-status-tabs {
   display: flex;
   align-items: center;
@@ -1159,4 +1165,27 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* 店铺筛选与批量改店铺 */
+.ledger-store-filter select {
+  min-width: 160px;
+  max-width: 220px;
+  text-overflow: ellipsis;
+}
+
+.ledger-batch .ledger-batch-store-select {
+  width: 160px;
+  max-width: 200px;
+  padding-right: 8px;
+  text-overflow: ellipsis;
+}
+
+.ledger-col-store,
+.ledger-store-cell {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-secondary, #526a82);
 }

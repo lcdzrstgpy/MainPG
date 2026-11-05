@@ -134,6 +134,9 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [site, setSite] = useState("");
   const [batchId, setBatchId] = useState("");
+  const [storeFilter, setStoreFilter] = useState("");
+  const [storeOptions, setStoreOptions] = useState<string[]>([]);
+  const [storeChoices, setStoreChoices] = useState<string[]>([]);
   const [batches, setBatches] = useState<LedgerBatchOption[]>([]);
   const [keyword, setKeyword] = useState("");
   const [sites, setSites] = useState<Array<{ site_code: string; display_name: string }>>([]);
@@ -143,6 +146,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [busy, setBusy] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [weightDraft, setWeightDraft] = useState("");
+  const [batchStoreDraft, setBatchStoreDraft] = useState("");
   const [previewImage, setPreviewImage] = useState("");
   const [expandedTitle, setExpandedTitle] = useState("");
   const [rateOpen, setRateOpen] = useState(false);
@@ -162,6 +166,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       .listItems({
         status: statusParam,
         site,
+        store: storeFilter,
         keyword: keyword.trim(),
         batch: batchId,
         limit: pageSize,
@@ -173,6 +178,8 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         setItems(payload.items || []);
         setCounts(payload.counts || {});
         setBatches(payload.batches || []);
+        setStoreOptions(payload.stores || []);
+        setStoreChoices(payload.store_names || []);
         setTotal(nextTotal);
         const lastPage = Math.max(1, Math.ceil(nextTotal / pageSize));
         if (page > lastPage) setPage(lastPage);
@@ -186,7 +193,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     return () => {
       cancelled = true;
     };
-  }, [batchId, isActive, keyword, page, pageSize, reloadToken, site, statusParam]);
+  }, [batchId, isActive, keyword, page, pageSize, reloadToken, site, statusParam, storeFilter]);
 
   const reload = useCallback(() => {
     setReloadToken((value) => value + 1);
@@ -213,6 +220,23 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
           ? `站点已改为 ${payload.site || siteCode}，利润按该站点费率重算`
           : "已恢复按采集站点自动判断",
       );
+      reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const changeStore = async (storeName: string) => {
+    if (!detail) return;
+    setBusy("store");
+    setNotice("");
+    setError("");
+    try {
+      const payload = await sourcingLedgerApi.setItemStore(detail.skc, storeName);
+      setDetail(payload);
+      setNotice(storeName ? `店铺已设为 ${storeName}` : "已清空店铺");
       reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -361,8 +385,33 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     }
   };
 
-  const addImage = async (source: LedgerSource) => {
-    await addImageUrl(source, (imageDraft[source.id] || "").trim());
+  const applyStores = async () => {
+    if (!selected.length) {
+      setError("请先勾选要设置店铺的商品");
+      return;
+    }
+    const name = batchStoreDraft.trim();
+    if (!name) {
+      setError("请填写店铺");
+      return;
+    }
+    setBusy("stores");
+    setNotice("");
+    setError("");
+    try {
+      const result = await sourcingLedgerApi.setStores(selected, name);
+      setNotice(`已把 ${result.updated} 个商品的店铺设为「${result.store_name}」`);
+      setSelected([]);
+      setBatchStoreDraft("");
+      reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const addImage = async (source: LedgerSource) => {    await addImageUrl(source, (imageDraft[source.id] || "").trim());
   };
 
   const addImageUrl = async (source: LedgerSource, url: string) => {
@@ -522,6 +571,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         </nav>
 
         <div className="ledger-toolbar-actions">
+          <span className="ledger-total">共 {total} 个商品 · 利润从高到低</span>
           <div className="ledger-batch">
             <span className="ledger-batch-title">批量重量（kg）</span>
             <input
@@ -539,6 +589,27 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
               disabled={Boolean(busy) || !selected.length}
             >
               {busy === "weights" ? "应用中…" : `应用到已选 ${selected.length} 个`}
+            </button>
+          </div>
+          <div className="ledger-batch ledger-batch-store">
+            <span className="ledger-batch-title">批量店铺</span>
+            <select
+              className="ledger-batch-store-select"
+              value={batchStoreDraft}
+              onChange={(event) => setBatchStoreDraft(event.target.value)}
+            >
+              <option value="">选择店铺</option>
+              {storeChoices.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="ledger-btn is-primary"
+              onClick={() => void applyStores()}
+              disabled={Boolean(busy) || !selected.length || !batchStoreDraft.trim()}
+            >
+              {busy === "stores" ? "应用中…" : `应用到已选 ${selected.length} 个`}
             </button>
           </div>
           {selected.length > 0 && (
@@ -567,6 +638,21 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
             <option value="">全部站点</option>
             {(sites ?? []).map((option) => (
               <option key={option.site_code} value={option.site_code}>{option.display_name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="ledger-store-filter">
+          <span>店铺</span>
+          <select
+            value={storeFilter}
+            onChange={(event) => {
+              setStoreFilter(event.target.value);
+              setPage(1);
+            }}
+          >
+            <option value="">全部店铺</option>
+            {storeOptions.map((name) => (
+              <option key={name} value={name}>{name}</option>
             ))}
           </select>
         </label>
@@ -620,6 +706,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
               </th>
               <th className="ledger-col-product">商品</th>
               <th className="ledger-col-site">站点</th>
+              <th className="ledger-col-store">店铺</th>
               <th className="ledger-col-source">货源</th>
               <th className="ledger-col-num">到手成本</th>
               <th className="ledger-col-num">申报价（调整后）</th>
@@ -685,6 +772,9 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                   </div>
                 </td>
                 <td className="ledger-col-site">{item.site ? item.site.replace(/站$/, "") : "—"}</td>
+                <td className="ledger-store-cell" title={item.store_name || undefined}>
+                  {item.store_name || "—"}
+                </td>
                 <td className="ledger-col-source">{item.source_count ? `${item.source_count} 条` : "—"}</td>
                 <td className="ledger-col-num">{money(item.best_source?.landed_cost_cny)}</td>
                 <td className="ledger-col-num">
@@ -728,7 +818,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       {total > 0 && (
         <div className="ledger-pager">
           <span className="ledger-pager-info">
-            第 {page} / {totalPages} 页 · 共 {total} 个商品 · 最近更新优先
+            第 {page} / {totalPages} 页 · 共 {total} 个商品 · 利润从高到低
           </span>
           <div className="ledger-pager-actions">
             <select
@@ -812,6 +902,19 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                       ))}
                     </select>
                     <small>采集来源：{detail.site || "未识别"}</small>
+                  </label>
+                  <label className="ledger-site-picker">
+                    <span>店铺</span>
+                    <select
+                      value={detail.store_name || ""}
+                      disabled={busy === "store"}
+                      onChange={(event) => void changeStore(event.target.value)}
+                    >
+                      <option value="">未设置</option>
+                      {(detail.stores || []).map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
                   </label>
                 </div>
                 <button type="button" className="ledger-close" onClick={() => setDetail(null)}>×</button>

@@ -53,17 +53,27 @@ SCENE_BASE_PROMPT = (
 # 每张图默认辅助方向（可编辑角色向用户展示，其余为内部固定方向）。
 DEFAULT_ROLE_DIRECTIONS: dict[str, str] = {
     "main": "",
-    "carousel_2": "lifestyle scene: the complete bundled set placed on a real home surface "
-                  "in a modern American living room or game-night table, minimal natural props "
-                  "(glass, snack, small plant, linen) that never cover the products, "
-                  "unified soft window light, every member product clearly visible",
+    "carousel_2": "lifestyle scene: the complete bundled set on a real home surface beside a "
+                  "window (warm wooden dining table or living-room sideboard), placed on the "
+                  "RIGHT golden line at x≈62% - never dead centre. Surround it with at least "
+                  "four source-compatible props (a mug, a folded linen napkin, a small potted "
+                  "plant, a wooden tray) that sit behind or beside the set and never cover it. "
+                  "Build this set fresh: never reuse a backdrop, surface or prop from the "
+                  "reference photos. Unified soft window light, no hands in this frame, one "
+                  "small kraft tag with a single English word allowed, every member product "
+                  "clearly visible",
     "carousel_3": "second lifestyle scene: the complete bundled set used in a different real "
-                  "home setting (sunlit dining table or cozy reading corner), relaxed natural "
-                  "arrangement, realistic adult hands allowed (Caucasian / Western European, "
-                  "light-to-medium skin tone), consistent soft light, "
-                  "every member product clearly recognizable",
-    "white_bg": "complete bundled set on a clean white background, full product visible, "
-                "balanced layout, professional studio shot",
+                  "home setting (sunlit kitchen island or cosy reading corner) at a different "
+                  "time of day, placed on the LEFT golden line at x≈38% with a tighter crop. "
+                  "At least four different props (an open book, a ceramic bowl, a folded throw, "
+                  "a floor plant) that never cover the products; invent a new set, never a crop "
+                  "of the first scene. Realistic adult hands allowed only if anatomically "
+                  "correct (Caucasian / Western European, light-to-medium skin tone, no face), "
+                  "consistent soft light, every member product clearly recognizable",
+    "white_bg": "complete bundled set on a pure white seamless background (#FFFFFF to #FAFAFA), "
+                "centred and filling 78%-85% of the frame with even clear margins, no props, "
+                "no room, no horizon, no text, professional studio lighting with a soft contact "
+                "shadow",
     "detail_shot": "",
     "detail_page": "",
 }
@@ -72,21 +82,25 @@ DEFAULT_ROLE_DIRECTIONS: dict[str, str] = {
 # 因此不写「整套/每个成员」，只强调该商品本身的展示。
 MULTIVIEW_ROLE_DIRECTIONS: dict[str, str] = {
     "main": "",
-    "carousel_2": "lifestyle scene: this same product placed and used in a real home environment, "
-                  "only one single copy of the product in the frame, "
-                  "minimal natural props that never cover the product, soft window light, "
-                  "realistic adult hands allowed (Caucasian / Western European, "
-                  "light-to-medium skin tone), product unchanged in design, color and material",
-    "carousel_3": "second lifestyle scene: the same product in a different real home setting and "
-                  "usage moment, only one single copy of the product in the frame, "
-                  "relaxed natural arrangement, realistic adult hands allowed (Caucasian / "
-                  "Western European, light-to-medium skin tone), "
-                  "consistent soft light, product unchanged in design, color and material",
+    "carousel_2": "lifestyle scene: this same product placed and used in a real home "
+                  "environment, exactly one copy of the product in the frame, on the RIGHT "
+                  "golden line at x≈62% - never dead centre, with at least four "
+                  "source-compatible props that never cover the product, set invented fresh "
+                  "(never copy the reference backdrop), soft window light, realistic adult "
+                  "hands allowed only if anatomically correct, product unchanged in design, "
+                  "color and material",
+    "carousel_3": "second lifestyle scene: the same product in a different real home setting "
+                  "and usage moment at a different time of day, exactly one copy of the "
+                  "product in the frame, on the LEFT golden line at x≈38%, at least four "
+                  "different props, a new set that is never a crop of the first scene, "
+                  "realistic adult hands allowed only if anatomically correct, consistent "
+                  "soft light, product unchanged in design, color and material",
     # 原措辞含 "interior / package structure clearly readable"，那是容器/包装类商品的描述；
     # 对鼠标等实心商品属错位指令，会诱导模型凭空补出内部结构或多视角拼贴。
-    "white_bg": "this same product on a clean white background, one single view only, "
-                "the whole product visible with a clear complete outline, "
-                "balanced layout, professional studio shot, "
+    "white_bg": "this same product on a pure white seamless background (#FFFFFF to #FAFAFA), "
+                "centred and filling 78%-85% of the frame with even clear margins, one single "
+                "view only, the whole product visible with a clear complete outline, "
+                "professional studio lighting with a soft contact shadow, no props, no text, "
                 "no duplicate copies of the product",
     "detail_shot": "",
     "detail_page": "",
@@ -152,6 +166,76 @@ QUALITY_CONTRACT = (
     "no slogans, no labels, no logos, no watermark.\n"
     "- Output must be high-resolution, sharp, with the main subject clearly visible and well-defined."
 )
+
+
+# 单图质量底线：对齐商品处理四宫格契约的画质/保真/真实感要求，但只描述「一张完整照片」，
+# 不含分隔带、面板坐标、拼版等四宫格约束——组合生图是 4 张互相独立的成品图，
+# 每张都要单独成立，所以构图类要求放在各角色的方向词里，这里只兜底不可妥协的部分。
+COMBO_QUALITY_FLOOR = (
+    "SHOT QUALITY FLOOR (mandatory; one single photographic frame, never a collage, grid or "
+    "multi-panel layout):\n"
+    "- FIDELITY: the reference photos are the only source of truth for every product in the "
+    "frame. Keep silhouette, proportions, colour, material, transparency, printed details and "
+    "visible quantity exactly; never add, remove, replace, recolour, stretch, merge or invent parts.\n"
+    "- REALISM: render like a real full-frame product shoot, not an illustration, 3D render or "
+    "CAD model. Every product gets a contact shadow matching the key light, rim separation from "
+    "the background and physically correct speculars (brushed-metal streaks, glass refraction, "
+    "fabric fibre). Nothing floats or looks pasted on, and flat grey metal is forbidden.\n"
+    "- ANTI-AI-TELL: reject HDR halos, crushed blacks, over-sharpening, waxy plastic surfaces, "
+    "impossible gradients, repeated identical props and a perfectly symmetrical frame.\n"
+    "- TEXT: no AI-added letters, numbers, labels, slogans, logos or watermarks. The only "
+    "exception is one small kraft tag or paper sticker carrying one short English word (NEW, "
+    "HANDMADE or SAMPLE) in a lifestyle scene, never on a product.\n"
+    "- FRAMING: every member product stays complete and fully readable, never cropped at the "
+    "frame edge, and never duplicated as a second copy elsewhere in the frame."
+)
+
+
+# 导演模式：与商品处理共用同一套五层卡片词库，保证界面选项同名、落到画面也同一句英文。
+_DIRECTOR_LAYER_LABELS: dict[str, str] = {
+    "frame": "Composition",
+    "light": "Light",
+    "tone": "Color",
+    "detail": "Detail",
+    "style": "Style",
+}
+
+# 导演模式的场景图硬约束：用户只调五层时，构图/道具/原创性/文字这几条容易被丢掉，
+# 所以只要走了导演选择就固定追加，不可被卡片覆盖。
+SCENE_GUARDRAILS = (
+    "SCENE GUARDRAILS (mandatory): place the set on a golden-section point (38% or 62% of the "
+    "width or height) and never dead centre; arrange at least four source-compatible props "
+    "around the products that never cover them; invent the set from scratch and never reuse a "
+    "backdrop, surface or prop from the reference photos; only one small kraft tag with a single "
+    "English word may carry text."
+)
+
+
+def compose_director_direction(
+    selection: dict[str, Any] | None, *, role: str = "carousel_2"
+) -> str:
+    """把导演模式的「场景 + 五层」选择编译成该图的方向词。
+
+    卡片词库与 AI 处理导演模式共用（product_processing.domain.photo_card_library），
+    所以两边同名选项产出同一句英文；``auto``/未知 id 直接跳过，交给默认方向兜底。
+    """
+
+    if not isinstance(selection, dict):
+        return ""
+    from ..product_processing.domain.photo_card_library import AUX_CARDS, CARD_LIBRARIES
+
+    parts: list[str] = []
+    if role in SCENE_ROLES:
+        scene = AUX_CARDS.get(str(selection.get("scene") or "").strip().lower())
+        if scene is not None and scene.kind == "scene":
+            parts.append(f"Set: {scene.prompt_en}.")
+    for layer, label in _DIRECTOR_LAYER_LABELS.items():
+        card = CARD_LIBRARIES.get(layer, {}).get(
+            str(selection.get(layer) or "").strip().lower()
+        )
+        if card is not None:
+            parts.append(f"{label}: {card.prompt_en}.")
+    return " ".join(parts)
 
 
 def default_base_for_index(index: int) -> str:
@@ -292,7 +376,7 @@ def build_multiview_main_prompt(
     guidance = build_view_guidance(reference_views=reference_views, output_view=output_view)
     if guidance:
         lines.append(guidance)
-    lines.extend(("", MULTIVIEW_QUALITY_CONTRACT))
+    lines.extend(("", MULTIVIEW_QUALITY_CONTRACT, "", COMBO_QUALITY_FLOOR))
     return "\n".join(lines)
 
 
@@ -320,7 +404,7 @@ def build_fusion_main_prompt(
         lines.append("Member subjects to fuse together:")
         lines.extend(f"- {value}" for value in subjects)
     # 兜底质量约束：无论是否自定义融合提示词，都强制追加，保证多主体全显示/无缺陷/无文字。
-    lines.extend(("", QUALITY_CONTRACT))
+    lines.extend(("", QUALITY_CONTRACT, "", COMBO_QUALITY_FLOOR))
     return "\n".join(lines)
 
 
@@ -335,6 +419,7 @@ def build_image_prompt(
     mode: str = DEFAULT_GENERATION_MODE,
     reference_views: list[str] | None = None,
     output_view: str = "",
+    director_selection: dict[str, Any] | None = None,
 ) -> str:
     """单图 Prompt = 基础模板 + 角色方向 + 视角指引 + 主体/规格注入。
 
@@ -343,15 +428,27 @@ def build_image_prompt(
     生图 provider 会凭空补出一个不存在的成员商品（例如造一只没上传过的笔袋）。
     reference_views / output_view 仅单品多视角（mode=multiview）使用：参考图是同商品
     的不同机位，必须把机位与要求输出的机位写清楚，否则模型会自己乱挑角度。
+    director_selection 为导演模式（与商品处理同一套五层卡片）的逐图选择：
+    有值时用编译结果替换默认角色方向，并追加场景硬约束。
     """
     parts = [str(base_prompt or "").strip()]
+    director_text = compose_director_direction(director_selection, role=role)
     if not role_direction:
         # 兜底方向也必须与生成选型一致：multiview 回落到 bundle 的「整套/每个成员」措辞，
         # 会把同一商品的多张视角又变成拼贴或一图多只。
         role_direction = str(default_image_prompts_for_mode(mode).get(role) or "")
     role_direction = str(role_direction or "").strip()
+    if director_text:
+        # 场景图：五层选择直接替换泛化的默认方向。
+        # 白底图：白底合规（纯白/78%-85%/零道具）必须保留，五层只做追加。
+        role_direction = (
+            f"{role_direction} {director_text}" if role == "white_bg" and role_direction
+            else director_text
+        )
     if role_direction:
         parts.append(role_direction)
+    if director_text and role in SCENE_ROLES:
+        parts.append(SCENE_GUARDRAILS)
     guidance = build_view_guidance(reference_views=reference_views, output_view=output_view)
     if guidance:
         parts.append(guidance)
@@ -382,7 +479,14 @@ def build_image_prompt(
     # 兜底质量约束按生成选型切换：bundle 版第一条是「必须画全每个成员、一个都不能少」，
     # 对「同一件商品的多张视角」来说等于命令模型把每个视角都画成一个商品，
     # 是白底图/细节图出现拼贴与一图多只的直接来源。
-    parts.extend(("", MULTIVIEW_QUALITY_CONTRACT if mode == "multiview" else QUALITY_CONTRACT))
+    parts.extend(
+        (
+            "",
+            MULTIVIEW_QUALITY_CONTRACT if mode == "multiview" else QUALITY_CONTRACT,
+            "",
+            COMBO_QUALITY_FLOOR,
+        )
+    )
     return "\n".join(part for part in parts if part)
 
 

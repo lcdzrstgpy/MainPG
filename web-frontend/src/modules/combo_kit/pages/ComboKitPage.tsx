@@ -41,7 +41,7 @@ import { ModeCardCarousel, type ModeCardSlide } from '../components/ModeCardCaro
 import { TaskProgressRing } from '../components/TaskProgressRing';
 import { ProductFlowSteps, type ProductFlowStep } from '../../product_processing/components/ProductFlowSteps';
 import { ShippingWeightDrawer } from '../../profit_activity/components/ShippingWeightDrawer';
-import { COMBO_PRESET_TEMPLATES, resolveActiveTemplate } from '../presetTemplates';
+import { COMBO_PRESET_TEMPLATES, buildDirectorPayload, resolveActiveTemplate } from '../presetTemplates';
 import '../styles/comboKit.css';
 
 type Props = { isActive?: boolean; initialSetId?: string };
@@ -195,6 +195,8 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const saveTimer = useRef<Record<string, number>>({});
   const refreshSeqRef = useRef(0);
   const openSetSeqRef = useRef(0);
+  // 当前套装的导演模式选择（五层 + 逐图卡片），保存辅助词时一起回写，避免被覆盖丢失。
+  const directorRef = useRef<Record<string, unknown> | null>(null);
   // 任务轮询序号：新动作会作废旧轮询，避免旧任务把已切换套装的结果写回界面。
   const pollSeqRef = useRef(0);
   // 选型默认辅助词来自 /roles；用 ref 读取可避免 openSet 因 roles 变化而重跑。
@@ -263,7 +265,14 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
       const mode = String(full.generation_mode || 'bundle');
       const p = (full.prompt || {}) as Record<string, unknown>;
       const storedBase = String(p.base_prompt_a || '').trim();
-      const storedRoles = ((p.image_prompts as Record<string, string>) || {}) as Record<string, string>;
+      const storedImagePrompts = ((p.image_prompts as Record<string, unknown>) || {}) as Record<string, unknown>;
+      const storedRoles = Object.fromEntries(
+        Object.entries(storedImagePrompts).filter(([key]) => key !== '__director'),
+      ) as Record<string, string>;
+      directorRef.current =
+        storedImagePrompts.__director && typeof storedImagePrompts.__director === 'object'
+          ? (storedImagePrompts.__director as Record<string, unknown>)
+          : null;
       const t = resolveActiveTemplate();
       const hasRoleContent = Object.values(storedRoles).some((v) => String(v).trim());
       // 若套装存的模板恰好等于某个内置预设：说明是「自动填充预设」，应在激活新预设时切换过去。
@@ -294,14 +303,19 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
         }
       } else {
         // 全新套装 或 旧预设自动填充的套装：按「当前激活预设」填充，并保存到该套装，保证生成使用该模板。
-        const imagePrompts = {
+        const directorPayload = buildDirectorPayload(t);
+        const rolePrompts = {
           carousel_2: t.role_directions.carousel_2,
           carousel_3: t.role_directions.carousel_3,
           white_bg: t.role_directions.white_bg,
           detail_shot: t.role_directions.detail_shot,
         };
+        const imagePrompts = directorPayload
+          ? { ...rolePrompts, __director: directorPayload }
+          : rolePrompts;
+        directorRef.current = directorPayload as Record<string, unknown> | null;
         setBaseA(t.base_prompt_a);
-        setPrompts(imagePrompts);
+        setPrompts(rolePrompts);
         await savePrompt(ctx, sid, { base_prompt_a: t.base_prompt_a, image_prompts: imagePrompts }).catch(() => undefined);
       }
       if (seq !== openSetSeqRef.current) return;
@@ -540,7 +554,11 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (!set) return;
     setBusy('savedPrompt');
     try {
-      await savePrompt(ctx, set.set_id, { base_prompt_a: baseA, image_prompts: prompts });
+      // 手写的辅助词优先；导演模式选择（__director）随套装一起保存，避免点一次保存就丢掉五层配置。
+      const imagePrompts = directorRef.current
+        ? { ...prompts, __director: directorRef.current }
+        : prompts;
+      await savePrompt(ctx, set.set_id, { base_prompt_a: baseA, image_prompts: imagePrompts });
       notify('模板配置已保存到该套装');
     } catch (e) { fail(e); } finally { setBusy(''); }
   };
@@ -548,14 +566,19 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
   const onApplyPreset = async () => {
     if (!set) return;
     const t = resolveActiveTemplate();
-    const imagePrompts = {
+    const directorPayload = buildDirectorPayload(t);
+    const rolePrompts = {
       carousel_2: t.role_directions.carousel_2,
       carousel_3: t.role_directions.carousel_3,
       white_bg: t.role_directions.white_bg,
       detail_shot: t.role_directions.detail_shot,
     };
+    const imagePrompts = directorPayload
+      ? { ...rolePrompts, __director: directorPayload }
+      : rolePrompts;
+    directorRef.current = directorPayload as Record<string, unknown> | null;
     setBaseA(t.base_prompt_a);
-    setPrompts(imagePrompts);
+    setPrompts(rolePrompts);
     setBusy('savedPrompt');
     try {
       await savePrompt(ctx, set.set_id, { base_prompt_a: t.base_prompt_a, image_prompts: imagePrompts });
@@ -675,6 +698,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
     if (mode === 'multiview') {
       const modeDefaults = (roles?.default_image_prompts_by_mode?.multiview || {}) as Record<string, string>;
       if (Object.keys(modeDefaults).length) setPrompts({ ...modeDefaults });
+      directorRef.current = null;
     } else {
       const t = resolveActiveTemplate();
       setBaseA(t.base_prompt_a);
@@ -684,6 +708,7 @@ export function ComboKitPage({ isActive = true, initialSetId }: Props) {
         white_bg: t.role_directions.white_bg,
         detail_shot: t.role_directions.detail_shot,
       });
+      directorRef.current = buildDirectorPayload(t) as Record<string, unknown> | null;
     }
   };
 

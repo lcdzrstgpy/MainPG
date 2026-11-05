@@ -95,6 +95,18 @@ const PRECHECK_MEDIA_PAGE_SIZE = 30;
 // 元数据分页：首屏只拿 30 条；剩余元数据在后台按 100 条/页渐进补齐。
 const PRECHECK_ITEM_PAGE_SIZE = 30;
 const PRECHECK_ITEM_PREFETCH_SIZE = 100;
+// 保存/导出前的图片清单补齐：按 30 条分批请求，每批最多重试 2 次。
+// 一次性把 200+ 条草稿塞进同一个请求，会撞上 30s 前端超时；超时后静默返回空，
+// 导出就会提交空 manifest，后台生成表格时报「没有可导出的 AI 处理图」。
+const PRECHECK_MEDIA_HYDRATE_BATCH_SIZE = 30;
+const PRECHECK_MEDIA_HYDRATE_RETRIES = 2;
+const PRECHECK_MEDIA_RETRY_DELAY_MS = 500;
+
+type MediaFetchResult = {
+  payloads: Record<string, PreviewMediaPayload>;
+  /** 重试后仍失败的草稿 id（导出/保存前必须为零）。 */
+  failed: number[];
+};
 
 type Props = {
   taskId: number;
@@ -474,6 +486,8 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   // ---- 图片懒加载：首屏只拿当前页，翻页/保存/导出前再批量补齐 ----
   const [mediaLoadingCount, setMediaLoadingCount] = useState(0);
+  // 保存/导出前补齐图片清单的真实进度（已处理条数 / 总条数）；null 表示没有进行中的补齐。
+  const [mediaHydrate, setMediaHydrate] = useState<{ done: number; total: number } | null>(null);
   const mediaRequestedRef = useRef<Set<number>>(new Set());
 
   const mergePreviewMedia = useCallback(
@@ -497,41 +511,76 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   );
 
   const loadPreviewMedia = useCallback(
-    async (draftIds: number[]): Promise<Record<string, PreviewMediaPayload>> => {
+    async (
+      draftIds: number[],
+      onProgress?: (done: number, total: number) => void,
+    ): Promise<MediaFetchResult> => {
       const unique = [
         ...new Set(draftIds.filter((value) => Number.isFinite(value) && value > 0)),
       ];
-      if (!unique.length) return {};
+      if (!unique.length) return { payloads: {}, failed: [] };
       setMediaLoadingCount((count) => count + 1);
+      onProgress?.(0, unique.length);
+      const payloads: Record<string, PreviewMediaPayload> = {};
+      const failed: number[] = [];
       try {
-        const data = await fetchProductPreviewMedia(ctx, taskId, unique);
-        mergePreviewMedia(data.items);
-        return data.items;
-      } catch {
-        // 单次懒加载失败不阻断页面；翻页或导出前会重试。
-        return {};
+        // 分批 + 重试：单请求只覆盖 30 条，避免大批量导出前补齐时整请求超时。
+        for (
+          let start = 0;
+          start < unique.length;
+          start += PRECHECK_MEDIA_HYDRATE_BATCH_SIZE
+        ) {
+          const chunk = unique.slice(start, start + PRECHECK_MEDIA_HYDRATE_BATCH_SIZE);
+          let chunkPayloads: Record<string, PreviewMediaPayload> | null = null;
+          for (let attempt = 0; attempt <= PRECHECK_MEDIA_HYDRATE_RETRIES; attempt += 1) {
+            try {
+              const data = await fetchProductPreviewMedia(ctx, taskId, chunk);
+              chunkPayloads = data.items || {};
+              break;
+            } catch {
+              if (attempt >= PRECHECK_MEDIA_HYDRATE_RETRIES) break;
+              await new Promise((resolve) => {
+                window.setTimeout(resolve, PRECHECK_MEDIA_RETRY_DELAY_MS * (attempt + 1));
+              });
+            }
+          }
+          if (chunkPayloads === null) {
+            failed.push(...chunk);
+          } else {
+            Object.assign(payloads, chunkPayloads);
+            mergePreviewMedia(chunkPayloads);
+          }
+          onProgress?.(Math.min(start + chunk.length, unique.length), unique.length);
+        }
       } finally {
         setMediaLoadingCount((count) => Math.max(0, count - 1));
       }
+      return { payloads, failed };
     },
     [ctx, mergePreviewMedia, taskId],
   );
 
   const hydrateAllMedia = useCallback(
-    async (items: PreviewItem[]): Promise<PreviewItem[]> => {
+    async (
+      items: PreviewItem[],
+      onProgress?: (done: number, total: number) => void,
+    ): Promise<{ items: PreviewItem[]; missing: number[] }> => {
       const missing = items
         .filter((item) => item.media_loaded === false && item.product_draft_id != null)
         .map((item) => item.product_draft_id as number);
-      if (!missing.length) return items;
-      const payloads = await loadPreviewMedia(missing);
-      if (!Object.keys(payloads).length) return items;
-      return items.map((item) => {
+      if (!missing.length) return { items, missing: [] };
+      const { payloads } = await loadPreviewMedia(missing, onProgress);
+      const hydrated = items.map((item) => {
         const payload =
           item.product_draft_id != null
             ? payloads[String(item.product_draft_id)]
             : undefined;
         return payload ? { ...item, ...payload, media_loaded: true } : item;
       });
+      const stillMissing = hydrated
+        .filter((item) => item.media_loaded === false && item.product_draft_id != null)
+        .map((item) => item.product_draft_id as number);
+      return { items: hydrated, missing: stillMissing };
     },
     [loadPreviewMedia],
   );
@@ -869,7 +918,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     if (!ids.length) return;
     ids.forEach((id) => mediaRequestedRef.current.add(id));
     void (async () => {
-      const payloads = await loadPreviewMedia(ids);
+      const { payloads } = await loadPreviewMedia(ids);
       ids.forEach((id) => {
         // 有返回（含空媒体）就允许下次重新拉；草稿已删/接口失败的保留标记，
         // 避免每次渲染都重复请求（保存/导出前仍会强制补齐一次）。
@@ -1555,9 +1604,17 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       if (allLoadedItems.length < expectedTotal) {
         throw new Error(`还有 ${expectedTotal - allLoadedItems.length} 条链接未加载完成，请稍后重试`);
       }
-      const hydratedItems = await hydrateAllMedia(
+      setMediaHydrate(null);
+      const { items: hydratedItems, missing: mediaMissing } = await hydrateAllMedia(
         allLoadedItems.filter((item) => !item.excluded),
+        (done, total) => setMediaHydrate({ done, total }),
       );
+      // 缺图片清单时绝不能保存：后端会用空 manifest 覆盖掉草稿里已保存的图片。
+      if (mediaMissing.length > 0) {
+        throw new Error(
+          `还有 ${mediaMissing.length} 条链接的图片清单未加载完成（本地服务繁忙或请求超时），请稍后重试`,
+        );
+      }
       const items = hydratedItems
         .filter((item) => item.product_draft_id != null && !item.excluded)
         .map(collectDesiredState);
@@ -1580,6 +1637,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       fail(err);
     } finally {
       setSaving(false);
+      setMediaHydrate(null);
     }
   };
 
@@ -1598,8 +1656,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       if (allLoadedItems.length < expectedTotal) {
         throw new Error(`还有 ${expectedTotal - allLoadedItems.length} 条链接未加载完成，请稍后重试`);
       }
-      const hydratedItems = await hydrateAllMedia(
+      setMediaHydrate(null);
+      const { items: hydratedItems } = await hydrateAllMedia(
         allLoadedItems.filter((item) => !item.excluded),
+        (done, total) => setMediaHydrate({ done, total }),
       );
       // 「只看成功链接」以统一失败标记为准：失败/待确认、部分产出、回退来源图都不算成功。
       const exportableItems = hydratedItems.filter(
@@ -1609,6 +1669,16 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           (!onlySuccess || !itemHasFailure(item)),
       );
       if (exportableItems.length === 0) throw new Error(onlySuccess ? '没有可导出的成功链接' : '任务没有可完成并导出的商品');
+      // 图片清单没补齐就提交，后台生成表格会报「没有可导出的 AI 处理图」。
+      // 这里直接拦住并说清楚：不是商品数据问题，是本地服务这次没把清单拉回来。
+      const mediaMissing = exportableItems.filter(
+        (item) => item.media_loaded === false && item.product_draft_id != null,
+      );
+      if (mediaMissing.length > 0) {
+        throw new Error(
+          `还有 ${mediaMissing.length} 个可导出商品的图片清单未加载完成（本地服务繁忙或请求超时），请稍后重试`,
+        );
+      }
       const missingDraft = exportableItems.find((item) => item.product_draft_id == null);
       if (missingDraft) throw new Error(`可导出商品 #${missingDraft.item_id} 缺少草稿 ID，已阻止不完整提交`);
       const missingMainItems = exportableItems.filter((item) => !effectiveManifest(item).main_asset_id);
@@ -1645,6 +1715,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       );
     } finally {
       setStartingFinalize(false);
+      setMediaHydrate(null);
     }
   };
 
@@ -1998,7 +2069,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             disabled={saving || loading || mutationsLocked || pendingUploads > 0 || allItems.length === 0}
           >
             {saving
-              ? <><i className="app-spinner is-sm" aria-hidden="true" />保存中…</>
+              ? (
+                mediaHydrate && mediaHydrate.total > 0
+                  ? <><i className="app-spinner is-sm" aria-hidden="true" />保存中 · 图片 {mediaHydrate.done}/{mediaHydrate.total}</>
+                  : <><i className="app-spinner is-sm" aria-hidden="true" />保存中…</>
+              )
               : `保存预检修改${dirtyCount > 0 ? `（${dirtyCount} 条有修改）` : ''}`}
           </button>
           <button
@@ -2008,7 +2083,11 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             disabled={startingFinalize || loading || mutationsLocked || pendingUploads > 0 || finalizeNeedsResolution || exportableCount === 0}
           >
             {startingFinalize
-              ? <><i className="app-spinner is-sm" aria-hidden="true" />正在建立完成任务…</>
+              ? (
+                mediaHydrate && mediaHydrate.total > 0
+                  ? <><i className="app-spinner is-sm" aria-hidden="true" />补齐图片清单 {mediaHydrate.done}/{mediaHydrate.total}</>
+                  : <><i className="app-spinner is-sm" aria-hidden="true" />正在建立完成任务…</>
+              )
               : pendingUploads > 0
                 ? <><i className="app-spinner is-sm" aria-hidden="true" />正在导入图片（{pendingUploads}）</>
                 : '完成预检并导出'}
@@ -2035,6 +2114,22 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
             管理 SKU 规格图
           </button>
         </div>
+        {mediaHydrate && mediaHydrate.total > 0 && (
+          <div className="precheck-media-progress" aria-live="polite">
+            <div className="precheck-progress-copy">
+              <strong>{saving ? '保存前补齐图片清单' : '导出前补齐图片清单'}</strong>
+              <span>{mediaHydrate.done} / {mediaHydrate.total}</span>
+            </div>
+            <progress
+              max={mediaHydrate.total}
+              value={mediaHydrate.done}
+              aria-label={`图片清单 ${mediaHydrate.done} / ${mediaHydrate.total}`}
+            />
+            <span className="precheck-progress-percent">
+              {Math.round((mediaHydrate.done / mediaHydrate.total) * 100)}%
+            </span>
+          </div>
+        )}
         {(dimensionSummary.estimated > 0 ||
           dimensionSummary.reused > 0 ||
           dimensionSummary.missing > 0 ||

@@ -38,6 +38,7 @@ from .prompts import (
     DETAIL_SHOT_TEMPLATE,
     MULTIVIEW_DETAIL_SHOT_TEMPLATE,
     base_prompt_for_role,
+    compose_director_direction,
     default_base_for_index,
     default_image_prompts_for_mode,
     build_image_prompt,
@@ -749,12 +750,28 @@ class ComboKitService:
         # 角色方向留空时的兜底默认词必须与生成选型一致：否则 multiview 会回落到
         # bundle 的「完整套装/每个成员」措辞，把多视角图又变成拼贴/多件商品。
         mode_defaults = default_image_prompts_for_mode(mode)
+        # 导演模式选择（与商品处理同一套五层卡片）：全局层 + 逐图卡片，卡片覆盖全局。
+        # 存在时按角色编译成方向词；用户手写的辅助词优先级更高。
+        director = image_prompts.get("__director")
+        director_layers = director.get("layers") if isinstance(director, dict) else {}
+        director_panels = director.get("panels") if isinstance(director, dict) else {}
         built: dict[str, str] = {}
+
+        def _director_for(role: str) -> dict[str, Any] | None:
+            merged: dict[str, Any] = {}
+            if isinstance(director_layers, dict):
+                merged.update(director_layers)
+            panel = director_panels.get(role) if isinstance(director_panels, dict) else None
+            if isinstance(panel, dict):
+                merged.update(panel)
+            return merged or None
+
         # 场景图与白底图开放用户自定义辅助提示词（方向词留空时回退内置默认方向）。
         for role in EDITABLE_PROMPT_ROLES:
             if role == "detail_shot":
                 continue
-            direction = str(image_prompts.get(role) or "").strip() or str(mode_defaults.get(role) or "")
+            manual = str(image_prompts.get(role) or "").strip()
+            direction = manual or str(mode_defaults.get(role) or "")
             reference_views, output_view = plan.get(role, ([], ""))
             built[role] = build_image_prompt(
                 role=role,
@@ -769,6 +786,8 @@ class ComboKitService:
                 mode=mode,
                 reference_views=reference_views,
                 output_view=output_view,
+                # 手写辅助词优先：用户明确改了文案，就不要再被五层覆盖。
+                director_selection=None if manual else _director_for(role),
             )
         # 细节图：固定模板为底座，用户补充只做追加，不允许覆盖模板（避免细节图退化成纯特写裁切）。
         # 模板按选型切换：bundle 版要「整套 + 一处 inset」，单品多视角只有一件商品，
@@ -776,6 +795,11 @@ class ComboKitService:
         detail_supplement = str(image_prompts.get("detail_shot") or "").strip()
         detail_template = MULTIVIEW_DETAIL_SHOT_TEMPLATE if mode == "multiview" else DETAIL_SHOT_TEMPLATE
         detail_direction = detail_template
+        detail_director = _director_for("detail_shot")
+        if detail_director:
+            composed = compose_director_direction(detail_director, role="detail_shot")
+            if composed:
+                detail_supplement = f"{detail_supplement}\n{composed}".strip()
         if detail_supplement:
             detail_direction = f"{detail_template}\nAdditional user requirements: {detail_supplement}"
         detail_views, detail_output_view = plan.get("detail_shot", ([], ""))

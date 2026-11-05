@@ -110,7 +110,7 @@ def register_plugin_bridge_routes(
         _reject_authorization(authorization)
         try:
             # Rejection here prevents hostile input from reaching service or storage.
-            result = safe_json_value(request.result)
+            result = safe_json_value(request.result, reject_write_actions=False)
             command = dependencies.service.receive_result(
                 request.session_token, request.command_id, request.status, result
             )

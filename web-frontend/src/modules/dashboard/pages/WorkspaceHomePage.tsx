@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { BRAND_LOGO_URL, BRAND_MANUAL_URL, BRAND_MARK_URL, BRAND_NAME } from "../../../shared/brand";
-import type { WorkspaceModule, WorkspaceModuleId } from "../../../app/navigation/modules";
+import type { WorkspaceModule, WorkspaceModuleId, WorkspaceNavigationItem } from "../../../app/navigation/modules";
 import { isWorkspaceNavigationGroup, workspaceModules } from "../../../app/navigation/modules";
 import { DashboardStats } from "../components/DashboardStats";
 import { useUiMode } from "../../../shared/hooks/useUiMode";
@@ -50,22 +50,33 @@ function toNavModule(module: WorkspaceModule): NavModule {
   };
 }
 
+/** 侧栏是三层结构，首页导航只取叶子页面，避免把分组标题也渲染成卡片。 */
+function leafModules(item: WorkspaceNavigationItem): WorkspaceModule[] {
+  return isWorkspaceNavigationGroup(item) ? item.children.flatMap(leafModules) : [item];
+}
+
 /** 直接复用侧边栏的模块配置，避免功能名称与描述出现第二处口径。 */
 const navGroups: Array<{ id: string; label: string; items: NavModule[] }> = (() => {
   const groups: Array<{ id: string; label: string; items: NavModule[] }> = [];
   const standalone: NavModule[] = [];
+  const seen = new Set<WorkspaceModuleId>();
   for (const item of workspaceModules) {
     if (item.id === "dashboard") continue;
-    if (isWorkspaceNavigationGroup(item)) {
-      // 个人中心在侧栏是「页内面板」分组，首页仍按单张入口卡展示，避免分组标题与卡片重名。
-      if (item.panels?.length) {
-        standalone.push(...item.children.map(toNavModule));
-        continue;
-      }
-      groups.push({ id: item.id, label: item.label, items: item.children.map(toNavModule) });
-    } else {
+    if (!isWorkspaceNavigationGroup(item)) {
       standalone.push(toNavModule(item));
+      continue;
     }
+    const leaves = leafModules(item);
+    // 个人中心与系统设置共用同一页面：首页只保留一张入口卡，避免重复。
+    const unique = leaves.filter((module) => !seen.has(module.id));
+    unique.forEach((module) => seen.add(module.id));
+    if (!unique.length) continue;
+    if (item.panels?.length) {
+      // 面板分组在侧栏只切页内面板，首页仍按单张入口卡展示。
+      standalone.push(...unique.map(toNavModule));
+      continue;
+    }
+    groups.push({ id: item.id, label: item.label, items: unique.map(toNavModule) });
   }
   if (standalone.length) groups.push({ id: "standalone", label: "更多工具", items: standalone });
   return groups;

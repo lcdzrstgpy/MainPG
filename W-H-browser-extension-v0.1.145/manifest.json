@@ -1,0 +1,132 @@
+{
+  "manifest_version": 3,
+  "name": "界野采集助手 · TEMU Workbench Connector",
+  "version": "0.1.145",
+  "description": "Connects logged-in TEMU/Dianxiaomi pages to the AI workbench without storing platform credentials.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting",
+    "alarms",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://amazon.com/*",
+    "https://*.amazon.com/*",
+    "https://*.media-amazon.com/*",
+    "https://*.1688.com/*",
+    "https://*.alibaba.com/*",
+    "https://*.alicdn.com/*",
+    "https://*.temaishuju.com/*",
+    "https://*.kwcdn.com/*",
+    "https://*.pinduoduo.com/*",
+    "https://*.yangkeduo.com/*",
+    "https://*.temu.com/*",
+    "https://*.kuajingmaihuo.com/*",
+    "https://*.dianxiaomi.com/*",
+    "https://*.taobao.com/*",
+    "https://*.tmall.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "界野采集助手",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.temu.com/*",
+        "https://*.kuajingmaihuo.com/*",
+        "https://*.dianxiaomi.com/*",
+        "https://amazon.com/*",
+        "https://*.amazon.com/*",
+        "https://*.1688.com/*",
+        "https://*.alibaba.com/*",
+        "https://*.temaishuju.com/*",
+        "https://*.pinduoduo.com/*",
+        "https://*.yangkeduo.com/*"
+      ],
+      "js": [
+        "temu_dom_capture.js",
+        "temu_order_profit.js",
+        "network_probe_utils.js",
+        "page_probe.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://*.temu.com/*",
+        "https://*.kuajingmaihuo.com/*",
+        "https://*.dianxiaomi.com/*",
+        "https://amazon.com/*",
+        "https://*.amazon.com/*",
+        "https://*.1688.com/*",
+        "https://*.alibaba.com/*",
+        "https://*.temaishuju.com/*",
+        "https://*.pinduoduo.com/*",
+        "https://*.yangkeduo.com/*",
+        "https://*.taobao.com/*",
+        "https://*.tmall.com/*"
+      ],
+      "js": [
+        "tenant_context.js",
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "instance_bind.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/jieye-char.png",
+        "assets/jieye-char-white.png",
+        "assets/jieye-mark.png"
+      ],
+      "matches": [
+        "https://*.temu.com/*",
+        "https://*.kuajingmaihuo.com/*",
+        "https://*.dianxiaomi.com/*",
+        "https://amazon.com/*",
+        "https://*.amazon.com/*",
+        "https://*.1688.com/*",
+        "https://*.alibaba.com/*",
+        "https://*.temaishuju.com/*",
+        "https://*.pinduoduo.com/*",
+        "https://*.yangkeduo.com/*",
+        "https://*.taobao.com/*",
+        "https://*.tmall.com/*"
+      ]
+    }
+  ]
+}

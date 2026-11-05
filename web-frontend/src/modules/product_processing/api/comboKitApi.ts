@@ -221,7 +221,8 @@ export async function getPrompt(ctx: ApiContext, setId: string): Promise<Record<
 export async function savePrompt(
   ctx: ApiContext,
   setId: string,
-  input: { base_prompt_a?: string; base_prompt_b?: string; image_prompts?: Record<string, string> }
+  // image_prompts 除角色文案外，还会带 __director（导演模式五层 + 逐图卡片），因此值允许是对象。
+  input: { base_prompt_a?: string; base_prompt_b?: string; image_prompts?: Record<string, unknown> }
 ): Promise<Record<string, unknown>> {
   return ppRequest(ctx, `${API_BASE}/sets/${setId}/prompt`, { body: input });
 }

@@ -718,6 +718,46 @@
   outline-color: #13a9f2;
 }
 
+/* 链接默认可直接点开跳转，点「编辑」才切换成输入框 */
+.profit-source-edit-url-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.profit-source-edit-url-line input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.profit-source-edit-url-link {
+  flex: 1;
+  min-width: 0;
+  color: #0a8fca;
+  font-size: 0.82rem;
+  text-decoration: underline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-source-edit-url-toggle {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0;
+  color: #0a8fca;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.profit-source-edit-url-toggle:hover {
+  color: #0877d3;
+}
+
 .profit-source-edit-actions {
   display: flex;
   flex: none;
@@ -767,6 +807,14 @@
 
 .profit-source-edit-row .profit-source-edit-main {
   flex: 1;
+}
+
+.profit-source-edit-row-actions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
 }
 
 .profit-source-remove-row {
@@ -1748,20 +1796,31 @@
 }
 
 /* —— 货源侧边栏跟随工作台主题（与「货源与利润」抽屉同一套变量/圆角/按钮） —— */
-.profit-source-drawer {
+/* 用 [data-theme] 提高优先级：共享的重量抽屉样式会晚于本文件加载，避免蓝白底把它盖回去。 */
+[data-theme] .profit-source-drawer {
   width: min(560px, 92vw);
+  height: 100%;
+  padding: 0 22px;
   background: var(--theme-module-surface, #fff);
-  border-left: 1px solid var(--theme-module-border, #d8e5ee);
+  border-left: none;
   box-shadow: -18px 0 40px rgba(12, 28, 42, 0.18);
 }
 
-.profit-source-drawer-head {
-  padding: 18px 22px 14px;
+[data-theme] .profit-source-drawer-mask {
+  background: var(--theme-module-overlay, rgba(13, 32, 52, 0.36));
+  backdrop-filter: none;
+}
+
+[data-theme] .profit-source-drawer-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 18px 0 12px;
   background: var(--theme-module-surface, #fff);
   border-bottom: 1px solid var(--theme-module-border, #e6eef4);
 }
 
-.profit-source-drawer-head h2 {
+[data-theme] .profit-source-drawer-head h2 {
   margin: 0 0 6px;
   font-size: 16px;
   font-weight: 600;
@@ -1769,7 +1828,7 @@
   color: var(--theme-text-primary, #18334d);
 }
 
-.profit-source-drawer-head p:not(.eyebrow) {
+[data-theme] .profit-source-drawer-head p:not(.eyebrow) {
   color: var(--theme-text-muted, #7b8fa4);
   font-size: 12px;
   font-weight: 500;
@@ -1779,7 +1838,7 @@
   color: var(--theme-text-muted, #7b8fa4);
 }
 
-.profit-source-drawer-close {
+[data-theme] .profit-source-drawer-close {
   width: 30px;
   height: 30px;
   border: none;
@@ -1789,13 +1848,13 @@
   font-size: 22px;
 }
 
-.profit-source-drawer-close:hover {
+[data-theme] .profit-source-drawer-close:hover {
   background: var(--theme-module-surface-soft, #f0f5f9);
   color: var(--theme-text-primary, #18334d);
 }
 
-.profit-source-drawer-body {
-  padding: 16px 22px 24px;
+[data-theme] .profit-source-drawer-body {
+  padding: 16px 0 8px;
 }
 
 .profit-source-drawer-status {
@@ -1910,7 +1969,7 @@
 }
 
 .profit-source-edit-url input {
-  border-radius: 8px;
+  border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
   background: var(--theme-module-surface-raised, #fff);
   color: var(--theme-text-primary, #18334d);
@@ -1922,6 +1981,40 @@
   font-size: 11px;
   font-weight: 400;
   color: var(--theme-text-muted, #7b8fa4);
+}
+
+/* 抽屉里仍是硬编码配色的零散元素，统一收敛到工作台主题变量 */
+.profit-source-edit-panel {
+  border-color: var(--theme-module-border, #e6eef4);
+  border-radius: 14px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+}
+
+.profit-source-edit-url span {
+  color: var(--theme-text-secondary, #526a82);
+}
+
+.profit-source-edit-url-link,
+.profit-source-edit-url-toggle {
+  color: var(--theme-primary, #0a8fca);
+}
+
+.profit-source-edit-url-toggle:hover {
+  color: var(--theme-primary, #0a8fca);
+  opacity: 0.75;
+}
+
+.profit-source-edit-image-button {
+  border: 1px solid var(--theme-module-border-strong, #b9dce9);
+  border-radius: 999px;
+  color: var(--theme-primary, #0877d3);
+  background: var(--theme-module-surface-soft, #f7fafc);
+  font-weight: 600;
+}
+
+.profit-source-edit-image-button:hover {
+  border-color: var(--theme-primary, #0a8fca);
+  color: var(--theme-primary, #0a8fca);
 }
 
 /* 货源图片：与「货源与利润」一致的缩略图带 */
@@ -1999,4 +2092,100 @@
 .profit-image-preview-mask {
   background: rgba(6, 16, 26, 0.82);
   backdrop-filter: none;
+}
+
+/* 抽屉分区与底部操作栏，对齐「货源与利润」详情抽屉 */
+.profit-source-section {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--theme-module-border, #e6eef4);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 55%, transparent);
+}
+
+.profit-source-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.profit-source-section-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text-primary, #18334d);
+}
+
+.profit-source-section .profit-source-add-row {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.profit-source-section .profit-source-sku-scroll {
+  max-height: 240px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.profit-source-drawer-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0 18px;
+  border-top: 1px solid var(--theme-module-border, #e6eef4);
+  background: var(--theme-module-surface, #fff);
+}
+
+.profit-source-foot-note {
+  font-size: 12px;
+  color: var(--theme-text-muted, #7b8fa4);
+}
+
+.profit-source-drawer-foot-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profit-source-drawer-foot-actions .profit-edit-save,
+.profit-source-drawer-foot-actions .profit-edit-cancel {
+  height: 32px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.profit-source-drawer-foot-actions .profit-edit-save {
+  border: 0;
+  color: var(--theme-on-primary, #fff);
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
+  box-shadow: none;
+}
+
+.profit-source-drawer-foot-actions .profit-edit-save:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.profit-source-drawer-foot-actions .profit-edit-cancel {
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: transparent;
+  color: var(--theme-text-primary, #18334d);
+}
+
+.profit-source-drawer-foot-actions .profit-edit-cancel:hover:not(:disabled) {
+  border-color: var(--theme-module-border-strong, #82c9ef);
+  color: var(--theme-primary, #0a8fca);
+}
+
+.profit-source-drawer-foot-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }

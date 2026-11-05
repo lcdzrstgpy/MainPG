@@ -26,7 +26,7 @@ export type ReleaseNotes = {
   sections: ReleaseNoteSection[];
 };
 
-export const APP_VERSION = "1.5.10";
+export const APP_VERSION = "1.6.1";
 
 /** 官网安装包下载地址（与发布脚本 `_publish_release_*.py` 的安装包路径一致）。 */
 export const OFFICIAL_DOWNLOAD_URL = `https://workbench.haocoming.top/mainpg/windows/MainPG-Setup-${APP_VERSION}.exe`;

@@ -143,9 +143,15 @@ def _safe_json_value(value: Any, *, depth: int = 0) -> Any:
     raise PriceVerificationContractError("JSON payload contains a non-serializable value")
 
 
-def safe_json_dumps(value: Any) -> str:
-    """Serialize redacted JSON only, with deterministic depth and size limits."""
-    _reject_platform_write(value)
+def safe_json_dumps(value: Any, *, reject_write_actions: bool = True) -> str:
+    """Serialize redacted JSON only, with deterministic depth and size limits.
+
+    ``reject_write_actions`` 只用于「下行指令」：命令载荷里出现 accept/submit 这类
+    写操作要直接拒绝。采集到的页面证据（URL、商品标题、接口返回值）天然可能含
+    order/accept 等单词，不能按同一个口径拦截，否则整页核价永远入库失败。
+    """
+    if reject_write_actions:
+        _reject_platform_write(value)
     safe = _safe_json_value(redact_sensitive(value))
     encoded = json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > MAX_JSON_BYTES:
@@ -153,9 +159,9 @@ def safe_json_dumps(value: Any) -> str:
     return encoded
 
 
-def safe_json_value(value: Any) -> Any:
+def safe_json_value(value: Any, *, reject_write_actions: bool = True) -> Any:
     """Return a JSON-safe, recursively redacted snapshot."""
-    return json.loads(safe_json_dumps(value))
+    return json.loads(safe_json_dumps(value, reject_write_actions=reject_write_actions))
 
 
 class _ContractModel(BaseModel):

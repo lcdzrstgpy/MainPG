@@ -600,6 +600,11 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         clipforge_service = getattr(runtime_app.state, "clipforge_service", None)
         source_sync_worker = getattr(runtime_app.state, "source_image_sync_worker", None)
         pod_log_task = getattr(runtime_app.state, "pod_log_upload_task", None)
+        team_rollup_task = getattr(runtime_app.state, "team_rollup_task", None)
+        if team_rollup_task is not None:
+            logger.info("lifespan step: starting team_rollup_task")
+            team_rollup_task.start()
+            logger.info("lifespan step: team_rollup_task started")
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
@@ -1002,6 +1007,44 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         prefix="/api",
     )
 
+    # 订单利润：插件采集 Temu 订单 → 列表/详情合并 → 月度利润与当日预估
+    from ..modules.order_profit.repository import OrderProfitRepository
+    from ..modules.order_profit.routes import create_order_profit_router
+    from ..modules.order_profit.service import OrderProfitService
+    from ..modules.team_store.client import TeamApiClient
+
+    def _team_remote_token(authorization: str | None) -> str:
+        """从本地会话取出远端令牌，用于向团队服务登记店铺。"""
+        text = str(authorization or "").strip()
+        if not text.lower().startswith("bearer "):
+            return ""
+        token = text[7:].strip()
+        if not token:
+            return ""
+        session = customer_sessions.store.get_session(token)
+        return str(getattr(session, "remote_token", "") or "")
+
+    app.include_router(
+        create_order_profit_router(
+            OrderProfitService(
+                OrderProfitRepository(db_path),
+                plugin_queue=plugin_queue,
+            ),
+            team_client=TeamApiClient(config.team_api_base_url),
+            remote_token_provider=_team_remote_token,
+        ),
+        prefix="/api",
+    )
+
+    # 每周六自动把店铺汇总提交到团队服务；其余时间由用户在采集页手动补交。
+    from ..modules.team_store.sync import TeamRollupTask
+
+    app.state.team_rollup_task = TeamRollupTask(
+        repository=OrderProfitRepository(db_path),
+        client=TeamApiClient(config.team_api_base_url),
+        sessions=customer_sessions,
+    )
+
     # 公告消息：从公告发布后台定时同步，前端右上角站内信读取。
     # 身份：同步时带上「远端会话令牌」作为真正身份，后台按令牌解析账号再做定向过滤。
     # account_id 由邮箱哈希推导、可被伪造，只能当兼容参数（新后台已忽略它）。
@@ -1116,6 +1159,8 @@ def _register_frontend_shell(app: FastAPI) -> None:
     mimetypes.add_type("font/woff", ".woff")
     mimetypes.add_type("font/ttf", ".ttf")
     mimetypes.add_type("font/otf", ".otf")
+    # 同理：部分环境不认识 webp，会回退成 application/octet-stream。
+    mimetypes.add_type("image/webp", ".webp")
     frontend_dist = _frontend_dist_dir()
     assets = frontend_dist / "assets"
     brand = frontend_dist / "brand"
@@ -1301,6 +1346,13 @@ def _migrate_sourcing_ledger(db_path: Path) -> None:
                 logger.info(
                     "sourcing ledger: %s existing capture chunk(s) backfilled (workspace=%s)",
                     ingested["chunks"],
+                    workspace_id,
+                )
+            attributes = service.backfill_sku_attributes(workspace_id)
+            if attributes:
+                logger.info(
+                    "sourcing ledger: %s declared SKU attribute(s) backfilled (workspace=%s)",
+                    attributes,
                     workspace_id,
                 )
             seeded = service.ensure_collected_sources(workspace_id)

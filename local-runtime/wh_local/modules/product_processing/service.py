@@ -112,7 +112,10 @@ from .domain.prompts import (
     ARK_GRID_IMAGE_PROMPT_B,
     ARK_GRID_IMAGE_PROMPT_C,
     ARK_GRID_IMAGE_PROMPT_D,
+    GRID_FINAL_GATE,
+    GRID_PROMPT_PRIORITY,
     GRID_RUNTIME_CONTRACT,
+    GRID_TEMPLATE_GATES,
     SINGLE_IMAGE_RUNTIME_CONTRACT,
     TWO_IMAGE_RUNTIME_CONTRACT,
     format_prompt,
@@ -964,6 +967,171 @@ def _preset_image_template(preset_id: str = "") -> str:
     """预设对应的基础模板；auto 或未知预设返回空串（沿用用户选择的模板）。"""
 
     return _PRESET_IMAGE_TEMPLATES.get(str(preset_id or "").strip().lower(), "")
+
+
+# ── 场景 / 背景（批次级）───────────────────────────────────────────────────
+# 模板负责「这是哪一种摄影类型」，场景风格只负责「这套画面有多花」。
+# 原因：四套模板如果共用同一组背景，用户切换模板几乎看不出差别；反过来，
+# 模板类型必须自带场地（影棚 / 生活台面 / 平铺台面 / 环境远景），差异才一眼可见。
+_TEMPLATE_SCENES: dict[str, tuple[tuple[str, str], ...]] = {
+    "a": (  # 影棚无缝：只有背景纸与基座，没有房间、没有地平线
+        (
+            "warm-grey seamless paper sweep",
+            "a low white riser, a folded linen square, a ceramic dish, a dried stem",
+        ),
+        (
+            "pale stone plinth on a high-key sweep",
+            "a marble slab, a folded cloth, a stone block, a green sprig",
+        ),
+        (
+            "charcoal seamless sweep with one hard shadow",
+            "an acrylic cube, a matte cube, a ceramic bowl, a folded grey cloth",
+        ),
+        (
+            "beige paper roll curving without a horizon",
+            "a kraft box, a rolled linen, a ceramic cup, a dried branch",
+        ),
+    ),
+    "b": (  # 人景叙事：真实生活台面，背景要有房间纵深
+        (
+            "warm wooden table with wrinkled linen",
+            "a coffee mug, an open notebook, folded glasses, a small plant, a linen napkin",
+        ),
+        (
+            "marble bathroom counter",
+            "a folded towel, a soap dish, a bamboo tray, a glass jar, a rolled towel",
+        ),
+        (
+            "kitchen island with a wooden board",
+            "a ceramic bowl, a glass jar, a folded cloth, fresh herbs, a mug",
+        ),
+        (
+            "bedside table under a warm lamp",
+            "a stacked book, folded glasses, a small vase, a wooden tray, a candle",
+        ),
+    ),
+    "c": (  # 静物平铺：只有平面，不要墙、不要竖立物件
+        (
+            "pale oak tabletop seen from directly above",
+            "a kraft paper box, a folded linen cloth, a ceramic cup, a dried branch",
+        ),
+        (
+            "light grey stone slab",
+            "a folded grey cloth, a marble coaster, a sculptural block, a green sprig",
+        ),
+        (
+            "soft beige paper surface",
+            "a paper box, a ribbon roll, a ceramic dish, a dried flower",
+        ),
+        (
+            "deep grey felt surface",
+            "a folded linen runner, a wooden block, a ceramic bowl, a dried stem",
+        ),
+    ),
+    "d": (  # 环境远景：整间房或户外，商品只占小比例
+        (
+            "sunlit living room with a sofa and rug",
+            "cushions, a throw, a side table, a floor lamp, a potted plant",
+        ),
+        (
+            "entryway with a console and a mirror",
+            "a woven basket, a potted plant, a paper bag, a ceramic tray, a folded scarf",
+        ),
+        (
+            "balcony with a rattan chair",
+            "potted plants, a watering can, a side table, a folded throw, a lantern",
+        ),
+        (
+            "bedroom corner beside a window",
+            "a bed corner, a rug, a nightstand, a table lamp, a potted plant",
+        ),
+    ),
+}
+_SCENE_TEMPLATE_ALIASES = {
+    "a": "a",
+    "b": "b",
+    "c": "c",
+    "d": "d",
+    "_b": "b",
+    "_c": "c",
+    "_d": "d",
+}
+_SCENE_STYLE_ALIASES = {
+    "smart": "smart",
+    "auto": "smart",
+    "minimal": "minimal",
+    "clean": "minimal",
+    "lifestyle": "lifestyle",
+    "life": "lifestyle",
+    "ornate": "ornate",
+    "fancy": "ornate",
+    "festive": "ornate",
+}
+_SCENE_STYLE_OVERLAY = {
+    "minimal": "Styling: matte, low-saturation props, clean empty space, nothing decorative.",
+    "lifestyle": "Styling: warm lived-in props with everyday wear and one personal object.",
+    "ornate": "Styling: add one decorative flourish per panel (dried flowers, ribbon, brass tray or candle) and a richer colour story.",
+}
+_TEMPLATE_PLACEMENTS = {
+    "a": (
+        "Panel 2: product centre on the RIGHT golden line at x=61.8%, y=46%, filling 55%-62% of the panel.",
+        "Panel 3: product centre on the LOWER-LEFT golden intersection at x=38.2%, y=61.8%, filling 70%-80%.",
+        "Panel 4: orthographic at x=50%, y=57%, clear space 12%-18%.",
+    ),
+    "b": (
+        "Panel 2: product centre on the LEFT golden line at x=38.2%, y=52%, filling 50%-58%, with room depth behind it.",
+        "Panel 3: product centre on the UPPER-RIGHT golden intersection at x=61.8%, y=38.2%, filling 65%-75%.",
+        "Panel 4: orthographic at x=50%, y=55%, clear space 12%-18%.",
+    ),
+    "c": (
+        "Panel 2: overhead, product centre on the RIGHT golden line x=61.8%, y=48%, laid flat with props in even rows.",
+        "Panel 3: overhead, product centre on the LOWER-LEFT golden intersection x=38.2%, y=61.8%, tight macro on material.",
+        "Panel 4: overhead orthographic at x=50%, y=54%, clear space 12%-18%.",
+    ),
+    "d": (
+        "Panel 2: product small at 18%-28% fill, centre on the LEFT golden line x=38.2%, y=56%, whole room visible.",
+        "Panel 3: product small at 18%-28% fill, centre on the RIGHT golden intersection x=61.8%, y=44%, different space and time of day.",
+        "Panel 4: orthographic at x=50%, y=55%, clear space 12%-18%.",
+    ),
+}
+
+
+def _scene_family_plan(
+    scene_style: str, seed: int, *, template: str = "a", allow_people: bool = False
+) -> str:
+    """按「模板 + 场景风格」生成本批次的地点、配饰物与主体位置。
+
+    模板决定场地类型（影棚 / 生活台面 / 平铺台面 / 环境远景），场景风格只调浓淡，
+    所以用户切换模板时能立刻看出这是另一种摄影，而不是同一套景换个角度。
+    """
+
+    key = _SCENE_TEMPLATE_ALIASES.get(str(template or "").strip().lower(), "a")
+    style = _SCENE_STYLE_ALIASES.get(str(scene_style or "").strip().lower(), "smart")
+    if style == "smart":
+        style = ("minimal", "lifestyle", "ornate")[seed % 3]
+    pool = _TEMPLATE_SCENES[key]
+    offset = seed % len(pool)
+    # Panel 1 固定纯白（平台主图合规），只给 2-4 格分配三个不同地点。
+    chosen = [pool[(offset + index) % len(pool)] for index in range(3)]
+    people_rule = "" if allow_people else " No people, hands or fingers."
+    lines = [
+        "SCENE PLAN (non-overridable; outranks every prop count written above):",
+        "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product (riser block, folded linen, ceramic dish, dried stem).",
+        *(
+            f"- Panel {index + 2}: {place}. At least four props go around the product - {props} - behind or beside it, never covering it."
+            for index, (place, props) in enumerate(chosen)
+        ),
+        "- Every panel shows at least four separate props; zero, one or two is a failure, and no prop set repeats across panels.",
+        "- Panels 2-4 are three different places: never two crops of one set and never the same room twice.",
+        "- Never copy a backdrop, surface, prop arrangement or camera position from the references - they define the product only; build every set from this plan.",
+        "- Decor: one small kraft tag or paper sticker per panel 2-4, one short English word (NEW, HANDMADE, SAMPLE), never on the product, no brand or claim. Panel 1 has no text.",
+        "- Golden ratio: Panels 2-3 sit on the 38% or 62% lines, never the centre lines; only Panel 1 and Panel 4 may be centred.",
+        *(f"- {placement}" for placement in _TEMPLATE_PLACEMENTS[key]),
+        f"- {_SCENE_STYLE_OVERLAY[style]}",
+        "- Backgrounds stay quieter than the product: low saturation, nothing printed on the backdrop, no logos; props never cover or crop the product."
+        + people_rule,
+    ]
+    return "\n".join(lines)
 
 
 # 上游生图服务不可用（维护/限流/超时/网关错误）与「链接原图不可用」是两类完全不同的
@@ -3690,6 +3858,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
         # 是否自动烧制第 4 格尺寸图：默认开启；关闭后整批跳过尺寸画布导入/烧卡与 OCR 预取。
         s["dimension_card"] = _as_bool(s.get("dimension_card"), default=True)
+        # 场景风格：决定四格背景族；未知值回落 smart（按批次稳定轮换三档）。
+        _scene_style = str(s.get("scene_style") or "smart").strip().lower()
+        s["scene_style"] = (
+            _scene_style if _scene_style in {"smart", "minimal", "lifestyle", "ornate"} else "smart"
+        )
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
         s["image_template"] = _image_template if _image_template in {"A", "B", "C", "D"} else "A"
@@ -4415,6 +4588,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         with self._task_last_seen_lock:
             self._task_last_seen.pop((workspace_id, int(task_id)), None)
         task = self.repository.mark_task_cancelled(task_id, workspace_id) or task
+        # 取消通常撞在自动补跑轮中段（用户先看到「正在重试波动链接」才点取消）：此刻 worker
+        # 可能仍卡在一条在途 AI 调用里，走不到收尾的补写逻辑；进程重启更会让该线程直接消失，
+        # _auto_repull 便永远停在 running，前端一直显示「处理中」。当场落终态，不依赖 worker。
+        self._close_auto_repull_marker(
+            task_id, workspace_id, task.get("settings"), "cancelled"
+        )
         # 取消后立即按「已完成全价 / 未完成 50%」结算该任务仍 open 的冻结批次，
         # 使积分扣费符合「取消按实际冻结积分 50% 扣除」的预期。token 失效或结算
         # 失败时不阻断：保留 open 记录，由对账 / 服务端 TTL 兜底。
@@ -5919,13 +6098,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         if tasks:
             from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
+            # 同一张规格图可能被多个变种/多条链接共用：按 asset_id 去重后再 OCR，
+            # 再把结论映射回每个变种键。OCR 结果本身还有内容哈希缓存兜底。
+            unique_assets = list(dict.fromkeys(asset_id for _draft, asset_id, _key in tasks))
             workers = max(1, ocr_worker_limit())
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sku-availability") as pool:
-                outcomes = list(
-                    pool.map(lambda task: self._inspect_sku_asset(task[1], workspace_id), tasks)
+                asset_outcomes = list(
+                    pool.map(lambda asset_id: self._inspect_sku_asset(asset_id, workspace_id), unique_assets)
                 )
-            for (draft_id, _asset_id, variant_key), outcome in zip(tasks, outcomes):
+            outcome_by_asset = dict(zip(unique_assets, asset_outcomes))
+            for (draft_id, asset_id, variant_key) in tasks:
                 plan = plan_by_draft[draft_id]
+                outcome = outcome_by_asset.get(asset_id)
                 if outcome is None:
                     plan["failed"] += 1
                     continue
@@ -9638,6 +9822,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         batch_image_prompt=batch_image_prompt,
                         image_preset=str(settings.get("image_preset") or "auto"),
                         panel_plan_override=panel_plan_override,
+                        scene_style=str(settings.get("scene_style") or "smart"),
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -9659,6 +9844,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         workspace_id=workspace_id,
                         batch_image_prompt=batch_image_prompt,
                         panel_plan_override=panel_plan_override,
+                        scene_style=str(settings.get("scene_style") or "smart"),
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -9771,6 +9957,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     batch_image_prompt=batch_image_prompt,
                     image_preset=str(settings.get("image_preset") or "auto"),
                     panel_plan_override=panel_plan_override,
+                    scene_style=str(settings.get("scene_style") or "smart"),
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -10472,6 +10659,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         batch_image_prompt: str = "",
         image_preset: str = "",
         panel_plan_override: str = "",
+        scene_style: str = "smart",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
         if not _ai_enabled() or not reference_urls:
@@ -10610,9 +10798,24 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # Generate the economical 2K transport grid once.  Validation happens
                 # after the deterministic split so one bad quadrant never redraws the
                 # three usable quadrants.
+                # 场景计划按 (task, draft) 稳定取样：同一链接重跑得到同一套背景族，
+                # 避免「重试后四格全换一遍」；不同链接之间保持档位/背景轮换。
+                scene_seed = int(
+                    hashlib.sha256(f"{task_id}:{draft_id}:scene".encode("utf-8")).hexdigest()[:8], 16
+                )
+                scene_block = _scene_family_plan(
+                    scene_style,
+                    scene_seed,
+                    template=_template_suffix,
+                    allow_people=allows_people,
+                )
                 grid_prompt = append_subject_analysis(
-                    f"{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}{preset_plan_block}{custom_plan_block}",
+                    f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
                     vision_identity,
+                ) + "\n\n" + GRID_FINAL_GATE.format(
+                    template_check=GRID_TEMPLATE_GATES.get(
+                        _template_suffix, GRID_TEMPLATE_GATES[""]
+                    )
                 )
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.
@@ -12851,17 +13054,28 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         return max(0, int((end - started).total_seconds()))
 
     def _normalize_stale_auto_repull(self, task: dict[str, Any]) -> None:
-        """崩溃兜底：进程重启后 settings._auto_repull 可能永久停在 running。
+        """崩溃兜底：任务已离开处理态后，settings._auto_repull 可能永久停在 running。
 
         前端把 running 视为「正在重试波动链接」，任务已终态却仍显示处理中。
-        仅当任务到终态、补跑线程已不在运行、且状态超过 60 秒未刷新时才归一化，
+        仅当任务已到终态/暂停、补跑线程已不在运行、且状态超过 60 秒未刷新时才归一化，
         避开补跑线程启动窗口（线程先睡 1 秒再注册，注册期 1~16 秒）。
         """
         settings = task.get("settings")
         state = settings.get("_auto_repull") if isinstance(settings, dict) else None
         if not isinstance(state, dict) or str(state.get("status") or "") != "running":
             return
-        if str(task.get("status") or "") not in {"completed", "failed", "partial_failure"}:
+        task_status = str(task.get("status") or "")
+        # cancelled / paused 同样要归一化：取消或暂停常发生在补跑轮中段，worker 可能仍卡在
+        # 在途 AI 调用里走不到收尾，进程重启更会让该线程直接消失——此前只认
+        # completed/failed/partial_failure，导致已取消的任务永远显示「处理中」
+        # （2026-10-16 task 65 线上实例）。
+        if task_status not in {
+            "completed",
+            "failed",
+            "partial_failure",
+            "cancelled",
+            "paused",
+        }:
             return
         workspace_id = str(task.get("workspace_id") or "local")
         task_id = int(task.get("id") or 0)
@@ -12881,12 +13095,44 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             age_seconds = float("inf")
         if age_seconds < 60:
             return
-        done_state = dict(state)
-        done_state["status"] = "completed"
-        done_state["message"] = "自动重试已结束（进程重启后恢复）"
-        done_state["updated_at"] = _iso_utc_now()
+        self._close_auto_repull_marker(task_id, workspace_id, settings, task_status)
+
+    @staticmethod
+    def _auto_repull_final_marker(status: str) -> tuple[str, str]:
+        """给 _auto_repull 标记挑收尾状态与文案（按任务真实状态，不再一律 completed）。"""
+        if status == "cancelled":
+            return "cancelled", "自动重试已取消"
+        if status == "paused":
+            return "paused", "自动重试已暂停，恢复任务后可继续补跑"
+        return "completed", "自动重试已结束（进程重启后恢复）"
+
+    def _close_auto_repull_marker(
+        self,
+        task_id: int,
+        workspace_id: str,
+        settings: dict[str, Any] | None,
+        task_status: str,
+    ) -> None:
+        """把仍停在 running 的 _auto_repull 标记落终态（幂等；写失败不抛）。
+
+        取消/暂停常发生在自动补跑轮中段：worker 可能仍卡在一条在途 AI 调用里，走不到
+        收尾的补写逻辑，进程重启更会让该线程直接消失。标记不落终态时，前端会把已终态的
+        任务一直当作「正在重试波动链接」（2026-10-16 task 65 线上实例）。
+
+        就地改传入 settings 里的那个标记：调用方随后正是用它构建响应，必须让**同一次**
+        响应就带上收尾状态——否则前端要多读一次才看到正确文案，而终态后轮询很快就停了。
+        """
+        state = settings.get("_auto_repull") if isinstance(settings, dict) else None
+        if not isinstance(state, dict) or str(state.get("status") or "") != "running":
+            return
+        final_status, message = self._auto_repull_final_marker(task_status)
+        state["status"] = final_status
+        state["message"] = message
+        state["updated_at"] = _iso_utc_now()
         try:
-            self.repository.merge_task_settings(task_id, workspace_id, _auto_repull=done_state)
+            self.repository.merge_task_settings(
+                task_id, workspace_id, _auto_repull=dict(state)
+            )
         except Exception:
             pass
 

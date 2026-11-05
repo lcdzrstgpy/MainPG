@@ -71,6 +71,14 @@ class MemoryCustomerSessionStore:
                 return session.remote_token
         return ""
 
+    def active_remote_sessions(self) -> list[tuple[str, str, str]]:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return [
+            (session.user_id, session.workspace_id, session.remote_token)
+            for session in self.sessions_by_token.values()
+            if session.remote_token and session.expires_at > now
+        ]
+
 
 class LocalSessionService:
     """Creates local workbench sessions after remote auth succeeds."""

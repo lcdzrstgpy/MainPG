@@ -20,6 +20,7 @@ from fastapi import (
     BackgroundTasks,
     Body,
     Depends,
+    Header,
     HTTPException,
     Query,
     Response,
@@ -423,6 +424,104 @@ def register_daily_selection_routes(
             capabilities=capabilities if isinstance(capabilities, Mapping) else {},
         )
 
+    # ---------- 插件设备配对：换长期设备凭证，不再依赖工作台页面常驻 ----------
+
+    @router.post("/plugin/pair-code")
+    def create_plugin_pair_code(
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        if plugin_queue is None:
+            raise HTTPException(status_code=503, detail="plugin queue is unavailable")
+        return plugin_queue.create_pair_code(
+            actor_id=actor.actor_id,
+            workspace_id=actor.workspace_id,
+        )
+
+    @router.post("/plugin/pair")
+    def pair_plugin_device(payload: Mapping[str, Any] = Body(...)) -> Mapping[str, Any]:
+        """插件用一次性配对码换设备凭证；此接口不需要工作台登录态。"""
+        if plugin_queue is None:
+            raise HTTPException(status_code=503, detail="plugin queue is unavailable")
+        try:
+            return plugin_queue.pair_device(
+                code=str(payload.get("code") or ""),
+                name=str(payload.get("name") or ""),
+                browser=str(payload.get("browser") or ""),
+                extension_version=str(payload.get("extension_version") or ""),
+            )
+        except PermissionError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.post("/plugin/device/connect")
+    def connect_paired_device(
+        payload: Mapping[str, Any] = Body(default_factory=dict),
+        authorization: str | None = Header(default=None),
+    ) -> Mapping[str, Any]:
+        """已配对设备直接换插件会话；后端没开时插件本地缓存仍可采集。"""
+        if plugin_queue is None:
+            raise HTTPException(status_code=503, detail="plugin queue is unavailable")
+        token = str(authorization or "").removeprefix("Bearer ").strip()
+        try:
+            device = plugin_queue.device_for_token(token)
+        except PermissionError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from error
+        capabilities = payload.get("capabilities")
+        session = plugin_queue.create_session(
+            actor_id=str(device["actor_id"] or ""),
+            workspace_id=str(device["workspace_id"] or ""),
+            capabilities=capabilities if isinstance(capabilities, Mapping) else {},
+            device_id=str(device["device_id"]),
+        )
+        return {**session, "device": device, "allowed_shops": device["allowed_shops"]}
+
+    @router.get("/plugin/devices")
+    def list_plugin_devices(
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        if plugin_queue is None:
+            raise HTTPException(status_code=503, detail="plugin queue is unavailable")
+        return {
+            "devices": plugin_queue.list_devices(
+                actor_id=actor.actor_id, workspace_id=actor.workspace_id
+            )
+        }
+
+    @router.patch("/plugin/devices/{device_id}")
+    def update_plugin_device(
+        device_id: str,
+        payload: Mapping[str, Any] = Body(default_factory=dict),
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        if plugin_queue is None:
+            raise HTTPException(status_code=503, detail="plugin queue is unavailable")
+        shops = payload.get("allowed_shops")
+        try:
+            device = plugin_queue.set_device_shops(
+                device_id=device_id,
+                actor_id=actor.actor_id,
+                workspace_id=actor.workspace_id,
+                shops=[str(item) for item in shops] if isinstance(shops, list) else [],
+            )
+        except PermissionError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return {"device": device}
+
+    @router.delete("/plugin/devices/{device_id}")
+    def delete_plugin_device(
+        device_id: str,
+        actor: DailySelectionActor = Depends(actor_dependency),
+    ) -> Mapping[str, Any]:
+        if plugin_queue is None:
+            raise HTTPException(status_code=503, detail="plugin queue is unavailable")
+        removed = plugin_queue.revoke_device(
+            device_id=device_id, actor_id=actor.actor_id, workspace_id=actor.workspace_id
+        )
+        if not removed:
+            raise HTTPException(status_code=404, detail="设备不存在")
+        return {"ok": True}
+
     # Realtime command channel for the browser connector.  The connector has
     # always dialled ``/plugin/session/{id}``; without this route the socket
     # never opened and every command had to wait for the 1 minute alarm poll.
@@ -531,8 +630,13 @@ def register_daily_selection_routes(
         session_token = payload.get("session_token")
         if not isinstance(session_token, str) or not session_token:
             raise HTTPException(status_code=422, detail="session_token is required")
+        capabilities = payload.get("capabilities")
         try:
-            commands = plugin_queue.poll(session_token, limit=int(payload.get("limit", 10)))
+            commands = plugin_queue.poll(
+                session_token,
+                limit=int(payload.get("limit", 10)),
+                capabilities=capabilities if isinstance(capabilities, Mapping) else None,
+            )
         except PermissionError as error:
             raise HTTPException(status_code=401, detail="invalid plugin session") from error
         return {

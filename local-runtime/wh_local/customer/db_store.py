@@ -278,6 +278,21 @@ class SQLiteCustomerSessionStore(CustomerSessionStore):
         tokens = [remote_token for _, _, expires_at, remote_token in stored if remote_token and expires_at > now]
         return list(dict.fromkeys(tokens))
 
+    def active_remote_sessions(self) -> list[tuple[str, str, str]]:
+        """仍有效的（user_id, workspace_id, remote_token）。
+
+        后台任务（如每周团队汇总）需要 workspace 维度，不能只拿 token。
+        """
+        now = _utc_now()
+        with self._remote_tokens_lock:
+            stored = tuple(self._remote_tokens.values())
+        sessions = [
+            (user_id, workspace_id, remote_token)
+            for user_id, workspace_id, expires_at, remote_token in stored
+            if remote_token and expires_at > now
+        ]
+        return list(dict.fromkeys(sessions))
+
     def revoke_all_sessions(self) -> None:
         with transaction(self.database_path) as conn:
             conn.execute(

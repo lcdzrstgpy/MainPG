@@ -592,7 +592,7 @@ def register_price_verification_routes(
         try:
             chunk = quote_service.capture_current_page(
                 plugin_actor,
-                _mapping(request.get("capture"), "capture"),
+                _mapping(request.get("capture"), "capture", reject_write_actions=False),
                 page_url=_text(request.get("page_url")),
             )
             batch = repository.get_current_quote_capture_batch(workspace_id=plugin_actor.workspace_id)
@@ -997,12 +997,17 @@ def _plugin_package_response() -> Mapping[str, Any]:
     }
 
 
-def _mapping(value: object, field_name: str) -> Mapping[str, Any]:
+def _mapping(
+    value: object,
+    field_name: str,
+    *,
+    reject_write_actions: bool = True,
+) -> Mapping[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise PriceVerificationContractError(f"{field_name} must be a mapping")
-    safe = safe_json_value(value)
+    safe = safe_json_value(value, reject_write_actions=reject_write_actions)
     if not isinstance(safe, Mapping):  # defensive: safe_json_value preserves mappings.
         raise PriceVerificationContractError(f"{field_name} must be a mapping")
     return safe

@@ -55,6 +55,28 @@ REQUEST_TIMEOUT_SECONDS = 120.0
 # 请求体安全上限（JSON 序列化字节数）。
 MAX_PAYLOAD_BYTES = 10 * 1024 * 1024
 
+
+def _json_size_estimate(value: Any) -> int:
+    """估算 JSON 序列化后的字节数，不真正 dumps。
+
+    多图请求里 image_url 是几十 MB 的 base64 字符串，``json.dumps`` 会先复制整包
+    再 ``encode`` 一次，峰值翻倍；这里改成遍历累加，量级一致但不额外占内存。
+    """
+
+    if isinstance(value, str):
+        return len(value.encode("utf-8", "ignore")) + 2
+    if isinstance(value, dict):
+        return sum(
+            _json_size_estimate(key) + _json_size_estimate(item) + 2
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return sum(_json_size_estimate(item) + 1 for item in value)
+    if value is None or isinstance(value, (bool, int, float)):
+        return 8
+    return len(str(value))
+
+
 _MAIN_PROMPT_RESPONSE_FORMAT: dict[str, Any] = {
     "type": "json_schema",
     "json_schema": {
@@ -318,11 +340,7 @@ class PodReplicaAnalysisRuntime(AiRuntime):
         return dict(facts)
 
     def _guard_payload(self, messages: list[dict[str, Any]]) -> None:
-        try:
-            size = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
-        except (TypeError, ValueError):
-            size = 0
-        if size > MAX_PAYLOAD_BYTES:
+        if _json_size_estimate(messages) > MAX_PAYLOAD_BYTES:
             raise DoubaoArkError(
                 "replica analysis request body exceeds the safe size limit",
                 error_kind="invalid_input",
