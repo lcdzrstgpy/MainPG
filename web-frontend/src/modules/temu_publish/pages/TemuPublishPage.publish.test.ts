@@ -176,6 +176,16 @@ test("批量发布：属性 pid 还原原始 pid，并补齐 refPid / 数值录�
   assert.match(batch, /if \(Object\.keys\(productTemplate\.attrs\)\.length && !attrs\) \{/);
 });
 
+test("变种行的单独预览图也要转存图床（dataURL / 本地路径不能直发）", () => {
+  // 变种图可以是本地文件（FileReader 转的 dataURL）或本机媒体路径：
+  // 直发 payload 会超长 / 内网地址，Temu 读不到。
+  assert.match(page, /const rowThumbs = new Map<string, string>\(\);/);
+  assert.match(page, /rowThumbs\.set\(row\.key, await resolveImage\(raw, leaf\.catId\)\);/);
+  assert.match(page, /thumb_url: rowThumbs\.get\(row\.key\) \|\| skcImage,/);
+  assert.match(page, /const skcImage = rowThumbs\.get\(row\.key\) \|\| carousel\[0\];/);
+  assert.match(page, /const skcImage = colorRows\.map\(\(row\) => rowThumbs\.get\(row\.key\)\)\.find\(Boolean\) \|\| carousel\[0\];/);
+});
+
 test("属性数值录入：纯数值属性不带 numberInputValue，下拉+数值才带", () => {
   // 实测两关报错：面料克重「属性数值录入信息必须为空」、成分「属性数值录入不能为空」
   // 区别是属性有没有预设可选值（成分有棉/涤纶，克重 values 是空数组）

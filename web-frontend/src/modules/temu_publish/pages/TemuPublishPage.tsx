@@ -2244,7 +2244,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
         width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
         height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
-        thumb_url: row.thumbUrl.trim() || skcImage,
+        thumb_url: rowThumbs.get(row.key) || skcImage,
         // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
         pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),
         is_sensitive: form.isSensitive,
@@ -2253,6 +2253,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     };
 
     const skcs: TemuGoodsDraft["skcs"] = [];
+    /**
+     * 变种行单独设的预览图也要过一遍图床。
+     *
+     * 它们可能是本地文件（FileReader 转的 dataURL）或本机媒体路径：
+     * dataURL 直接塞进 payload 会超长且 Temu 读不到，本地路径更是内网地址。
+     * 以前这里是 `row.thumbUrl.trim() || skcImage` 直接发，等于「设了变种图就发不出去」。
+     * 没单独设图的行留空，调用方回退到 SKC 图 / 轮播首图。
+     */
+    const rowThumbs = new Map<string, string>();
+    for (const row of rows) {
+      const raw = row.thumbUrl.trim();
+      if (!raw) continue;
+      rowThumbs.set(row.key, await resolveImage(raw, leaf.catId));
+    }
     /**
      * 单 SKU 分支：规格声明与 SKU 规格都发空数组。
      *
@@ -2269,7 +2283,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         );
       }
       const row = rows[0];
-      const skcImage = row.thumbUrl.trim() || carousel[0];
+      const skcImage = rowThumbs.get(row.key) || carousel[0];
       skcs.push({
         ext_code: (productCode || "SKC").slice(0, 120),
         preview_image_urls: [skcImage],
@@ -2293,7 +2307,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         colorIndex += 1;
         const colorSpec = await ensureSpec(colorParent, color);
         // SKC 图：优先用该色第一行单独设的变种图，否则取轮播首图
-        const skcImage = colorRows.find((row) => row.thumbUrl.trim())?.thumbUrl.trim() || carousel[0];
+        const skcImage = colorRows.map((row) => rowThumbs.get(row.key)).find(Boolean) || carousel[0];
         const seenSizes = new Set<string>();
         const skus: TemuSkuDraft[] = [];
         for (const [index, row] of colorRows.entries()) {
