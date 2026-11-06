@@ -1,4 +1,4 @@
-import { getAuthToken, httpBlob, httpJson, toUserMessage } from "../../../transport/http/client";
+import { asArray, getAuthToken, httpBlob, httpJson, toUserMessage } from "../../../transport/http/client";
 import { parseDianxiaomiExportFilename, parseDianxiaomiExportHeaderCount } from "../data/dianxiaomiExport";
 import { podStyleTitleRegenerateRequest } from "../data/styleTitleRequest";
 import type { PodBatchRetryRequest } from "../data/podBatchRetry";
@@ -187,9 +187,14 @@ export const podCustomizationApi = {
   uploadTemplate,
   updateTemplateStructure,
   attachTemplateViews,
-  listBatches: (limit = 20, offset = 0) => httpJson<PodBatchListResponse>(
-    `${API_BASE}/batches?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`,
-  ),
+  listBatches: (limit = 20, offset = 0) =>
+    httpJson<PodBatchListResponse>(
+      `${API_BASE}/batches?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`,
+    ).then((response) => ({
+      // 回包缺 batches（空对象 / 网关吞错）时按空列表渲染，别让 `[...batches]` 抛异常把整页打崩
+      batches: asArray<PodBatchListResponse["batches"][number]>(response?.batches),
+      total: typeof response?.total === "number" ? response.total : asArray(response?.batches).length,
+    })),
   createBatch: (body: CreatePodBatchRequest) => httpJson<PodBatch>(`${API_BASE}/batches`, {
     method: "POST",
     body,

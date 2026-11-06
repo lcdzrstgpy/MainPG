@@ -48,3 +48,23 @@ test("利润活动：loadSites 里 data.sites 缺失时不能 map 崩", () => {
   const page = read("../modules/profit_activity/pages/ProfitActivityTestPage.tsx");
   assert.match(page, /\(Array\.isArray\(data\?\.sites\) \? data\.sites : \[\]\)\.map/);
 });
+
+test("草稿库：counts 缺失时统计卡不能崩（可选链要落到 counts 上）", () => {
+  const page = read("../modules/temu_publish/pages/TemuDraftLibraryPage.tsx");
+  // 统计卡三行都必须写成 `data?.counts?.xxx`：只护住 data 是不够的，
+  // 接口回 {} 时 counts 是 undefined，`data?.counts.total` 照样抛。
+  assert.doesNotMatch(page, /\["all", "全部", data\?\.counts\.total/);
+  assert.doesNotMatch(page, /\["ai", "AI 处理", data\?\.counts\.ai/);
+  assert.match(page, /\["all", "全部", data\?\.counts\?\.total \?\? 0/);
+});
+
+test("列表接口回空对象时按空数组渲染（asArray 统一兜底）", () => {
+  const client = read("../transport/http/client.ts");
+  assert.match(client, /export function asArray<T>\(value: unknown\): T\[\]/);
+
+  const daily = read("../modules/daily_selection/api/dailySelectionApi.ts");
+  assert.match(daily, /asArray<DailySelectionRunSummary>\(value\)/);
+
+  const pod = read("../modules/pod_customization/api/podCustomizationApi.ts");
+  assert.match(pod, /batches: asArray<PodBatchListResponse\["batches"\]\[number\]>\(response\?\.batches\)/);
+});
