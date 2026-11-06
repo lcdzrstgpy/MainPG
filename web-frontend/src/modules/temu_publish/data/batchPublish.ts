@@ -320,6 +320,8 @@ export async function buildDraftForPublish(
   });
 
   const skcs: TemuGoodsDraft["skcs"] = [];
+  /** 三个边长降序：Temu 只认「最长 ≥ 次长 ≥ 最短」，用户怎么填都得按这个顺序传 */
+  const sortedDims = [lengthCm, widthCm, heightCm].sort((a, b) => b - a);
   /** 一个 SKU 的价格/库存/物流字段：单 SKU 与多规格两条路径共用一份。 */
   const skuFields = (extCode: string, specs: TemuSkuDraft["specs"]): TemuSkuDraft => ({
     ext_code: extCode,
@@ -330,9 +332,11 @@ export async function buildDraftForPublish(
     stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
     warehouse_id: warehouseId,
     weight_mg: Math.round(weightG * 1000) < 1 ? 1 : Math.round(weightG * 1000),
-    length_mm: Math.max(1, Math.round(lengthCm * 10)),
-    width_mm: Math.max(1, Math.round(widthCm * 10)),
-    height_mm: Math.max(1, Math.round(heightCm * 10)),
+    // Temu 体积校验要求「最长边 ≥ 次长边 ≥ 最短边」，顺序不对直接拒；
+    // 体积只看三个边长，跟哪条叫「长」无关，所以这里排好再发。
+    length_mm: Math.max(1, Math.round(sortedDims[0] * 10)),
+    width_mm: Math.max(1, Math.round(sortedDims[1] * 10)),
+    height_mm: Math.max(1, Math.round(sortedDims[2] * 10)),
     thumb_url: carousel[0] ?? null,
     is_sensitive: productTemplate.isSensitive,
     specs,

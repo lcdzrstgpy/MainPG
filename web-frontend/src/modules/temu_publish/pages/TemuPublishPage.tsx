@@ -386,6 +386,17 @@ function cleanExtCode(value: string): string {
   return String(value || "").replace(/[^A-Za-z0-9_-]+/g, "").trim();
 }
 
+/**
+ * Temu 的体积校验要求「最长边 ≥ 次长边 ≥ 最短边」，三个值必须降序传。
+ *
+ * 用户填的「长 33 × 宽 13 × 高 20」是**他对物品的描述**，不是排序结果；
+ * 直接照发会被拒：「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」。
+ * 体积只看三个边长，跟哪条叫「长」无关，所以这里替他排好，物理含义不变。
+ */
+function sortDimensionsDesc(a: number, b: number, c: number): [number, number, number] {
+  return [a, b, c].sort((x, y) => y - x) as [number, number, number];
+}
+
 /** 取出现次数最多的宽度（详情图统一到这个宽度）；没有就 800。 */
 function mostCommonWidth(widths: number[]): number {
   const valid = widths.filter((value) => Number.isFinite(value) && value > 0);
@@ -2366,6 +2377,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       }
       usedSkuCodes.add(skuCode);
       if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
+
+      // Temu 要求「最长边 ≥ 次长边 ≥ 最短边」，顺序不对直接拒：
+      // 「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」
+      const lengthCm = parsePositive(row.lengthCm, `${at}长`);
+      const widthCm = parsePositive(row.widthCm, `${at}宽`);
+      const heightCm = parsePositive(row.heightCm, `${at}高`);
+      const [longest, middle, shortest] = sortDimensionsDesc(lengthCm, widthCm, heightCm);
+      if (longest !== lengthCm || middle !== widthCm) {
+        warnings.push(
+          `${at}长宽高 ${lengthCm}×${widthCm}×${heightCm} 不是「最长 ≥ 次长 ≥ 最短」，` +
+            `已按 ${longest}×${middle}×${shortest} 提交（Temu 的体积校验要求降序，体积不变）`,
+        );
+      }
+
       return {
         ext_code: skuCode,
         // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
@@ -2379,11 +2404,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
         stock: parseStock(row.stock, `${at}库存`),
         warehouse_id: row.warehouseId,
-        // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
+        // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米。三维已按降序排好（见上面）
         weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
-        length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
-        width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
-        height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
+        length_mm: Math.round(longest * 10),
+        width_mm: Math.round(middle * 10),
+        height_mm: Math.round(shortest * 10),
         thumb_url: rowThumbs.get(row.key) || skcImage,
         // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
         pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),

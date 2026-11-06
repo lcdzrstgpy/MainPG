@@ -2463,3 +2463,23 @@ test("中文颜色不能让货号撞车：SKU-黑/浅绿 会被洗成同一个 S
   assert.match(page, /if \(!cleaned \|\| \/\[-_\]\$\/\.test\(cleaned\)\) \{/);
   assert.match(page, /SKU 货号去掉中文后与前面的重复，已改成/);
 });
+
+test("长宽高必须按「最长 ≥ 次长 ≥ 最短」提交（Temu 体积校验）", () => {
+  // 实测被拒：「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」。
+  // 用户填的 33×13×20 是对物品的描述（长 33、宽 13、高 20），不是排序结果；
+  // 体积只看三个边长，替他按降序发即可，物理含义不变。
+  assert.match(page, /function sortDimensionsDesc\(a: number, b: number, c: number\): \[number, number, number\]/);
+  assert.match(page, /\.sort\(\(x, y\) => y - x\)/);
+  assert.match(page, /const \[longest, middle, shortest\] = sortDimensionsDesc\(lengthCm, widthCm, heightCm\);/);
+  assert.match(page, /length_mm: Math\.round\(longest \* 10\)/);
+  assert.match(page, /width_mm: Math\.round\(middle \* 10\)/);
+  assert.match(page, /height_mm: Math\.round\(shortest \* 10\)/);
+  // 重排过要告诉用户，别让他以为系统把尺寸填错了
+  assert.match(page, /不是「最长 ≥ 次长 ≥ 最短」/);
+
+  // 批量发布走同一套规则，否则那条链路还是会踩同一个坑
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  assert.match(batch, /const sortedDims = \[lengthCm, widthCm, heightCm\]\.sort\(\(a, b\) => b - a\);/);
+  assert.match(batch, /length_mm: Math\.max\(1, Math\.round\(sortedDims\[0\] \* 10\)\)/);
+  assert.match(batch, /height_mm: Math\.max\(1, Math\.round\(sortedDims\[2\] \* 10\)\)/);
+});
