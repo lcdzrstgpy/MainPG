@@ -2083,7 +2083,7 @@ test("缩略图尺寸：变种行/草稿库/历史都要看得清，别被容器
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
   // 变种行：第一列 72px + 容器 68px + 图 64px（三层都要够）
-  assert.match(css, /grid-template-columns: 72px 96px 62px 104px/);
+  assert.match(css, /grid-template-columns: 72px 88px/);
   assert.match(css, /\.is-console \.temu-variant-thumb \{[\s\S]{0,80}width: 68px;/);
   assert.match(css, /\.is-console \.temu-variant-row \.temu-img-thumb \{[\s\S]{0,80}width: 64px;/);
   // 草稿库 76px 图 + 88px 列，历史 88px
@@ -2371,9 +2371,15 @@ test("变种表尺寸列：长/宽/高 合成一组，不再各占 44px", () => 
   assert.match(panel, /className="temu-variant-dims" title="长 × 宽 × 高，单位厘米"/);
   assert.match(panel, /aria-label="长（厘米）"/);
   assert.match(panel, /aria-label="高（厘米）"/);
-  // 网格少两列（原来 44px ×3，现在 150px ×1）
-  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 150px 58px 70px 56px 24px;/);
-  assert.match(css, /\.is-console \.temu-variant-row\.is-single \{[\s\S]{0,120}150px/);
+  // 尺寸列 240px（每格 72px）：150px 时每格只剩 39px，连「25.5」都截断
+  assert.match(css, /grid-template-columns: 72px 88px 58px 100px 62px 240px[\s\S]{0,60}minmax\(48px, 1fr\) 24px;/);
+  assert.match(css, /\.is-console \.temu-variant-row\.is-single \{[\s\S]{0,120}240px/);
+  // 每格至少 72px，否则数字被截成半截（实测截图里三格只剩三条缝）
+  assert.match(css, /\.temu-variant-dims \.temu-input \{[\s\S]{0,120}min-width: 72px;/);
+  // × 是「这是一组」的唯一线索，太淡会变成三个孤立数字
+  assert.match(css, /\.temu-variant-dims i \{[\s\S]{0,160}55%, transparent/);
+  // 库存列吃剩余宽度：容器更宽时铺满不留白，更窄时才出滚动条
+  assert.match(css, /\.temu-variant-table \{[\s\S]{0,200}min-width: 870px;/);
   // 表头跟着改
   assert.match(panel, /<span title="长 × 宽 × 高，单位厘米">尺寸\(cm\)<\/span>/);
 });
