@@ -2389,3 +2389,37 @@ test("不再凭空造「均码」：新会话初始行留空，第二维没填�
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /第二维空着不能生成/);
 });
+
+test("右栏指标卡：三个数字要能一眼看出哪个没填", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 变种/轮播并排、申报价占整行（它最长，挤在 136px 里连 ¥12.99 都放不下）
+  assert.match(page, /<dl className="temu-rail-stats">/);
+  assert.match(page, /className=\{`temu-stat\$\{rows\.length \? "" : " is-danger"\}`\}/);
+  assert.match(page, /className=\{`temu-stat is-wide\$\{firstPrice && Number\(firstPrice\) > 0 \? "" : " is-muted"\}\`\}/);
+  // 轮播不足 3 张是琥珀、0 张才是红（Temu 要求至少 3 张）
+  assert.match(page, /carouselCount >= 3 \? "" : carouselCount > 0 \? " is-warn" : " is-danger"/);
+  // 有图标，且三个图标不是同一个
+  assert.match(page, /function StatIcon\(\{ kind \}/);
+  assert.match(page, /kind="variant"/);
+  assert.match(page, /kind="image"/);
+  assert.match(page, /kind="price"/);
+  assert.match(css, /\.is-console \.temu-stat\.is-wide \{\s*grid-column: 1 \/ -1;/);
+  // 语义色走主题变量，深色主题自动提亮（写死 #146c43 在 diamond 上几乎看不见）
+  assert.match(css, /--temu-danger: var\(--theme-danger/);
+  assert.match(css, /--temu-warn: var\(--theme-warning/);
+});
+
+test("金属质感：高光/暗边/描边三层都由变量控制，深色主题要反相", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 浅色：白高光 + 冷暗边
+  assert.match(css, /--temu-metal-hi: rgba\(255, 255, 255, 0\.85\);/);
+  assert.match(css, /--temu-metal-lo: rgba\(18, 45, 72, 0\.08\);/);
+  // 深色必须覆盖，否则白高光在深底上是一道脏线
+  assert.match(css, /\[data-theme="diamond"\] \.temu-publish-page\.is-console \{[\s\S]{0,200}--temu-metal-hi: rgba\(255, 255, 255, 0\.1\)/);
+  // 主按钮：渐变 + 内高光 + 下沿暗边；按下时反过来
+  assert.match(css, /\.temu-btn-primary \{[\s\S]{0,900}linear-gradient\(/);
+  assert.match(css, /\.temu-btn-primary \{[\s\S]{0,900}inset 0 1px 0 rgba\(255, 255, 255, 0\.4\)/);
+  assert.match(css, /\.temu-btn-primary:active:not\(:disabled\) \{[\s\S]{0,400}inset 0 2px 5px/);
+  // 文字阴影会糊：diamond 主题下主按钮是浅底深字
+  assert.doesNotMatch(css, /\.temu-btn-primary \{[\s\S]{0,400}text-shadow/);
+});

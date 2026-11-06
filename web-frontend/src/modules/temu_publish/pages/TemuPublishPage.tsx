@@ -497,6 +497,47 @@ const ICON_CHECK = "M3 8.4l3.1 3.1L13 4.9";
 const ICON_SUBMIT = "M8 12.5V4M4.6 7.4L8 4l3.4 3.4";
 const ICON_NEXT = "M3.5 8h9M9 4.5L12.5 8 9 11.5";
 
+/**
+ * 右栏三张指标卡的图标：层叠方块（变种）/ 图片（轮播）/ 价格（申报价）。
+ * 和按钮图标同一套 16×16 线性风格，描边走 currentColor，
+ * 颜色由卡片的状态色决定（缺项时整张卡连图标一起变红）。
+ */
+function StatIcon({ kind }: { kind: "variant" | "image" | "price" }) {
+  const base = {
+    width: 15,
+    height: 15,
+    viewBox: "0 0 16 16",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.4,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    focusable: "false" as const,
+  };
+  if (kind === "variant") {
+    return (
+      <svg {...base} aria-hidden="true">
+        <rect x="2" y="5.6" width="6.6" height="6.6" rx="1.5" />
+        <path d="M5.2 5.6V4a1.5 1.5 0 011.5-1.5h5.8A1.5 1.5 0 0114 4v5.8a1.5 1.5 0 01-1.5 1.5h-1.6" />
+      </svg>
+    );
+  }
+  if (kind === "image") {
+    return (
+      <svg {...base} aria-hidden="true">
+        <rect x="2" y="3" width="12" height="10" rx="1.6" />
+        <circle cx="5.6" cy="6.4" r="1" />
+        <path d="M2.6 11.4l3-3 2.4 2.4 2.4-2.4 3 3" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M8 10.4v3.2M4.6 3.2L8 8l3.4-4.8M5.6 6.5h4.8M5.6 8.9h4.8" />
+    </svg>
+  );
+}
+
 function SectionHead({
   step,
   index,
@@ -4191,18 +4232,49 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </li>
               ))}
             </ol>
+            {/* 提交前的最后一眼：三个数字做成指标卡，缺什么当场变色。
+                变种/轮播并排，申报价单独占整行 —— 它是三个里最要命的（填错就是亏钱），
+                挤在 72px 里连「¥12.99」都显示不全。 */}
             <dl className="temu-rail-stats">
-              <div>
-                <dt>变种</dt>
-                <dd>{rows.length}</dd>
+              <div className={`temu-stat${rows.length ? "" : " is-danger"}`}>
+                <span className="temu-stat-ico" aria-hidden="true">
+                  <StatIcon kind="variant" />
+                </span>
+                <div className="temu-stat-body">
+                  <dt>变种</dt>
+                  <dd>
+                    {rows.length}
+                    <em>个</em>
+                  </dd>
+                </div>
               </div>
-              <div>
-                <dt>轮播</dt>
-                <dd>{carouselCount}</dd>
+              <div
+                className={`temu-stat${
+                  carouselCount >= 3 ? "" : carouselCount > 0 ? " is-warn" : " is-danger"
+                }`}
+              >
+                <span className="temu-stat-ico" aria-hidden="true">
+                  <StatIcon kind="image" />
+                </span>
+                <div className="temu-stat-body">
+                  <dt>轮播</dt>
+                  <dd>
+                    {carouselCount}
+                    <em>张</em>
+                  </dd>
+                </div>
               </div>
-              <div>
-                <dt>申报价</dt>
-                <dd>{firstPrice ? formatYuan(firstPrice) : "—"}</dd>
+              <div className={`temu-stat is-wide${firstPrice && Number(firstPrice) > 0 ? "" : " is-muted"}`}>
+                <span className="temu-stat-ico" aria-hidden="true">
+                  <StatIcon kind="price" />
+                </span>
+                <div className="temu-stat-body">
+                  <dt>申报价</dt>
+                  <dd>
+                    {firstPrice && Number(firstPrice) > 0 ? formatYuan(firstPrice) : "未填"}
+                    <em>{firstPrice && Number(firstPrice) > 0 ? "首件" : "提交会被拒"}</em>
+                  </dd>
+                </div>
               </div>
             </dl>
             <div className="temu-rail-actions">

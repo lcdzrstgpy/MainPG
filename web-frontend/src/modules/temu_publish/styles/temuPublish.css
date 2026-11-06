@@ -113,14 +113,49 @@
   background: var(--theme-module-surface-soft, #f5f8fb);
 }
 
+/* 主按钮做成一块有厚度的金属片：上表面提亮 → 中段本色 → 下沿压暗，
+   配上沿高光/下沿暗边和一点外投影。不用 filter 拉整个元素，
+   否则文字也会被一起提亮、发虚。 */
 .temu-btn-primary {
-  border-color: var(--theme-module-primary-strong, #087bf5);
+  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 74%, #000);
   color: var(--theme-on-primary, #fff);
-  background: var(--theme-module-primary-strong, #087bf5);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 86%, #fff) 0%,
+    var(--theme-module-primary-strong, #087bf5) 52%,
+    color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 88%, #000) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.16),
+    0 2px 6px -2px color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 52%, transparent);
 }
 
 .temu-btn-primary:hover:not(:disabled) {
-  filter: brightness(1.05);
+  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 66%, #000);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 78%, #fff) 0%,
+    color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 96%, #fff) 52%,
+    color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 84%, #000) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18),
+    0 5px 12px -6px color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 62%, transparent);
+}
+
+/* 按下时反过来：高光收掉、内阴影压进去，像真的按下去了一点 */
+.temu-btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 88%, #000) 0%,
+    var(--theme-module-primary-strong, #087bf5) 100%
+  );
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(0, 0, 0, 0.12);
 }
 
 .temu-btn-upload {
@@ -2243,30 +2278,151 @@ textarea.temu-input {
   font-weight: 400;
 }
 
+/* 右栏指标卡：变种 / 轮播并排，申报价占整行。
+   这是一块「提交前最后一眼」的区域，所以缺项直接用状态色标出来，
+   而不是让 1、0、— 三个数字长得一模一样。 */
 .is-console .temu-rail-stats {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
-  padding-top: 10px;
+  padding-top: 12px;
   border-top: 1px dashed var(--theme-module-border, #d8e5ee);
 }
 
-.is-console .temu-rail-stats div {
+.is-console .temu-stat {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--theme-module-border, #e0eaf2);
+  border-radius: 9px;
+  /* 金属面板：上表面比下表面亮一点 + 上沿一道高光 + 下沿一道暗线，
+     读起来像一块有厚度的薄金属片，而不是平涂的浅灰块 */
+  background: linear-gradient(
+    180deg,
+    var(--theme-module-surface-raised, #fff) 0%,
+    var(--theme-module-surface-soft, #f6f9fc) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 var(--temu-metal-hi),
+    inset 0 -1px 0 var(--temu-metal-lo),
+    0 1px 2px var(--temu-metal-edge);
+  color: var(--temu-text);
+}
+
+.is-console .temu-stat.is-wide {
+  grid-column: 1 / -1;
+}
+
+.is-console .temu-stat-ico {
   display: grid;
-  gap: 2px;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--theme-module-border, #e0eaf2);
+  border-radius: 8px;
+  /* 图标底座也做成小金属片：凹下去的槽，靠内阴影做出「嵌进去」的观感 */
+  background: linear-gradient(
+    180deg,
+    var(--theme-module-surface-soft, #f2f6fa),
+    color-mix(in srgb, var(--theme-module-surface-raised, #fff) 94%, #fff)
+  );
+  box-shadow:
+    inset 0 1px 1px var(--temu-metal-lo),
+    inset 0 -1px 0 var(--temu-metal-hi);
+  color: var(--temu-text-muted);
 }
 
-.is-console .temu-rail-stats dt {
-  color: var(--theme-text-muted, #7b93a8);
+.is-console .temu-stat-body {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.is-console .temu-stat dt {
+  overflow: hidden;
+  color: var(--temu-text-muted);
   font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.is-console .temu-rail-stats dd {
+.is-console .temu-stat dd {
   margin: 0;
-  color: var(--theme-text-primary, #20364d);
-  font-size: 14px;
+  color: var(--temu-text);
+  font-size: 18px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.is-console .temu-stat dd em {
+  margin-left: 3px;
+  color: var(--temu-text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* 缺项：数字和图标一起变红，扫一眼就知道这条没填 */
+.is-console .temu-stat.is-danger {
+  border-color: color-mix(in srgb, var(--temu-danger) 45%, var(--theme-module-border, #e0eaf2));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--temu-danger-soft) 70%, var(--theme-module-surface-raised, #fff)) 0%,
+    var(--temu-danger-soft) 100%
+  );
+}
+
+.is-console .temu-stat.is-danger dd,
+.is-console .temu-stat.is-danger .temu-stat-ico {
+  color: var(--temu-danger);
+}
+
+.is-console .temu-stat.is-danger .temu-stat-ico {
+  border-color: color-mix(in srgb, var(--temu-danger) 32%, transparent);
+}
+
+/* 不足但没空缺（轮播 1~2 张）：琥珀提示，不算错 */
+.is-console .temu-stat.is-warn {
+  border-color: color-mix(in srgb, var(--temu-warn) 35%, var(--theme-module-border, #e0eaf2));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--temu-warn-soft) 70%, var(--theme-module-surface-raised, #fff)) 0%,
+    var(--temu-warn-soft) 100%
+  );
+}
+
+.is-console .temu-stat.is-warn dd,
+.is-console .temu-stat.is-warn .temu-stat-ico {
+  color: var(--temu-warn);
+}
+
+/* 未填：压暗但不报警，和上面两格的「红」区分开 */
+.is-console .temu-stat.is-muted dd {
+  color: var(--temu-text-muted);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* 整行那张卡右侧还有余量，把「提交会被拒」放第二行：
+   挤在同一行会读成「未填提交会被拒」一句话 */
+.is-console .temu-stat.is-wide dd em {
+  display: block;
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.is-console .temu-stat.is-muted dd em {
+  color: var(--temu-danger);
+  opacity: 0.85;
 }
 
 .is-console .temu-rail-tip {
@@ -4097,14 +4253,22 @@ textarea.temu-input {
    ================================================================ */
 
 /* 局部语义变量：主题里没有 success / warning 这类令牌，
-   文字色一律走主题变量（深色主题才不会黑底黑字），
-   语义色沿用模块内既有的 #146c43 / #a5342f 家族，保持一致。 */
+   语义色统一走 --theme-*（深色主题会自动提亮，写死 #146c43 在 diamond 上几乎看不见）。 */
 .temu-publish-page.is-console {
   --temu-text: var(--theme-text-primary, #1f2d3d);
   --temu-text-muted: var(--theme-text-muted, #7c8fa3);
-  --temu-ok: #146c43;
-  --temu-ok-soft: #e8f8ef;
-  --temu-warn: #8a5a00;
+  --temu-ok: var(--theme-success, #146c43);
+  --temu-ok-soft: var(--theme-success-soft, #e8f8ef);
+  --temu-warn: var(--theme-warning, #8a5a00);
+  --temu-warn-soft: var(--theme-warning-soft, #fdf2e2);
+  --temu-danger: var(--theme-danger, #a5342f);
+  --temu-danger-soft: var(--theme-danger-soft, #fdecea);
+  /* 金属质感的三层：上沿高光、下沿暗边、外圈冷调描边。
+     深色主题里这三层要反过来（见文末 [data-theme="diamond"] 段），
+     否则白高光会在深底上变成一道脏线 */
+  --temu-metal-hi: rgba(255, 255, 255, 0.85);
+  --temu-metal-lo: rgba(18, 45, 72, 0.08);
+  --temu-metal-edge: rgba(18, 45, 72, 0.06);
 }
 
 /* ---- 1. 卡片与区块 ---- */
@@ -4115,7 +4279,9 @@ textarea.temu-input {
   border: 1px solid var(--theme-module-border, #e4ecf3);
   border-radius: 12px;
   background: var(--theme-module-surface, #fff);
-  box-shadow: none;
+  /* 只留一道极淡的上沿高光：整页的卡片都有同一道光线，
+     视觉上像同一种材质切出来的；不加外投影，避免五块卡互相抢 */
+  box-shadow: inset 0 1px 0 var(--temu-metal-hi);
   gap: 16px;
 }
 
@@ -4362,10 +4528,21 @@ textarea.temu-input {
   color: var(--temu-text);
 }
 
+/* 完成的节点做成一颗小金属扣：上沿高光 + 下沿暗边 + 一圈外投影，
+   在浅色和深色底上都能「凸」出来；纯色圆点在 diamond 主题里是块死绿。 */
 .temu-stepbar-item.is-done .temu-stepbar-num {
-  border-color: transparent;
-  background: var(--theme-success, #1f7a4c);
+  border-color: color-mix(in srgb, var(--theme-success, #1f7a4c) 62%, #000);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--theme-success, #1f7a4c) 76%, #fff) 0%,
+    var(--theme-success, #1f7a4c) 58%,
+    color-mix(in srgb, var(--theme-success, #1f7a4c) 84%, #000) 100%
+  );
   color: var(--theme-on-primary, #fff);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 1px 3px color-mix(in srgb, var(--theme-success, #1f7a4c) 42%, transparent);
 }
 
 /* 当前所在区块：描边 + 主色圆点 + 轻投影，像一枚「被按下」的胶囊 */
@@ -4425,8 +4602,13 @@ textarea.temu-input {
   padding: 16px 16px 14px;
   border: 1px solid var(--theme-module-border, #e4ecf3);
   border-radius: 12px;
+  /* 右栏是独立的操作面板，给它一道上沿高光 + 极淡外投影，
+     让它从页面底色上「抬」起来半层，而不是贴成一片 */
   background: var(--theme-module-surface, #fff);
-  box-shadow: none;
+  box-shadow:
+    inset 0 1px 0 var(--temu-metal-hi),
+    0 1px 2px var(--temu-metal-edge),
+    0 10px 24px -22px var(--theme-module-shadow, rgba(12, 91, 139, 0.55));
 }
 
 .is-console .temu-rail-error {
@@ -6758,4 +6940,17 @@ textarea.temu-input {
 
 .is-console .temu-sizechart-warn strong {
   font-weight: 700;
+}
+
+/* ================================================================
+   深色主题下的金属质感
+   ----------------------------------------------------------------
+   浅色用「白高光 + 冷暗边」做出凸起；深色底上同一招会变成一道脏白线，
+   所以反相：高光收到极淡的冷白，暗边加深，外投影改成纯黑。
+   ================================================================ */
+
+[data-theme="diamond"] .temu-publish-page.is-console {
+  --temu-metal-hi: rgba(255, 255, 255, 0.1);
+  --temu-metal-lo: rgba(0, 0, 0, 0.55);
+  --temu-metal-edge: rgba(0, 0, 0, 0.38);
 }
