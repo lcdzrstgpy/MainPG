@@ -876,7 +876,9 @@ export function PublishSkuPanel({
             )}
             <span>SKU 货号</span>
             <span>申报价格(元)</span>
-            <span title="长 × 宽 × 高，单位厘米">尺寸(cm)</span>
+            <span title="单位：厘米">长</span>
+            <span title="单位：厘米">宽</span>
+            <span title="单位：厘米">高</span>
             <span>重量(g)</span>
             <span>建议售价(元)</span>
             <span title="填 0 也能建品，但商品是售罄/不可售状态">库存(件)</span>
@@ -1061,36 +1063,36 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { supplierPrice: event.target.value })}
                 placeholder="12.99"
               />
-              {/* 长宽高合成一组：三列挨着时每格只有 44px，卡片式后台里最容易填错列。
-                  Temu 后台本身也是「长 × 宽 × 高」一组，跟它对齐。 */}
-              <span className="temu-variant-dims" title="长 × 宽 × 高，单位厘米">
-                <input
-                  className="temu-input"
-                  inputMode="decimal"
-                  aria-label="长（厘米）"
-                  placeholder="长"
-                  value={row.lengthCm}
-                  onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
-                />
-                <i aria-hidden="true">×</i>
-                <input
-                  className="temu-input"
-                  inputMode="decimal"
-                  aria-label="宽（厘米）"
-                  placeholder="宽"
-                  value={row.widthCm}
-                  onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
-                />
-                <i aria-hidden="true">×</i>
-                <input
-                  className="temu-input"
-                  inputMode="decimal"
-                  aria-label="高（厘米）"
-                  placeholder="高"
-                  value={row.heightCm}
-                  onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
-                />
-              </span>
+              {/* 长/宽/高 各占一列、各有表头。曾经合成「长 × 宽 × 高」一组，
+                  但一列里塞三个框只能分到 39~72px，看着挤成一堆小方块；
+                  三列分开每格都有自己的标题，填错列时反而更容易发现。 */}
+              <input
+                className="temu-input"
+                inputMode="decimal"
+                aria-label="长（厘米）"
+                title="长（厘米）"
+                placeholder="长"
+                value={row.lengthCm}
+                onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
+              />
+              <input
+                className="temu-input"
+                inputMode="decimal"
+                aria-label="宽（厘米）"
+                title="宽（厘米）"
+                placeholder="宽"
+                value={row.widthCm}
+                onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
+              />
+              <input
+                className="temu-input"
+                inputMode="decimal"
+                aria-label="高（厘米）"
+                title="高（厘米）"
+                placeholder="高"
+                value={row.heightCm}
+                onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
+              />
               <input
                 className="temu-input"
                 inputMode="decimal"

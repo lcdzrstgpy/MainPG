@@ -2382,54 +2382,25 @@ textarea.temu-input {
 .is-console .temu-variant-table {
   display: grid;
   gap: 6px;
-  /* 固定列总宽 826px + 9 个间隙 = 880px。库存列用 1fr 吸收多余空间：
-     容器比它宽时铺满不留白，比它窄时才出现横向滚动条。
-     低于 870px 就会挤压固定列（尺寸三格曾被压成三条缝） */
-  min-width: 870px;
+  /* 12 列固定总宽 732px + 11 个间隙 + 库存列最小 48px = 846px。
+     低于它才出横向滚动条，高于它由库存列吃掉余量 */
+  min-width: 846px;
 }
 
 .is-console .temu-variant-row {
   display: grid;
   /* 第一列是预览图：留够 72px，否则图被容器压成 34px 看不清。
-     尺寸列给到 240px（每格 72px），150px 时每格只剩 39px 连「25.5」都截断。
-     最后一列固定 24px（删除按钮），库存吃掉剩余宽度。 */
-  grid-template-columns: 72px 88px 58px 100px 62px 240px 56px 68px minmax(48px, 1fr) 24px;
+     长/宽/高 各占一列（60px）：之前合成一列被压到 39px，视觉上成了三个小方块。
+     库存列用 1fr 吸收余量，删除固定 24px 收尾。 */
+  grid-template-columns: 72px 96px 62px 104px 66px 60px 60px 60px 58px 70px minmax(48px, 1fr) 24px;
   align-items: center;
   gap: 6px;
 }
 
-/* 尺寸一组：长 × 宽 × 高 */
-.is-console .temu-variant-dims {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-}
-
-/* 每个格 72px：能完整显示「25.5」这种 4 个字符并留出光标位置。
-   之前只有 39px，数字被截成半截（截图里三格看着像三条缝）。 */
-.is-console .temu-variant-dims .temu-input {
-  flex: 1 1 0;
-  min-width: 72px;
-  padding-left: 8px;
-  padding-right: 8px;
-  text-align: center;
-}
-
-/* × 是「这是一组尺寸」的唯一线索，太淡就变成三个孤立数字：
-   8px/38% 在缩小视图里直接消失，提亮到 55% 并给足 10px */
-.is-console .temu-variant-dims i {
-  flex: 0 0 10px;
-  color: color-mix(in srgb, var(--temu-text) 55%, transparent);
-  font-size: 12px;
-  font-style: normal;
-  line-height: 1;
-  text-align: center;
-}
-
 /* 无销售属性的类目（如桌布/亚麻布）：没有颜色/尺码变种，这两列不渲染 */
 .is-console .temu-variant-row.is-single {
-  grid-template-columns: 72px 100px 62px 240px 56px 68px minmax(48px, 1fr) 24px;
+  /* 单 SKU 没有颜色/尺码两列，省下的宽度摊给其余列，避免某一列被拉得过宽 */
+  grid-template-columns: 72px 116px 80px 96px 96px 96px 70px 90px minmax(48px, 1fr) 24px;
 }
 
 .is-console .temu-variant-row.is-head {
