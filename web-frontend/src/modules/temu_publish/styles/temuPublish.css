@@ -3834,6 +3834,87 @@ textarea.temu-input {
   line-height: 1.6;
 }
 
+/* ---- 类目预设值：入口 + 可搜索面板 ---- */
+.temu-spec-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.temu-spec-browse {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 4px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f6fafc);
+  color: var(--temu-text);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.temu-spec-browse:hover,
+.temu-spec-browse.is-open {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-spec-browse-count {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-on-primary, #fff);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-spec-browse-caret {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.temu-spec-picked-note,
+.temu-spec-presets-note {
+  margin: 0;
+  color: color-mix(in srgb, var(--temu-text) 62%, transparent);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.temu-spec-panel {
+  display: grid;
+  gap: 8px;
+  flex: 1 1 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+  box-shadow: 0 10px 24px -20px rgba(16, 42, 74, 0.55);
+}
+
+.temu-spec-panel-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 168px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.temu-spec-panel-note {
+  margin: 0;
+  color: color-mix(in srgb, var(--temu-text) 62%, transparent);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .temu-spec-chip {
   padding: 1px 9px;
   border: 1px solid var(--theme-module-border-strong, #cfdae4);
@@ -3851,16 +3932,35 @@ textarea.temu-input {
 
 /* 已经加进列表的值：变淡，避免重复点 */
 .temu-spec-chip.is-picked {
-  opacity: 0.45;
-  cursor: default;
+  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 55%, transparent);
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 10%, transparent);
+  color: var(--theme-module-primary-strong, #087bf5);
 }
 
 /* 手填了类目预设之外的值：Temu 会直接判「不是合法的规格值」，先在本地标红 */
 .temu-spec-bad {
+  display: grid;
+  gap: 4px;
   margin: 6px 0 0;
   color: #a5342f;
   font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.temu-spec-bad p {
+  margin: 0;
+}
+
+.temu-spec-bad-fix {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.temu-spec-bad-fix .temu-spec-chip {
+  border-color: color-mix(in srgb, #a5342f 35%, transparent);
+  color: #a5342f;
 }
 
 /* ================================================================

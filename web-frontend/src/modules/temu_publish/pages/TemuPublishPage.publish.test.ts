@@ -1674,25 +1674,34 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
 test("变种规格值要把 Temu 的预设值摆出来，而不是让用户猜", () => {
   // 实测反馈：「我怎么知道 Temu 要什么？」—— 用户手填「苹果4」这种值，
   // 提交才被回「[4] 不是尺码表的合法值」。只给 datalist 不够：
-  // 不点开输入框根本看不到有哪些可选值。预设值必须直接列成可点的标签。
+  // 不点开输入框根本看不到有哪些可选值。
+  // 2026-11-06 二次反馈：「真的只能是预设的吗，那我怎么知道预设有什么？」
+  // 只露前 10 个不够（Temu 颜色预设上百个），改成「浏览全部 N 个」+ 搜索面板。
   const panel = readFileSync(
     new URL("../components/PublishSkuPanel.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(panel, /Temu 只认这些\{label\}（点一下填入）/);
+  assert.match(panel, /浏览全部\$\{label\}预设/);
+  assert.match(panel, /className="temu-spec-panel"/);
+  assert.match(panel, /搜索\$\{label\}预设/);
   assert.match(panel, /className=\{`temu-spec-chip/);
-  // 手填非法值要当场标红，不能等提交
-  // 红字要点名是哪一列（颜色/款式/型号…）不对
+  // 手填非法值要当场标红，不能等提交；并且给出「最像的预设值」一键替换
   assert.match(panel, /不是合法的\{colorSpecName\}值（Temu 只认类目预设）/);
   assert.match(panel, /不是合法的\{sizeSpecName\}值（Temu 只认类目预设）/);
+  assert.match(panel, /const suggestSpecValues = /);
+  assert.match(panel, /replaceSpecValue\(colorsText, value, name\)/);
   assert.match(panel, /unknownColors\.length \? " is-bad" : ""/);
   assert.match(panel, /unknownSizes\.length \? " is-bad" : ""/);
   // 两个输入框都要能下拉搜
   assert.match(panel, /list="temu-color-options"/);
   assert.match(panel, /list="temu-size-options"/);
+  // 类目预设还没读到时不能断言「没有预设」，否则用户会以为可以自由填
+  assert.match(panel, /正在读取类目预设/);
+  assert.match(panel, /这个类目没有\$\{label\}预设值/);
   // 样式在位
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
-  assert.match(css, /\.temu-spec-choices \{/);
+  assert.match(css, /\.temu-spec-presets \{/);
+  assert.match(css, /\.temu-spec-panel \{/);
   assert.match(css, /\.temu-spec-chip \{/);
   assert.match(css, /\.temu-spec-bad \{/);
 });

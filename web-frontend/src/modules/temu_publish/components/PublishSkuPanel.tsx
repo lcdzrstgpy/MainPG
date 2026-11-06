@@ -152,6 +152,7 @@ export function PublishSkuPanel({
   carouselImages = [],
   onPreviewImage,
   singleSku = false,
+  presetsReady = true,
 }: {
   rows: VariantRow[];
   onRowsChange: (rows: VariantRow[]) => void;
@@ -188,6 +189,11 @@ export function PublishSkuPanel({
    * 只能建单 SKU 商品。此时隐藏变种生成区与颜色/尺码两列，只保留第 1 行的价格尺寸。
    */
   singleSku?: boolean;
+  /**
+   * 类目属性是否已经读过。没读过时不能断言「这个类目没有预设」——
+   * 那句提示会让用户以为可以自由填，提交时才被 Temu 打回。
+   */
+  presetsReady?: boolean;
 }) {
   const [batch, setBatch] = useState<VariantBatch>(EMPTY_BATCH);
   const [batchTouched, setBatchTouched] = useState(false);
@@ -257,48 +263,128 @@ export function PublishSkuPanel({
   const unknownColors = unknownSpecValues(colorNames, colorOptions);
   const unknownSizes = unknownSpecValues(sizeNames, sizeOptions);
 
-  /** 「Temu 只认这些值」：把类目预设直接列出来，点一下追加（不用自己背）。 */
+  /**
+   * 给一个不在预设里的值找「最像的」预设值。
+   *
+   * 用户写「浅绿色」而预设叫「浅绿」时，光说「不合法」帮不上忙 —— 直接给候选，
+   * 点一下替换掉。只做包含关系匹配（够用且不会乱猜），最多 3 个。
+   */
+  const suggestSpecValues = (value: string, options: string[]): string[] => {
+    const base = value.trim().toLowerCase();
+    if (!base) return [];
+    return options
+      .filter((option) => {
+        const candidate = option.toLowerCase();
+        if (candidate === base) return false;
+        return candidate.includes(base) || base.includes(candidate);
+      })
+      .sort((left, right) => Math.abs(left.length - value.length) - Math.abs(right.length - value.length))
+      .slice(0, 3);
+  };
+
+  /** 把列表里的某个值换成另一个（一个值可能出现在多行里）。 */
+  const replaceSpecValue = (current: string, from: string, to: string) =>
+    splitSpecValues(current)
+      .map((value) => (value.toLowerCase() === from.toLowerCase() ? to : value))
+      .join(",");
+
+  /**
+   * 「Temu 只认这些值」：把类目预设全量摊开，可搜索、点一下加入/移除。
+   *
+   * 以前只露前 10 个 + 一句「还有 N 个，输入框里可以下拉搜」——
+   * 用户根本不知道该搜什么，只能凭感觉手打「浅绿色」，然后被 Temu 判
+   * 「不合法的规格值」（截图里的失败就是这么来的）。
+   * 现在默认显示数量与入口，点开就是全部预设 + 搜索框。
+   */
+  const [specPanel, setSpecPanel] = useState<"color" | "size" | null>(null);
+  const [specQuery, setSpecQuery] = useState("");
+
+  const splitSpecValues = (text: string) =>
+    text
+      .split(/[,，]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+
   const renderSpecChoices = (
     options: string[],
     current: string,
     onPick: (next: string) => void,
     label: string,
-    limit = 10,
+    kind: "color" | "size",
   ) => {
-    if (!options.length) return null;
-    const picked = new Set(
-      current
-        .split(/[,，]/)
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean),
-    );
-    const pick = (name: string) => {
-      if (picked.has(name.toLowerCase())) return;
-      const head = current
-        .split(/[,，]/)
-        .map((value) => value.trim())
-        .filter(Boolean);
-      onPick([...head, name].join(","));
+    const picked = splitSpecValues(current);
+    const pickedLower = new Set(picked.map((value) => value.toLowerCase()));
+    const toggle = (name: string) => {
+      const exists = pickedLower.has(name.toLowerCase());
+      const next = exists
+        ? picked.filter((value) => value.toLowerCase() !== name.toLowerCase())
+        : [...picked, name];
+      onPick(next.join(","));
     };
+    const query = specPanel === kind ? specQuery.trim().toLowerCase() : "";
+    const filtered = query ? options.filter((name) => name.toLowerCase().includes(query)) : options;
+    const open = specPanel === kind;
+
+    if (!options.length) {
+      // 读到了属性但确实没有预设值（走自定义规格的类目）→ 明确说可以自由填；
+      // 还没读到就不能这么说，否则用户以为随便填都行
+      return (
+        <p className="temu-spec-presets-note">
+          {presetsReady
+            ? `这个类目没有${label}预设值，可以自己填写（Temu 按自定义规格收）。`
+            : "正在读取类目预设…"}
+        </p>
+      );
+    }
+
     return (
-      <div className="temu-spec-choices">
-        <span className="temu-muted">Temu 只认这些{label}（点一下填入）：</span>
-        {options.slice(0, limit).map((name) => (
-          <button
-            key={name}
-            type="button"
-            className={`temu-spec-chip${picked.has(name.toLowerCase()) ? " is-picked" : ""}`}
-            onClick={() => pick(name)}
-            title={picked.has(name.toLowerCase()) ? "已经加进上面的列表了" : `填入「${name}」`}
-          >
-            {name}
-          </button>
-        ))}
-        {options.length > limit && (
-          <span className="temu-muted">
-            …还有 {options.length - limit} 个，输入框里可以下拉搜
+      <div className="temu-spec-presets">
+        <button
+          type="button"
+          className={`temu-spec-browse${open ? " is-open" : ""}`}
+          onClick={() => {
+            setSpecPanel(open ? null : kind);
+            setSpecQuery("");
+          }}
+        >
+          <span className="temu-spec-browse-count">{options.length}</span>
+          {open ? `收起${label}预设` : `浏览全部${label}预设`}
+          <span className="temu-spec-browse-caret" aria-hidden="true">
+            {open ? "▴" : "▾"}
           </span>
-        )}
+        </button>
+        {picked.length ? <span className="temu-spec-picked-note">已选 {picked.length} 个</span> : null}
+        {open ? (
+          <div className="temu-spec-panel">
+            <input
+              className="temu-input"
+              value={specQuery}
+              placeholder={`搜索${label}预设，例如「黑」「浅」`}
+              onChange={(event) => setSpecQuery(event.target.value)}
+              // 面板里按回车不要触发下面的「生成变种」
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.preventDefault();
+              }}
+            />
+            <div className="temu-spec-panel-list">
+              {filtered.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className={`temu-spec-chip${pickedLower.has(name.toLowerCase()) ? " is-picked" : ""}`}
+                  onClick={() => toggle(name)}
+                  title={pickedLower.has(name.toLowerCase()) ? "再点一下从列表里移除" : `加入「${name}」`}
+                >
+                  {name}
+                </button>
+              ))}
+              {!filtered.length ? <span className="temu-muted">没有匹配的预设值</span> : null}
+            </div>
+            <p className="temu-spec-panel-note">
+              只能从这些值里选（点一下加入、再点移除）。自己造的词 Temu 会判「不合法的{label}」。
+            </p>
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -462,12 +548,33 @@ export function PublishSkuPanel({
               placeholder={`${colorSpecName}值，多个用逗号分隔`}
             />
           </div>
-          {renderSpecChoices(colorOptions, colorsText, onColorsTextChange, colorSpecName)}
+          {renderSpecChoices(colorOptions, colorsText, onColorsTextChange, colorSpecName, "color")}
           {unknownColors.length > 0 && (
-            <p className="temu-spec-bad">
-              「{unknownColors.join("、")}」不是合法的{colorSpecName}值（Temu 只认类目预设）——
-              点上面任意一个换掉它。
-            </p>
+            <div className="temu-spec-bad">
+              <p>
+                「{unknownColors.join("、")}」不是合法的{colorSpecName}值（Temu 只认类目预设），提交会被拒。
+              </p>
+              {unknownColors.map((value) => {
+                const suggestions = suggestSpecValues(value, colorOptions);
+                if (!suggestions.length) return null;
+                return (
+                  <p key={value} className="temu-spec-bad-fix">
+                    把「{value}」换成：
+                    {suggestions.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="temu-spec-chip"
+                        onClick={() => onColorsTextChange(replaceSpecValue(colorsText, value, name))}
+                        title={`用预设值「${name}」替换「${value}」`}
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </p>
+                );
+              })}
+            </div>
           )}
         </label>
         {/* 只有一个销售属性的类目（手机壳只有「型号」、毛巾只有「颜色」）不显示第二列，
@@ -500,12 +607,33 @@ export function PublishSkuPanel({
                   if (event.key === "Enter") generate();
                 }}
               />
-              {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName)}
+              {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size")}
               {unknownSizes.length > 0 && (
-                <p className="temu-spec-bad">
-                  「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设）——
-                  点上面任意一个换掉它。
-                </p>
+                <div className="temu-spec-bad">
+                  <p>
+                    「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设），提交会被拒。
+                  </p>
+                  {unknownSizes.map((value) => {
+                    const suggestions = suggestSpecValues(value, sizeOptions);
+                    if (!suggestions.length) return null;
+                    return (
+                      <p key={value} className="temu-spec-bad-fix">
+                        把「{value}」换成：
+                        {suggestions.map((name) => (
+                          <button
+                            key={name}
+                            type="button"
+                            className="temu-spec-chip"
+                            onClick={() => onSizesTextChange(replaceSpecValue(sizesText, value, name))}
+                            title={`用预设值「${name}」替换「${value}」`}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </p>
+                    );
+                  })}
+                </div>
               )}
             </label>
           </>

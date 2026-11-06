@@ -3816,6 +3816,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               carouselImages={splitLines(form.carousel)}
               onPreviewImage={(src, alt) => setImagePreview({ src, alt })}
               singleSku={singleSkuMode}
+              presetsReady={attributes !== null}
             />
             {/* 显示条件用 required（类目要不要），不是 has（店里有没有）：
                 服装类目新店一张表都没有，用 has 判会把整个字段藏掉，
