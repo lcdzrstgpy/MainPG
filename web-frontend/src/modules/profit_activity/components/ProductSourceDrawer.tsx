@@ -108,6 +108,86 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl, onPreview 
   );
 }
 
+/**
+ * 一条货源的多张货源图（标准审核表截图 1/2/3）。
+ *
+ * 后端 `/products/{skc}/sources` 返回的是 `image_paths: string[]` + `group`，
+ * **没有 `images` 字段**（那是个一直在等后端填空的类型，永远 undefined，渲染出来是空的）。
+ * 这里按路径逐张走 `/image` 接口换签名 URL，和后端契约对齐。
+ */
+function SourceThumbStrip({
+  skc,
+  site,
+  group,
+  imagePaths,
+  onPreview,
+}: {
+  skc: string;
+  site: string;
+  group?: number;
+  imagePaths: string[];
+  onPreview: (image: PreviewImage) => void;
+}) {
+  const [urls, setUrls] = useState<string[]>([]);
+  const pathsKey = imagePaths.join("|");
+
+  useEffect(() => {
+    let cancelled = false;
+    const created: string[] = [];
+    const paths = pathsKey ? pathsKey.split("|") : [];
+    if (!paths.length) {
+      setUrls([]);
+      return undefined;
+    }
+    Promise.all(
+      paths.map((path, index) =>
+        loadProductImage({
+          skc,
+          site: (site || "US") as "US" | "CO" | "EC",
+          kind: "source",
+          group: group ?? 0,
+          index,
+          version: path,
+        })
+          .then((loaded) => {
+            created.push(loaded);
+            return loaded;
+          })
+          // 单张失败不该连累其它张，也不该让整页报错
+          .catch(() => ""),
+      ),
+    ).then((loaded) => {
+      if (cancelled) {
+        created.forEach((url) => URL.revokeObjectURL(url));
+        return;
+      }
+      setUrls(loaded.filter(Boolean));
+    });
+    return () => {
+      cancelled = true;
+      created.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [skc, site, group, pathsKey]);
+
+  if (!urls.length) return null;
+  return (
+    <span className="profit-source-thumbs">
+      {urls.map((url, index) => (
+        <img
+          key={`${url}-${index}`}
+          className="profit-source-thumb"
+          src={url}
+          alt="货源图"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          title="点击查看大图"
+          onClick={() => onPreview({ url, label: "货源图" })}
+        />
+      ))}
+    </span>
+  );
+}
+
 export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [sources, setSources] = useState<ProductSources | null>(null);
   const [loading, setLoading] = useState(false);
@@ -467,25 +547,15 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                             </button>
                           </div>
                           {/* 这条货源已有的货源图（可能多张）：对方分支把只读卡片去掉了，
-                              但「一个链接对应多张货源图」是我们要保留的能力，挂到编辑行里 */}
-                          {(linkOfRow(row)?.images ?? []).length ? (
-                            <span className="profit-source-thumbs">
-                              {(linkOfRow(row)?.images ?? []).map((image, imageIndex) => (
-                                <img
-                                  key={`${image.id}-${imageIndex}`}
-                                  className="profit-source-thumb"
-                                  src={image.image_url}
-                                  alt="货源图"
-                                  loading="lazy"
-                                  referrerPolicy="no-referrer"
-                                  title="点击查看大图"
-                                  onClick={() =>
-                                    setPreviewImage({ url: image.image_url, label: "货源图" })
-                                  }
-                                />
-                              ))}
-                            </span>
-                          ) : null}
+                              但「一个链接对应多张货源图」是我们要保留的能力，挂到编辑行里。
+                              数据源是后端返回的 image_paths（不是 images，那个字段后端从来没有过）。 */}
+                          <SourceThumbStrip
+                            skc={current.skc}
+                            site={sources?.site || current.site || current.site_code || "US"}
+                            group={row.originalGroup}
+                            imagePaths={original?.image_paths ?? []}
+                            onPreview={setPreviewImage}
+                          />
                         </div>
                       </div>
                       <div className="profit-source-edit-row-actions">

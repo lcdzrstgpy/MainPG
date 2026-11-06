@@ -39,9 +39,13 @@ test("product library opens the source drawer and previews ledger source images"
   assert.match(source, /setActiveProduct\(/);
   assert.match(source, /<ProductSourceDrawer/);
   assert.match(source, /<ImagePreviewModal/);
-  // 一个货源链接可以带多张货源图（link.images），抽屉里要能点开看大图。
-  // 对方分支把只读货源卡片去掉了，这里改成挂在编辑行里（linkOfRow(row).images）。
+  // 一个货源链接可以带多张货源图（后端 image_paths），抽屉里要能点开看大图。
+  // 对方分支把只读货源卡片去掉了，这里改成挂在编辑行里（SourceThumbStrip）。
+  // 注意：不能再按 link.images 取图 —— 后端从来没有这个字段（只有 image_paths），
+  // 那一版写法的结果是缩略图区永远不渲染。
   assert.match(drawer, /profit-source-thumb/);
-  assert.match(drawer, /\.images \?\? \[\]\)\.length/);
-  assert.match(drawer, /setPreviewImage\(\{ url: image\.image_url/);
+  assert.match(drawer, /function SourceThumbStrip\(/);
+  assert.match(drawer, /imagePaths=\{original\?\.image_paths \?\? \[\]\}/);
+  assert.match(drawer, /loadProductImage\(\{/);
+  assert.doesNotMatch(drawer, /linkOfRow\(row\)\?\.images/);
 });
