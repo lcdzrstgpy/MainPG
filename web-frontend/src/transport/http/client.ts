@@ -148,6 +148,17 @@ if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
 }
 
 /**
+ * 把接口里的「列表字段」收成数组。
+ *
+ * 后端回空对象（204 / 非 JSON / 网关把错误吞成 `{}`）或字段改名时，`payload.batches`
+ * 会是 undefined，下游 `.map` / `[...batches]` 直接抛渲染期异常 —— 这类异常只能靠
+ * 错误边界兜，用户看到的是整块页面变成「出错了」。宁可按空列表渲染。
+ */
+export function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/**
  * 把服务端/网络错误转换为用户可读的中文提示（不再外露英文）。
  * - 已知业务错误映射为具体中文 + 解决建议；
  * - 纯英文的未知错误兜底为通用中文提示；

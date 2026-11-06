@@ -455,7 +455,8 @@ const podWorkflow: WorkspaceNavigationGroup = {
 const aiVideoWorkflow: WorkspaceNavigationGroup = {
   // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
   id: "ai_video",
-  label: "AI视频（实验）",
+  // 和页面模块的 label 保持一致（都带空格）：分组与扁平表不一致会被守护测试拦下
+  label: "AI 视频（实验）",
   icon: "",
   iconClass: "iconfont icon-video",
   description: "通过 ClipForge 生成电商短视频",
@@ -498,7 +499,8 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [productWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
   },
   {
-    // 海外上架即原「发布商品」：发布页与草稿库是同级子项。
+    // 海外上架（原「发布商品」）：草稿库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
+    // 而不是一张空表单。
     id: "overseas_listing",
     label: "海外上架",
     icon: "",

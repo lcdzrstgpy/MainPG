@@ -1761,10 +1761,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 详情图**不能裁方** —— 商详楼层是长图，裁成 1:1 会把内容切掉；
    * 详情图交给服务端按原宽上传（target_width=0 表示不缩放），宽度在提交时统一。
    */
-  const uploadTo = (slot: ImageSlot, event: ChangeEvent<HTMLInputElement>) =>
+  const uploadFiles = (slot: ImageSlot, files: File[]) =>
     run("upload", async () => {
-      const files = Array.from(event.target.files ?? []);
-      event.target.value = "";
       if (!files.length) return;
       // 数量先挡：外包装图 Temu 只收 6 张，轮播 10 张。传上去再被拒会白等半天上传
       const exist = splitLines(slotText(slot)).length;
@@ -2975,22 +2973,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
       {/* 横向步骤条：粘在顶部，点一下滚到那一块。
           不做分步向导 —— 发布要在「类目 → 属性 → 变种」之间来回对照，
-          一次只显示一步会逼人翻页，反而更慢。 */}
+          一次只显示一步会逼人翻页，反而更慢。
+          版式：圆点在上、文字在下，圆点之间用短连接段串起来（像物流轨迹），
+          完成的段跟着点亮；右侧给「已完成 n/5」。
+          不用「圆点 + 长横线 + 文字」那种排法 —— 连接段会被拉成一米长，
+          文字飘在线上，看着散。 */}
       <nav className="temu-stepbar" aria-label="发布步骤">
-        {flowSteps.map((step, index) => (
-          <button
-            key={step.id}
-            type="button"
-            className={`temu-stepbar-item${step.done ? " is-done" : ""}${
-              activeSectionId === step.id ? " is-active" : ""
-            }`}
-            onClick={() => jumpTo(step.id)}
-            title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
-          >
-            <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
-            <span className="temu-stepbar-label">{step.label}</span>
-          </button>
-        ))}
+        <div className="temu-stepbar-flow">
+          {flowSteps.map((step, index) => (
+            <div className="temu-stepbar-node" key={step.id}>
+              <button
+                type="button"
+                className={`temu-stepbar-item${step.done ? " is-done" : ""}${
+                  activeSectionId === step.id ? " is-active" : ""
+                }`}
+                onClick={() => jumpTo(step.id)}
+                aria-current={activeSectionId === step.id ? "step" : undefined}
+                title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
+              >
+                <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
+                <span className="temu-stepbar-label">{step.label}</span>
+              </button>
+              {/* 连接段从本节点圆点中心画到下一个节点圆点中心（等宽单元格 → 宽度 100%） */}
+              {index < flowSteps.length - 1 ? (
+                <span
+                  className={`temu-stepbar-seg${step.done ? " is-done" : ""}`}
+                  aria-hidden="true"
+                />
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <span className="temu-stepbar-progress" title="已完成的步骤数">
+          <b>{flowSteps.filter((step) => step.done).length}</b>/{flowSteps.length}
+        </span>
         {/* 还没带入草稿时，把入口挂在步骤条右侧的空白里：
             原来它单独占一整行（「来源」大条），首屏白白少看两个字段。
             带入之后摘要信息多（标题/图数/申报价/需核对项），才恢复成整行。 */}
@@ -3009,8 +3025,16 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
       <div className="temu-console-body">
         <div className="temu-console-main">
-          {/* 状态还没回来：给一行轻提示，别让人以为页面坏了 */}
-          {!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…</p>}
+          {/* 状态还没回来：给一张正经的加载卡，别让人以为页面卡住/坏了 */}
+          {!statusLoaded && (
+            <div className="temu-loading-card" role="status" aria-live="polite">
+              <span className="temu-loading-spinner" aria-hidden="true" />
+              <span className="temu-loading-text">
+                <strong>正在读取店铺配置</strong>
+                <em>店铺授权、运费模板与尺码表，通常 1~2 秒</em>
+              </span>
+            </div>
+          )}
           {statusLoaded && !ready && (
             <div className="temu-bind-banner">
               <div>
@@ -3551,18 +3575,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     {slot.label}
                     {slot.required && <em className="temu-required">*</em>}
                   </strong>
-                  <span className="temu-muted">{slotHint}</span>
-                  <label className="temu-btn is-small">
-                    + 添加图片
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      hidden
-                      onChange={(event) => uploadTo(slot.key, event)}
-                      disabled={busy !== ""}
-                    />
-                  </label>
+                  {/* 轮播的说明放进上传位里（那儿位置大），这里再写一遍就是重复 */}
+                  {slot.key === "carousel" ? null : <span className="temu-muted">{slotHint}</span>}
                   <button
                     type="button"
                     className="temu-btn is-small"
@@ -3572,10 +3586,25 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     从成品库挑图
                   </button>
                 </div>
+                {/* 上传位就是空态：虚线落点比「+ 添加图片」小按钮直观，能点、能拖、能粘 */}
                 <TemuImageStrip
                   urls={splitLines(slotText(slot.key))}
                   onChange={(next) => setSlotText(slot.key, next.join("\n"))}
                   firstBadge={slot.key === "carousel" ? "主图" : undefined}
+                  onAddFiles={(files) => void uploadFiles(slot.key, files)}
+                  addHint={`点击上传${slot.label}`}
+                  addSubHint={
+                    slot.key === "carousel"
+                      ? apparelSlot
+                        ? "至少 3 张 · 3:4 竖图（≥1344×1792）· 自动裁切压缩"
+                        : "至少 3 张 · 1:1 方图（≥800×800）· 自动裁切压缩"
+                      : slot.key === "detail"
+                        ? "最多 30 张，一张一个详情模块；长图不裁切，提交时统一宽度"
+                        : "最多 6 张，建议含正面 / 侧面 / 底部 / 细节特写"
+                  }
+                  variant={slot.key === "carousel" ? "primary" : "compact"}
+                  maxCount={IMAGE_LIMITS[slot.key]}
+                  busy={busy !== ""}
                   emptyHint={
                     slot.key === "carousel"
                       ? `草稿带入的图会显示在这里；上传会自动裁成 ${apparelSlot ? "3:4" : "1:1"}`
@@ -3583,11 +3612,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   }
                 />
                 {slot.key === "carousel" ? (
-                  <p className="temu-image-rules">
-                    {apparelSlot
-                      ? "服饰类目要求：至少 3 张、最多 10 张 · 比例 3:4 · 宽 ≥1340、高 ≥1785 · 单张 ≤2MB"
-                      : "Temu 要求：至少 3 张、最多 10 张 · 比例 1:1 · 宽高 ≥800px · 单张 ≤2MB"}
-                    （上传时自动裁切压缩，按顺序提交，第一张是主图）
+                  // 规则长句收进 title：正文只留一行关键数字，不再三行灰字压在图下面
+                  <p
+                    className="temu-image-rules"
+                    title={
+                      apparelSlot
+                        ? "服饰类目轮播图：至少 3 张、最多 10 张；比例 3:4；宽 ≥1340、高 ≥1785；单张 ≤2MB。上传时自动居中裁切并压缩，按顺序提交，第一张是主图。"
+                        : "轮播图：至少 3 张、最多 10 张；比例 1:1；宽高 ≥800px；单张 ≤2MB。上传时自动裁切并压缩，按顺序提交，第一张是主图。"
+                    }
+                  >
+                    第一张是主图，可用 ← → 调序；单张 ≤2MB
+                    <span className="temu-muted">（悬停看完整规则）</span>
                   </p>
                 ) : null}
               </div>
@@ -3609,6 +3644,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     onChange={(event) => patch({ material: event.target.value })}
                     placeholder="覆盖素材图地址（可选）"
                   />
+                  {/* 手里只有竖图？这里直接裁成 1:1 再传，省得用户自己找工具转 */}
+                  <label className="temu-btn is-small" title="选一张图，自动居中裁成 1:1（≥800×800）后上传">
+                    上传方图
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      disabled={busy !== ""}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (!file) return;
+                        void run("material", async () => {
+                          const leaf = categoryPath[categoryPath.length - 1];
+                          if (!leaf?.catId) {
+                            throw new Error("请先选到叶子类目再上传素材图：图片要按类目上传到 Temu 图床。");
+                          }
+                          const square = await toSquareDataUrl(await blobToDataUrl(file));
+                          const uploaded = pickUploadedUrl(
+                            await temuPublishApi.uploadImage(square, leaf.catId),
+                          );
+                          if (!uploaded) throw new Error("素材图上传成功但没有返回图片地址");
+                          patch({ material: uploaded });
+                        });
+                      }}
+                    />
+                  </label>
                 </div>
                 {isApparelCategory ? (
                   <em className="temu-field-note">

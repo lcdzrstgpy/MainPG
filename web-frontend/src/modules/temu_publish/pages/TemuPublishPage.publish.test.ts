@@ -124,8 +124,12 @@ test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", ()
   // 草稿带入的竖图没法自动转（alicdn 取不到 canvas 像素），必须在提交前说清楚
   assert.match(page, /服饰类目的产品素材图要单独填一张 1:1（宽 ≥800px）的方图/);
   // 界面文案也要跟着类目变，不能写着 1:1 实际裁 3:4
-  assert.match(page, /服饰类目要竖图 3:4（≥1344×1792）/);
-  assert.match(page, /比例 3:4 · 宽 ≥1340、高 ≥1785/);
+  // （2026-11-06 改版：轮播的说明收进上传位，写成一行「3:4 竖图（≥1344×1792）」，
+  //   完整规则挂在 title 上 —— 断言跟着改，但「服饰必须出现 3:4 而不是 1:1」这条不能丢）
+  assert.match(page, /3:4 竖图（≥1344×1792）· 自动裁切压缩/);
+  assert.match(page, /比例 3:4；宽 ≥1340、高 ≥1785/);
+  // 非服饰分支仍然要写 1:1 / ≥800×800
+  assert.match(page, /1:1 方图（≥800×800）· 自动裁切压缩/);
 });
 
 test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () => {
@@ -748,8 +752,10 @@ test("首屏不闪「还没绑定店铺」：状态没回来之前不渲染横�
   // 横幅必须同时满足「已加载」和「未绑定」
   assert.match(page, /\{statusLoaded && !ready && \(/);
   assert.ok(!/\{!ready && \(\s*<div className="temu-bind-banner">/.test(page));
-  // 加载期间给一行轻提示，而不是留空
-  assert.match(page, /\{!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…<\/p>\}/);
+  // 加载期间给一张正经的加载卡（带转圈 + 说明），而不是留空或一行像报错的灰字
+  assert.match(page, /\{!statusLoaded && \(\s*<div className="temu-loading-card"/);
+  assert.match(page, /className="temu-loading-spinner"/);
+  assert.ok(page.includes("正在读取店铺配置"));
 });
 
 test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => {
@@ -2237,4 +2243,42 @@ test("服装类目「必须有尺码表但店里没建」要显式提示，不�
   assert.match(page, /Temu 要求必填测量项：\$\{sizeChart\.info\.required_elements\.join\("、"\\?\)\}/);
   assert.match(page, /商品管理 → 尺码表模板/);
   assert.match(page, /该尺码组可选尺码：/);
+});
+
+test("图片槽位：上传位要看得见、能点能拖能粘（不再靠一行灰字）", () => {
+  const strip = readFileSync(new URL("../components/TemuImageStrip.tsx", import.meta.url), "utf8");
+  // 空槽位直接是虚线落点，有图时缩成条带末尾的 ＋ 格
+  assert.match(strip, /function ImageAddTile\(/);
+  assert.match(strip, /onDrop=\{\(event\) => \{/);
+  assert.match(strip, /onPaste=\{\(event\) => \{/);
+  assert.match(strip, /type="file"/);
+  assert.match(strip, /variant === "compact"/);
+  // 上传位必须真的接到上传逻辑上；顶部那颗隐蔽的「+ 添加图片」按钮已经删掉
+  assert.match(page, /onAddFiles=\{\(files\) => void uploadFiles\(slot\.key, files\)\}/);
+  assert.doesNotMatch(page, /\+\s*添加图片\s*<input/, "不该再有那个把 file input 藏进小按钮的写法");
+  // 主图槽位铺满整行、可选项只占一个小格：三个一样大的虚线框会把页面撑长且没有主次
+  assert.match(page, /variant=\{slot\.key === "carousel" \? "primary" : "compact"\}/);
+  // 长规则收进 title，正文只留一行
+  assert.match(page, /第一张是主图，可用 ← → 调序；单张 ≤2MB/);
+});
+
+test("发布流程条：圆点在上、文字在下的轨迹式布局，且来源入口只出现一次", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 版式：圆点 + 文字竖排，连接段画在两个圆点之间（对齐圆点中心）
+  assert.match(page, /className="temu-stepbar-flow"/);
+  assert.match(page, /className="temu-stepbar-node"/);
+  // 连接段属于「本节点 → 下一个节点」，所以用本节点的 done 决定点亮
+  assert.match(page, /temu-stepbar-seg\$\{step\.done \? " is-done" : ""\}/);
+  assert.match(page, /className="temu-stepbar-progress"/);
+  // 连接段绝对定位在 left:50% + width:100%（等宽单元格 → 正好连到下一个圆点中心）
+  assert.match(css, /\.temu-stepbar-seg \{[\s\S]{0,240}left: 50%;[\s\S]{0,80}width: 100%/);
+  // 垂直对齐圆点中心（圆点 22px → top 10px），否则会从文字那儿穿过去
+  assert.match(css, /\.temu-stepbar-seg \{[\s\S]{0,240}top: 10px;/);
+  // 待完成的连接段不能直接用边框色（白底上 1.1:1，等于没有）
+  assert.match(css, /\.temu-stepbar-seg \{[\s\S]{0,260}color-mix\(in srgb, var\(--temu-text\) 16%/);
+  // 完成度胶囊的文字别用 --temu-text-muted：实测只有 2.9:1
+  assert.match(css, /\.temu-stepbar-progress \{[\s\S]{0,320}color-mix\(in srgb, var\(--temu-text\) 72%/);
+  // 来源按钮只能有一个（改流程条时手滑复制成了两个，页面上出现两枚一模一样的胶囊）
+  const sourceButtons = page.match(/className="temu-stepbar-source"/g) ?? [];
+  assert.equal(sourceButtons.length, 1);
 });

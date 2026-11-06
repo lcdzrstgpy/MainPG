@@ -1026,9 +1026,12 @@ export function TemuDraftLibraryPage({
         <div className="temu-library-stats" role="tablist" aria-label="草稿来源筛选">
           {(
             [
-              ["all", "全部", data?.counts.total ?? 0, ""],
-              ["ai", "AI 处理", data?.counts.ai ?? 0, "ai"],
-              ["pod", "POD", data?.counts.pod ?? 0, "pod"],
+              // counts 也要兜：接口回 `{}`（网关吞错 / 老版本没有这个字段）时
+              // data 存在但 data.counts 是 undefined，`data?.counts.total` 照样抛，
+              // 整个草稿库白屏。
+              ["all", "全部", data?.counts?.total ?? 0, ""],
+              ["ai", "AI 处理", data?.counts?.ai ?? 0, "ai"],
+              ["pod", "POD", data?.counts?.pod ?? 0, "pod"],
             ] as Array<[Filter, string, number, string]>
           ).map(([key, label, count, tone]) => (
             <button
