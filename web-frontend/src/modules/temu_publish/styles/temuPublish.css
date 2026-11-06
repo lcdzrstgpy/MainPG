@@ -3989,6 +3989,18 @@ textarea.temu-input {
   line-height: 1.5;
 }
 
+/* 说明一行、复制按钮单独一行：并排时按钮会被挤进句子里，读起来像错位 */
+.temu-spec-panel-foot {
+  display: grid;
+  gap: 6px;
+}
+
+.temu-spec-panel-foot .temu-link-button {
+  justify-self: start;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .temu-spec-chip {
   padding: 1px 9px;
   border: 1px solid var(--theme-module-border-strong, #cfdae4);

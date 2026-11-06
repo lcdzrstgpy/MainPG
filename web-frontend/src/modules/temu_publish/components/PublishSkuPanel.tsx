@@ -301,6 +301,8 @@ export function PublishSkuPanel({
   const [specQuery, setSpecQuery] = useState("");
   /** 面板里的色系筛选：all / 色系 key / other */
   const [specGroupKey, setSpecGroupKey] = useState<string>("all");
+  /** 「复制全部预设」后的短暂反馈 */
+  const [copiedSpec, setCopiedSpec] = useState(false);
 
   /** 点空白处收起预设面板（浮层，不收会一直压着下面的表格） */
   useEffect(() => {
@@ -449,9 +451,30 @@ export function PublishSkuPanel({
               })}
               {!filtered.length ? <span className="temu-muted">没有匹配的预设值</span> : null}
             </div>
-            <p className="temu-spec-panel-note">
-              只能从这些值里选（点一下加入、再点移除）。自己造的词 Temu 会判「不合法的{label}」。
-            </p>
+            <div className="temu-spec-panel-foot">
+              <p className="temu-spec-panel-note">
+                只能从这些值里选（点一下加入、再点移除）。自己造的词 Temu 会判「不合法的{label}」。
+              </p>
+              {/* 有人要拿全量清单去对表 / 报给运营，给个复制口子，别逼他一个个抄 */}
+              <button
+                type="button"
+                className="temu-link-button"
+                onClick={() => {
+                  const text = options.join("\n");
+                  const done = () => {
+                    setCopiedSpec(true);
+                    window.setTimeout(() => setCopiedSpec(false), 1800);
+                  };
+                  if (navigator.clipboard?.writeText) {
+                    void navigator.clipboard.writeText(text).then(done).catch(() => done());
+                  } else {
+                    done();
+                  }
+                }}
+              >
+                {copiedSpec ? "已复制全部" : `复制全部 ${options.length} 个`}
+              </button>
+            </div>
           </div>
         ) : null}
       </div>
