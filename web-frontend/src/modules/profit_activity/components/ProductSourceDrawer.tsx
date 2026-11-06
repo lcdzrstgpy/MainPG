@@ -135,18 +135,22 @@ function SourceThumbStrip({
     let cancelled = false;
     const created: string[] = [];
     const paths = pathsKey ? pathsKey.split("|") : [];
-    if (!paths.length) {
+    // 第一张已经由上面的 SourceCardImage 大图展示，这里只补「其余的」，
+    // 否则同一张图会在编辑行里出现两次。
+    const extras = paths.slice(1);
+    if (!extras.length) {
       setUrls([]);
       return undefined;
     }
     Promise.all(
-      paths.map((path, index) =>
+      extras.map((path, offset) =>
         loadProductImage({
           skc,
           site: (site || "US") as "US" | "CO" | "EC",
           kind: "source",
           group: group ?? 0,
-          index,
+          // 索引要对上原始数组位置（第 2 张起），不能从 0 开始
+          index: offset + 1,
           version: path,
         })
           .then((loaded) => {
@@ -171,7 +175,7 @@ function SourceThumbStrip({
 
   if (!urls.length) return null;
   return (
-    <span className="profit-source-thumbs">
+    <span className="profit-source-thumbs" title="这条货源的其它货源图">
       {urls.map((url, index) => (
         <img
           key={`${url}-${index}`}
