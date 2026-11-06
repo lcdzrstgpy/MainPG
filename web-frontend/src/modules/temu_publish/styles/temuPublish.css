@@ -2387,15 +2387,39 @@ textarea.temu-input {
 
 .is-console .temu-variant-row {
   display: grid;
-  /* 第一列是预览图：留够 72px，否则图被容器压成 34px 看不清 */
-  grid-template-columns: 72px 96px 62px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+  /* 第一列是预览图：留够 72px，否则图被容器压成 34px 看不清。
+     长/宽/高 合并成一列（150px），否则三格各 44px 最容易填错列。 */
+  grid-template-columns: 72px 96px 62px 104px 66px 150px 58px 70px 56px 24px;
   align-items: center;
   gap: 6px;
 }
 
+/* 尺寸一组：长 × 宽 × 高 */
+.is-console .temu-variant-dims {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.is-console .temu-variant-dims .temu-input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-left: 6px;
+  padding-right: 4px;
+  text-align: center;
+}
+
+.is-console .temu-variant-dims i {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--temu-text) 45%, transparent);
+  font-size: 11px;
+  font-style: normal;
+}
+
 /* 无销售属性的类目（如桌布/亚麻布）：没有颜色/尺码变种，这两列不渲染 */
 .is-console .temu-variant-row.is-single {
-  grid-template-columns: 72px 104px 66px 44px 44px 44px 58px 70px 52px 24px;
+  grid-template-columns: 72px 104px 66px 150px 58px 70px 56px 24px;
 }
 
 .is-console .temu-variant-row.is-head {

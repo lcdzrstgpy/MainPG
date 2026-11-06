@@ -2345,8 +2345,10 @@ test("只要一维（只有颜色、不要尺码）：第二维可以关掉", ()
   assert.match(panel, /className="temu-spec-nodim"/);
   assert.match(panel, /sizeParentId > 0 \? <span>\{sizeSpecName\}<\/span> : null/);
   assert.match(panel, /sizeParentId > 0 \? \(\s*<input[\s\S]{0,300}placeholder=\{sizeOptions\.length/);
-  // 生成时不要塞「均码」假值（sizeParent 为空时提交也会忽略它）
-  assert.match(panel, /const sizes = sizeParentId > 0 \? \(sizeNames\.length \? sizeNames : \["均码"\]\) : \[""\]/);
+  // 生成时不塞「均码」假值：第二维关了就是 [""]；还开着但没填值 → 拦下并说明原因
+  assert.match(panel, /else if \(sizeOptions\.includes\("均码"\)\) sizes = \["均码"\];/);
+  assert.match(panel, /setGenHint\(/);
+  assert.match(panel, /\} else \{\s*sizes = \[""\];/);
   // 提交端本来就只在 sizeParent 存在时才带第二维规格
   assert.match(page, /if \(sizeParent\) \{/);
 });
@@ -2360,4 +2362,26 @@ test("变种表的占位符要一眼看出是提示，不是已填值", () => {
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /\{singleSku \? "。" : ` \/ \$\{new Set/);
   assert.match(panel, /singleSku \|\| sizeParentId <= 0 \? "" : "；同色下尺码不能重复"/);
+});
+
+test("变种表尺寸列：长/宽/高 合成一组，不再各占 44px", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 渲染成一个 span 内含 3 个输入 + × 分隔
+  assert.match(panel, /className="temu-variant-dims" title="长 × 宽 × 高，单位厘米"/);
+  assert.match(panel, /aria-label="长（厘米）"/);
+  assert.match(panel, /aria-label="高（厘米）"/);
+  // 网格少两列（原来 44px ×3，现在 150px ×1）
+  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 150px 58px 70px 56px 24px;/);
+  assert.match(css, /\.is-console \.temu-variant-row\.is-single \{[\s\S]{0,120}150px/);
+  // 表头跟着改
+  assert.match(panel, /<span title="长 × 宽 × 高，单位厘米">尺寸\(cm\)<\/span>/);
+});
+
+test("不再凭空造「均码」：新会话初始行留空，第二维没填就拦下生成", () => {
+  // 以前初始行预填「均码」，不是预设值时提交必被拒；生成时也会塞一个假尺码
+  assert.match(page, /return \[createVariantRow\(whId, "", "", EMPTY_BATCH, 0\)\];/);
+  assert.match(page, /const fallbackSize = prefill\.specValue2 \|\| "";/);
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /第二维空着不能生成/);
 });

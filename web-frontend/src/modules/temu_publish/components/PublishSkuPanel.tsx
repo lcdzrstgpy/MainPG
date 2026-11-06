@@ -235,7 +235,9 @@ export function PublishSkuPanel({
   const coverage = variantCoverage(
     rows,
     colorNames.length ? colorNames : ["Default"],
-    sizeNames.length ? sizeNames : ["均码"],
+    // 第二维关掉 = 每色一行，用空尺码参与比对；还开着但没填值就别假装是「均码」，
+    // 否则按钮会显示「✓ 已生成」，用户以为完事了，实际第二维还是空的。
+    sizeParentId > 0 ? (sizeNames.length ? sizeNames : ["均码"]) : [""],
   );
 
   /**
@@ -303,6 +305,9 @@ export function PublishSkuPanel({
   const [specGroupKey, setSpecGroupKey] = useState<string>("all");
   /** 「复制全部预设」后的短暂反馈 */
   const [copiedSpec, setCopiedSpec] = useState(false);
+
+  /** 「生成变种」被拦下时的原因（第二维没填，不能凭空造「均码」） */
+  const [genHint, setGenHint] = useState("");
 
   /** 点空白处收起预设面板（浮层，不收会一直压着下面的表格） */
   useEffect(() => {
@@ -512,10 +517,28 @@ export function PublishSkuPanel({
    * 保留（只同步颜色/尺码文字），只有新组合才用批量默认值填。
    */
   const generate = () => {
-    // 第二维被关掉时不要塞「均码」：那是个预设里可能不存在的值，
-    // 提交时又会因为 sizeParent 为空被忽略 —— 中间这层假数据没有意义。
-    const sizes = sizeParentId > 0 ? (sizeNames.length ? sizeNames : ["均码"]) : [""];
+    setGenHint("");
     const colors = colorNames.length ? colorNames : ["Default"];
+    /**
+     * 第二维被关掉 → 只按颜色铺行；
+     * 第二维还在但用户没填值 → 不再凭空造「均码」：
+     * 那不是预设值，提交必被判「不合法的规格属性」，不如当场说清楚。
+     * （只有类目预设里真的有「均码」时才用它兜底 —— 这类目卖的就是均码商品。）
+     */
+    let sizes: string[];
+    if (sizeParentId > 0) {
+      if (sizeNames.length) sizes = sizeNames;
+      else if (sizeOptions.includes("均码")) sizes = ["均码"];
+      else {
+        setGenHint(
+          `先在「变种属性二」里填${sizeSpecName}值（从预设里选），或者把它设成「不使用（单维）」——` +
+            `第二维空着不能生成，硬填一个「均码」提交会被 Temu 判为不合法的规格值。`,
+        );
+        return;
+      }
+    } else {
+      sizes = [""];
+    }
     const base = rows[0];
     const effective: VariantBatch = {
       supplierPrice: batch.supplierPrice.trim() || base?.supplierPrice || "",
@@ -760,6 +783,7 @@ export function PublishSkuPanel({
         </button>
         </div>
       )}
+      {genHint ? <p className="temu-spec-bad">{genHint}</p> : null}
 
       <div className="temu-batch">
         <div className="temu-batch-head">
@@ -852,9 +876,7 @@ export function PublishSkuPanel({
             )}
             <span>SKU 货号</span>
             <span>申报价格(元)</span>
-            <span title="单位：厘米">长</span>
-            <span title="单位：厘米">宽</span>
-            <span title="单位：厘米">高</span>
+            <span title="长 × 宽 × 高，单位厘米">尺寸(cm)</span>
             <span>重量(g)</span>
             <span>建议售价(元)</span>
             <span title="填 0 也能建品，但商品是售罄/不可售状态">库存(件)</span>
@@ -1039,27 +1061,41 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { supplierPrice: event.target.value })}
                 placeholder="12.99"
               />
+              {/* 长宽高合成一组：三列挨着时每格只有 44px，卡片式后台里最容易填错列。
+                  Temu 后台本身也是「长 × 宽 × 高」一组，跟它对齐。 */}
+              <span className="temu-variant-dims" title="长 × 宽 × 高，单位厘米">
+                <input
+                  className="temu-input"
+                  inputMode="decimal"
+                  aria-label="长（厘米）"
+                  placeholder="长"
+                  value={row.lengthCm}
+                  onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
+                />
+                <i aria-hidden="true">×</i>
+                <input
+                  className="temu-input"
+                  inputMode="decimal"
+                  aria-label="宽（厘米）"
+                  placeholder="宽"
+                  value={row.widthCm}
+                  onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
+                />
+                <i aria-hidden="true">×</i>
+                <input
+                  className="temu-input"
+                  inputMode="decimal"
+                  aria-label="高（厘米）"
+                  placeholder="高"
+                  value={row.heightCm}
+                  onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
+                />
+              </span>
               <input
                 className="temu-input"
                 inputMode="decimal"
-                value={row.lengthCm}
-                onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
-              />
-              <input
-                className="temu-input"
-                inputMode="decimal"
-                value={row.widthCm}
-                onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
-              />
-              <input
-                className="temu-input"
-                inputMode="decimal"
-                value={row.heightCm}
-                onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
-              />
-              <input
-                className="temu-input"
-                inputMode="decimal"
+                aria-label="重量（克）"
+                placeholder="重量"
                 value={row.weightG}
                 onChange={(event) => onUpdateRow(row.key, { weightG: event.target.value })}
               />

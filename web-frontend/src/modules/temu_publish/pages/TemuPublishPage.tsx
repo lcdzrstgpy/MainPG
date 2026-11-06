@@ -988,7 +988,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           // 一条草稿往往有多个 SKU（一个颜色一条），全部铺出来，不用用户再点生成。
           if (seedRows && seedRows.length) return seedRows;
           if (current.length) return current;
-          return [createVariantRow(whId, "", "均码", EMPTY_BATCH, 0)];
+          return [createVariantRow(whId, "", "", EMPTY_BATCH, 0)];
         });
         // 这条草稿上次选过类目：直接套回去，省得每次重选
         if (prefill?.categoryPath?.length) {
@@ -1097,9 +1097,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       (item) => item && (item.color || item.size || item.sku),
     );
     if (variants.length <= 1) {
-      return [prefillToRow(createVariantRow(whId, "", "均码", EMPTY_BATCH, 0), prefill)];
+      return [prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill)];
     }
-    const fallbackSize = prefill.specValue2 || "均码";
+    const fallbackSize = prefill.specValue2 || "";
     return variants.map((variant, index) => {
       const base = createVariantRow(
         whId,
