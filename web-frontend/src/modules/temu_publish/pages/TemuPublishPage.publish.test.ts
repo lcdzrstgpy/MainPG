@@ -2291,3 +2291,13 @@ test("发布流程条：圆点在上、文字在下的轨迹式布局，且来�
   const sourceButtons = page.match(/className="temu-stepbar-source"/g) ?? [];
   assert.equal(sourceButtons.length, 1);
 });
+
+test("修正规格值要连批量列表一起改，否则再点生成又铺回非法值", () => {
+  // 只改表格是治标：上方「颜色 / 尺码 列表」还留着非法值，
+  // 用户再点一次「生成变种」就按旧文本重新铺一遍。
+  assert.match(page, /const remapList = \(text: string, options: string\[\]\) => \{/);
+  assert.match(page, /const nextColorsText = remapList\(form\.colorsText, colorNames\);/);
+  assert.match(page, /patch\(\{ colorsText: nextColorsText, sizesText: nextSizesText \}\)/);
+  // 对不上的值要直说「手动选」，不能让用户以为修正是坏的
+  assert.match(page, /预设里没有相近值，请用上方「浏览全部预设」手动选/);
+});

@@ -318,6 +318,13 @@ textarea.temu-input {
   overflow: auto;
 }
 
+/* 每个非法值后面那半句：能自动改的给出目标值，改不了的直说手动选 */
+.temu-spec-mismatch-manual {
+  margin-left: 6px;
+  font-style: normal;
+  opacity: 0.8;
+}
+
 .temu-link-button {
   flex: none;
   padding: 0;

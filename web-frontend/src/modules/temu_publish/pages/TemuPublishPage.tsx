@@ -1939,6 +1939,30 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       };
     });
     setRows(next);
+    /**
+     * 上方的「颜色 / 尺码 列表」也要一起改。
+     *
+     * 只改表格是治标：那两个输入框还留着非法值，用户再点一次「生成变种」就按旧文本
+     * 重新铺一遍，刚修好的行又被替换成「浅绿色」这种提交必被拒的值。
+     */
+    const remapList = (text: string, options: string[]) => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const raw of text.split(/[,，]/)) {
+        const name = raw.trim();
+        if (!name) continue;
+        const fixed = matchPresetValue(name, options) ?? name;
+        if (seen.has(fixed)) continue;
+        seen.add(fixed);
+        out.push(fixed);
+      }
+      return out.join(",");
+    };
+    const nextColorsText = remapList(form.colorsText, colorNames);
+    const nextSizesText = remapList(form.sizesText, sizeNames);
+    if (nextColorsText !== form.colorsText || nextSizesText !== form.sizesText) {
+      patch({ colorsText: nextColorsText, sizesText: nextSizesText });
+    }
     setSpecMismatch(findSpecMismatches(attributes, next));
   };
 
@@ -3783,12 +3807,21 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   价格、重量这些没动，改完规格就行。
                 </p>
                 <ul>
-                  {specMismatch.map((item) => (
-                    <li key={`${item.rowKey}-${item.field}`}>
-                      第 {item.rowNo} 行{" "}
-                      {item.field === "color" ? colorSpecName : sizeSpecName}「{item.value}」
-                    </li>
-                  ))}
+                  {specMismatch.map((item) => {
+                    // 能自动对齐的会给「按最接近的预设值修正」；对不上的必须说清楚，
+                    // 否则用户点了修正发现这个值还在，会以为功能坏了
+                    const options = item.field === "color" ? specOptions(colorParentId) : specOptions(sizeParentId);
+                    const fixable = matchPresetValue(item.value, options);
+                    return (
+                      <li key={`${item.rowKey}-${item.field}`}>
+                        第 {item.rowNo} 行{" "}
+                        {item.field === "color" ? colorSpecName : sizeSpecName}「{item.value}」
+                        <em className="temu-spec-mismatch-manual">
+                          {fixable ? `→ 可改成「${fixable}」` : "预设里没有相近值，请用上方「浏览全部预设」手动选"}
+                        </em>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
