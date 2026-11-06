@@ -2973,22 +2973,38 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
       {/* 横向步骤条：粘在顶部，点一下滚到那一块。
           不做分步向导 —— 发布要在「类目 → 属性 → 变种」之间来回对照，
-          一次只显示一步会逼人翻页，反而更慢。 */}
+          一次只显示一步会逼人翻页，反而更慢。
+          视觉上做成一条「流程线」：节点 + 连接段，完成的段跟着点亮，
+          右侧给已完成 n/5 —— 一眼能看出走到哪、还差几步。 */}
       <nav className="temu-stepbar" aria-label="发布步骤">
-        {flowSteps.map((step, index) => (
-          <button
-            key={step.id}
-            type="button"
-            className={`temu-stepbar-item${step.done ? " is-done" : ""}${
-              activeSectionId === step.id ? " is-active" : ""
-            }`}
-            onClick={() => jumpTo(step.id)}
-            title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
-          >
-            <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
-            <span className="temu-stepbar-label">{step.label}</span>
-          </button>
-        ))}
+        <div className="temu-stepbar-track">
+          {flowSteps.map((step, index) => (
+            <div className="temu-stepbar-cell" key={step.id}>
+              {/* 连接段属于前一个节点：前一步完成就点亮到这一步 */}
+              {index > 0 ? (
+                <span
+                  className={`temu-stepbar-line${flowSteps[index - 1].done ? " is-done" : ""}`}
+                  aria-hidden="true"
+                />
+              ) : null}
+              <button
+                type="button"
+                className={`temu-stepbar-item${step.done ? " is-done" : ""}${
+                  activeSectionId === step.id ? " is-active" : ""
+                }`}
+                onClick={() => jumpTo(step.id)}
+                aria-current={activeSectionId === step.id ? "step" : undefined}
+                title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
+              >
+                <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
+                <span className="temu-stepbar-label">{step.label}</span>
+              </button>
+            </div>
+          ))}
+        </div>
+        <span className="temu-stepbar-progress" title="已完成的步骤数">
+          <b>{flowSteps.filter((step) => step.done).length}</b>/{flowSteps.length}
+        </span>
         {/* 还没带入草稿时，把入口挂在步骤条右侧的空白里：
             原来它单独占一整行（「来源」大条），首屏白白少看两个字段。
             带入之后摘要信息多（标题/图数/申报价/需核对项），才恢复成整行。 */}

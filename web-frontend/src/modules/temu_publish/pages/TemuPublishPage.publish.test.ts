@@ -2259,3 +2259,19 @@ test("图片槽位：上传位要看得见、能点能拖能粘（不再靠一�
   // 长规则收进 title，正文只留一行
   assert.match(page, /第一张是主图，可用 ← → 调序；单张 ≤2MB/);
 });
+
+test("发布流程条：节点 + 连接段 + 完成度，且来源入口只出现一次", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 「流程组件」而不是一排散胶囊：节点之间要有连接段，前一步完成就点亮到下一步
+  assert.match(page, /className="temu-stepbar-track"/);
+  assert.match(page, /className="temu-stepbar-cell"/);
+  assert.match(page, /temu-stepbar-line\$\{flowSteps\[index - 1\]\.done \? " is-done" : ""\}/);
+  assert.match(page, /className="temu-stepbar-progress"/);
+  // 待完成的连接段不能直接用边框色（白底上 1.1:1，等于没有）
+  assert.match(css, /\.temu-stepbar-line \{[\s\S]{0,260}color-mix\(in srgb, var\(--temu-text\) 20%/);
+  // 完成度胶囊的文字别用 --temu-text-muted：实测只有 2.9:1
+  assert.match(css, /\.temu-stepbar-progress \{[\s\S]{0,320}color-mix\(in srgb, var\(--temu-text\) 72%/);
+  // 来源按钮只能有一个（改流程条时手滑复制成了两个，页面上出现两枚一模一样的胶囊）
+  const sourceButtons = page.match(/className="temu-stepbar-source"/g) ?? [];
+  assert.equal(sourceButtons.length, 1);
+});
