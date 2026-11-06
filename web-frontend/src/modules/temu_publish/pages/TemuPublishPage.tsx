@@ -2567,8 +2567,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...rowPatch } : row)));
   };
 
-  const removeRow = (key: string) =>
-    setRows((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
+  /**
+   * 删一行变种。
+   *
+   * 只从表格里删是不够的：上面的「颜色 / 尺码 列表」还留着那个值，
+   * 用户再点一次「生成变种」它就长回来了 —— 看起来像「删不掉」。
+   * 所以删掉某颜色的最后一行时，顺手把它从颜色列表里去掉（尺码同理）。
+   */
+  const removeRow = (key: string) => {
+    const target = rows.find((row) => row.key === key);
+    if (!target || rows.length <= 1) return;
+    const next = rows.filter((row) => row.key !== key);
+    setRows(next);
+    const dropValue = (text: string, value: string) => {
+      const name = value.trim();
+      if (!name) return null;
+      const parts = text
+        .split(/[,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (!parts.some((item) => item === name)) return null;
+      return parts.filter((item) => item !== name).join(",");
+    };
+    // 这个颜色 / 尺码在剩下的行里已经没人用了，才从列表里移除
+    const color = target.colorName.trim();
+    if (color && !next.some((row) => row.colorName.trim() === color)) {
+      const nextColors = dropValue(form.colorsText, color);
+      if (nextColors !== null) patch({ colorsText: nextColors });
+    }
+    const size = target.sizeName.trim();
+    if (size && !next.some((row) => row.sizeName.trim() === size)) {
+      const nextSizes = dropValue(form.sizesText, size);
+      if (nextSizes !== null) patch({ sizesText: nextSizes });
+    }
+  };
 
   const leaf = categoryPath[categoryPath.length - 1];
   // 产品货号（ParentSKU）：Temu 只认字母/数字/-/_，渲染层也用它拼变种货号前缀

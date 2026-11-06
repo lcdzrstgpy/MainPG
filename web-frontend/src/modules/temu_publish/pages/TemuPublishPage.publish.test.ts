@@ -2317,3 +2317,20 @@ test("预设面板：颜色带色卡 + 按色系分组筛选，且是浮层不�
   // 点空白处要能收起
   assert.match(panel, /target\?\.closest\("\.temu-spec-presets"\)/);
 });
+
+test("删一行变种：同色最后一行要连颜色列表一起删，否则生成又长回来", () => {
+  // 用户问「只需要一个变种，怎么删」—— 只删表格行没用，上面的颜色列表还在，
+  // 再点「生成变种」那一行会长回来。
+  assert.match(page, /const removeRow = \(key: string\) => \{/);
+  assert.match(page, /const target = rows\.find\(\(row\) => row\.key === key\);/);
+  assert.match(page, /if \(color && !next\.some\(\(row\) => row\.colorName\.trim\(\) === color\)\) \{[\s\S]{0,220}colorsText: nextColors/);
+  assert.match(page, /if \(size && !next\.some\(\(row\) => row\.sizeName\.trim\(\) === size\)\) \{[\s\S]{0,220}sizesText: nextSizes/);
+  // 至少留 1 行，并且按钮要说清为什么不能删
+  assert.match(page, /if \(!target \|\| rows\.length <= 1\) return;/);
+  assert.match(panelSrc(), /至少保留 1 个变种/);
+});
+
+/** 便捷读取面板源码（多处断言要用） */
+function panelSrc() {
+  return readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+}

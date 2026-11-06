@@ -2334,7 +2334,10 @@ textarea.temu-input {
 
 .is-console .temu-variant-spec {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.8fr) minmax(0, 1fr) auto;
+  /* 三个孩子：属性一（父下拉+值）、属性二（父下拉+值）、生成按钮。
+     以前是 4 列（属性二被拆成两格），合并后按 4 列排会把第二列压到 0.8fr，
+     输入框里的占位文字直接被截断。 */
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
   align-items: end;
   gap: 10px;
 }

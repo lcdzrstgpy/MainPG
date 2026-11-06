@@ -672,9 +672,11 @@ export function PublishSkuPanel({
         {/* 只有一个销售属性的类目（手机壳只有「型号」、毛巾只有「颜色」）不显示第二列，
             否则用户会以为必须再填一项，而 Temu 那边根本没这个属性 */}
         {sizeParentId > 0 && (
-          <>
-            <label className="temu-field">
-              <span>变种属性二：{sizeSpecName}</span>
+          // 和「属性一」保持同一副骨架：标题 + 一行（父属性下拉 + 值输入）+ 预设区。
+          // 拆成两个 field 会让网格按顺序排版，标题和输入框错行（截图里就歪了）。
+          <label className="temu-field">
+            <span>变种属性二：{sizeSpecName}</span>
+            <div className="temu-spec-row">
               <select
                 className="temu-input"
                 value={sizeParentId}
@@ -686,9 +688,6 @@ export function PublishSkuPanel({
                   </option>
                 ))}
               </select>
-            </label>
-            <label className="temu-field">
-              <span>{sizeSpecName}值（多个用逗号分隔）</span>
               <input
                 className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
                 list="temu-size-options"
@@ -699,36 +698,36 @@ export function PublishSkuPanel({
                   if (event.key === "Enter") generate();
                 }}
               />
-              {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size")}
-              {unknownSizes.length > 0 && (
-                <div className="temu-spec-bad">
-                  <p>
-                    「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设），提交会被拒。
-                  </p>
-                  {unknownSizes.map((value) => {
-                    const suggestions = suggestSpecValues(value, sizeOptions);
-                    if (!suggestions.length) return null;
-                    return (
-                      <p key={value} className="temu-spec-bad-fix">
-                        把「{value}」换成：
-                        {suggestions.map((name) => (
-                          <button
-                            key={name}
-                            type="button"
-                            className="temu-spec-chip"
-                            onClick={() => onSizesTextChange(replaceSpecValue(sizesText, value, name))}
-                            title={`用预设值「${name}」替换「${value}」`}
-                          >
-                            {name}
-                          </button>
-                        ))}
-                      </p>
-                    );
-                  })}
-                </div>
-              )}
-            </label>
-          </>
+            </div>
+            {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size")}
+            {unknownSizes.length > 0 && (
+              <div className="temu-spec-bad">
+                <p>
+                  「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设），提交会被拒。
+                </p>
+                {unknownSizes.map((value) => {
+                  const suggestions = suggestSpecValues(value, sizeOptions);
+                  if (!suggestions.length) return null;
+                  return (
+                    <p key={value} className="temu-spec-bad-fix">
+                      把「{value}」换成：
+                      {suggestions.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          className="temu-spec-chip"
+                          onClick={() => onSizesTextChange(replaceSpecValue(sizesText, value, name))}
+                          title={`用预设值「${name}」替换「${value}」`}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </p>
+                  );
+                })}
+              </div>
+            )}
+          </label>
         )}
         <button
           type="button"
@@ -1071,7 +1070,12 @@ export function PublishSkuPanel({
                 className="temu-variant-del"
                 onClick={() => onRemoveRow(row.key)}
                 disabled={rows.length <= 1}
-                title="删除这一行"
+                aria-label="删除这一行变种"
+                title={
+                  rows.length <= 1
+                    ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
+                    : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
+                }
               >
                 ×
               </button>
