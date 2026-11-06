@@ -2321,6 +2321,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const colorParent = parentSpecs.find((item) => item.parentSpecId === colorParentId) ?? null;
     const sizeParent = parentSpecs.find((item) => item.parentSpecId === sizeParentId) ?? null;
 
+    /**
+     * SKU 货号去重表。
+     * `cleanExtCode` 只保留 A-Za-z0-9-_，所以自动生成的「SKU-黑」「SKU-浅绿」
+     * 清洗后**全都是「SKU-」**，四个颜色撞成同一个货号 → 提交被判「ext_code 重复」。
+     * 用户看到表格里明明各不相同，报错却说重复，就是这么来的。
+     */
+    const usedSkuCodes = new Set<string>();
+
     /** 一行变种 → 一个 SKU 草稿。带不带规格由调用方给，字段映射只写这一份。 */
     const buildSku = (
       row: VariantRow,
@@ -2336,11 +2344,27 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             "确认一下是不是少填了一位（两个都是元，不用换算）。",
         );
       }
-      const skuCode = cleanExtCode(row.extCode);
-      if (!skuCode) throw new Error(`${at}缺少 SKU 货号（只能用字母/数字/-/_）`);
-      if (skuCode !== row.extCode.trim()) {
-        warnings.push(`${at}SKU 货号里的中文/符号已自动去掉：${row.extCode.trim()} → ${skuCode}`);
+      const rawSkuCode = row.extCode.trim();
+      if (!rawSkuCode) throw new Error(`${at}缺少 SKU 货号（只能用字母/数字/-/_）`);
+      const cleaned = cleanExtCode(rawSkuCode);
+      let skuCode = cleaned;
+      if (!cleaned || /[-_]$/.test(cleaned)) {
+        // 整条货号都是中文，或者中文在末尾（「SKU-黑」→ 洗完只剩「SKU-」）：
+        // 这等同于没写，用序号兜底，别让用户卡在「我没乱填但发不出去」
+        skuCode = `SKU-${String(usedSkuCodes.size + 1).padStart(3, "0")}`;
+        warnings.push(`${at}SKU 货号「${rawSkuCode}」去掉中文后只剩空壳，自动改用 ${skuCode}`);
+      } else if (cleaned !== rawSkuCode) {
+        warnings.push(`${at}SKU 货号里的中文/符号已自动去掉：${rawSkuCode} → ${cleaned}`);
       }
+      // 清洗后撞号（「SKU-黑」「SKU-浅绿」→ 都是 SKU-）→ 追加序号，仍然唯一
+      if (usedSkuCodes.has(skuCode)) {
+        const base = skuCode;
+        let n = 2;
+        while (usedSkuCodes.has(`${base}-${n}`)) n += 1;
+        skuCode = `${base}-${n}`;
+        warnings.push(`${at}SKU 货号去掉中文后与前面的重复，已改成 ${skuCode}`);
+      }
+      usedSkuCodes.add(skuCode);
       if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
       return {
         ext_code: skuCode,
@@ -2441,9 +2465,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           }
           skus.push(buildSku(row, at, specs, skcImage));
         }
+        // 颜色名全是中文时（黑/浅绿/象牙）cleanExtCode 会把它清成空字符串，
+        // 四个 SKC 就都变成同一个「SKC」→ 提交被判「SKC ext_code 重复」。
+        // 用颜色序号兜底，并保证后缀不被 120 字截断（截断了一样会撞号）。
+        const colorCode = cleanExtCode(color) || `C${colorIndex}`;
+        const skcHead = (productCode || "SKC").slice(0, Math.max(1, 120 - colorCode.length - 1));
         skcs.push({
-          // SKC 货号：产品货号 + 颜色，避免多色撞号
-          ext_code: [productCode || "SKC", cleanExtCode(color)].filter(Boolean).join("-").slice(0, 120),
+          ext_code: `${skcHead}-${colorCode}`,
           preview_image_urls: [skcImage],
           color_image_url: skcImage,
           main_specs: [colorSpec],

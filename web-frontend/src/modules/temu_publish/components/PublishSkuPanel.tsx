@@ -85,7 +85,7 @@ function safeCodePart(value: string): string {
     .trim();
 }
 
-/** 造一行变种；有产品货号就拼成「货号-尺码」，否则用 SKU-001。 */
+/** 造一行变种；货号只拼 ASCII 部分，拼不出可读的就用 SKU-001。 */
 export function createVariantRow(
   warehouseId: string,
   colorName: string,
@@ -97,7 +97,14 @@ export function createVariantRow(
   const parts = [extCodePrefix || "SKU", safeCodePart(colorName), safeCodePart(sizeName)].filter(
     Boolean,
   );
-  const code = parts.length > 1 ? parts.join("-") : `SKU-${String(index + 1).padStart(3, "0")}`;
+  // 货号只能是字母/数字/-/_（提交前 cleanExtCode 会把中文洗掉）。
+  // 拼了中文进去，表格里显示「SKU-黑」「SKU-浅绿」，提交时全都变成「SKU-」，
+  // 四个颜色撞成同一个货号 → 「ext_code 重复」。所以带中文时直接用序号。
+  const asciiOnly = parts.every((part) => !/[^\x20-\x7E]/.test(part));
+  const code =
+    parts.length > 1 && asciiOnly
+      ? parts.join("-")
+      : `SKU-${String(index + 1).padStart(3, "0")}`;
   return {
     key: nextKey(),
     extCode: code,

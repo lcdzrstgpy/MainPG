@@ -968,8 +968,9 @@ test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
 
   // 每个出口都用清洗后的值：SKC 货号、变种前缀、SKU 货号
   assert.match(page, /ext_code: \(productCode \|\| "SKC"\)\.slice\(0, 120\),/);
-  assert.match(page, /ext_code: \[productCode \|\| "SKC", cleanExtCode\(color\)\]/);
-  assert.match(page, /const skuCode = cleanExtCode\(row\.extCode\);/);
+  // 颜色是中文时 cleanExtCode 会清成空串，必须有序号兜底（见下一条测试）
+  assert.match(page, /const colorCode = cleanExtCode\(color\) \|\| `C\$\{colorIndex\}`;/);
+  assert.match(page, /const skuCode = cleanExtCode\(row\.extCode\);|let skuCode = cleaned;/);
   assert.match(page, /extCodePrefix=\{productCode\}/);
 });
 
@@ -2441,4 +2442,24 @@ test("类目没有预设值时必须自建规格，不能报「只认预设值�
   // 有预设但对不上仍然要拦 —— 那才是真的填错
   assert.match(page, /不在「\$\{parentSpec\.parentSpecName\}」的预设值里/);
   assert.doesNotMatch(page, /不是该 \$\{parentSpec\.parentSpecName\} 的合法值/);
+});
+
+test("中文颜色不能让货号撞车：SKU-黑/浅绿 会被洗成同一个 SKU-", () => {
+  // 用户截图：「SKC ext_code 重复：SKC」。四个颜色「黑/浅绿/浅黄/象牙」拼进货号后，
+  // cleanExtCode 只留 A-Za-z0-9-_，中文全被删 → 全变成空的或只剩「SKU-」→ 撞号。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  // 1) 默认货号不再拼中文：带非 ASCII 就直接用序号，表格里看到的就是能提交的值
+  assert.match(panel, /const asciiOnly = parts\.every\(\(part\) => !\/\[\^\\x20-\\x7E\]\/\.test\(part\)\);/);
+  assert.match(panel, /parts\.length > 1 && asciiOnly/);
+
+  // 2) SKC 货号：颜色洗成空时用 C1/C2… 兜底，并且保证后缀不被 120 字截断
+  assert.match(page, /const colorCode = cleanExtCode\(color\) \|\| `C\$\{colorIndex\}`;/);
+  assert.match(page, /ext_code: `\$\{skcHead\}-\$\{colorCode\}`/);
+  assert.match(page, /120 - colorCode\.length - 1/);
+
+  // 3) SKU 货号：洗成空壳（「SKU-」）或撞号时自动补序号，并留 warning
+  assert.match(page, /const usedSkuCodes = new Set<string>\(\);/);
+  assert.match(page, /if \(!cleaned \|\| \/\[-_\]\$\/\.test\(cleaned\)\) \{/);
+  assert.match(page, /SKU 货号去掉中文后与前面的重复，已改成/);
 });
