@@ -1089,6 +1089,35 @@ class TemuPublishService:
     # 记下来，避免每次切类目都打一次必然失败的网关。
     _size_chart_absent: set[int] = set()
 
+    @staticmethod
+    def _size_table_entry(row: Any) -> dict[str, Any] | None:
+        """把网关返回的一行尺码表收敛成 `{id, name}`。
+
+        网关这行的字段名一直没确认（`sizeSpecDataList` 里到底叫 businessId 还是
+        sizeSpecId 没人给过样例），所以这里按优先级挨个试，**认不出 id 就丢弃**——
+        宁可少列一张，也不要给前端一个填不进去的假 ID。
+        """
+        if not isinstance(row, dict):
+            return None
+        table_id = 0
+        for key in ("businessId", "sizeSpecId", "sizeTemplateId", "specId", "templateId", "id"):
+            try:
+                value = int(row.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                table_id = value
+                break
+        if not table_id:
+            return None
+        name = ""
+        for key in ("name", "sizeSpecName", "groupName", "tableName", "title", "remark"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                name = value.strip()[:40]
+                break
+        return {"id": table_id, "name": name}
+
     def size_charts(self, cat_id: int) -> dict[str, Any]:
         """这个类目要不要尺码表、店里有哪些现成表。
 
@@ -1177,8 +1206,13 @@ class TemuPublishService:
             "required": True,
             "has_size_chart": bool(rows),
             "count": len(rows),
-            "tables": rows[:5],
-            # 结构未知，原样带回去（真正接 selector 时先看这条）
+            # 店里已有的表，收敛成 {id, name} 给前端点选；认不出 id 的丢掉（见 _size_table_entry）
+            "tables": [
+                entry
+                for entry in (self._size_table_entry(row) for row in rows[:20])
+                if entry is not None
+            ],
+            # 原始结构照旧带回去（真正接 selector 时先看这条）
             "raw": rows[:3],
             "elements": elements,
             "required_elements": [item["name"] for item in elements if item["necessary"]],

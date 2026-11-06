@@ -772,6 +772,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const patch = (partial: Partial<PublishForm>) => setForm((current) => ({ ...current, ...partial }));
 
+  /**
+   * 已选的尺码表模板 ID（逗号/空格分隔的字符串 ↔ 数组）。
+   * 店里已经有表的时候，让用户点一下直接填，别去 Temu 后台抄 ID。
+   */
+  const selectedSizeTemplateIds = form.sizeTemplates
+    .split(/[,，\s]+/)
+    .map((item) => Number(item))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  const toggleSizeTemplate = (id: number) => {
+    const next = selectedSizeTemplateIds.includes(id)
+      ? selectedSizeTemplateIds.filter((item) => item !== id)
+      : [...selectedSizeTemplateIds, id];
+    patch({ sizeTemplates: next.join(",") });
+  };
+
   // 表单内容落本机：切页签/刷新不丢，等同「保存到待发布」。
   // 防抖 300ms —— 标题每敲一个字都全量写一次（含长图片 URL 数组）会卡。
   useEffect(() => {
@@ -4047,7 +4063,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   尺码表模板 ID
                   <em className="temu-muted">
                     {sizeChart.has
-                      ? `这个类目需要尺码表（店里已有 ${sizeChart.info?.count ?? 0} 张）：填模板 ID，多个用逗号`
+                      ? `这个类目需要尺码表（店里已有 ${sizeChart.info?.count ?? 0} 张）：点下面的表直接用，也可以手填 ID`
                       : "这个类目必须绑尺码表：先在 Temu 后台建好，再把模板 ID 填这里"}
                   </em>
                 </span>
@@ -4059,6 +4075,35 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       : ""}
                     去卖家后台「商品管理 → 尺码表模板」建一张，再把模板 ID 填到这里
                     （接口建表 sizecharts.create 的参数结构还没打通，暂时只能后台建）。
+                  </p>
+                ) : null}
+                {/* 店里的商品既然带尺码表，就该能直接点选 —— 以前只能去后台抄那串 ID。
+                    后端会把网关返回的行收敛成 {id, name}，认不出 id 的不会出现在这里。 */}
+                {sizeChart.info?.tables?.length ? (
+                  <div className="temu-sizechart-picks">
+                    <span className="temu-muted">用店里已有的尺码表：</span>
+                    {sizeChart.info.tables.map((table) => {
+                      const picked = selectedSizeTemplateIds.includes(table.id);
+                      return (
+                        <button
+                          key={table.id}
+                          type="button"
+                          className={`temu-sizechart-chip${picked ? " is-picked" : ""}`}
+                          onClick={() => toggleSizeTemplate(table.id)}
+                          title={picked ? "再点一下移除" : `填入模板 ID ${table.id}`}
+                        >
+                          {table.name || "尺码表"}
+                          <em>{table.id}</em>
+                          {picked ? <b aria-hidden="true">✓</b> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {sizeChart.has && !sizeChart.info?.tables?.length ? (
+                  <p className="temu-field-note">
+                    店里已有 {sizeChart.info?.count ?? 0} 张尺码表，但网关没返回能用的 ID ——
+                    去卖家后台复制模板 ID 填到下面。
                   </p>
                 ) : null}
                 {sizeChart.info?.sizes?.length ? (

@@ -25,8 +25,12 @@ export type TemuSizeChartInfo = {
   required?: boolean;
   has_size_chart: boolean;
   count: number;
-  /** 店里已有的表（结构未确认，仅备查） */
-  tables?: unknown[];
+  /**
+   * 店里已有的尺码表（可以直接填进 sizeTemplateIds 的那种）。
+   * 后端收敛成 `{id, name}`：网关字段名没确认，认不出 id 的行会被丢掉，所以
+   * `count` 可能大于 `tables.length`。
+   */
+  tables?: Array<{ id: number; name: string }>;
   raw?: unknown;
   /** 该尺码组的测量项（肩宽/胸围全围/裙长…） */
   elements?: Array<{ id: number; name: string; necessary: boolean }>;

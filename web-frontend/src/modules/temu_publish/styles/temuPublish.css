@@ -6942,6 +6942,62 @@ textarea.temu-input {
   font-weight: 700;
 }
 
+/* 店里已有的尺码表：点一下直接填 ID，不用去后台抄 */
+.is-console .temu-sizechart-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.is-console .temu-sizechart-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-module-border-strong, #cfdae4);
+  border-radius: 999px;
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--temu-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+
+.is-console .temu-sizechart-chip em {
+  color: var(--temu-text-muted);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.is-console .temu-sizechart-chip:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+/* 已选中：主色描边 + 主色浅底 + 勾 */
+.is-console .temu-sizechart-chip.is-picked {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(
+    in srgb,
+    var(--theme-module-primary-strong, #087bf5) 10%,
+    var(--theme-module-surface-raised, #fff)
+  );
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.is-console .temu-sizechart-chip.is-picked em {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.is-console .temu-sizechart-chip b {
+  font-weight: 700;
+}
+
 /* ================================================================
    深色主题下的金属质感
    ----------------------------------------------------------------

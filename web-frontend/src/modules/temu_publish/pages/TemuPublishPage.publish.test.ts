@@ -2483,3 +2483,21 @@ test("长宽高必须按「最长 ≥ 次长 ≥ 最短」提交（Temu 体积�
   assert.match(batch, /length_mm: Math\.max\(1, Math\.round\(sortedDims\[0\] \* 10\)\)/);
   assert.match(batch, /height_mm: Math\.max\(1, Math\.round\(sortedDims\[2\] \* 10\)\)/);
 });
+
+test("尺码表：店里已有的表要能点选，不用去后台抄 ID", () => {
+  // 用户反馈：Vesthara Shop 里有带尺码表的商品，发布时却只能手填一串模板 ID。
+  // 后端把 sizecharts.get 的行收敛成 {id, name}，前端直接列成可点的胶囊。
+  assert.match(page, /const selectedSizeTemplateIds = form\.sizeTemplates/);
+  assert.match(page, /const toggleSizeTemplate = \(id: number\) => \{/);
+  assert.match(page, /patch\(\{ sizeTemplates: next\.join\(","\) \}\)/);
+  assert.match(page, /className="temu-sizechart-picks"/);
+  assert.match(page, /className=\{`temu-sizechart-chip\$\{picked \? " is-picked" : ""\}`\}/);
+  // 没有名字的行退化成「尺码表 + ID」，不能让用户看到空白胶囊
+  assert.match(page, /\{table\.name \|\| "尺码表"\}/);
+  // 有表但网关没给 ID 时要说清楚，别让人对着空白找
+  assert.match(page, /但网关没返回能用的 ID/);
+
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.match(css, /\.is-console \.temu-sizechart-chip \{/);
+  assert.match(css, /\.is-console \.temu-sizechart-chip\.is-picked \{/);
+});

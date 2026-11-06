@@ -3634,3 +3634,30 @@ def test_variants_stock_uses_trusted_value_only() -> None:
     }
     variants = _draft_extra_fields(draft)["variants"]
     assert [item["stock"] for item in variants] == [None, 304, 0]
+
+
+def test_size_charts_exposes_pickable_tables(tmp_path: Path) -> None:
+    """店里已有的尺码表要收敛成 {id, name} 给前端点选。
+
+    网关那行的字段名一直没确认（businessId / sizeSpecId 都可能），所以按优先级试；
+    认不出 id 的行必须丢掉 —— 给前端一个填不进去的假 ID 比不给更糟。
+    """
+    client = SizeChartClient(
+        [
+            {"businessId": 908812, "name": "女装标准尺码表"},
+            {"sizeSpecId": 908815},
+            {"foo": "bar"},
+        ],
+        elements=[{"id": 10002, "name": "胸围全围", "necessary": True}],
+    )
+    service = TemuPublishService(tmp_path / "e.sqlite3", client=client)
+    info = service.size_charts(24376)
+
+    assert [table["id"] for table in info["tables"]] == [908812, 908815]
+    assert info["tables"][0]["name"] == "女装标准尺码表"
+    # 没有名字也要留一行，前端会退化成「表 #id」
+    assert info["tables"][1]["name"] == ""
+    # count 是网关给的原始行数，tables 是能用的那些 —— 两者可以不等
+    assert info["count"] == 3
+    # 原始结构照旧保留，排查时还要看它
+    assert info["raw"][0] == {"businessId": 908812, "name": "女装标准尺码表"}
