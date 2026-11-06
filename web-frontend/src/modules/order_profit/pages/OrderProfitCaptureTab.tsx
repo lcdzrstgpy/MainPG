@@ -116,10 +116,19 @@ export function OrderProfitCaptureTab({
         });
         setShops(shopPayload.shops || []);
         setActiveShop(shopPayload.active || null);
-        setSettings(settingsPayload.settings);
-        setRateInput(String(settingsPayload.settings.usd_cny_rate));
-        setCommissionInput(String(Number(settingsPayload.settings.commission_rate) * 100));
-        setHeadInput(String(settingsPayload.settings.head_unit_price_cny));
+        // 接口回包里没有 settings（后端异常时可能回空对象、老版本后端也可能没这个字段）时
+        // 不能直接解引用 —— 一抛就是整页白屏（渲染期 TypeError 只能靠错误边界兜）。
+        // 三个字段逐个兜默认值，和后端 repository.settings() 的建表默认保持一致。
+        const rawSettings = settingsPayload?.settings;
+        const nextSettings: OrderProfitSettings = {
+          usd_cny_rate: Number(rawSettings?.usd_cny_rate ?? 7.2) || 7.2,
+          commission_rate: Number(rawSettings?.commission_rate ?? 0.05),
+          head_unit_price_cny: Number(rawSettings?.head_unit_price_cny ?? 0) || 0,
+        };
+        setSettings(nextSettings);
+        setRateInput(String(nextSettings.usd_cny_rate));
+        setCommissionInput(String(nextSettings.commission_rate * 100));
+        setHeadInput(String(nextSettings.head_unit_price_cny));
       })
       .catch((cause) => {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
