@@ -1761,10 +1761,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 详情图**不能裁方** —— 商详楼层是长图，裁成 1:1 会把内容切掉；
    * 详情图交给服务端按原宽上传（target_width=0 表示不缩放），宽度在提交时统一。
    */
-  const uploadTo = (slot: ImageSlot, event: ChangeEvent<HTMLInputElement>) =>
+  const uploadFiles = (slot: ImageSlot, files: File[]) =>
     run("upload", async () => {
-      const files = Array.from(event.target.files ?? []);
-      event.target.value = "";
       if (!files.length) return;
       // 数量先挡：外包装图 Temu 只收 6 张，轮播 10 张。传上去再被拒会白等半天上传
       const exist = splitLines(slotText(slot)).length;
@@ -3551,18 +3549,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     {slot.label}
                     {slot.required && <em className="temu-required">*</em>}
                   </strong>
-                  <span className="temu-muted">{slotHint}</span>
-                  <label className="temu-btn is-small">
-                    + 添加图片
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      hidden
-                      onChange={(event) => uploadTo(slot.key, event)}
-                      disabled={busy !== ""}
-                    />
-                  </label>
+                  {/* 轮播的说明放进上传位里（那儿位置大），这里再写一遍就是重复 */}
+                  {slot.key === "carousel" ? null : <span className="temu-muted">{slotHint}</span>}
                   <button
                     type="button"
                     className="temu-btn is-small"
@@ -3572,10 +3560,25 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     从成品库挑图
                   </button>
                 </div>
+                {/* 上传位就是空态：虚线落点比「+ 添加图片」小按钮直观，能点、能拖、能粘 */}
                 <TemuImageStrip
                   urls={splitLines(slotText(slot.key))}
                   onChange={(next) => setSlotText(slot.key, next.join("\n"))}
                   firstBadge={slot.key === "carousel" ? "主图" : undefined}
+                  onAddFiles={(files) => void uploadFiles(slot.key, files)}
+                  addHint={`点击上传${slot.label}`}
+                  addSubHint={
+                    slot.key === "carousel"
+                      ? apparelSlot
+                        ? "至少 3 张 · 3:4 竖图（≥1344×1792）· 自动裁切压缩"
+                        : "至少 3 张 · 1:1 方图（≥800×800）· 自动裁切压缩"
+                      : slot.key === "detail"
+                        ? "最多 30 张，一张一个详情模块；长图不裁切，提交时统一宽度"
+                        : "最多 6 张，建议含正面 / 侧面 / 底部 / 细节特写"
+                  }
+                  variant={slot.key === "carousel" ? "primary" : "compact"}
+                  maxCount={IMAGE_LIMITS[slot.key]}
+                  busy={busy !== ""}
                   emptyHint={
                     slot.key === "carousel"
                       ? `草稿带入的图会显示在这里；上传会自动裁成 ${apparelSlot ? "3:4" : "1:1"}`
@@ -3583,11 +3586,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   }
                 />
                 {slot.key === "carousel" ? (
-                  <p className="temu-image-rules">
-                    {apparelSlot
-                      ? "服饰类目要求：至少 3 张、最多 10 张 · 比例 3:4 · 宽 ≥1340、高 ≥1785 · 单张 ≤2MB"
-                      : "Temu 要求：至少 3 张、最多 10 张 · 比例 1:1 · 宽高 ≥800px · 单张 ≤2MB"}
-                    （上传时自动裁切压缩，按顺序提交，第一张是主图）
+                  // 规则长句收进 title：正文只留一行关键数字，不再三行灰字压在图下面
+                  <p
+                    className="temu-image-rules"
+                    title={
+                      apparelSlot
+                        ? "服饰类目轮播图：至少 3 张、最多 10 张；比例 3:4；宽 ≥1340、高 ≥1785；单张 ≤2MB。上传时自动居中裁切并压缩，按顺序提交，第一张是主图。"
+                        : "轮播图：至少 3 张、最多 10 张；比例 1:1；宽高 ≥800px；单张 ≤2MB。上传时自动裁切并压缩，按顺序提交，第一张是主图。"
+                    }
+                  >
+                    第一张是主图，可用 ← → 调序；单张 ≤2MB
+                    <span className="temu-muted">（悬停看完整规则）</span>
                   </p>
                 ) : null}
               </div>
@@ -3609,6 +3618,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     onChange={(event) => patch({ material: event.target.value })}
                     placeholder="覆盖素材图地址（可选）"
                   />
+                  {/* 手里只有竖图？这里直接裁成 1:1 再传，省得用户自己找工具转 */}
+                  <label className="temu-btn is-small" title="选一张图，自动居中裁成 1:1（≥800×800）后上传">
+                    上传方图
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      disabled={busy !== ""}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (!file) return;
+                        void run("material", async () => {
+                          const leaf = categoryPath[categoryPath.length - 1];
+                          if (!leaf?.catId) {
+                            throw new Error("请先选到叶子类目再上传素材图：图片要按类目上传到 Temu 图床。");
+                          }
+                          const square = await toSquareDataUrl(await blobToDataUrl(file));
+                          const uploaded = pickUploadedUrl(
+                            await temuPublishApi.uploadImage(square, leaf.catId),
+                          );
+                          if (!uploaded) throw new Error("素材图上传成功但没有返回图片地址");
+                          patch({ material: uploaded });
+                        });
+                      }}
+                    />
+                  </label>
                 </div>
                 {isApparelCategory ? (
                   <em className="temu-field-note">

@@ -1674,6 +1674,96 @@ textarea.temu-input {
   font-size: 0.7rem;
   font-weight: 700;
 }
+
+/* ---- 上传位（空态 / 条带末尾的「＋」格） ----
+   空槽位以前只有一行灰字，看不出这里能放图。给一个能点、能拖、能粘贴的落点：
+   空态铺满整行，有图时缩成 88×88 与缩略图同高。 */
+.temu-img-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 104px;
+  padding: 14px;
+  border: 1.5px dashed #c6d8e5;
+  border-radius: 10px;
+  background: #fafdff;
+  color: #5c7d94;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.temu-img-add.is-compact {
+  width: 88px;
+  height: 88px;
+  min-height: 0;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.temu-img-add.is-over {
+  border-color: #28a0cf;
+  background: #eef9ff;
+  color: #0f6f95;
+}
+
+.temu-img-add.is-disabled {
+  cursor: not-allowed;
+  border-color: #e2ebf2;
+  background: #fafcfd;
+  color: #b3c1cc;
+}
+
+.temu-img-add:hover:not(.is-disabled),
+.temu-img-add:focus-visible {
+  border-color: #7cc7e3;
+  background: #f2fbff;
+  color: #0f6f95;
+  outline: none;
+}
+
+.temu-img-add-plus {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 300;
+}
+
+.temu-img-add.is-compact .temu-img-add-plus {
+  font-size: 20px;
+}
+
+.temu-img-add-text {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.temu-img-add-sub {
+  color: #8ba0b0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 可选槽位：小落点 + 右侧一行说明，横向占位就够 */
+.temu-img-add-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 88px;
+}
+
+.temu-img-add-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #8ba0b0;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
 .temu-img-strip-hint {
   margin: 0 0 12px;
   color: #8ba0b0;
@@ -6066,6 +6156,33 @@ textarea.temu-input {
 /* 槽位里那句「Temu 要求…」跟着子卡走，别掉到卡片外面 */
 .is-console .temu-img-group .temu-image-rules {
   margin: 0;
+}
+
+/* 上传位吃主题色：写死的浅蓝在深色主题上会变成一块白斑 */
+.is-console .temu-img-add {
+  border-color: var(--theme-module-border-strong, #c6d8e5);
+  background: var(--theme-module-surface-soft, #fafdff);
+  /* --theme-text 在这个页面的作用域里没有定义，落到写死的 #5c7d94，
+     深色主题下算出来只有 3.27:1（实测）。这里跟页面统一用 --temu-text。 */
+  color: var(--temu-text, #2c4a61);
+}
+
+.is-console .temu-img-add:hover:not(.is-disabled),
+.is-console .temu-img-add:focus-visible,
+.is-console .temu-img-add.is-over {
+  border-color: var(--theme-module-primary-strong, #28a0cf);
+  background: color-mix(
+    in srgb,
+    var(--theme-module-primary-strong, #28a0cf) 8%,
+    var(--theme-module-surface-soft, #fafdff)
+  );
+  color: var(--theme-module-primary-strong, #0f6f95);
+}
+
+.is-console .temu-img-add-sub,
+.is-console .temu-img-add-note,
+.is-console .temu-img-add.is-disabled {
+  color: var(--temu-text-muted, #6b8296);
 }
 
 /* ---- 3. 右栏指标：三个数字做成小卡，别只是一排文字 ---- */

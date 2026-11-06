@@ -124,8 +124,12 @@ test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", ()
   // 草稿带入的竖图没法自动转（alicdn 取不到 canvas 像素），必须在提交前说清楚
   assert.match(page, /服饰类目的产品素材图要单独填一张 1:1（宽 ≥800px）的方图/);
   // 界面文案也要跟着类目变，不能写着 1:1 实际裁 3:4
-  assert.match(page, /服饰类目要竖图 3:4（≥1344×1792）/);
-  assert.match(page, /比例 3:4 · 宽 ≥1340、高 ≥1785/);
+  // （2026-11-06 改版：轮播的说明收进上传位，写成一行「3:4 竖图（≥1344×1792）」，
+  //   完整规则挂在 title 上 —— 断言跟着改，但「服饰必须出现 3:4 而不是 1:1」这条不能丢）
+  assert.match(page, /3:4 竖图（≥1344×1792）· 自动裁切压缩/);
+  assert.match(page, /比例 3:4；宽 ≥1340、高 ≥1785/);
+  // 非服饰分支仍然要写 1:1 / ≥800×800
+  assert.match(page, /1:1 方图（≥800×800）· 自动裁切压缩/);
 });
 
 test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () => {
@@ -2237,4 +2241,21 @@ test("服装类目「必须有尺码表但店里没建」要显式提示，不�
   assert.match(page, /Temu 要求必填测量项：\$\{sizeChart\.info\.required_elements\.join\("、"\\?\)\}/);
   assert.match(page, /商品管理 → 尺码表模板/);
   assert.match(page, /该尺码组可选尺码：/);
+});
+
+test("图片槽位：上传位要看得见、能点能拖能粘（不再靠一行灰字）", () => {
+  const strip = readFileSync(new URL("../components/TemuImageStrip.tsx", import.meta.url), "utf8");
+  // 空槽位直接是虚线落点，有图时缩成条带末尾的 ＋ 格
+  assert.match(strip, /function ImageAddTile\(/);
+  assert.match(strip, /onDrop=\{\(event\) => \{/);
+  assert.match(strip, /onPaste=\{\(event\) => \{/);
+  assert.match(strip, /type="file"/);
+  assert.match(strip, /variant === "compact"/);
+  // 上传位必须真的接到上传逻辑上；顶部那颗隐蔽的「+ 添加图片」按钮已经删掉
+  assert.match(page, /onAddFiles=\{\(files\) => void uploadFiles\(slot\.key, files\)\}/);
+  assert.doesNotMatch(page, /\+\s*添加图片\s*<input/, "不该再有那个把 file input 藏进小按钮的写法");
+  // 主图槽位铺满整行、可选项只占一个小格：三个一样大的虚线框会把页面撑长且没有主次
+  assert.match(page, /variant=\{slot\.key === "carousel" \? "primary" : "compact"\}/);
+  // 长规则收进 title，正文只留一行
+  assert.match(page, /第一张是主图，可用 ← → 调序；单张 ≤2MB/);
 });
