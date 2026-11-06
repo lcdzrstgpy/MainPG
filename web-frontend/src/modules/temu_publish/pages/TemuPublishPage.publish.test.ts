@@ -505,12 +505,13 @@ test("详情图：手动上传不裁方、提交时统一宽度（Temu 2000306�
   assert.match(page, /detail_images: detailImages,/);
 });
 
-test("规格值必须来自类目预设，多颜色合并成一个 SKC", () => {
-  // 自己 createSpec 造颜色会被 Temu 判「不合法的规格属性 Color_Black」
-  assert.doesNotMatch(page, /temuPublishApi\.createSpec\(/);
+test("规格值优先用类目预设；只有类目没有预设时才自建", () => {
+  // 有预设时必须命中预设（自己 createSpec 造颜色会被 Temu 判「不合法的规格属性 Color_Black」），
+  // 没有预设的类目（化妆包/桌布这类自定义规格）才允许自建 —— 边界见下一条测试。
+  assert.match(page, /const matchedName = matchPresetValue\(name, options\.map\(\(item\) => item\.name\)\)/);
+  assert.match(page, /if \(!options\.length\) \{[\s\S]{0,300}temuPublishApi\.createSpec\(/);
   assert.match(page, /const saleValueIndex = useMemo\(/);
   assert.match(page, /if \(!prop\.isSale\) continue;/);
-  assert.match(page, /Temu 只认类目预设值/);
   // 变种表的颜色/尺码给预设值下拉
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /list="temu-color-options"/);
@@ -2422,4 +2423,22 @@ test("金属质感：高光/暗边/描边三层都由变量控制，深色主题
   assert.match(css, /\.temu-btn-primary:active:not\(:disabled\) \{[\s\S]{0,400}inset 0 2px 5px/);
   // 文字阴影会糊：diamond 主题下主按钮是浅底深字
   assert.doesNotMatch(css, /\.temu-btn-primary \{[\s\S]{0,400}text-shadow/);
+});
+
+test("类目没有预设值时必须自建规格，不能报「只认预设值」", () => {
+  // 截图复现：化妆包这类自定义规格类目，界面写着「可以自己填写（Temu 按自定义规格收）」，
+  // 点提交却回「「黑」不是该 颜色 的合法值：Temu 只认类目预设值」—— 永远发不出去。
+  // 批量发布那边一直有自建分支，单个发布漏了。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /这个类目没有\$\{label\}预设值，可以自己填写（Temu 按自定义规格收）/);
+
+  // 提交端要跟这句承诺一致：没有预设 → createSpec
+  assert.match(page, /const createdSpecsRef = useRef\(new Map<string, TemuSkuSpec>\(\)\)/);
+  assert.match(page, /if \(!options\.length\) \{[\s\S]{0,300}temuPublishApi\.createSpec\(parentSpec\.parentSpecId, name\)/);
+  assert.match(page, /createdSpecsRef\.current\.set\(cacheKey, resolved\)/);
+  // 同一个值只建一次（颜色×尺码会反复解析）
+  assert.match(page, /const cached = createdSpecsRef\.current\.get\(cacheKey\);\s*if \(cached\) return cached;/);
+  // 有预设但对不上仍然要拦 —— 那才是真的填错
+  assert.match(page, /不在「\$\{parentSpec\.parentSpecName\}」的预设值里/);
+  assert.doesNotMatch(page, /不是该 \$\{parentSpec\.parentSpecName\} 的合法值/);
 });

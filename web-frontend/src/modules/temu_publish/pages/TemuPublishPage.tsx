@@ -2015,6 +2015,24 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setSpecMismatch(findSpecMismatches(attributes, next));
   };
 
+  /**
+   * 自建规格值的缓存：颜色 × 尺码是笛卡尔积，同一个值会被反复解析，
+   * 不缓存就会对同一个值重复 createSpec（Temu 侧可能报「已存在」）。
+   */
+  const createdSpecsRef = useRef(new Map<string, TemuSkuSpec>());
+
+  /**
+   * 把「颜色 / 尺码 的文字值」解析成 Temu 认的规格（spec_id）。
+   *
+   * 两条路：
+   * - 类目有预设值 → 必须命中预设，对不上就报错让用户从下拉选；
+   * - 类目没有这个属性的预设值（化妆包 / 桌布这类自定义规格类目：attrs 里一个
+   *   isSale 都没有，`inputMaxSpecNum` 却是 2）→ 调 createSpec 自己建。
+   *
+   * 以前这里缺第二条分支，一律抛「Temu 只认类目预设值」，而界面上明明写着
+   * 「可以自己填写（Temu 按自定义规格收）」—— 于是这类类目永远发不出去。
+   * 批量发布那边一直有这条自建分支，单个发布漏了。
+   */
   const ensureSpec = async (
     parentSpec: TemuParentSpec | null,
     specName: string,
@@ -2022,23 +2040,50 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (!parentSpec) throw new Error("Temu 父规格列表为空，无法创建规格");
     const name = specName.trim();
     if (!name) throw new Error("规格名称不能为空");
+
+    const cacheKey = `${parentSpec.parentSpecId}:${name}`;
+    const cached = createdSpecsRef.current.get(cacheKey);
+    if (cached) return cached;
+
     const options = saleValueIndex.get(parentSpec.parentSpecId) ?? [];
     // 草稿带来的是「安卓通用款-黑色」「迷雾蓝」这种描述，先自动对齐到预设值
     const matchedName = matchPresetValue(name, options.map((item) => item.name));
     const preset = matchedName ? options.find((item) => item.name === matchedName) : undefined;
-    if (!preset) {
-      const samples = specOptions(parentSpec.parentSpecId).slice(0, 6).join("、");
-      throw new Error(
-        `「${name}」不是该 ${parentSpec.parentSpecName} 的合法值：Temu 只认类目预设值` +
-          (samples ? `，请从下拉里选（如 ${samples}）` : ""),
-      );
+    if (preset) {
+      return {
+        parent_spec_id: parentSpec.parentSpecId,
+        parent_spec_name: parentSpec.parentSpecName,
+        spec_id: preset.specId,
+        spec_name: preset.name,
+      };
     }
-    return {
-      parent_spec_id: parentSpec.parentSpecId,
-      parent_spec_name: parentSpec.parentSpecName,
-      spec_id: preset.specId,
-      spec_name: preset.name,
-    };
+
+    // 这个属性压根没有预设值 → 自建（界面已经告诉用户「Temu 按自定义规格收」）
+    if (!options.length) {
+      const created = await temuPublishApi.createSpec(parentSpec.parentSpecId, name);
+      const specId = Number(created.specId ?? 0);
+      if (!specId) {
+        throw new Error(
+          `${parentSpec.parentSpecName}「${name}」建成自定义规格失败（Temu 没返回 spec_id），重试一次；` +
+            "仍失败就去 Temu 后台确认这个类目还能不能加自定义规格",
+        );
+      }
+      const resolved: TemuSkuSpec = {
+        parent_spec_id: parentSpec.parentSpecId,
+        parent_spec_name: parentSpec.parentSpecName,
+        spec_id: specId,
+        spec_name: created.specName?.trim() || name,
+      };
+      createdSpecsRef.current.set(cacheKey, resolved);
+      return resolved;
+    }
+
+    // 有预设但对不上：这是真的填错了，明确告诉他能选什么
+    const samples = specOptions(parentSpec.parentSpecId).slice(0, 6).join("、");
+    throw new Error(
+      `「${name}」不在「${parentSpec.parentSpecName}」的预设值里` +
+        (samples ? `：点上方「浏览全部预设」选一个（如 ${samples}）` : ""),
+    );
   };
 
   /**
