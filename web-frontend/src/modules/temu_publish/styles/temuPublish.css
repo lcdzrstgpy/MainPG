@@ -3129,9 +3129,61 @@ textarea.temu-input {
 }
 
 /* 首屏加载提示：占位一行，避免表单上方突然空一块或闪红条 */
-.temu-console-loading {
-  margin: 0 0 10px;
-  font-size: 12.5px;
+/* 读取店铺配置时的加载卡：一行灰字看着像报错条，改成带转圈的卡 */
+.temu-loading-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 14px;
+  background: linear-gradient(
+    180deg,
+    var(--theme-module-surface-soft, #f7fafc) 0%,
+    var(--theme-module-surface, #ffffff) 100%
+  );
+}
+
+.temu-loading-spinner {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 2px solid color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 20%, transparent);
+  border-top-color: var(--theme-module-primary-strong, #087bf5);
+  border-radius: 50%;
+  animation: temu-spin 0.8s linear infinite;
+}
+
+@keyframes temu-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .temu-loading-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+.temu-loading-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.temu-loading-text strong {
+  color: var(--temu-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.temu-loading-text em {
+  /* 62% 在白底上只有 ~4.1:1（小字不达标），压到 72% */
+  color: color-mix(in srgb, var(--temu-text) 72%, transparent);
+  font-size: 11.5px;
+  font-style: normal;
+  line-height: 1.5;
 }
 
 /* 批量编辑填了但没点「应用到全部」：这些值不会进提交，必须显眼 */
@@ -3996,49 +4048,58 @@ textarea.temu-input {
   backdrop-filter: blur(6px);
 }
 
-/* 流程线：节点 + 连接段。整条线撑满左侧，右侧留给「已完成 n/5」和来源入口 */
-.temu-stepbar-track {
+/* 流程线版式：圆点在上、文字在下，圆点之间用短连接段（像物流轨迹）。
+   不用「圆点 + 长横线 + 文字」—— 那条线会被拉成一米长，文字飘在线上很散。 */
+.temu-stepbar-flow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex: 1 1 auto;
+  min-width: 0;
+  gap: 0;
+}
+
+.temu-stepbar-node {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  /* 等宽单元格：连接段用 width:100% 就能正好画到下一个圆点中心 */
+  flex: 1 1 0;
   min-width: 0;
 }
 
-.temu-stepbar-cell {
-  display: flex;
-  align-items: center;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.temu-stepbar-cell:last-child {
-  flex: 0 0 auto;
-}
-
-.temu-stepbar-line {
-  flex: 1 1 auto;
-  min-width: 18px;
+/* 连接段：从本节点圆点中心（left:50%）画到下一节点圆点中心，垂直对齐圆点中心 */
+.temu-stepbar-seg {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  width: 100%;
   height: 2px;
-  margin: 0 4px;
   border-radius: 2px;
-  /* 待完成的连接段要看得见但不抢戏：直接用边框色在白底上只有 1.1:1，等于没有 */
-  background: color-mix(in srgb, var(--temu-text) 20%, transparent);
+  /* 待完成的连接段要看得见但不抢戏：直接用边框色在白底上只有 1.1:1 */
+  background: color-mix(in srgb, var(--temu-text) 16%, transparent);
   transition: background 0.2s ease;
 }
 
-.temu-stepbar-line.is-done {
-  background: var(--temu-ok, #1f9d63);
-  opacity: 0.55;
+.temu-stepbar-seg.is-done {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--theme-success, #1f7a4c) 72%, transparent),
+    color-mix(in srgb, var(--theme-success, #1f7a4c) 42%, transparent)
+  );
 }
 
 .temu-stepbar-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px 5px 6px;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 2px 6px;
   border: 1px solid transparent;
-  border-radius: 999px;
-  background: transparent;
+  border-radius: 10px;
+  /* 底下的连接段不能从文字后面透出来 */
+  background: var(--theme-card-bg-solid, #fff);
   /* 五个区块名是导航主力，别用弱化灰：深色主题（diamond）下灰字几乎看不见 */
   color: var(--temu-text);
   font-size: 13.5px;
@@ -4056,34 +4117,40 @@ textarea.temu-input {
 .temu-stepbar-num {
   display: grid;
   place-items: center;
-  width: 19px;
-  height: 19px;
+  width: 22px;
+  height: 22px;
   border: 1px solid var(--theme-module-border-strong, #cfdae4);
   border-radius: 50%;
+  background: var(--theme-card-bg-solid, #fff);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
-/* 已完成：实心绿点，和右侧检查清单的 ✓ 是同一套语义 */
+.temu-stepbar-label {
+  font-size: 12.5px;
+  line-height: 1.2;
+}
+
+/* 已完成：实心绿点 + ✓，和右侧检查清单是同一套语义 */
 .temu-stepbar-item.is-done {
   color: var(--temu-text);
 }
 
 .temu-stepbar-item.is-done .temu-stepbar-num {
   border-color: transparent;
-  background: var(--temu-ok, #1f9d63);
+  background: var(--theme-success, #1f7a4c);
   color: var(--theme-on-primary, #fff);
 }
 
-/* 当前所在区块：描边 + 轻投影，像一枚「被按下」的胶囊 */
+/* 当前所在区块：描边 + 主色圆点 + 轻投影，像一枚「被按下」的胶囊 */
 .temu-stepbar-item.is-active {
-  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 55%, transparent);
+  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 42%, transparent);
   background: color-mix(
     in srgb,
-    var(--theme-module-primary-strong, #087bf5) 7%,
+    var(--theme-module-primary-strong, #087bf5) 6%,
     var(--theme-card-bg-solid, #fff)
   );
   color: var(--theme-module-primary-strong, #087bf5);
@@ -4094,12 +4161,14 @@ textarea.temu-input {
   border-color: transparent;
   background: var(--theme-module-primary-strong, #087bf5);
   color: var(--theme-on-primary, #fff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 16%, transparent);
 }
 
-/* 已完成且当前所在：别再染成蓝色，保持绿点 + 描边即可 */
+/* 已完成且当前所在：圆点保持绿色，只靠胶囊底色标示位置 */
 .temu-stepbar-item.is-done.is-active .temu-stepbar-num {
-  background: var(--temu-ok, #1f9d63);
+  background: var(--theme-success, #1f7a4c);
   color: var(--theme-on-primary, #fff);
+  box-shadow: 0 0 0 3px var(--theme-success-soft, rgba(47, 158, 99, 0.16));
 }
 
 .temu-stepbar-progress {

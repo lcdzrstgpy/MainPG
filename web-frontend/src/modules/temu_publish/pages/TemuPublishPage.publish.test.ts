@@ -752,8 +752,10 @@ test("首屏不闪「还没绑定店铺」：状态没回来之前不渲染横�
   // 横幅必须同时满足「已加载」和「未绑定」
   assert.match(page, /\{statusLoaded && !ready && \(/);
   assert.ok(!/\{!ready && \(\s*<div className="temu-bind-banner">/.test(page));
-  // 加载期间给一行轻提示，而不是留空
-  assert.match(page, /\{!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…<\/p>\}/);
+  // 加载期间给一张正经的加载卡（带转圈 + 说明），而不是留空或一行像报错的灰字
+  assert.match(page, /\{!statusLoaded && \(\s*<div className="temu-loading-card"/);
+  assert.match(page, /className="temu-loading-spinner"/);
+  assert.ok(page.includes("正在读取店铺配置"));
 });
 
 test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => {
@@ -2260,15 +2262,20 @@ test("图片槽位：上传位要看得见、能点能拖能粘（不再靠一�
   assert.match(page, /第一张是主图，可用 ← → 调序；单张 ≤2MB/);
 });
 
-test("发布流程条：节点 + 连接段 + 完成度，且来源入口只出现一次", () => {
+test("发布流程条：圆点在上、文字在下的轨迹式布局，且来源入口只出现一次", () => {
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
-  // 「流程组件」而不是一排散胶囊：节点之间要有连接段，前一步完成就点亮到下一步
-  assert.match(page, /className="temu-stepbar-track"/);
-  assert.match(page, /className="temu-stepbar-cell"/);
-  assert.match(page, /temu-stepbar-line\$\{flowSteps\[index - 1\]\.done \? " is-done" : ""\}/);
+  // 版式：圆点 + 文字竖排，连接段画在两个圆点之间（对齐圆点中心）
+  assert.match(page, /className="temu-stepbar-flow"/);
+  assert.match(page, /className="temu-stepbar-node"/);
+  // 连接段属于「本节点 → 下一个节点」，所以用本节点的 done 决定点亮
+  assert.match(page, /temu-stepbar-seg\$\{step\.done \? " is-done" : ""\}/);
   assert.match(page, /className="temu-stepbar-progress"/);
+  // 连接段绝对定位在 left:50% + width:100%（等宽单元格 → 正好连到下一个圆点中心）
+  assert.match(css, /\.temu-stepbar-seg \{[\s\S]{0,240}left: 50%;[\s\S]{0,80}width: 100%/);
+  // 垂直对齐圆点中心（圆点 22px → top 10px），否则会从文字那儿穿过去
+  assert.match(css, /\.temu-stepbar-seg \{[\s\S]{0,240}top: 10px;/);
   // 待完成的连接段不能直接用边框色（白底上 1.1:1，等于没有）
-  assert.match(css, /\.temu-stepbar-line \{[\s\S]{0,260}color-mix\(in srgb, var\(--temu-text\) 20%/);
+  assert.match(css, /\.temu-stepbar-seg \{[\s\S]{0,260}color-mix\(in srgb, var\(--temu-text\) 16%/);
   // 完成度胶囊的文字别用 --temu-text-muted：实测只有 2.9:1
   assert.match(css, /\.temu-stepbar-progress \{[\s\S]{0,320}color-mix\(in srgb, var\(--temu-text\) 72%/);
   // 来源按钮只能有一个（改流程条时手滑复制成了两个，页面上出现两枚一模一样的胶囊）

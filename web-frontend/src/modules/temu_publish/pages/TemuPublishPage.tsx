@@ -2974,19 +2974,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       {/* 横向步骤条：粘在顶部，点一下滚到那一块。
           不做分步向导 —— 发布要在「类目 → 属性 → 变种」之间来回对照，
           一次只显示一步会逼人翻页，反而更慢。
-          视觉上做成一条「流程线」：节点 + 连接段，完成的段跟着点亮，
-          右侧给已完成 n/5 —— 一眼能看出走到哪、还差几步。 */}
+          版式：圆点在上、文字在下，圆点之间用短连接段串起来（像物流轨迹），
+          完成的段跟着点亮；右侧给「已完成 n/5」。
+          不用「圆点 + 长横线 + 文字」那种排法 —— 连接段会被拉成一米长，
+          文字飘在线上，看着散。 */}
       <nav className="temu-stepbar" aria-label="发布步骤">
-        <div className="temu-stepbar-track">
+        <div className="temu-stepbar-flow">
           {flowSteps.map((step, index) => (
-            <div className="temu-stepbar-cell" key={step.id}>
-              {/* 连接段属于前一个节点：前一步完成就点亮到这一步 */}
-              {index > 0 ? (
-                <span
-                  className={`temu-stepbar-line${flowSteps[index - 1].done ? " is-done" : ""}`}
-                  aria-hidden="true"
-                />
-              ) : null}
+            <div className="temu-stepbar-node" key={step.id}>
               <button
                 type="button"
                 className={`temu-stepbar-item${step.done ? " is-done" : ""}${
@@ -2999,6 +2994,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
                 <span className="temu-stepbar-label">{step.label}</span>
               </button>
+              {/* 连接段从本节点圆点中心画到下一个节点圆点中心（等宽单元格 → 宽度 100%） */}
+              {index < flowSteps.length - 1 ? (
+                <span
+                  className={`temu-stepbar-seg${step.done ? " is-done" : ""}`}
+                  aria-hidden="true"
+                />
+              ) : null}
             </div>
           ))}
         </div>
@@ -3023,8 +3025,16 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
       <div className="temu-console-body">
         <div className="temu-console-main">
-          {/* 状态还没回来：给一行轻提示，别让人以为页面坏了 */}
-          {!statusLoaded && <p className="temu-muted temu-console-loading">正在读取店铺配置…</p>}
+          {/* 状态还没回来：给一张正经的加载卡，别让人以为页面卡住/坏了 */}
+          {!statusLoaded && (
+            <div className="temu-loading-card" role="status" aria-live="polite">
+              <span className="temu-loading-spinner" aria-hidden="true" />
+              <span className="temu-loading-text">
+                <strong>正在读取店铺配置</strong>
+                <em>店铺授权、运费模板与尺码表，通常 1~2 秒</em>
+              </span>
+            </div>
+          )}
           {statusLoaded && !ready && (
             <div className="temu-bind-banner">
               <div>
