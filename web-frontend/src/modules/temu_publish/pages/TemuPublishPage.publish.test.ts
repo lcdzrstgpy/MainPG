@@ -618,8 +618,10 @@ test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
   assert.match(page, /function parseStock\(value: string, label: string\): number \{/);
   assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
   assert.match(page, /stock: parseStock\(row\.stock, `\$\{at\}库存`\)/);
-  // 变种表：只有空/负数标红，0 正常
-  assert.match(panel, /String\(row\.stock\)\.trim\(\) === "" \|\| Number\(row\.stock\) < 0/);
+  // 变种表：空/负数标红；0 不标红（合法），只用橙色提示「售罄」
+  assert.match(panel, /String\(row\.stock\)\.trim\(\) === "" \|\| Number\.isNaN\(Number\(row\.stock\)\) \|\| Number\(row\.stock\) < 0/);
+  assert.match(panel, /: Number\(row\.stock\) === 0/);
+  assert.match(panel, /is-empty-stock/);
   assert.match(panel, /placeholder="0 也可"/);
   // 草稿带入：0 不再被当空丢掉
   assert.match(library, /stock: numericText\(entry\.stock\),/);
@@ -2347,4 +2349,15 @@ test("只要一维（只有颜色、不要尺码）：第二维可以关掉", ()
   assert.match(panel, /const sizes = sizeParentId > 0 \? \(sizeNames\.length \? sizeNames : \["均码"\]\) : \[""\]/);
   // 提交端本来就只在 sizeParent 存在时才带第二维规格
   assert.match(page, /if \(sizeParent\) \{/);
+});
+
+test("变种表的占位符要一眼看出是提示，不是已填值", () => {
+  // 截图反馈：一行里 12.99 / 可选 / 0 看着像已经填好了，右栏却显示「申报价 —」。
+  // 占位符必须明显淡于真实值。
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.match(css, /\.is-console \.temu-variant-row \.temu-input::placeholder \{[\s\S]{0,120}34%, transparent/);
+  // 单 SKU 类目不要再提「几个颜色 / 同色下尺码不能重复」
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /\{singleSku \? "。" : ` \/ \$\{new Set/);
+  assert.match(panel, /singleSku \|\| sizeParentId <= 0 \? "" : "；同色下尺码不能重复"/);
 });

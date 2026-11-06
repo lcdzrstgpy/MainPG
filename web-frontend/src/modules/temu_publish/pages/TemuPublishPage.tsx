@@ -3794,7 +3794,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             id="sec-variant"
           >
             <SectionHead
-              step={stepOf("sec-variant")}
+              step={{
+                ...stepOf("sec-variant"),
+                // 单 SKU 类目还叫「变种信息」会让人以为漏填了颜色/尺码
+                label: singleSkuMode ? "变种信息（单 SKU）" : "变种信息",
+                hint: singleSkuMode
+                  ? "只有一个 SKU：填价格、库存、尺寸重量即可"
+                  : "颜色尺码、申报价格、尺寸重量",
+              }}
               active={activeSectionId === "sec-variant"}
               index={2}
               extra={<span className="temu-muted">{rows.length} 个变种</span>}

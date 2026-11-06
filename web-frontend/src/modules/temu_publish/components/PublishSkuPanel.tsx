@@ -852,12 +852,12 @@ export function PublishSkuPanel({
             )}
             <span>SKU 货号</span>
             <span>申报价格(元)</span>
-            <span>长</span>
-            <span>宽</span>
-            <span>高</span>
+            <span title="单位：厘米">长</span>
+            <span title="单位：厘米">宽</span>
+            <span title="单位：厘米">高</span>
             <span>重量(g)</span>
             <span>建议售价(元)</span>
-            <span>库存</span>
+            <span title="填 0 也能建品，但商品是售罄/不可售状态">库存(件)</span>
             <span />
           </div>
           {rows.length === 0 && (
@@ -1072,13 +1072,22 @@ export function PublishSkuPanel({
               />
               <input
                 className={`temu-input${
-                  String(row.stock).trim() === "" || Number(row.stock) < 0 ? " is-bad" : ""
+                  String(row.stock).trim() === "" || Number.isNaN(Number(row.stock)) || Number(row.stock) < 0
+                    ? " is-bad"
+                    : Number(row.stock) === 0
+                      // 0 是合法值但商品会「售罄」，用橙色（不是红色报错）提醒一下
+                      ? " is-empty-stock"
+                      : ""
                 }`}
                 inputMode="numeric"
                 value={row.stock}
                 onChange={(event) => onUpdateRow(row.key, { stock: event.target.value })}
                 placeholder="0 也可"
-                title="可以填 0：Temu 会建品但前台不可售（售罄），卖之前补库存即可"
+                title={
+                  Number(row.stock) > 0
+                    ? "库存（件）"
+                    : "库存 0：能建品，但商品是「售罄 / 不可售」状态，买家看不到"
+                }
               />
               <button
                 type="button"
@@ -1099,8 +1108,10 @@ export function PublishSkuPanel({
         </div>
       </div>
       <p className="temu-muted">
-        共 {rows.length} 个变种 / {new Set(rows.map((row) => row.colorName.trim() || "Default")).size} 个颜色。
-        Temu 变种上限 20 个；同色下尺码不能重复、SKU 货号不能重复。
+        共 {rows.length} 个变种
+        {/* 单 SKU 类目没有颜色维度，别再说「几个颜色 / 同色下尺码不能重复」 */}
+        {singleSku ? "。" : ` / ${new Set(rows.map((row) => row.colorName.trim() || "Default")).size} 个颜色。`}
+        Temu 变种上限 20 个{singleSku || sizeParentId <= 0 ? "" : "；同色下尺码不能重复"}，SKU 货号不能重复。
       </p>
       {zeroStockCount > 0 && (
         <p className="temu-variant-zerohint">

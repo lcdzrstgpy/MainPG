@@ -2804,9 +2804,24 @@ textarea.temu-input {
 }
 
 /* 库存 0 / 留空：标红提示（半托管必须 ≥1） */
+/* 变种表里的占位符（12.99 / 可选 / 0 也可）必须一眼看出是提示而不是已填值：
+   否则扫一眼以为价格库存都填好了，右栏却显示「申报价 —」。 */
+.is-console .temu-variant-row .temu-input::placeholder {
+  color: color-mix(in srgb, var(--temu-text) 34%, transparent);
+  font-weight: 400;
+}
+
 .is-console .temu-variant-row .temu-input.is-bad {
   border-color: #e2384a;
   background: #fff5f5;
+}
+
+/* 库存 0：合法但商品会「售罄」，用橙色提醒而不是红色报错 */
+.is-console .temu-variant-row .temu-input.is-empty-stock {
+  border-color: color-mix(in srgb, var(--theme-warning, #b45309) 55%, transparent);
+  background: var(--theme-warning-soft, rgba(230, 126, 34, 0.08));
+  color: var(--theme-warning, #b45309);
+  font-weight: 600;
 }
 
 /* 申报价格（分）换算成元的即时提示 */
