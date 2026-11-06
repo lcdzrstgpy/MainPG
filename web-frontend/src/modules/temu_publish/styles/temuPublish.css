@@ -3992,6 +3992,20 @@ textarea.temu-input {
   line-height: 1.5;
 }
 
+/* 「不使用第二维」时占住值输入框的位置：一句说明，别留个空洞 */
+.temu-spec-nodim {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px dashed var(--theme-module-border-strong, #cfdae4);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f6fafc);
+  color: color-mix(in srgb, var(--temu-text) 66%, transparent);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
 /* 说明一行、复制按钮单独一行：并排时按钮会被挤进句子里，读起来像错位 */
 .temu-spec-panel-foot {
   display: grid;

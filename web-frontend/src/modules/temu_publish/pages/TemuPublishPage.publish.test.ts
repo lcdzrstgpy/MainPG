@@ -1289,7 +1289,7 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   // 提示区 + 样式
   assert.match(page, /className="temu-spec-mismatch"/);
   // 提示文案不写死「颜色/尺码」：手机壳是「型号」、收纳盒是「容量」
-  assert.match(page, /有 \{specMismatch\.length\} 个规格值不在当前类目的预设里/);
+  assert.match(page, /有 \{activeSpecMismatch\.length\} 个规格值不在当前类目的预设里/);
   assert.match(css, /\.temu-spec-mismatch \{/);
   assert.match(css, /\.temu-spec-mismatch ul \{[\s\S]*?max-height: 132px;/);
 });
@@ -1731,9 +1731,9 @@ test("变种两列不能写死「颜色/尺码」：任意类目都要自适应"
     "utf8",
   );
   assert.match(panel, /变种属性一：\{colorSpecName\}/);
-  assert.match(panel, /变种属性二：\{sizeSpecName\}/);
-  // 单销售属性类目直接不渲染第二列
-  assert.match(panel, /\{sizeParentId > 0 && \(/);
+  assert.match(panel, /变种属性二：\{sizeParentId > 0 \? sizeSpecName : "不使用"\}/);
+  // 单销售属性类目直接不渲染第二列（有第二维时还有「不使用」出口，见对应测试）
+  assert.match(panel, /\{parentSpecs\.length > 1 && \(/);
 });
 
 test("底部粘性操作条已去掉：只在右侧检查栏留校验/提交", () => {
@@ -2334,3 +2334,17 @@ test("删一行变种：同色最后一行要连颜色列表一起删，否则�
 function panelSrc() {
   return readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
 }
+
+test("只要一维（只有颜色、不要尺码）：第二维可以关掉", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  // 下拉里必须有「不使用」出口；以前没有，用户只能看着尺码列发呆
+  assert.match(panel, /<option value=\{0\}>不使用（单维）<\/option>/);
+  // 关掉后：值输入换成一句说明、表格不再渲染尺码列
+  assert.match(panel, /className="temu-spec-nodim"/);
+  assert.match(panel, /sizeParentId > 0 \? <span>\{sizeSpecName\}<\/span> : null/);
+  assert.match(panel, /sizeParentId > 0 \? \(\s*<input[\s\S]{0,300}placeholder=\{sizeOptions\.length/);
+  // 生成时不要塞「均码」假值（sizeParent 为空时提交也会忽略它）
+  assert.match(panel, /const sizes = sizeParentId > 0 \? \(sizeNames\.length \? sizeNames : \["均码"\]\) : \[""\]/);
+  // 提交端本来就只在 sizeParent 存在时才带第二维规格
+  assert.match(page, /if \(sizeParent\) \{/);
+});

@@ -1922,6 +1922,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return out;
   };
 
+  /**
+   * 真正要提示的不匹配项：某一维被关掉后，它名下的旧值不再算数
+   * （提交时根本不带那个规格），提示条不能还挂着它。
+   */
+  const activeSpecMismatch = specMismatch.filter((item) =>
+    item.field === "color" ? colorParentId > 0 : sizeParentId > 0,
+  );
+
   /** 按最接近的预设值把不合法的颜色/尺码批量改掉；对不上的保持原样并继续留在清单里。 */
   const fixSpecMismatches = () => {
     if (!specMismatch.length) return;
@@ -3813,10 +3821,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </select>
               </div>
             </details>
-            {specMismatch.length > 0 && (
+            {activeSpecMismatch.length > 0 && (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
-                  <strong>有 {specMismatch.length} 个规格值不在当前类目的预设里</strong>
+                  <strong>有 {activeSpecMismatch.length} 个规格值不在当前类目的预设里</strong>
                   <div className="temu-spec-mismatch-actions">
                     <button
                       type="button"
@@ -3839,7 +3847,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   价格、重量这些没动，改完规格就行。
                 </p>
                 <ul>
-                  {specMismatch.map((item) => {
+                  {/* 第二维被关掉后，之前记下的尺码不匹配就不算数了（提交时根本不带它） */}
+                  {activeSpecMismatch.map((item) => {
                     // 能自动对齐的会给「按最接近的预设值修正」；对不上的必须说清楚，
                     // 否则用户点了修正发现这个值还在，会以为功能坏了
                     const options = item.field === "color" ? specOptions(colorParentId) : specOptions(sizeParentId);

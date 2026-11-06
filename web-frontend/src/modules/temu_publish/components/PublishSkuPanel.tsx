@@ -512,7 +512,9 @@ export function PublishSkuPanel({
    * 保留（只同步颜色/尺码文字），只有新组合才用批量默认值填。
    */
   const generate = () => {
-    const sizes = sizeNames.length ? sizeNames : ["均码"];
+    // 第二维被关掉时不要塞「均码」：那是个预设里可能不存在的值，
+    // 提交时又会因为 sizeParent 为空被忽略 —— 中间这层假数据没有意义。
+    const sizes = sizeParentId > 0 ? (sizeNames.length ? sizeNames : ["均码"]) : [""];
     const colors = colorNames.length ? colorNames : ["Default"];
     const base = rows[0];
     const effective: VariantBatch = {
@@ -669,13 +671,13 @@ export function PublishSkuPanel({
             </div>
           )}
         </label>
-        {/* 只有一个销售属性的类目（手机壳只有「型号」、毛巾只有「颜色」）不显示第二列，
-            否则用户会以为必须再填一项，而 Temu 那边根本没这个属性 */}
-        {sizeParentId > 0 && (
+        {/* 有第二维就当普通两列用；只有一列销售属性的类目（手机壳只有「型号」）不显示。
+            第二维允许手动关掉：只发颜色/款式，一个颜色一个 SKU。 */}
+        {parentSpecs.length > 1 && (
           // 和「属性一」保持同一副骨架：标题 + 一行（父属性下拉 + 值输入）+ 预设区。
           // 拆成两个 field 会让网格按顺序排版，标题和输入框错行（截图里就歪了）。
           <label className="temu-field">
-            <span>变种属性二：{sizeSpecName}</span>
+            <span>变种属性二：{sizeParentId > 0 ? sizeSpecName : "不使用"}</span>
             <div className="temu-spec-row">
               <select
                 className="temu-input"
@@ -687,20 +689,30 @@ export function PublishSkuPanel({
                     {item.parentSpecName}
                   </option>
                 ))}
+                {/* 只要一维（只有颜色、没有尺码）时的出口：以前没有这个选项，
+                    用户只能看着尺码列发呆 —— 删不掉也没法忽略。
+                    下拉很窄，标签得短；完整解释在右边的虚线提示里。 */}
+                <option value={0}>不使用（单维）</option>
               </select>
-              <input
-                className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
-                list="temu-size-options"
-                value={sizesText}
-                onChange={(event) => onSizesTextChange(event.target.value)}
-                placeholder={`${sizeSpecName}值，多个用逗号分隔`}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") generate();
-                }}
-              />
+              {sizeParentId > 0 ? (
+                <input
+                  className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
+                  list="temu-size-options"
+                  value={sizesText}
+                  onChange={(event) => onSizesTextChange(event.target.value)}
+                  placeholder={`${sizeSpecName}值，多个用逗号分隔`}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") generate();
+                  }}
+                />
+              ) : (
+                <span className="temu-spec-nodim">
+                  每个{colorSpecName}一个 SKU，提交时不再带第二维规格
+                </span>
+              )}
             </div>
-            {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size")}
-            {unknownSizes.length > 0 && (
+            {sizeParentId > 0 ? renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size") : null}
+            {sizeParentId > 0 && unknownSizes.length > 0 && (
               <div className="temu-spec-bad">
                 <p>
                   「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设），提交会被拒。
@@ -834,7 +846,8 @@ export function PublishSkuPanel({
             {!singleSku && (
               <>
                 <span>颜色</span>
-                <span>尺码</span>
+                {/* 第二维被关掉（只按颜色发）时不要留一列空的「尺码」 */}
+                {sizeParentId > 0 ? <span>{sizeSpecName}</span> : null}
               </>
             )}
             <span>SKU 货号</span>
@@ -1003,13 +1016,15 @@ export function PublishSkuPanel({
                     }
                     title={`Temu 只认类目预设的${colorSpecName}值，自己输入会被拒`}
                   />
-                  <input
-                    className="temu-input"
-                    list="temu-size-options"
-                    value={row.sizeName}
-                    onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
-                    placeholder={sizeOptions.length ? "选预设值" : `输入${sizeSpecName}`}
-                  />
+                  {sizeParentId > 0 ? (
+                    <input
+                      className="temu-input"
+                      list="temu-size-options"
+                      value={row.sizeName}
+                      onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
+                      placeholder={sizeOptions.length ? "选预设值" : `输入${sizeSpecName}`}
+                    />
+                  ) : null}
                 </>
               )}
               <input
