@@ -504,8 +504,8 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     icon: "",
     iconClass: "iconfont icon-upload",
     description: "Temu 商品发布与草稿库",
-    defaultChildId: "temu_publish",
-    children: [temuPublish, temuDraftLibrary, temuPublishHistory],
+    defaultChildId: "temu_draft_library",
+    children: [temuDraftLibrary, temuPublish, temuPublishHistory],
   },
   {
     id: "data_insights",
