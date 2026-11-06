@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TemuParentSpec } from "../types";
 import { TemuThumb } from "./TemuImageStrip";
 import { mergeGeneratedRows, variantCoverage } from "../data/variantMerge";
+import { groupSpecColors, specColorGroup } from "../data/specSwatch";
 
 /**
  * 变种信息一行。字段与单位对齐 Temu 刊登表：
@@ -298,6 +299,20 @@ export function PublishSkuPanel({
    */
   const [specPanel, setSpecPanel] = useState<"color" | "size" | null>(null);
   const [specQuery, setSpecQuery] = useState("");
+  /** 面板里的色系筛选：all / 色系 key / other */
+  const [specGroupKey, setSpecGroupKey] = useState<string>("all");
+
+  /** 点空白处收起预设面板（浮层，不收会一直压着下面的表格） */
+  useEffect(() => {
+    if (!specPanel) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".temu-spec-presets")) return;
+      setSpecPanel(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [specPanel]);
 
   const splitSpecValues = (text: string) =>
     text
@@ -322,8 +337,17 @@ export function PublishSkuPanel({
       onPick(next.join(","));
     };
     const query = specPanel === kind ? specQuery.trim().toLowerCase() : "";
-    const filtered = query ? options.filter((name) => name.toLowerCase().includes(query)) : options;
     const open = specPanel === kind;
+
+    // 颜色：按色系分组 + 色卡。尺码（S/M/L、容量）没有色系概念，走纯文字列表。
+    const groups = kind === "color" ? groupSpecColors(options) : [];
+    const useGroups = groups.length > 1;
+    const activeGroupKey = open ? specGroupKey : "all";
+    const scoped =
+      useGroups && activeGroupKey !== "all"
+        ? groups.find((item) => (item.group?.key ?? "other") === activeGroupKey)?.values ?? []
+        : options;
+    const filtered = query ? scoped.filter((name) => name.toLowerCase().includes(query)) : scoped;
 
     if (!options.length) {
       // 读到了属性但确实没有预设值（走自定义规格的类目）→ 明确说可以自由填；
@@ -345,6 +369,7 @@ export function PublishSkuPanel({
           onClick={() => {
             setSpecPanel(open ? null : kind);
             setSpecQuery("");
+            setSpecGroupKey("all");
           }}
         >
           <span className="temu-spec-browse-count">{options.length}</span>
@@ -366,18 +391,62 @@ export function PublishSkuPanel({
                 if (event.key === "Enter") event.preventDefault();
               }}
             />
-            <div className="temu-spec-panel-list">
-              {filtered.map((name) => (
+            {/* 色系分组：一个类目几十上百个颜色时，先按色系收窄再搜 */}
+            {useGroups ? (
+              <div className="temu-spec-groups">
                 <button
-                  key={name}
                   type="button"
-                  className={`temu-spec-chip${pickedLower.has(name.toLowerCase()) ? " is-picked" : ""}`}
-                  onClick={() => toggle(name)}
-                  title={pickedLower.has(name.toLowerCase()) ? "再点一下从列表里移除" : `加入「${name}」`}
+                  className={`temu-spec-group${activeGroupKey === "all" ? " is-active" : ""}`}
+                  onClick={() => setSpecGroupKey("all")}
                 >
-                  {name}
+                  全部<span>{options.length}</span>
                 </button>
-              ))}
+                {groups.map((item) => {
+                  const key = item.group?.key ?? "other";
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`temu-spec-group${activeGroupKey === key ? " is-active" : ""}`}
+                      onClick={() => setSpecGroupKey(key)}
+                    >
+                      {item.group ? (
+                        <i
+                          className={`temu-spec-dot${item.group.gradient ? " is-multi" : ""}`}
+                          style={item.group.gradient ? undefined : { background: item.group.swatch }}
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      {item.label}
+                      <span>{item.values.length}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            <div className="temu-spec-panel-list">
+              {filtered.map((name) => {
+                const swatch = kind === "color" ? specColorGroup(name) : null;
+                const isPicked = pickedLower.has(name.toLowerCase());
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    className={`temu-spec-chip${isPicked ? " is-picked" : ""}`}
+                    onClick={() => toggle(name)}
+                    title={isPicked ? "再点一下从列表里移除" : `加入「${name}」`}
+                  >
+                    {swatch ? (
+                      <i
+                        className={`temu-spec-dot${swatch.gradient ? " is-multi" : ""}`}
+                        style={swatch.gradient ? undefined : { background: swatch.swatch }}
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    {name}
+                  </button>
+                );
+              })}
               {!filtered.length ? <span className="temu-muted">没有匹配的预设值</span> : null}
             </div>
             <p className="temu-spec-panel-note">

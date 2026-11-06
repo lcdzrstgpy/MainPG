@@ -2301,3 +2301,19 @@ test("修正规格值要连批量列表一起改，否则再点生成又铺回�
   // 对不上的值要直说「手动选」，不能让用户以为修正是坏的
   assert.match(page, /预设里没有相近值，请用上方「浏览全部预设」手动选/);
 });
+
+test("预设面板：颜色带色卡 + 按色系分组筛选，且是浮层不撑高布局", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 颜色值前面要有一枚色块，几十个「浅绿/浅绿色/薄荷绿」纯文字分不出来
+  assert.match(panel, /const swatch = kind === "color" \? specColorGroup\(name\) : null;/);
+  assert.match(panel, /className={`temu-spec-dot/);
+  // 按色系收窄，再叠加搜索
+  assert.match(panel, /const groups = kind === "color" \? groupSpecColors\(options\) : \[\];/);
+  assert.match(panel, /className={`temu-spec-group/);
+  // 浮层：内联展开会把整行拉高、把右边的尺码列挤下去
+  assert.match(css, /\.temu-spec-panel \{[\s\S]{0,300}position: absolute;/);
+  assert.match(css, /\.temu-spec-presets \{[\s\S]{0,120}position: relative;/);
+  // 点空白处要能收起
+  assert.match(panel, /target\?\.closest\("\.temu-spec-presets"\)/);
+});

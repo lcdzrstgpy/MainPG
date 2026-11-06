@@ -3843,6 +3843,7 @@ textarea.temu-input {
 
 /* ---- 类目预设值：入口 + 可搜索面板 ---- */
 .temu-spec-presets {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3896,14 +3897,20 @@ textarea.temu-input {
 }
 
 .temu-spec-panel {
+  /* 浮层而不是撑开布局：它挂在「颜色」那一格下面，内联展开会把整行拉高、
+     还把右边的尺码列挤到下一行去。 */
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
   display: grid;
   gap: 8px;
-  flex: 1 1 100%;
+  width: min(440px, 88vw);
   padding: 10px 12px;
   border: 1px solid var(--theme-module-border, #e4ecf3);
   border-radius: 10px;
   background: var(--theme-module-surface, #fff);
-  box-shadow: 0 10px 24px -20px rgba(16, 42, 74, 0.55);
+  box-shadow: 0 18px 40px -24px rgba(16, 42, 74, 0.6);
 }
 
 .temu-spec-panel-list {
@@ -3913,6 +3920,66 @@ textarea.temu-input {
   max-height: 168px;
   overflow-y: auto;
   scrollbar-width: thin;
+}
+
+/* 色系分组条 */
+.temu-spec-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.temu-spec-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f4f8fb);
+  color: color-mix(in srgb, var(--temu-text) 78%, transparent);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.temu-spec-group:hover {
+  border-color: color-mix(in srgb, var(--temu-text) 22%, transparent);
+}
+
+.temu-spec-group.is-active {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 10%, transparent);
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-weight: 600;
+}
+
+.temu-spec-group span {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+/* 色卡小圆点：颜色预设前面一枚，一眼分出黑/白/绿 */
+.temu-spec-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-right: 4px;
+  border: 1px solid color-mix(in srgb, var(--temu-text) 22%, transparent);
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.temu-spec-dot.is-multi {
+  background: conic-gradient(#e74c3c, #f1c40f, #2ecc71, #3498db, #9b59b6, #e74c3c);
+}
+
+.temu-spec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
 
 .temu-spec-panel-note {
