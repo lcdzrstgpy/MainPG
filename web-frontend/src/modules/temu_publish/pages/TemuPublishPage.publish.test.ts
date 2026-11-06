@@ -505,12 +505,13 @@ test("详情图：手动上传不裁方、提交时统一宽度（Temu 2000306�
   assert.match(page, /detail_images: detailImages,/);
 });
 
-test("规格值必须来自类目预设，多颜色合并成一个 SKC", () => {
-  // 自己 createSpec 造颜色会被 Temu 判「不合法的规格属性 Color_Black」
-  assert.doesNotMatch(page, /temuPublishApi\.createSpec\(/);
+test("规格值优先用类目预设；只有类目没有预设时才自建", () => {
+  // 有预设时必须命中预设（自己 createSpec 造颜色会被 Temu 判「不合法的规格属性 Color_Black」），
+  // 没有预设的类目（化妆包/桌布这类自定义规格）才允许自建 —— 边界见下一条测试。
+  assert.match(page, /const matchedName = matchPresetValue\(name, options\.map\(\(item\) => item\.name\)\)/);
+  assert.match(page, /if \(!options\.length\) \{[\s\S]{0,300}temuPublishApi\.createSpec\(/);
   assert.match(page, /const saleValueIndex = useMemo\(/);
   assert.match(page, /if \(!prop\.isSale\) continue;/);
-  assert.match(page, /Temu 只认类目预设值/);
   // 变种表的颜色/尺码给预设值下拉
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /list="temu-color-options"/);
@@ -618,8 +619,10 @@ test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
   assert.match(page, /function parseStock\(value: string, label: string\): number \{/);
   assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
   assert.match(page, /stock: parseStock\(row\.stock, `\$\{at\}库存`\)/);
-  // 变种表：只有空/负数标红，0 正常
-  assert.match(panel, /String\(row\.stock\)\.trim\(\) === "" \|\| Number\(row\.stock\) < 0/);
+  // 变种表：空/负数标红；0 不标红（合法），只用橙色提示「售罄」
+  assert.match(panel, /String\(row\.stock\)\.trim\(\) === "" \|\| Number\.isNaN\(Number\(row\.stock\)\) \|\| Number\(row\.stock\) < 0/);
+  assert.match(panel, /: Number\(row\.stock\) === 0/);
+  assert.match(panel, /is-empty-stock/);
   assert.match(panel, /placeholder="0 也可"/);
   // 草稿带入：0 不再被当空丢掉
   assert.match(library, /stock: numericText\(entry\.stock\),/);
@@ -965,8 +968,9 @@ test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
 
   // 每个出口都用清洗后的值：SKC 货号、变种前缀、SKU 货号
   assert.match(page, /ext_code: \(productCode \|\| "SKC"\)\.slice\(0, 120\),/);
-  assert.match(page, /ext_code: \[productCode \|\| "SKC", cleanExtCode\(color\)\]/);
-  assert.match(page, /const skuCode = cleanExtCode\(row\.extCode\);/);
+  // 颜色是中文时 cleanExtCode 会清成空串，必须有序号兜底（见下一条测试）
+  assert.match(page, /const colorCode = cleanExtCode\(color\) \|\| `C\$\{colorIndex\}`;/);
+  assert.match(page, /const skuCode = cleanExtCode\(row\.extCode\);|let skuCode = cleaned;/);
   assert.match(page, /extCodePrefix=\{productCode\}/);
 });
 
@@ -1289,7 +1293,7 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   // 提示区 + 样式
   assert.match(page, /className="temu-spec-mismatch"/);
   // 提示文案不写死「颜色/尺码」：手机壳是「型号」、收纳盒是「容量」
-  assert.match(page, /有 \{specMismatch\.length\} 个规格值不在当前类目的预设里/);
+  assert.match(page, /有 \{activeSpecMismatch\.length\} 个规格值不在当前类目的预设里/);
   assert.match(css, /\.temu-spec-mismatch \{/);
   assert.match(css, /\.temu-spec-mismatch ul \{[\s\S]*?max-height: 132px;/);
 });
@@ -1674,25 +1678,34 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
 test("变种规格值要把 Temu 的预设值摆出来，而不是让用户猜", () => {
   // 实测反馈：「我怎么知道 Temu 要什么？」—— 用户手填「苹果4」这种值，
   // 提交才被回「[4] 不是尺码表的合法值」。只给 datalist 不够：
-  // 不点开输入框根本看不到有哪些可选值。预设值必须直接列成可点的标签。
+  // 不点开输入框根本看不到有哪些可选值。
+  // 2026-11-06 二次反馈：「真的只能是预设的吗，那我怎么知道预设有什么？」
+  // 只露前 10 个不够（Temu 颜色预设上百个），改成「浏览全部 N 个」+ 搜索面板。
   const panel = readFileSync(
     new URL("../components/PublishSkuPanel.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(panel, /Temu 只认这些\{label\}（点一下填入）/);
+  assert.match(panel, /浏览全部\$\{label\}预设/);
+  assert.match(panel, /className="temu-spec-panel"/);
+  assert.match(panel, /搜索\$\{label\}预设/);
   assert.match(panel, /className=\{`temu-spec-chip/);
-  // 手填非法值要当场标红，不能等提交
-  // 红字要点名是哪一列（颜色/款式/型号…）不对
+  // 手填非法值要当场标红，不能等提交；并且给出「最像的预设值」一键替换
   assert.match(panel, /不是合法的\{colorSpecName\}值（Temu 只认类目预设）/);
   assert.match(panel, /不是合法的\{sizeSpecName\}值（Temu 只认类目预设）/);
+  assert.match(panel, /const suggestSpecValues = /);
+  assert.match(panel, /replaceSpecValue\(colorsText, value, name\)/);
   assert.match(panel, /unknownColors\.length \? " is-bad" : ""/);
   assert.match(panel, /unknownSizes\.length \? " is-bad" : ""/);
   // 两个输入框都要能下拉搜
   assert.match(panel, /list="temu-color-options"/);
   assert.match(panel, /list="temu-size-options"/);
+  // 类目预设还没读到时不能断言「没有预设」，否则用户会以为可以自由填
+  assert.match(panel, /正在读取类目预设/);
+  assert.match(panel, /这个类目没有\$\{label\}预设值/);
   // 样式在位
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
-  assert.match(css, /\.temu-spec-choices \{/);
+  assert.match(css, /\.temu-spec-presets \{/);
+  assert.match(css, /\.temu-spec-panel \{/);
   assert.match(css, /\.temu-spec-chip \{/);
   assert.match(css, /\.temu-spec-bad \{/);
 });
@@ -1722,9 +1735,9 @@ test("变种两列不能写死「颜色/尺码」：任意类目都要自适应"
     "utf8",
   );
   assert.match(panel, /变种属性一：\{colorSpecName\}/);
-  assert.match(panel, /变种属性二：\{sizeSpecName\}/);
-  // 单销售属性类目直接不渲染第二列
-  assert.match(panel, /\{sizeParentId > 0 && \(/);
+  assert.match(panel, /变种属性二：\{sizeParentId > 0 \? sizeSpecName : "不使用"\}/);
+  // 单销售属性类目直接不渲染第二列（有第二维时还有「不使用」出口，见对应测试）
+  assert.match(panel, /\{parentSpecs\.length > 1 && \(/);
 });
 
 test("底部粘性操作条已去掉：只在右侧检查栏留校验/提交", () => {
@@ -2072,7 +2085,7 @@ test("缩略图尺寸：变种行/草稿库/历史都要看得清，别被容器
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
   // 变种行：第一列 72px + 容器 68px + 图 64px（三层都要够）
-  assert.match(css, /grid-template-columns: 72px 96px 62px 104px/);
+  assert.match(css, /grid-template-columns: 72px 96px 62px/);
   assert.match(css, /\.is-console \.temu-variant-thumb \{[\s\S]{0,80}width: 68px;/);
   assert.match(css, /\.is-console \.temu-variant-row \.temu-img-thumb \{[\s\S]{0,80}width: 64px;/);
   // 草稿库 76px 图 + 88px 列，历史 88px
@@ -2281,4 +2294,192 @@ test("发布流程条：圆点在上、文字在下的轨迹式布局，且来�
   // 来源按钮只能有一个（改流程条时手滑复制成了两个，页面上出现两枚一模一样的胶囊）
   const sourceButtons = page.match(/className="temu-stepbar-source"/g) ?? [];
   assert.equal(sourceButtons.length, 1);
+});
+
+test("修正规格值要连批量列表一起改，否则再点生成又铺回非法值", () => {
+  // 只改表格是治标：上方「颜色 / 尺码 列表」还留着非法值，
+  // 用户再点一次「生成变种」就按旧文本重新铺一遍。
+  assert.match(page, /const remapList = \(text: string, options: string\[\]\) => \{/);
+  assert.match(page, /const nextColorsText = remapList\(form\.colorsText, colorNames\);/);
+  assert.match(page, /patch\(\{ colorsText: nextColorsText, sizesText: nextSizesText \}\)/);
+  // 对不上的值要直说「手动选」，不能让用户以为修正是坏的
+  assert.match(page, /预设里没有相近值，请用上方「浏览全部预设」手动选/);
+});
+
+test("预设面板：颜色带色卡 + 按色系分组筛选，且是浮层不撑高布局", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 颜色值前面要有一枚色块，几十个「浅绿/浅绿色/薄荷绿」纯文字分不出来
+  assert.match(panel, /const swatch = kind === "color" \? specColorGroup\(name\) : null;/);
+  assert.match(panel, /className={`temu-spec-dot/);
+  // 按色系收窄，再叠加搜索
+  assert.match(panel, /const groups = kind === "color" \? groupSpecColors\(options\) : \[\];/);
+  assert.match(panel, /className={`temu-spec-group/);
+  // 浮层：内联展开会把整行拉高、把右边的尺码列挤下去
+  assert.match(css, /\.temu-spec-panel \{[\s\S]{0,300}position: absolute;/);
+  assert.match(css, /\.temu-spec-presets \{[\s\S]{0,120}position: relative;/);
+  // 点空白处要能收起
+  assert.match(panel, /target\?\.closest\("\.temu-spec-presets"\)/);
+});
+
+test("删一行变种：同色最后一行要连颜色列表一起删，否则生成又长回来", () => {
+  // 用户问「只需要一个变种，怎么删」—— 只删表格行没用，上面的颜色列表还在，
+  // 再点「生成变种」那一行会长回来。
+  assert.match(page, /const removeRow = \(key: string\) => \{/);
+  assert.match(page, /const target = rows\.find\(\(row\) => row\.key === key\);/);
+  assert.match(page, /if \(color && !next\.some\(\(row\) => row\.colorName\.trim\(\) === color\)\) \{[\s\S]{0,220}colorsText: nextColors/);
+  assert.match(page, /if \(size && !next\.some\(\(row\) => row\.sizeName\.trim\(\) === size\)\) \{[\s\S]{0,220}sizesText: nextSizes/);
+  // 至少留 1 行，并且按钮要说清为什么不能删
+  assert.match(page, /if \(!target \|\| rows\.length <= 1\) return;/);
+  assert.match(panelSrc(), /至少保留 1 个变种/);
+});
+
+/** 便捷读取面板源码（多处断言要用） */
+function panelSrc() {
+  return readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+}
+
+test("只要一维（只有颜色、不要尺码）：第二维可以关掉", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  // 下拉里必须有「不使用」出口；以前没有，用户只能看着尺码列发呆
+  assert.match(panel, /<option value=\{0\}>不使用（单维）<\/option>/);
+  // 关掉后：值输入换成一句说明、表格不再渲染尺码列
+  assert.match(panel, /className="temu-spec-nodim"/);
+  assert.match(panel, /sizeParentId > 0 \? <span>\{sizeSpecName\}<\/span> : null/);
+  assert.match(panel, /sizeParentId > 0 \? \(\s*<input[\s\S]{0,300}placeholder=\{sizeOptions\.length/);
+  // 生成时不塞「均码」假值：第二维关了就是 [""]；还开着但没填值 → 拦下并说明原因
+  assert.match(panel, /else if \(sizeOptions\.includes\("均码"\)\) sizes = \["均码"\];/);
+  assert.match(panel, /setGenHint\(/);
+  assert.match(panel, /\} else \{\s*sizes = \[""\];/);
+  // 提交端本来就只在 sizeParent 存在时才带第二维规格
+  assert.match(page, /if \(sizeParent\) \{/);
+});
+
+test("变种表的占位符要一眼看出是提示，不是已填值", () => {
+  // 截图反馈：一行里 12.99 / 可选 / 0 看着像已经填好了，右栏却显示「申报价 —」。
+  // 占位符必须明显淡于真实值。
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.match(css, /\.is-console \.temu-variant-row \.temu-input::placeholder \{[\s\S]{0,120}34%, transparent/);
+  // 单 SKU 类目不要再提「几个颜色 / 同色下尺码不能重复」
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /\{singleSku \? "。" : ` \/ \$\{new Set/);
+  assert.match(panel, /singleSku \|\| sizeParentId <= 0 \? "" : "；同色下尺码不能重复"/);
+});
+
+test("变种表尺寸：长/宽/高 各占一列、各有表头", () => {
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 三个独立输入框，各带 aria-label（之前合成一组时被压成 39px 的三条缝）
+  assert.match(panel, /aria-label="长（厘米）"/);
+  assert.match(panel, /aria-label="宽（厘米）"/);
+  assert.match(panel, /aria-label="高（厘米）"/);
+  // 表头也是三列，不再是一个「尺寸(cm)」
+  assert.match(panel, /<span title="单位：厘米">长<\/span>\s*<span title="单位：厘米">宽<\/span>\s*<span title="单位：厘米">高<\/span>/);
+  assert.doesNotMatch(panel, /尺寸\(cm\)/);
+  assert.doesNotMatch(panel, /temu-variant-dims/);
+  // 两维模式：三列各 60px；单 SKU 模式省下颜色/尺码后摊宽到 96px
+  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 60px 60px 60px 58px 70px minmax\(48px, 1fr\) 24px;/);
+  assert.match(css, /\.temu-variant-row\.is-single \{[\s\S]{0,140}96px 96px 96px/);
+  // 库存列吃剩余宽度；min-width 按真实列总和（732 + 11×6 + 48 = 846）
+  assert.match(css, /\.temu-variant-table \{[\s\S]{0,200}min-width: 846px;/);
+});
+
+test("不再凭空造「均码」：新会话初始行留空，第二维没填就拦下生成", () => {
+  // 以前初始行预填「均码」，不是预设值时提交必被拒；生成时也会塞一个假尺码
+  assert.match(page, /return \[createVariantRow\(whId, "", "", EMPTY_BATCH, 0\)\];/);
+  assert.match(page, /const fallbackSize = prefill\.specValue2 \|\| "";/);
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /第二维空着不能生成/);
+});
+
+test("右栏指标卡：三个数字要能一眼看出哪个没填", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 变种/轮播并排、申报价占整行（它最长，挤在 136px 里连 ¥12.99 都放不下）
+  assert.match(page, /<dl className="temu-rail-stats">/);
+  assert.match(page, /className=\{`temu-stat\$\{rows\.length \? "" : " is-danger"\}`\}/);
+  assert.match(page, /className=\{`temu-stat is-wide\$\{firstPrice && Number\(firstPrice\) > 0 \? "" : " is-muted"\}\`\}/);
+  // 轮播不足 3 张是琥珀、0 张才是红（Temu 要求至少 3 张）
+  assert.match(page, /carouselCount >= 3 \? "" : carouselCount > 0 \? " is-warn" : " is-danger"/);
+  // 有图标，且三个图标不是同一个
+  assert.match(page, /function StatIcon\(\{ kind \}/);
+  assert.match(page, /kind="variant"/);
+  assert.match(page, /kind="image"/);
+  assert.match(page, /kind="price"/);
+  assert.match(css, /\.is-console \.temu-stat\.is-wide \{\s*grid-column: 1 \/ -1;/);
+  // 语义色走主题变量，深色主题自动提亮（写死 #146c43 在 diamond 上几乎看不见）
+  assert.match(css, /--temu-danger: var\(--theme-danger/);
+  assert.match(css, /--temu-warn: var\(--theme-warning/);
+});
+
+test("金属质感：高光/暗边/描边三层都由变量控制，深色主题要反相", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  // 浅色：白高光 + 冷暗边
+  assert.match(css, /--temu-metal-hi: rgba\(255, 255, 255, 0\.85\);/);
+  assert.match(css, /--temu-metal-lo: rgba\(18, 45, 72, 0\.08\);/);
+  // 深色必须覆盖，否则白高光在深底上是一道脏线
+  assert.match(css, /\[data-theme="diamond"\] \.temu-publish-page\.is-console \{[\s\S]{0,200}--temu-metal-hi: rgba\(255, 255, 255, 0\.1\)/);
+  // 主按钮：渐变 + 内高光 + 下沿暗边；按下时反过来
+  assert.match(css, /\.temu-btn-primary \{[\s\S]{0,900}linear-gradient\(/);
+  assert.match(css, /\.temu-btn-primary \{[\s\S]{0,900}inset 0 1px 0 rgba\(255, 255, 255, 0\.4\)/);
+  assert.match(css, /\.temu-btn-primary:active:not\(:disabled\) \{[\s\S]{0,400}inset 0 2px 5px/);
+  // 文字阴影会糊：diamond 主题下主按钮是浅底深字
+  assert.doesNotMatch(css, /\.temu-btn-primary \{[\s\S]{0,400}text-shadow/);
+});
+
+test("类目没有预设值时必须自建规格，不能报「只认预设值」", () => {
+  // 截图复现：化妆包这类自定义规格类目，界面写着「可以自己填写（Temu 按自定义规格收）」，
+  // 点提交却回「「黑」不是该 颜色 的合法值：Temu 只认类目预设值」—— 永远发不出去。
+  // 批量发布那边一直有自建分支，单个发布漏了。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /这个类目没有\$\{label\}预设值，可以自己填写（Temu 按自定义规格收）/);
+
+  // 提交端要跟这句承诺一致：没有预设 → createSpec
+  assert.match(page, /const createdSpecsRef = useRef\(new Map<string, TemuSkuSpec>\(\)\)/);
+  assert.match(page, /if \(!options\.length\) \{[\s\S]{0,300}temuPublishApi\.createSpec\(parentSpec\.parentSpecId, name\)/);
+  assert.match(page, /createdSpecsRef\.current\.set\(cacheKey, resolved\)/);
+  // 同一个值只建一次（颜色×尺码会反复解析）
+  assert.match(page, /const cached = createdSpecsRef\.current\.get\(cacheKey\);\s*if \(cached\) return cached;/);
+  // 有预设但对不上仍然要拦 —— 那才是真的填错
+  assert.match(page, /不在「\$\{parentSpec\.parentSpecName\}」的预设值里/);
+  assert.doesNotMatch(page, /不是该 \$\{parentSpec\.parentSpecName\} 的合法值/);
+});
+
+test("中文颜色不能让货号撞车：SKU-黑/浅绿 会被洗成同一个 SKU-", () => {
+  // 用户截图：「SKC ext_code 重复：SKC」。四个颜色「黑/浅绿/浅黄/象牙」拼进货号后，
+  // cleanExtCode 只留 A-Za-z0-9-_，中文全被删 → 全变成空的或只剩「SKU-」→ 撞号。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  // 1) 默认货号不再拼中文：带非 ASCII 就直接用序号，表格里看到的就是能提交的值
+  assert.match(panel, /const asciiOnly = parts\.every\(\(part\) => !\/\[\^\\x20-\\x7E\]\/\.test\(part\)\);/);
+  assert.match(panel, /parts\.length > 1 && asciiOnly/);
+
+  // 2) SKC 货号：颜色洗成空时用 C1/C2… 兜底，并且保证后缀不被 120 字截断
+  assert.match(page, /const colorCode = cleanExtCode\(color\) \|\| `C\$\{colorIndex\}`;/);
+  assert.match(page, /ext_code: `\$\{skcHead\}-\$\{colorCode\}`/);
+  assert.match(page, /120 - colorCode\.length - 1/);
+
+  // 3) SKU 货号：洗成空壳（「SKU-」）或撞号时自动补序号，并留 warning
+  assert.match(page, /const usedSkuCodes = new Set<string>\(\);/);
+  assert.match(page, /if \(!cleaned \|\| \/\[-_\]\$\/\.test\(cleaned\)\) \{/);
+  assert.match(page, /SKU 货号去掉中文后与前面的重复，已改成/);
+});
+
+test("长宽高必须按「最长 ≥ 次长 ≥ 最短」提交（Temu 体积校验）", () => {
+  // 实测被拒：「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」。
+  // 用户填的 33×13×20 是对物品的描述（长 33、宽 13、高 20），不是排序结果；
+  // 体积只看三个边长，替他按降序发即可，物理含义不变。
+  assert.match(page, /function sortDimensionsDesc\(a: number, b: number, c: number\): \[number, number, number\]/);
+  assert.match(page, /\.sort\(\(x, y\) => y - x\)/);
+  assert.match(page, /const \[longest, middle, shortest\] = sortDimensionsDesc\(lengthCm, widthCm, heightCm\);/);
+  assert.match(page, /length_mm: Math\.round\(longest \* 10\)/);
+  assert.match(page, /width_mm: Math\.round\(middle \* 10\)/);
+  assert.match(page, /height_mm: Math\.round\(shortest \* 10\)/);
+  // 重排过要告诉用户，别让他以为系统把尺寸填错了
+  assert.match(page, /不是「最长 ≥ 次长 ≥ 最短」/);
+
+  // 批量发布走同一套规则，否则那条链路还是会踩同一个坑
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  assert.match(batch, /const sortedDims = \[lengthCm, widthCm, heightCm\]\.sort\(\(a, b\) => b - a\);/);
+  assert.match(batch, /length_mm: Math\.max\(1, Math\.round\(sortedDims\[0\] \* 10\)\)/);
+  assert.match(batch, /height_mm: Math\.max\(1, Math\.round\(sortedDims\[2\] \* 10\)\)/);
 });

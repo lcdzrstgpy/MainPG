@@ -97,3 +97,42 @@ test("空表格 / 空取值都不算对齐（按钮要能点）", () => {
   assert.equal(variantCoverage([], ["黑"], ["S"]).inSync, false);
   assert.equal(variantCoverage([], [], []).inSync, false);
 });
+
+test("尺码改了名（均码 → 可定制尺寸）：同颜色的旧行必须被认领，图/价不能丢", () => {
+  // 用户截图反馈：点「生成变种」后四行预览图全变成轮播第一张，因为旧行没认领上、
+  // 整表重建 → 每行手配的 thumbUrl 被冲掉。
+  type ImgRow = Row & { thumbUrl: string };
+  const previous: ImgRow[] = [
+    { ...row("黑色", "", "360"), thumbUrl: "black.png" },
+    { ...row("浅绿色", "", "360"), thumbUrl: "lightgreen.png" },
+    { ...row("浅黄色", "", "360"), thumbUrl: "lightyellow.png" },
+    { ...row("象牙白", "", "360"), thumbUrl: "ivory.png" },
+  ];
+  const make = (color: string, size: string): ImgRow => ({ ...row(color, size, "0"), thumbUrl: "" });
+
+  const out = mergeGeneratedRows<ImgRow>(previous, ["黑色", "浅绿色", "浅黄色", "象牙白"], ["可定制尺寸"], make);
+
+  assert.equal(out.length, 4);
+  assert.deepEqual(
+    out.map((item) => item.thumbUrl),
+    ["black.png", "lightgreen.png", "lightyellow.png", "ivory.png"],
+    "每个颜色各自的预览图必须留着",
+  );
+  assert.ok(out.every((item) => item.sizeName === "可定制尺寸"), "尺码文字要改成新值");
+  assert.ok(out.every((item) => item.supplierPrice === "360"), "价格也沿用旧行，不回到默认 0");
+});
+
+test("同一颜色拆成多个尺码：一条旧行只被认领一次，不会复制出两行同图", () => {
+  type ImgRow = Row & { thumbUrl: string };
+  const previous: ImgRow[] = [{ ...row("黑色", "", "360"), thumbUrl: "black.png" }];
+  const make = (color: string, size: string): ImgRow => ({ ...row(color, size, "0"), thumbUrl: "" });
+
+  const out = mergeGeneratedRows<ImgRow>(previous, ["黑色"], ["S", "M"], make);
+
+  assert.equal(out.length, 2);
+  assert.equal(out[0].thumbUrl, "black.png");
+  assert.equal(out[0].supplierPrice, "360");
+  // 第二条必须走默认行，不能把同一条旧行复制两份（否则两行同图、价格也不该一样）
+  assert.equal(out[1].thumbUrl, "");
+  assert.equal(out[1].supplierPrice, "0");
+});

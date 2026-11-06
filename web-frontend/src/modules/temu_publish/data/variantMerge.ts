@@ -8,6 +8,12 @@
  * 所以这里按「颜色 + 尺码」认领旧行：同一格已经存在就原样留下，
  * 只有新组合才交给 `makeRow` 生成。抽成独立纯函数是为了能直接单测 ——
  * 这功能一旦退回重建，只有肉眼能发现。
+ *
+ * 第二层认领：**同颜色**的旧行也优先复用。
+ * 真实场景 —— 草稿带入时只有「均码」一行，用户把尺码改成「可定制尺寸」再点生成：
+ * 尺码不同 → 旧行认领不上 → 四行全部重建 → 每行手配的预览图被冲掉，
+ * 全变成轮播第一张（用户截图反馈「原先的图片全都换了，有些图是对的」）。
+ * 同色复用能保住图、价格、尺寸；尺码文字按新值改写。
  */
 export function mergeGeneratedRows<T extends { colorName: string; sizeName: string }>(
   rows: T[],
@@ -16,13 +22,29 @@ export function mergeGeneratedRows<T extends { colorName: string; sizeName: stri
   makeRow: (color: string, size: string, index: number) => T,
 ): T[] {
   const existing = new Map<string, T>();
-  for (const row of rows) existing.set(`${row.colorName}\u0000${row.sizeName}`, row);
+  /** 颜色 → 该颜色下还没被认领的旧行（按原顺序） */
+  const byColor = new Map<string, T[]>();
+  for (const row of rows) {
+    existing.set(`${row.colorName}\u0000${row.sizeName}`, row);
+    const list = byColor.get(row.colorName);
+    if (list) list.push(row);
+    else byColor.set(row.colorName, [row]);
+  }
+  const claimed = new Set<T>();
   const next: T[] = [];
   for (const color of colors) {
     for (const size of sizes) {
-      const kept = existing.get(`${color}\u0000${size}`);
-      if (kept) {
-        next.push(kept);
+      const exact = existing.get(`${color}\u0000${size}`);
+      if (exact && !claimed.has(exact)) {
+        claimed.add(exact);
+        next.push(exact);
+        continue;
+      }
+      // 同颜色还有没被认领的旧行 → 沿用它（保住预览图/价格/尺寸），只改尺码文字
+      const sameColor = (byColor.get(color) ?? []).find((row) => !claimed.has(row));
+      if (sameColor) {
+        claimed.add(sameColor);
+        next.push({ ...sameColor, sizeName: size });
         continue;
       }
       next.push(makeRow(color, size, next.length));

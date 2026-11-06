@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TemuParentSpec } from "../types";
 import { TemuThumb } from "./TemuImageStrip";
 import { mergeGeneratedRows, variantCoverage } from "../data/variantMerge";
+import { groupSpecColors, specColorGroup } from "../data/specSwatch";
 
 /**
  * 变种信息一行。字段与单位对齐 Temu 刊登表：
@@ -84,7 +85,7 @@ function safeCodePart(value: string): string {
     .trim();
 }
 
-/** 造一行变种；有产品货号就拼成「货号-尺码」，否则用 SKU-001。 */
+/** 造一行变种；货号只拼 ASCII 部分，拼不出可读的就用 SKU-001。 */
 export function createVariantRow(
   warehouseId: string,
   colorName: string,
@@ -96,7 +97,14 @@ export function createVariantRow(
   const parts = [extCodePrefix || "SKU", safeCodePart(colorName), safeCodePart(sizeName)].filter(
     Boolean,
   );
-  const code = parts.length > 1 ? parts.join("-") : `SKU-${String(index + 1).padStart(3, "0")}`;
+  // 货号只能是字母/数字/-/_（提交前 cleanExtCode 会把中文洗掉）。
+  // 拼了中文进去，表格里显示「SKU-黑」「SKU-浅绿」，提交时全都变成「SKU-」，
+  // 四个颜色撞成同一个货号 → 「ext_code 重复」。所以带中文时直接用序号。
+  const asciiOnly = parts.every((part) => !/[^\x20-\x7E]/.test(part));
+  const code =
+    parts.length > 1 && asciiOnly
+      ? parts.join("-")
+      : `SKU-${String(index + 1).padStart(3, "0")}`;
   return {
     key: nextKey(),
     extCode: code,
@@ -152,6 +160,7 @@ export function PublishSkuPanel({
   carouselImages = [],
   onPreviewImage,
   singleSku = false,
+  presetsReady = true,
 }: {
   rows: VariantRow[];
   onRowsChange: (rows: VariantRow[]) => void;
@@ -188,6 +197,11 @@ export function PublishSkuPanel({
    * 只能建单 SKU 商品。此时隐藏变种生成区与颜色/尺码两列，只保留第 1 行的价格尺寸。
    */
   singleSku?: boolean;
+  /**
+   * 类目属性是否已经读过。没读过时不能断言「这个类目没有预设」——
+   * 那句提示会让用户以为可以自由填，提交时才被 Temu 打回。
+   */
+  presetsReady?: boolean;
 }) {
   const [batch, setBatch] = useState<VariantBatch>(EMPTY_BATCH);
   const [batchTouched, setBatchTouched] = useState(false);
@@ -228,7 +242,9 @@ export function PublishSkuPanel({
   const coverage = variantCoverage(
     rows,
     colorNames.length ? colorNames : ["Default"],
-    sizeNames.length ? sizeNames : ["均码"],
+    // 第二维关掉 = 每色一行，用空尺码参与比对；还开着但没填值就别假装是「均码」，
+    // 否则按钮会显示「✓ 已生成」，用户以为完事了，实际第二维还是空的。
+    sizeParentId > 0 ? (sizeNames.length ? sizeNames : ["均码"]) : [""],
   );
 
   /**
@@ -257,48 +273,222 @@ export function PublishSkuPanel({
   const unknownColors = unknownSpecValues(colorNames, colorOptions);
   const unknownSizes = unknownSpecValues(sizeNames, sizeOptions);
 
-  /** 「Temu 只认这些值」：把类目预设直接列出来，点一下追加（不用自己背）。 */
+  /**
+   * 给一个不在预设里的值找「最像的」预设值。
+   *
+   * 用户写「浅绿色」而预设叫「浅绿」时，光说「不合法」帮不上忙 —— 直接给候选，
+   * 点一下替换掉。只做包含关系匹配（够用且不会乱猜），最多 3 个。
+   */
+  const suggestSpecValues = (value: string, options: string[]): string[] => {
+    const base = value.trim().toLowerCase();
+    if (!base) return [];
+    return options
+      .filter((option) => {
+        const candidate = option.toLowerCase();
+        if (candidate === base) return false;
+        return candidate.includes(base) || base.includes(candidate);
+      })
+      .sort((left, right) => Math.abs(left.length - value.length) - Math.abs(right.length - value.length))
+      .slice(0, 3);
+  };
+
+  /** 把列表里的某个值换成另一个（一个值可能出现在多行里）。 */
+  const replaceSpecValue = (current: string, from: string, to: string) =>
+    splitSpecValues(current)
+      .map((value) => (value.toLowerCase() === from.toLowerCase() ? to : value))
+      .join(",");
+
+  /**
+   * 「Temu 只认这些值」：把类目预设全量摊开，可搜索、点一下加入/移除。
+   *
+   * 以前只露前 10 个 + 一句「还有 N 个，输入框里可以下拉搜」——
+   * 用户根本不知道该搜什么，只能凭感觉手打「浅绿色」，然后被 Temu 判
+   * 「不合法的规格值」（截图里的失败就是这么来的）。
+   * 现在默认显示数量与入口，点开就是全部预设 + 搜索框。
+   */
+  const [specPanel, setSpecPanel] = useState<"color" | "size" | null>(null);
+  const [specQuery, setSpecQuery] = useState("");
+  /** 面板里的色系筛选：all / 色系 key / other */
+  const [specGroupKey, setSpecGroupKey] = useState<string>("all");
+  /** 「复制全部预设」后的短暂反馈 */
+  const [copiedSpec, setCopiedSpec] = useState(false);
+
+  /** 「生成变种」被拦下时的原因（第二维没填，不能凭空造「均码」） */
+  const [genHint, setGenHint] = useState("");
+
+  /** 点空白处收起预设面板（浮层，不收会一直压着下面的表格） */
+  useEffect(() => {
+    if (!specPanel) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".temu-spec-presets")) return;
+      setSpecPanel(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [specPanel]);
+
+  const splitSpecValues = (text: string) =>
+    text
+      .split(/[,，]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+
   const renderSpecChoices = (
     options: string[],
     current: string,
     onPick: (next: string) => void,
     label: string,
-    limit = 10,
+    kind: "color" | "size",
   ) => {
-    if (!options.length) return null;
-    const picked = new Set(
-      current
-        .split(/[,，]/)
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean),
-    );
-    const pick = (name: string) => {
-      if (picked.has(name.toLowerCase())) return;
-      const head = current
-        .split(/[,，]/)
-        .map((value) => value.trim())
-        .filter(Boolean);
-      onPick([...head, name].join(","));
+    const picked = splitSpecValues(current);
+    const pickedLower = new Set(picked.map((value) => value.toLowerCase()));
+    const toggle = (name: string) => {
+      const exists = pickedLower.has(name.toLowerCase());
+      const next = exists
+        ? picked.filter((value) => value.toLowerCase() !== name.toLowerCase())
+        : [...picked, name];
+      onPick(next.join(","));
     };
+    const query = specPanel === kind ? specQuery.trim().toLowerCase() : "";
+    const open = specPanel === kind;
+
+    // 颜色：按色系分组 + 色卡。尺码（S/M/L、容量）没有色系概念，走纯文字列表。
+    const groups = kind === "color" ? groupSpecColors(options) : [];
+    const useGroups = groups.length > 1;
+    const activeGroupKey = open ? specGroupKey : "all";
+    const scoped =
+      useGroups && activeGroupKey !== "all"
+        ? groups.find((item) => (item.group?.key ?? "other") === activeGroupKey)?.values ?? []
+        : options;
+    const filtered = query ? scoped.filter((name) => name.toLowerCase().includes(query)) : scoped;
+
+    if (!options.length) {
+      // 读到了属性但确实没有预设值（走自定义规格的类目）→ 明确说可以自由填；
+      // 还没读到就不能这么说，否则用户以为随便填都行
+      return (
+        <p className="temu-spec-presets-note">
+          {presetsReady
+            ? `这个类目没有${label}预设值，可以自己填写（Temu 按自定义规格收）。`
+            : "正在读取类目预设…"}
+        </p>
+      );
+    }
+
     return (
-      <div className="temu-spec-choices">
-        <span className="temu-muted">Temu 只认这些{label}（点一下填入）：</span>
-        {options.slice(0, limit).map((name) => (
-          <button
-            key={name}
-            type="button"
-            className={`temu-spec-chip${picked.has(name.toLowerCase()) ? " is-picked" : ""}`}
-            onClick={() => pick(name)}
-            title={picked.has(name.toLowerCase()) ? "已经加进上面的列表了" : `填入「${name}」`}
-          >
-            {name}
-          </button>
-        ))}
-        {options.length > limit && (
-          <span className="temu-muted">
-            …还有 {options.length - limit} 个，输入框里可以下拉搜
+      <div className="temu-spec-presets">
+        <button
+          type="button"
+          className={`temu-spec-browse${open ? " is-open" : ""}`}
+          onClick={() => {
+            setSpecPanel(open ? null : kind);
+            setSpecQuery("");
+            setSpecGroupKey("all");
+          }}
+        >
+          <span className="temu-spec-browse-count">{options.length}</span>
+          {open ? `收起${label}预设` : `浏览全部${label}预设`}
+          <span className="temu-spec-browse-caret" aria-hidden="true">
+            {open ? "▴" : "▾"}
           </span>
-        )}
+        </button>
+        {picked.length ? <span className="temu-spec-picked-note">已选 {picked.length} 个</span> : null}
+        {open ? (
+          <div className="temu-spec-panel">
+            <input
+              className="temu-input"
+              value={specQuery}
+              placeholder={`搜索${label}预设，例如「黑」「浅」`}
+              onChange={(event) => setSpecQuery(event.target.value)}
+              // 面板里按回车不要触发下面的「生成变种」
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.preventDefault();
+              }}
+            />
+            {/* 色系分组：一个类目几十上百个颜色时，先按色系收窄再搜 */}
+            {useGroups ? (
+              <div className="temu-spec-groups">
+                <button
+                  type="button"
+                  className={`temu-spec-group${activeGroupKey === "all" ? " is-active" : ""}`}
+                  onClick={() => setSpecGroupKey("all")}
+                >
+                  全部<span>{options.length}</span>
+                </button>
+                {groups.map((item) => {
+                  const key = item.group?.key ?? "other";
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`temu-spec-group${activeGroupKey === key ? " is-active" : ""}`}
+                      onClick={() => setSpecGroupKey(key)}
+                    >
+                      {item.group ? (
+                        <i
+                          className={`temu-spec-dot${item.group.gradient ? " is-multi" : ""}`}
+                          style={item.group.gradient ? undefined : { background: item.group.swatch }}
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      {item.label}
+                      <span>{item.values.length}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            <div className="temu-spec-panel-list">
+              {filtered.map((name) => {
+                const swatch = kind === "color" ? specColorGroup(name) : null;
+                const isPicked = pickedLower.has(name.toLowerCase());
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    className={`temu-spec-chip${isPicked ? " is-picked" : ""}`}
+                    onClick={() => toggle(name)}
+                    title={isPicked ? "再点一下从列表里移除" : `加入「${name}」`}
+                  >
+                    {swatch ? (
+                      <i
+                        className={`temu-spec-dot${swatch.gradient ? " is-multi" : ""}`}
+                        style={swatch.gradient ? undefined : { background: swatch.swatch }}
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    {name}
+                  </button>
+                );
+              })}
+              {!filtered.length ? <span className="temu-muted">没有匹配的预设值</span> : null}
+            </div>
+            <div className="temu-spec-panel-foot">
+              <p className="temu-spec-panel-note">
+                只能从这些值里选（点一下加入、再点移除）。自己造的词 Temu 会判「不合法的{label}」。
+              </p>
+              {/* 有人要拿全量清单去对表 / 报给运营，给个复制口子，别逼他一个个抄 */}
+              <button
+                type="button"
+                className="temu-link-button"
+                onClick={() => {
+                  const text = options.join("\n");
+                  const done = () => {
+                    setCopiedSpec(true);
+                    window.setTimeout(() => setCopiedSpec(false), 1800);
+                  };
+                  if (navigator.clipboard?.writeText) {
+                    void navigator.clipboard.writeText(text).then(done).catch(() => done());
+                  } else {
+                    done();
+                  }
+                }}
+              >
+                {copiedSpec ? "已复制全部" : `复制全部 ${options.length} 个`}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -334,8 +524,28 @@ export function PublishSkuPanel({
    * 保留（只同步颜色/尺码文字），只有新组合才用批量默认值填。
    */
   const generate = () => {
-    const sizes = sizeNames.length ? sizeNames : ["均码"];
+    setGenHint("");
     const colors = colorNames.length ? colorNames : ["Default"];
+    /**
+     * 第二维被关掉 → 只按颜色铺行；
+     * 第二维还在但用户没填值 → 不再凭空造「均码」：
+     * 那不是预设值，提交必被判「不合法的规格属性」，不如当场说清楚。
+     * （只有类目预设里真的有「均码」时才用它兜底 —— 这类目卖的就是均码商品。）
+     */
+    let sizes: string[];
+    if (sizeParentId > 0) {
+      if (sizeNames.length) sizes = sizeNames;
+      else if (sizeOptions.includes("均码")) sizes = ["均码"];
+      else {
+        setGenHint(
+          `先在「变种属性二」里填${sizeSpecName}值（从预设里选），或者把它设成「不使用（单维）」——` +
+            `第二维空着不能生成，硬填一个「均码」提交会被 Temu 判为不合法的规格值。`,
+        );
+        return;
+      }
+    } else {
+      sizes = [""];
+    }
     const base = rows[0];
     const effective: VariantBatch = {
       supplierPrice: batch.supplierPrice.trim() || base?.supplierPrice || "",
@@ -462,20 +672,43 @@ export function PublishSkuPanel({
               placeholder={`${colorSpecName}值，多个用逗号分隔`}
             />
           </div>
-          {renderSpecChoices(colorOptions, colorsText, onColorsTextChange, colorSpecName)}
+          {renderSpecChoices(colorOptions, colorsText, onColorsTextChange, colorSpecName, "color")}
           {unknownColors.length > 0 && (
-            <p className="temu-spec-bad">
-              「{unknownColors.join("、")}」不是合法的{colorSpecName}值（Temu 只认类目预设）——
-              点上面任意一个换掉它。
-            </p>
+            <div className="temu-spec-bad">
+              <p>
+                「{unknownColors.join("、")}」不是合法的{colorSpecName}值（Temu 只认类目预设），提交会被拒。
+              </p>
+              {unknownColors.map((value) => {
+                const suggestions = suggestSpecValues(value, colorOptions);
+                if (!suggestions.length) return null;
+                return (
+                  <p key={value} className="temu-spec-bad-fix">
+                    把「{value}」换成：
+                    {suggestions.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="temu-spec-chip"
+                        onClick={() => onColorsTextChange(replaceSpecValue(colorsText, value, name))}
+                        title={`用预设值「${name}」替换「${value}」`}
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </p>
+                );
+              })}
+            </div>
           )}
         </label>
-        {/* 只有一个销售属性的类目（手机壳只有「型号」、毛巾只有「颜色」）不显示第二列，
-            否则用户会以为必须再填一项，而 Temu 那边根本没这个属性 */}
-        {sizeParentId > 0 && (
-          <>
-            <label className="temu-field">
-              <span>变种属性二：{sizeSpecName}</span>
+        {/* 有第二维就当普通两列用；只有一列销售属性的类目（手机壳只有「型号」）不显示。
+            第二维允许手动关掉：只发颜色/款式，一个颜色一个 SKU。 */}
+        {parentSpecs.length > 1 && (
+          // 和「属性一」保持同一副骨架：标题 + 一行（父属性下拉 + 值输入）+ 预设区。
+          // 拆成两个 field 会让网格按顺序排版，标题和输入框错行（截图里就歪了）。
+          <label className="temu-field">
+            <span>变种属性二：{sizeParentId > 0 ? sizeSpecName : "不使用"}</span>
+            <div className="temu-spec-row">
               <select
                 className="temu-input"
                 value={sizeParentId}
@@ -486,29 +719,57 @@ export function PublishSkuPanel({
                     {item.parentSpecName}
                   </option>
                 ))}
+                {/* 只要一维（只有颜色、没有尺码）时的出口：以前没有这个选项，
+                    用户只能看着尺码列发呆 —— 删不掉也没法忽略。
+                    下拉很窄，标签得短；完整解释在右边的虚线提示里。 */}
+                <option value={0}>不使用（单维）</option>
               </select>
-            </label>
-            <label className="temu-field">
-              <span>{sizeSpecName}值（多个用逗号分隔）</span>
-              <input
-                className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
-                list="temu-size-options"
-                value={sizesText}
-                onChange={(event) => onSizesTextChange(event.target.value)}
-                placeholder={`${sizeSpecName}值，多个用逗号分隔`}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") generate();
-                }}
-              />
-              {renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName)}
-              {unknownSizes.length > 0 && (
-                <p className="temu-spec-bad">
-                  「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设）——
-                  点上面任意一个换掉它。
-                </p>
+              {sizeParentId > 0 ? (
+                <input
+                  className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
+                  list="temu-size-options"
+                  value={sizesText}
+                  onChange={(event) => onSizesTextChange(event.target.value)}
+                  placeholder={`${sizeSpecName}值，多个用逗号分隔`}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") generate();
+                  }}
+                />
+              ) : (
+                <span className="temu-spec-nodim">
+                  每个{colorSpecName}一个 SKU，提交时不再带第二维规格
+                </span>
               )}
-            </label>
-          </>
+            </div>
+            {sizeParentId > 0 ? renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size") : null}
+            {sizeParentId > 0 && unknownSizes.length > 0 && (
+              <div className="temu-spec-bad">
+                <p>
+                  「{unknownSizes.join("、")}」不是合法的{sizeSpecName}值（Temu 只认类目预设），提交会被拒。
+                </p>
+                {unknownSizes.map((value) => {
+                  const suggestions = suggestSpecValues(value, sizeOptions);
+                  if (!suggestions.length) return null;
+                  return (
+                    <p key={value} className="temu-spec-bad-fix">
+                      把「{value}」换成：
+                      {suggestions.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          className="temu-spec-chip"
+                          onClick={() => onSizesTextChange(replaceSpecValue(sizesText, value, name))}
+                          title={`用预设值「${name}」替换「${value}」`}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </p>
+                  );
+                })}
+              </div>
+            )}
+          </label>
         )}
         <button
           type="button"
@@ -529,6 +790,7 @@ export function PublishSkuPanel({
         </button>
         </div>
       )}
+      {genHint ? <p className="temu-spec-bad">{genHint}</p> : null}
 
       <div className="temu-batch">
         <div className="temu-batch-head">
@@ -615,17 +877,18 @@ export function PublishSkuPanel({
             {!singleSku && (
               <>
                 <span>颜色</span>
-                <span>尺码</span>
+                {/* 第二维被关掉（只按颜色发）时不要留一列空的「尺码」 */}
+                {sizeParentId > 0 ? <span>{sizeSpecName}</span> : null}
               </>
             )}
             <span>SKU 货号</span>
             <span>申报价格(元)</span>
-            <span>长</span>
-            <span>宽</span>
-            <span>高</span>
+            <span title="单位：厘米">长</span>
+            <span title="单位：厘米">宽</span>
+            <span title="单位：厘米">高</span>
             <span>重量(g)</span>
             <span>建议售价(元)</span>
-            <span>库存</span>
+            <span title="填 0 也能建品，但商品是售罄/不可售状态">库存(件)</span>
             <span />
           </div>
           {rows.length === 0 && (
@@ -784,13 +1047,15 @@ export function PublishSkuPanel({
                     }
                     title={`Temu 只认类目预设的${colorSpecName}值，自己输入会被拒`}
                   />
-                  <input
-                    className="temu-input"
-                    list="temu-size-options"
-                    value={row.sizeName}
-                    onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
-                    placeholder={sizeOptions.length ? "选预设值" : `输入${sizeSpecName}`}
-                  />
+                  {sizeParentId > 0 ? (
+                    <input
+                      className="temu-input"
+                      list="temu-size-options"
+                      value={row.sizeName}
+                      onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
+                      placeholder={sizeOptions.length ? "选预设值" : `输入${sizeSpecName}`}
+                    />
+                  ) : null}
                 </>
               )}
               <input
@@ -805,27 +1070,41 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { supplierPrice: event.target.value })}
                 placeholder="12.99"
               />
+              {/* 长/宽/高 各占一列、各有表头。曾经合成「长 × 宽 × 高」一组，
+                  但一列里塞三个框只能分到 39~72px，看着挤成一堆小方块；
+                  三列分开每格都有自己的标题，填错列时反而更容易发现。 */}
               <input
                 className="temu-input"
                 inputMode="decimal"
+                aria-label="长（厘米）"
+                title="长（厘米）"
+                placeholder="长"
                 value={row.lengthCm}
                 onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
               />
               <input
                 className="temu-input"
                 inputMode="decimal"
+                aria-label="宽（厘米）"
+                title="宽（厘米）"
+                placeholder="宽"
                 value={row.widthCm}
                 onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
               />
               <input
                 className="temu-input"
                 inputMode="decimal"
+                aria-label="高（厘米）"
+                title="高（厘米）"
+                placeholder="高"
                 value={row.heightCm}
                 onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
               />
               <input
                 className="temu-input"
                 inputMode="decimal"
+                aria-label="重量（克）"
+                placeholder="重量"
                 value={row.weightG}
                 onChange={(event) => onUpdateRow(row.key, { weightG: event.target.value })}
               />
@@ -838,20 +1117,34 @@ export function PublishSkuPanel({
               />
               <input
                 className={`temu-input${
-                  String(row.stock).trim() === "" || Number(row.stock) < 0 ? " is-bad" : ""
+                  String(row.stock).trim() === "" || Number.isNaN(Number(row.stock)) || Number(row.stock) < 0
+                    ? " is-bad"
+                    : Number(row.stock) === 0
+                      // 0 是合法值但商品会「售罄」，用橙色（不是红色报错）提醒一下
+                      ? " is-empty-stock"
+                      : ""
                 }`}
                 inputMode="numeric"
                 value={row.stock}
                 onChange={(event) => onUpdateRow(row.key, { stock: event.target.value })}
                 placeholder="0 也可"
-                title="可以填 0：Temu 会建品但前台不可售（售罄），卖之前补库存即可"
+                title={
+                  Number(row.stock) > 0
+                    ? "库存（件）"
+                    : "库存 0：能建品，但商品是「售罄 / 不可售」状态，买家看不到"
+                }
               />
               <button
                 type="button"
                 className="temu-variant-del"
                 onClick={() => onRemoveRow(row.key)}
                 disabled={rows.length <= 1}
-                title="删除这一行"
+                aria-label="删除这一行变种"
+                title={
+                  rows.length <= 1
+                    ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
+                    : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
+                }
               >
                 ×
               </button>
@@ -860,8 +1153,10 @@ export function PublishSkuPanel({
         </div>
       </div>
       <p className="temu-muted">
-        共 {rows.length} 个变种 / {new Set(rows.map((row) => row.colorName.trim() || "Default")).size} 个颜色。
-        Temu 变种上限 20 个；同色下尺码不能重复、SKU 货号不能重复。
+        共 {rows.length} 个变种
+        {/* 单 SKU 类目没有颜色维度，别再说「几个颜色 / 同色下尺码不能重复」 */}
+        {singleSku ? "。" : ` / ${new Set(rows.map((row) => row.colorName.trim() || "Default")).size} 个颜色。`}
+        Temu 变种上限 20 个{singleSku || sizeParentId <= 0 ? "" : "；同色下尺码不能重复"}，SKU 货号不能重复。
       </p>
       {zeroStockCount > 0 && (
         <p className="temu-variant-zerohint">

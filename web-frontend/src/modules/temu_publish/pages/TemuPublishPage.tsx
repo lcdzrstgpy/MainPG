@@ -386,6 +386,17 @@ function cleanExtCode(value: string): string {
   return String(value || "").replace(/[^A-Za-z0-9_-]+/g, "").trim();
 }
 
+/**
+ * Temu 的体积校验要求「最长边 ≥ 次长边 ≥ 最短边」，三个值必须降序传。
+ *
+ * 用户填的「长 33 × 宽 13 × 高 20」是**他对物品的描述**，不是排序结果；
+ * 直接照发会被拒：「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」。
+ * 体积只看三个边长，跟哪条叫「长」无关，所以这里替他排好，物理含义不变。
+ */
+function sortDimensionsDesc(a: number, b: number, c: number): [number, number, number] {
+  return [a, b, c].sort((x, y) => y - x) as [number, number, number];
+}
+
 /** 取出现次数最多的宽度（详情图统一到这个宽度）；没有就 800。 */
 function mostCommonWidth(widths: number[]): number {
   const valid = widths.filter((value) => Number.isFinite(value) && value > 0);
@@ -496,6 +507,47 @@ function BtnIcon({ path }: { path: string }) {
 const ICON_CHECK = "M3 8.4l3.1 3.1L13 4.9";
 const ICON_SUBMIT = "M8 12.5V4M4.6 7.4L8 4l3.4 3.4";
 const ICON_NEXT = "M3.5 8h9M9 4.5L12.5 8 9 11.5";
+
+/**
+ * 右栏三张指标卡的图标：层叠方块（变种）/ 图片（轮播）/ 价格（申报价）。
+ * 和按钮图标同一套 16×16 线性风格，描边走 currentColor，
+ * 颜色由卡片的状态色决定（缺项时整张卡连图标一起变红）。
+ */
+function StatIcon({ kind }: { kind: "variant" | "image" | "price" }) {
+  const base = {
+    width: 15,
+    height: 15,
+    viewBox: "0 0 16 16",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.4,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    focusable: "false" as const,
+  };
+  if (kind === "variant") {
+    return (
+      <svg {...base} aria-hidden="true">
+        <rect x="2" y="5.6" width="6.6" height="6.6" rx="1.5" />
+        <path d="M5.2 5.6V4a1.5 1.5 0 011.5-1.5h5.8A1.5 1.5 0 0114 4v5.8a1.5 1.5 0 01-1.5 1.5h-1.6" />
+      </svg>
+    );
+  }
+  if (kind === "image") {
+    return (
+      <svg {...base} aria-hidden="true">
+        <rect x="2" y="3" width="12" height="10" rx="1.6" />
+        <circle cx="5.6" cy="6.4" r="1" />
+        <path d="M2.6 11.4l3-3 2.4 2.4 2.4-2.4 3 3" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...base} aria-hidden="true">
+      <path d="M8 10.4v3.2M4.6 3.2L8 8l3.4-4.8M5.6 6.5h4.8M5.6 8.9h4.8" />
+    </svg>
+  );
+}
 
 function SectionHead({
   step,
@@ -988,7 +1040,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           // 一条草稿往往有多个 SKU（一个颜色一条），全部铺出来，不用用户再点生成。
           if (seedRows && seedRows.length) return seedRows;
           if (current.length) return current;
-          return [createVariantRow(whId, "", "均码", EMPTY_BATCH, 0)];
+          return [createVariantRow(whId, "", "", EMPTY_BATCH, 0)];
         });
         // 这条草稿上次选过类目：直接套回去，省得每次重选
         if (prefill?.categoryPath?.length) {
@@ -1097,9 +1149,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       (item) => item && (item.color || item.size || item.sku),
     );
     if (variants.length <= 1) {
-      return [prefillToRow(createVariantRow(whId, "", "均码", EMPTY_BATCH, 0), prefill)];
+      return [prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill)];
     }
-    const fallbackSize = prefill.specValue2 || "均码";
+    const fallbackSize = prefill.specValue2 || "";
     return variants.map((variant, index) => {
       const base = createVariantRow(
         whId,
@@ -1922,6 +1974,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return out;
   };
 
+  /**
+   * 真正要提示的不匹配项：某一维被关掉后，它名下的旧值不再算数
+   * （提交时根本不带那个规格），提示条不能还挂着它。
+   */
+  const activeSpecMismatch = specMismatch.filter((item) =>
+    item.field === "color" ? colorParentId > 0 : sizeParentId > 0,
+  );
+
   /** 按最接近的预设值把不合法的颜色/尺码批量改掉；对不上的保持原样并继续留在清单里。 */
   const fixSpecMismatches = () => {
     if (!specMismatch.length) return;
@@ -1939,9 +1999,51 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       };
     });
     setRows(next);
+    /**
+     * 上方的「颜色 / 尺码 列表」也要一起改。
+     *
+     * 只改表格是治标：那两个输入框还留着非法值，用户再点一次「生成变种」就按旧文本
+     * 重新铺一遍，刚修好的行又被替换成「浅绿色」这种提交必被拒的值。
+     */
+    const remapList = (text: string, options: string[]) => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const raw of text.split(/[,，]/)) {
+        const name = raw.trim();
+        if (!name) continue;
+        const fixed = matchPresetValue(name, options) ?? name;
+        if (seen.has(fixed)) continue;
+        seen.add(fixed);
+        out.push(fixed);
+      }
+      return out.join(",");
+    };
+    const nextColorsText = remapList(form.colorsText, colorNames);
+    const nextSizesText = remapList(form.sizesText, sizeNames);
+    if (nextColorsText !== form.colorsText || nextSizesText !== form.sizesText) {
+      patch({ colorsText: nextColorsText, sizesText: nextSizesText });
+    }
     setSpecMismatch(findSpecMismatches(attributes, next));
   };
 
+  /**
+   * 自建规格值的缓存：颜色 × 尺码是笛卡尔积，同一个值会被反复解析，
+   * 不缓存就会对同一个值重复 createSpec（Temu 侧可能报「已存在」）。
+   */
+  const createdSpecsRef = useRef(new Map<string, TemuSkuSpec>());
+
+  /**
+   * 把「颜色 / 尺码 的文字值」解析成 Temu 认的规格（spec_id）。
+   *
+   * 两条路：
+   * - 类目有预设值 → 必须命中预设，对不上就报错让用户从下拉选；
+   * - 类目没有这个属性的预设值（化妆包 / 桌布这类自定义规格类目：attrs 里一个
+   *   isSale 都没有，`inputMaxSpecNum` 却是 2）→ 调 createSpec 自己建。
+   *
+   * 以前这里缺第二条分支，一律抛「Temu 只认类目预设值」，而界面上明明写着
+   * 「可以自己填写（Temu 按自定义规格收）」—— 于是这类类目永远发不出去。
+   * 批量发布那边一直有这条自建分支，单个发布漏了。
+   */
   const ensureSpec = async (
     parentSpec: TemuParentSpec | null,
     specName: string,
@@ -1949,23 +2051,50 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (!parentSpec) throw new Error("Temu 父规格列表为空，无法创建规格");
     const name = specName.trim();
     if (!name) throw new Error("规格名称不能为空");
+
+    const cacheKey = `${parentSpec.parentSpecId}:${name}`;
+    const cached = createdSpecsRef.current.get(cacheKey);
+    if (cached) return cached;
+
     const options = saleValueIndex.get(parentSpec.parentSpecId) ?? [];
     // 草稿带来的是「安卓通用款-黑色」「迷雾蓝」这种描述，先自动对齐到预设值
     const matchedName = matchPresetValue(name, options.map((item) => item.name));
     const preset = matchedName ? options.find((item) => item.name === matchedName) : undefined;
-    if (!preset) {
-      const samples = specOptions(parentSpec.parentSpecId).slice(0, 6).join("、");
-      throw new Error(
-        `「${name}」不是该 ${parentSpec.parentSpecName} 的合法值：Temu 只认类目预设值` +
-          (samples ? `，请从下拉里选（如 ${samples}）` : ""),
-      );
+    if (preset) {
+      return {
+        parent_spec_id: parentSpec.parentSpecId,
+        parent_spec_name: parentSpec.parentSpecName,
+        spec_id: preset.specId,
+        spec_name: preset.name,
+      };
     }
-    return {
-      parent_spec_id: parentSpec.parentSpecId,
-      parent_spec_name: parentSpec.parentSpecName,
-      spec_id: preset.specId,
-      spec_name: preset.name,
-    };
+
+    // 这个属性压根没有预设值 → 自建（界面已经告诉用户「Temu 按自定义规格收」）
+    if (!options.length) {
+      const created = await temuPublishApi.createSpec(parentSpec.parentSpecId, name);
+      const specId = Number(created.specId ?? 0);
+      if (!specId) {
+        throw new Error(
+          `${parentSpec.parentSpecName}「${name}」建成自定义规格失败（Temu 没返回 spec_id），重试一次；` +
+            "仍失败就去 Temu 后台确认这个类目还能不能加自定义规格",
+        );
+      }
+      const resolved: TemuSkuSpec = {
+        parent_spec_id: parentSpec.parentSpecId,
+        parent_spec_name: parentSpec.parentSpecName,
+        spec_id: specId,
+        spec_name: created.specName?.trim() || name,
+      };
+      createdSpecsRef.current.set(cacheKey, resolved);
+      return resolved;
+    }
+
+    // 有预设但对不上：这是真的填错了，明确告诉他能选什么
+    const samples = specOptions(parentSpec.parentSpecId).slice(0, 6).join("、");
+    throw new Error(
+      `「${name}」不在「${parentSpec.parentSpecName}」的预设值里` +
+        (samples ? `：点上方「浏览全部预设」选一个（如 ${samples}）` : ""),
+    );
   };
 
   /**
@@ -2203,6 +2332,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const colorParent = parentSpecs.find((item) => item.parentSpecId === colorParentId) ?? null;
     const sizeParent = parentSpecs.find((item) => item.parentSpecId === sizeParentId) ?? null;
 
+    /**
+     * SKU 货号去重表。
+     * `cleanExtCode` 只保留 A-Za-z0-9-_，所以自动生成的「SKU-黑」「SKU-浅绿」
+     * 清洗后**全都是「SKU-」**，四个颜色撞成同一个货号 → 提交被判「ext_code 重复」。
+     * 用户看到表格里明明各不相同，报错却说重复，就是这么来的。
+     */
+    const usedSkuCodes = new Set<string>();
+
     /** 一行变种 → 一个 SKU 草稿。带不带规格由调用方给，字段映射只写这一份。 */
     const buildSku = (
       row: VariantRow,
@@ -2218,12 +2355,42 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             "确认一下是不是少填了一位（两个都是元，不用换算）。",
         );
       }
-      const skuCode = cleanExtCode(row.extCode);
-      if (!skuCode) throw new Error(`${at}缺少 SKU 货号（只能用字母/数字/-/_）`);
-      if (skuCode !== row.extCode.trim()) {
-        warnings.push(`${at}SKU 货号里的中文/符号已自动去掉：${row.extCode.trim()} → ${skuCode}`);
+      const rawSkuCode = row.extCode.trim();
+      if (!rawSkuCode) throw new Error(`${at}缺少 SKU 货号（只能用字母/数字/-/_）`);
+      const cleaned = cleanExtCode(rawSkuCode);
+      let skuCode = cleaned;
+      if (!cleaned || /[-_]$/.test(cleaned)) {
+        // 整条货号都是中文，或者中文在末尾（「SKU-黑」→ 洗完只剩「SKU-」）：
+        // 这等同于没写，用序号兜底，别让用户卡在「我没乱填但发不出去」
+        skuCode = `SKU-${String(usedSkuCodes.size + 1).padStart(3, "0")}`;
+        warnings.push(`${at}SKU 货号「${rawSkuCode}」去掉中文后只剩空壳，自动改用 ${skuCode}`);
+      } else if (cleaned !== rawSkuCode) {
+        warnings.push(`${at}SKU 货号里的中文/符号已自动去掉：${rawSkuCode} → ${cleaned}`);
       }
+      // 清洗后撞号（「SKU-黑」「SKU-浅绿」→ 都是 SKU-）→ 追加序号，仍然唯一
+      if (usedSkuCodes.has(skuCode)) {
+        const base = skuCode;
+        let n = 2;
+        while (usedSkuCodes.has(`${base}-${n}`)) n += 1;
+        skuCode = `${base}-${n}`;
+        warnings.push(`${at}SKU 货号去掉中文后与前面的重复，已改成 ${skuCode}`);
+      }
+      usedSkuCodes.add(skuCode);
       if (!row.warehouseId) throw new Error(`${at}缺少发货仓库`);
+
+      // Temu 要求「最长边 ≥ 次长边 ≥ 最短边」，顺序不对直接拒：
+      // 「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」
+      const lengthCm = parsePositive(row.lengthCm, `${at}长`);
+      const widthCm = parsePositive(row.widthCm, `${at}宽`);
+      const heightCm = parsePositive(row.heightCm, `${at}高`);
+      const [longest, middle, shortest] = sortDimensionsDesc(lengthCm, widthCm, heightCm);
+      if (longest !== lengthCm || middle !== widthCm) {
+        warnings.push(
+          `${at}长宽高 ${lengthCm}×${widthCm}×${heightCm} 不是「最长 ≥ 次长 ≥ 最短」，` +
+            `已按 ${longest}×${middle}×${shortest} 提交（Temu 的体积校验要求降序，体积不变）`,
+        );
+      }
+
       return {
         ext_code: skuCode,
         // 半托管供货价按人民币结算：传其它币种会被拒「请选择正确的币种：CNY」
@@ -2237,11 +2404,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 库存 0 是合法的（Temu 会建品但不可售），别拿价格的规则卡它
         stock: parseStock(row.stock, `${at}库存`),
         warehouse_id: row.warehouseId,
-        // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米
+        // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米。三维已按降序排好（见上面）
         weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
-        length_mm: Math.round(parsePositive(row.lengthCm, `${at}长`) * 10),
-        width_mm: Math.round(parsePositive(row.widthCm, `${at}宽`) * 10),
-        height_mm: Math.round(parsePositive(row.heightCm, `${at}高`) * 10),
+        length_mm: Math.round(longest * 10),
+        width_mm: Math.round(middle * 10),
+        height_mm: Math.round(shortest * 10),
         thumb_url: rowThumbs.get(row.key) || skcImage,
         // 多件装（4 Pack / 12Pcs）：1 就是单件装，接口里不发这个字段
         pieces_per_pack: Math.max(1, Math.round(Number(form.piecesPerPack || "1") || 1)),
@@ -2323,9 +2490,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           }
           skus.push(buildSku(row, at, specs, skcImage));
         }
+        // 颜色名全是中文时（黑/浅绿/象牙）cleanExtCode 会把它清成空字符串，
+        // 四个 SKC 就都变成同一个「SKC」→ 提交被判「SKC ext_code 重复」。
+        // 用颜色序号兜底，并保证后缀不被 120 字截断（截断了一样会撞号）。
+        const colorCode = cleanExtCode(color) || `C${colorIndex}`;
+        const skcHead = (productCode || "SKC").slice(0, Math.max(1, 120 - colorCode.length - 1));
         skcs.push({
-          // SKC 货号：产品货号 + 颜色，避免多色撞号
-          ext_code: [productCode || "SKC", cleanExtCode(color)].filter(Boolean).join("-").slice(0, 120),
+          ext_code: `${skcHead}-${colorCode}`,
           preview_image_urls: [skcImage],
           color_image_url: skcImage,
           main_specs: [colorSpec],
@@ -2543,8 +2714,40 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows((current) => current.map((row) => (row.key === key ? { ...row, ...rowPatch } : row)));
   };
 
-  const removeRow = (key: string) =>
-    setRows((current) => (current.length > 1 ? current.filter((row) => row.key !== key) : current));
+  /**
+   * 删一行变种。
+   *
+   * 只从表格里删是不够的：上面的「颜色 / 尺码 列表」还留着那个值，
+   * 用户再点一次「生成变种」它就长回来了 —— 看起来像「删不掉」。
+   * 所以删掉某颜色的最后一行时，顺手把它从颜色列表里去掉（尺码同理）。
+   */
+  const removeRow = (key: string) => {
+    const target = rows.find((row) => row.key === key);
+    if (!target || rows.length <= 1) return;
+    const next = rows.filter((row) => row.key !== key);
+    setRows(next);
+    const dropValue = (text: string, value: string) => {
+      const name = value.trim();
+      if (!name) return null;
+      const parts = text
+        .split(/[,，]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (!parts.some((item) => item === name)) return null;
+      return parts.filter((item) => item !== name).join(",");
+    };
+    // 这个颜色 / 尺码在剩下的行里已经没人用了，才从列表里移除
+    const color = target.colorName.trim();
+    if (color && !next.some((row) => row.colorName.trim() === color)) {
+      const nextColors = dropValue(form.colorsText, color);
+      if (nextColors !== null) patch({ colorsText: nextColors });
+    }
+    const size = target.sizeName.trim();
+    if (size && !next.some((row) => row.sizeName.trim() === size)) {
+      const nextSizes = dropValue(form.sizesText, size);
+      if (nextSizes !== null) patch({ sizesText: nextSizes });
+    }
+  };
 
   const leaf = categoryPath[categoryPath.length - 1];
   // 产品货号（ParentSKU）：Temu 只认字母/数字/-/_，渲染层也用它拼变种货号前缀
@@ -3730,7 +3933,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             id="sec-variant"
           >
             <SectionHead
-              step={stepOf("sec-variant")}
+              step={{
+                ...stepOf("sec-variant"),
+                // 单 SKU 类目还叫「变种信息」会让人以为漏填了颜色/尺码
+                label: singleSkuMode ? "变种信息（单 SKU）" : "变种信息",
+                hint: singleSkuMode
+                  ? "只有一个 SKU：填价格、库存、尺寸重量即可"
+                  : "颜色尺码、申报价格、尺寸重量",
+              }}
               active={activeSectionId === "sec-variant"}
               index={2}
               extra={<span className="temu-muted">{rows.length} 个变种</span>}
@@ -3757,10 +3967,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </select>
               </div>
             </details>
-            {specMismatch.length > 0 && (
+            {activeSpecMismatch.length > 0 && (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
-                  <strong>有 {specMismatch.length} 个规格值不在当前类目的预设里</strong>
+                  <strong>有 {activeSpecMismatch.length} 个规格值不在当前类目的预设里</strong>
                   <div className="temu-spec-mismatch-actions">
                     <button
                       type="button"
@@ -3783,12 +3993,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   价格、重量这些没动，改完规格就行。
                 </p>
                 <ul>
-                  {specMismatch.map((item) => (
-                    <li key={`${item.rowKey}-${item.field}`}>
-                      第 {item.rowNo} 行{" "}
-                      {item.field === "color" ? colorSpecName : sizeSpecName}「{item.value}」
-                    </li>
-                  ))}
+                  {/* 第二维被关掉后，之前记下的尺码不匹配就不算数了（提交时根本不带它） */}
+                  {activeSpecMismatch.map((item) => {
+                    // 能自动对齐的会给「按最接近的预设值修正」；对不上的必须说清楚，
+                    // 否则用户点了修正发现这个值还在，会以为功能坏了
+                    const options = item.field === "color" ? specOptions(colorParentId) : specOptions(sizeParentId);
+                    const fixable = matchPresetValue(item.value, options);
+                    return (
+                      <li key={`${item.rowKey}-${item.field}`}>
+                        第 {item.rowNo} 行{" "}
+                        {item.field === "color" ? colorSpecName : sizeSpecName}「{item.value}」
+                        <em className="temu-spec-mismatch-manual">
+                          {fixable ? `→ 可改成「${fixable}」` : "预设里没有相近值，请用上方「浏览全部预设」手动选"}
+                        </em>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             )}
@@ -3816,6 +4036,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               carouselImages={splitLines(form.carousel)}
               onPreviewImage={(src, alt) => setImagePreview({ src, alt })}
               singleSku={singleSkuMode}
+              presetsReady={attributes !== null}
             />
             {/* 显示条件用 required（类目要不要），不是 has（店里有没有）：
                 服装类目新店一张表都没有，用 has 判会把整个字段藏掉，
@@ -4109,18 +4330,49 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </li>
               ))}
             </ol>
+            {/* 提交前的最后一眼：三个数字做成指标卡，缺什么当场变色。
+                变种/轮播并排，申报价单独占整行 —— 它是三个里最要命的（填错就是亏钱），
+                挤在 72px 里连「¥12.99」都显示不全。 */}
             <dl className="temu-rail-stats">
-              <div>
-                <dt>变种</dt>
-                <dd>{rows.length}</dd>
+              <div className={`temu-stat${rows.length ? "" : " is-danger"}`}>
+                <span className="temu-stat-ico" aria-hidden="true">
+                  <StatIcon kind="variant" />
+                </span>
+                <div className="temu-stat-body">
+                  <dt>变种</dt>
+                  <dd>
+                    {rows.length}
+                    <em>个</em>
+                  </dd>
+                </div>
               </div>
-              <div>
-                <dt>轮播</dt>
-                <dd>{carouselCount}</dd>
+              <div
+                className={`temu-stat${
+                  carouselCount >= 3 ? "" : carouselCount > 0 ? " is-warn" : " is-danger"
+                }`}
+              >
+                <span className="temu-stat-ico" aria-hidden="true">
+                  <StatIcon kind="image" />
+                </span>
+                <div className="temu-stat-body">
+                  <dt>轮播</dt>
+                  <dd>
+                    {carouselCount}
+                    <em>张</em>
+                  </dd>
+                </div>
               </div>
-              <div>
-                <dt>申报价</dt>
-                <dd>{firstPrice ? formatYuan(firstPrice) : "—"}</dd>
+              <div className={`temu-stat is-wide${firstPrice && Number(firstPrice) > 0 ? "" : " is-muted"}`}>
+                <span className="temu-stat-ico" aria-hidden="true">
+                  <StatIcon kind="price" />
+                </span>
+                <div className="temu-stat-body">
+                  <dt>申报价</dt>
+                  <dd>
+                    {firstPrice && Number(firstPrice) > 0 ? formatYuan(firstPrice) : "未填"}
+                    <em>{firstPrice && Number(firstPrice) > 0 ? "首件" : "提交会被拒"}</em>
+                  </dd>
+                </div>
               </div>
             </dl>
             <div className="temu-rail-actions">
