@@ -1306,8 +1306,15 @@ export function TemuDraftLibraryPage({
                           alt={entry.title || "草稿图"}
                           onPreview={(src, alt) => setPreview({ src, alt })}
                         />
+                        {/* 角标「+N」= 除了这张缩略图还有 N 张（轮播 + 详情合集）。
+                            鼠标悬浮缩略图会放大并隐藏它，所以这里补个 title 说明。 */}
                         {entry.images.length > 1 ? (
-                          <span className="temu-draft-more">+{entry.images.length - 1}</span>
+                          <span
+                            className="temu-draft-more"
+                            title={`共 ${entry.images.length} 张图（轮播 + 详情），另有 ${entry.images.length - 1} 张`}
+                          >
+                            +{entry.images.length - 1}
+                          </span>
                         ) : null}
                       </span>
                     </td>
@@ -1481,7 +1488,7 @@ export function TemuDraftLibraryPage({
             以前只显示前 20 个、也没有任何提示。这里明确告诉用户「加载到第几个」，
             点一下让后端把每批的偏移往后推一页。成本恒定，不会因为 500 而变慢。 */}
         {data?.has_more ? (
-          <div className="temu-draft-more">
+          <div className="temu-draft-load-more">
             <span className="temu-muted">
               每个批次已加载前 {itemOffset + 20} 个，还有更多
             </span>

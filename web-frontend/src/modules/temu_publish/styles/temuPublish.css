@@ -7076,8 +7076,10 @@ textarea.temu-input {
 }
 
 /* 「加载更多」：批次里超过 20 个商品时的出口。
-   以前这批只显示前 20 个、界面还写「共 20 条」，用户以为就这些。 */
-.temu-draft-more {
+   以前这批只显示前 20 个、界面还写「共 20 条」，用户以为就这些。
+   ⚠️ 类名别再用 .temu-draft-more —— 那是缩略图角标「+N」的类，
+   同名会把白底虚线框套到每张缩略图的角标上（2026-11-07 修）。 */
+.temu-draft-load-more {
   display: flex;
   flex-wrap: wrap;
   align-items: center;

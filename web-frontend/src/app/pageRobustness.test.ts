@@ -68,3 +68,15 @@ test("列表接口回空对象时按空数组渲染（asArray 统一兜底）", 
   const pod = read("../modules/pod_customization/api/podCustomizationApi.ts");
   assert.match(pod, /batches: asArray<PodBatchListResponse\["batches"\]\[number\]>\(response\?\.batches\)/);
 });
+
+test("成品库：缩略图「+N」角标和「加载更多」不能共用同一个类名", () => {
+  // 2026-11-07 实测故障：两处都叫 .temu-draft-more，后定义的「加载更多」
+  // 把白底虚线框 + padding 套到了每张缩略图的小角标上，界面上就是一堆白框。
+  const css = read("../modules/temu_publish/styles/temuPublish.css");
+  const definitions = css.match(/^\.temu-draft-more\s*\{/gm) ?? [];
+  assert.equal(definitions.length, 1, ".temu-draft-more 只能有一处定义（缩略图角标）");
+
+  const page = read("../modules/temu_publish/pages/TemuDraftLibraryPage.tsx");
+  assert.match(page, /className="temu-draft-load-more"/, "「加载更多」要用自己的类名");
+  assert.match(page, /className="temu-draft-more"/, "缩略图角标仍用 temu-draft-more");
+});
