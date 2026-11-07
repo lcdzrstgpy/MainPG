@@ -197,7 +197,7 @@ export function TemuDraftBulkBar({
             <button
               type="button"
               className="temu-bulk-action is-danger"
-              title="从草稿库移除这些条目（不动 Temu 店铺里的商品）"
+              title="从成品库移除这些条目（不动 Temu 店铺里的商品）"
               onClick={onDelete}
             >
               删除

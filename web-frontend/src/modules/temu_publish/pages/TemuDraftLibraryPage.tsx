@@ -1017,9 +1017,9 @@ export function TemuDraftLibraryPage({
     <div className="temu-publish-page">
       <header className="temu-library-head">
         <div className="temu-library-title">
-          <p className="eyebrow">DRAFT LIBRARY</p>
-          <h1>草稿库</h1>
-          <p>汇总 AI 处理与 POD 的成品数据。成功发布过的会自动移出这里，可在「发布历史」回看。</p>
+          <p className="eyebrow">PRODUCT LIBRARY</p>
+          <h1>成品库</h1>
+          <p>AI 处理与 POD 定制的成品都在这里。成功发布过的会自动移出，可在「发布历史」回看。</p>
         </div>
 
         {/* 分类筛选做成统计卡：一眼看到各类有多少条，点一下就筛 */}
@@ -1200,10 +1200,10 @@ export function TemuDraftLibraryPage({
             {!data
               ? "正在读取草稿…"
               : query
-                ? `没有匹配「${query}」的草稿：换个关键字，或清空搜索看全部。`
+                ? `没有匹配「${query}」的成品：换个关键字，或清空搜索看全部。`
                 : hidden.length > 0
                   ? `当前页的 ${hidden.length} 条都被本机隐藏了，翻页或点「恢复隐藏」查看。`
-                  : "暂无可用草稿：先完成一批 AI 处理或 POD 生成。"}
+                  : "暂无可用成品：先完成一批 AI 处理或 POD 生成。"}
           </p>
         ) : (
           // 翻页时保留上一页内容并压暗，避免整块塌成「加载中」闪一下
@@ -1658,7 +1658,7 @@ export function TemuDraftLibraryPage({
             >
               <header className="temu-edit-head">
                 <div>
-                  <strong>从草稿库移除</strong>
+                  <strong>从成品库移除</strong>
                   <span>只影响本机展示，Temu 店铺里的商品不受影响，随时可以恢复</span>
                 </div>
                 <button type="button" onClick={() => setDeleteTargets([])} aria-label="关闭">
@@ -1666,7 +1666,7 @@ export function TemuDraftLibraryPage({
                 </button>
               </header>
               <p className="temu-edit-note">
-                选中的 {deleteTargets.length} 条会从草稿库隐藏，右上角「已隐藏 N 条 · 恢复」可以全部还原。
+                选中的 {deleteTargets.length} 条会从成品库隐藏，右上角「已隐藏 N 条 · 恢复」可以全部还原。
               </p>
               <footer className="temu-edit-foot">
                 <button type="button" className="temu-btn" onClick={() => setDeleteTargets([])}>

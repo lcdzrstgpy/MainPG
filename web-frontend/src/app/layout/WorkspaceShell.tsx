@@ -238,9 +238,18 @@ function restoreWorkspaceTabs(isAdmin: boolean): RestoredWorkspaceTabs {
   const tabs = snapshot.tabs
     .filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId))
     .map((tab) => {
-      // 页签标题是动态文案（"处理·12项"）时沿用持久化值，缺失时才回落到模块默认名。
+      // 页签标题是动态文案（"处理·12项"）时沿用持久化值。
+      // 但模块改名后旧标题会一直留着（侧栏叫「成品库」、页签还写「草稿库」），
+      // 所以只有「写盘时的模块名 == 当前模块名」才认快照里的 label。
+      // 老快照没有 moduleLabel 字段 → 视为改名，直接用当前注册表的名字。
       const base = moduleTab(tab.moduleId, modules);
-      const restored: WorkspaceTab = { ...tab, label: tab.label || base.label, icon: tab.icon || base.icon, iconClass: tab.iconClass ?? base.iconClass };
+      const keepSnapshotLabel = tab.moduleLabel === base.label;
+      const restored: WorkspaceTab = {
+        ...tab,
+        label: keepSnapshotLabel && tab.label ? tab.label : base.label,
+        icon: tab.icon || base.icon,
+        iconClass: tab.iconClass ?? base.iconClass,
+      };
       // 开工中的处理页签按「任务详情」恢复：它因此继续轮询 /outputs（= 还有人在看），
       // 页面上也没有「开始处理」入口，不会再建出一个重复任务。
       if (restored.taskRunId == null && restored.activeTaskId != null) restored.taskRunId = restored.activeTaskId;
@@ -329,8 +338,13 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       writeWorkspaceTabsSnapshot(window.localStorage, {
         tabs: tabs
           .filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId))
-          // AI 视频的当前页面属于会话状态，不是模块默认值：写盘时注入，刷新后回到同一路径。
-          .map((tab) => (tab.moduleId === "ai_video" ? { ...tab, aiVideoPath } : tab)),
+          .map((tab) => ({
+            ...tab,
+            // 记下当前的模块名：模块改名后还原时才能识别出快照里的 label 已过期。
+            moduleLabel: moduleTab(tab.moduleId, workspacePageModules).label,
+            // AI 视频的当前页面属于会话状态，不是模块默认值：写盘时注入，刷新后回到同一路径。
+            ...(tab.moduleId === "ai_video" ? { aiVideoPath } : {}),
+          })),
         activeTabKey,
       });
     } catch {

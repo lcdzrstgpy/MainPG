@@ -71,3 +71,12 @@ test("product processing distinguishes remote service outages from API key failu
     /const AI_CONFIG_ERROR_RE\s*=\s*\/[^/\n]*unreachable[^/\n]*\/i/,
   );
 });
+
+test("模块改名后，持久化的旧页签标题要跟着换", () => {
+  // 实测：侧栏把「草稿库」改成「成品库」后，页签和面包屑还写着旧名 ——
+  // 因为快照把 label 一起存了，还原时无条件信任它。
+  assert.match(source, /const keepSnapshotLabel = tab\.moduleLabel === base\.label;/);
+  assert.match(source, /label: keepSnapshotLabel && tab\.label \? tab\.label : base\.label/);
+  // 写盘时记下当时的模块名，改名后才有参照
+  assert.match(source, /moduleLabel: moduleTab\(tab\.moduleId, workspacePageModules\)\.label/);
+});

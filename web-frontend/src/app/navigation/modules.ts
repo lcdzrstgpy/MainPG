@@ -195,7 +195,7 @@ const productProcessingHistory: WorkspaceModule = {
 
 const temuPublish: WorkspaceModule = {
   id: "temu_publish",
-  label: "发布商品（实验）",
+  label: "发布商品",
   icon: "",
   iconClass: "iconfont icon-upload",
   description: "选择类目与属性，组装 Temu 商品发布请求体",
@@ -211,10 +211,12 @@ const temuPublishHistory: WorkspaceModule = {
 
 const temuDraftLibrary: WorkspaceModule = {
   id: "temu_draft_library",
-  label: "草稿库",
+  label: "成品库",
   icon: "",
   iconClass: "iconfont icon-database",
-  description: "汇总 AI 处理与 POD 成品，一键带入发布商品",
+  // 里面放的是 AI 处理完 / POD 定制完的东西 —— 已经做完了，只差没上架；
+  // 叫「草稿」会让人以为还没做完，也和 Temu 后台的草稿箱撞名。
+  description: "AI 处理与 POD 定制成品，一键带入发布商品",
 };
 
 const productProcessingSourcing: WorkspaceModule = {
@@ -498,13 +500,13 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [productWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
   },
   {
-    // 海外上架（原「发布商品」）：草稿库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
+    // 海外上架：成品库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
     // 而不是一张空表单。
     id: "overseas_listing",
     label: "海外上架",
     icon: "",
     iconClass: "iconfont icon-upload",
-    description: "Temu 商品发布与草稿库",
+    description: "Temu 商品发布：成品库 → 发布商品 → 发布历史",
     defaultChildId: "temu_draft_library",
     children: [temuDraftLibrary, temuPublish, temuPublishHistory],
   },

@@ -1854,7 +1854,7 @@ test("发布历史：成功与失败分开，成功过的草稿从草稿库消�
   // 成功显示商品 id，失败展开看原因（Temu 原话 + 错误码）
   assert.match(history, /商品 id <b>\{item\.goods_id \|\| "—"\}<\/b>/);
   assert.match(history, /失败原因|temu-history-reason/);
-  assert.match(history, /去草稿库重发/);
+  assert.match(history, /去成品库重发/);
   // 走的是后端台账，不是本机 localStorage
   assert.match(apiTs, /publish-history\?/);
   assert.match(history, /temuPublishApi\.publishHistory\(/);

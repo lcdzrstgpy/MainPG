@@ -236,7 +236,7 @@ export function TemuPublishHistoryPage({
   const emptyText = appliedKeyword
     ? `没有匹配「${appliedKeyword}」的记录，换个关键词试试（标题、商品 id、类目名都能搜）。`
     : tab === "success"
-      ? "还没有成功发布过商品。从草稿库挑一条发布成功后，这里会记下商品 id。"
+      ? "还没有成功发布过商品。从成品库挑一条发布成功后，这里会记下商品 id。"
       : "还没有失败记录 —— 失败时这里会显示 Temu 的原话和错误码，方便照着改。";
 
   async function handleCopy(key: string, text: string) {
@@ -257,7 +257,7 @@ export function TemuPublishHistoryPage({
       <header className="temu-history-head">
         <div className="temu-history-title">
           <h1>发布历史</h1>
-          <p>成功与失败分开记；成功过的草稿会自动从草稿库移除，避免重复上架。</p>
+          <p>成功与失败分开记；成功过的成品会自动从成品库移除，避免重复上架。</p>
         </div>
 
         <div className="temu-history-stats" aria-label="发布统计">
@@ -439,7 +439,7 @@ export function TemuPublishHistoryPage({
                         </button>
                         {onOpenDraftLibrary ? (
                           <button type="button" className="temu-history-retry" onClick={onOpenDraftLibrary}>
-                            去草稿库重发
+                            去成品库重发
                           </button>
                         ) : null}
                       </div>

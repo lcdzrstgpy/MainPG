@@ -81,8 +81,8 @@ test("image service nests the existing workflows one level deeper", () => {
     "temu_publish_history",
   ]);
   assert.deepEqual(overseas?.children?.map((child) => child.label), [
-    "草稿库",
-    "发布商品（实验）",
+    "成品库",
+    "发布商品",
     "发布历史",
   ]);
   assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
