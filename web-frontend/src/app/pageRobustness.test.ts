@@ -95,3 +95,11 @@ test("发布页：选填属性常驻展开，不能改成折叠块", () => {
   // 高级设置仍可折叠，别把它的 summary 样式一起删了
   assert.match(css, /\.is-console \.temu-advanced > summary \{/);
 });
+
+test("发布页：产品素材图的占位文案要区分「必填/可选」", () => {
+  // 老文案「覆盖素材图地址（可选）」看着像必填，普通类目其实留空就行。
+  const page = read("../modules/temu_publish/pages/TemuPublishPage.tsx");
+  assert.doesNotMatch(page, /placeholder="覆盖素材图地址（可选）"/);
+  assert.match(page, /"必填 · 粘贴 Temu 图片地址，或点右边「上传方图」"/);
+  assert.match(page, /"可选 · 留空自动用轮播第一张"/);
+});

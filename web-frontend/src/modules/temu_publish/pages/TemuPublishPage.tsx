@@ -3861,7 +3861,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     className="temu-input"
                     value={form.material}
                     onChange={(event) => patch({ material: event.target.value })}
-                    placeholder="覆盖素材图地址（可选）"
+                    // 文案要说清「要不要填」：原来的「覆盖素材图地址（可选）」看着像必填，
+                    // 而普通类目其实留空就行（自动用轮播第一张）。
+                    placeholder={
+                      isApparelCategory
+                        ? "必填 · 粘贴 Temu 图片地址，或点右边「上传方图」"
+                        : "可选 · 留空自动用轮播第一张"
+                    }
                   />
                   {/* 手里只有竖图？这里直接裁成 1:1 再传，省得用户自己找工具转 */}
                   <label className="temu-btn is-small" title="选一张图，自动居中裁成 1:1（≥800×800）后上传">
