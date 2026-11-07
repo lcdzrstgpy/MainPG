@@ -3722,3 +3722,369 @@ def test_draft_library_pages_inside_a_big_task(tmp_path: Path) -> None:
     assert len(seen) == 500
     assert len(set(seen)) == 500  # 没有重复
     assert seen[0] == "商品0" and seen[-1] == "商品499"
+
+
+class _WholeTaskAi:
+    """一个任务里塞满商品，只有第 480 个带关键字。
+
+    模拟真实情况：普通聚合只看每个任务前 20 个，480 号那条根本进不了列表。
+    """
+
+    def __init__(self, total: int = 500) -> None:
+        self.total = total
+        self.media_calls: list[list[int]] = []
+        self.repository = self
+
+    def task_history(self, limit: int, ws: str) -> dict[str, Any]:
+        return {
+            "tasks": [
+                {
+                    "task_id": 7,
+                    "status": "completed",
+                    "success_count": self.total,
+                    "updated_at": "2026-11-01T10:00:00",
+                    "title": "大批次",
+                }
+            ]
+        }
+
+    def task_preview(
+        self,
+        task_id: int,
+        *,
+        workspace_id: str = "",
+        item_limit: int | None = None,
+        item_offset: int = 0,
+        media_limit: int | None = None,
+    ) -> dict[str, Any]:
+        end = min(self.total, item_offset + (item_limit or 0))
+        has_media = media_limit is None or media_limit > 0
+        items = []
+        for k in range(item_offset, end):
+            items.append(
+                {
+                    "item_id": k,
+                    "product_draft_id": 1000 + k,
+                    "exportable": True,
+                    "excluded": False,
+                    "title": "蓝色桌布" if k == 480 else f"商品{k}",
+                    "status": "completed",
+                    "carousel_images": [f"/api/x/{k}.jpg"] if has_media else [],
+                    "detail_images": [],
+                    "main_image": f"/api/x/{k}.jpg" if has_media else "",
+                    "core_fields": {"sku": f"SKU-{k}"},
+                }
+            )
+        return {
+            "items": items,
+            "item_count": self.total,
+            "item_offset": item_offset,
+            "has_more": end < self.total,
+        }
+
+    def task_search_preview(
+        self,
+        task_id: int,
+        needle: str,
+        *,
+        workspace_id: str = "",
+        limit: int = 2000,
+        match_all: bool = False,
+    ) -> dict[str, Any]:
+        """库里做匹配的那份（这里用 Python 模拟 SQL 行为）。"""
+        hits = []
+        for k in range(self.total):
+            title = "蓝色桌布" if k == 480 else f"商品{k}"
+            haystack = f"{title} sku-{k}".lower()
+            if not match_all and needle.lower() not in haystack:
+                continue
+            hits.append(
+                {
+                    "item_id": k,
+                    "product_draft_id": 1000 + k,
+                    "exportable": True,
+                    "excluded": False,
+                    "title": title,
+                    "status": "completed",
+                    "carousel_images": [],
+                    "detail_images": [],
+                    "main_image": "",
+                    "core_fields": {"sku": f"SKU-{k}"},
+                }
+            )
+            if len(hits) >= limit:
+                break
+        return {
+            "task_id": task_id,
+            "item_count": len(hits),
+            "truncated": len(hits) >= limit,
+            "items": hits,
+        }
+
+    def task_preview_media(
+        self, task_id: int, draft_ids: list[int], *, workspace_id: str = ""
+    ) -> dict[str, Any]:
+        self.media_calls.append(list(draft_ids))
+        return {
+            "items": {
+                str(draft_id): {
+                    "carousel_images": [f"/api/x/{draft_id - 1000}.jpg"],
+                    "detail_images": [],
+                    "main_image": f"/api/x/{draft_id - 1000}.jpg",
+                }
+                for draft_id in draft_ids
+            }
+        }
+
+    def get_drafts(self, ids, **kwargs):  # noqa: ANN001, ANN201
+        return []
+
+
+def test_search_finds_item_far_inside_a_big_task() -> None:
+    """搜索必须扫全量：第 480 个商品不能因为「前 20 个没它」就搜不到。
+
+    以前搜索只在「已经聚合出来的那几十条」里过滤，用户搜自己明明有的商品
+    会得到「没有匹配」，然后以为商品丢了。
+    """
+    from wh_local.modules.temu_publish.library import (
+        collect_all_draft_entries,
+        materialize_draft_search,
+        paginate_draft_library,
+        scan_draft_library,
+    )
+    from wh_local.session import Actor
+
+    actor = Actor(id="x", username="x", role="admin", workspace_id="default")
+    pp = _WholeTaskAi()
+
+    # 普通路径看不到它：只有前 20 个
+    normal = paginate_draft_library(
+        collect_all_draft_entries(
+            product_processing=pp, pod_service=None, actor=actor, limit=200
+        ),
+        query="蓝色桌布",
+        page=1,
+        page_size=30,
+    )
+    assert normal["entries"] == []
+
+    scan = scan_draft_library(
+        product_processing=pp, pod_service=None, actor=actor, query="蓝色桌布"
+    )
+    assert [entry["title"] for entry in scan["ai"]] == ["蓝色桌布"]
+    assert scan["counts"] == {"ai": 1, "pod": 0, "total": 1}
+
+    page = materialize_draft_search(
+        scan, product_processing=pp, actor=actor, page=1, page_size=30
+    )
+    assert page["total"] == 1
+    assert page["has_more"] is False
+    # 只有命中的那一条去取图，不是把 500 条全投影一遍
+    assert pp.media_calls == [[1480]]
+    assert page["entries"][0]["images"] == ["/api/x/480.jpg"]
+    assert page["entries"][0]["sku"] == "SKU-480"
+
+
+def test_search_pages_whole_result_and_projects_only_that_page() -> None:
+    """命中 500 条时：翻页是真翻页（total/pages 正确），且每页只投影 30 张图。"""
+    from wh_local.modules.temu_publish.library import materialize_draft_search, scan_draft_library
+    from wh_local.session import Actor
+
+    actor = Actor(id="x", username="x", role="admin", workspace_id="default")
+    pp = _WholeTaskAi()
+    scan = scan_draft_library(product_processing=pp, pod_service=None, actor=actor, query="商品")
+
+    assert scan["counts"]["ai"] == 499  # 除了「蓝色桌布」那条，其余都匹配
+
+    first = materialize_draft_search(scan, product_processing=pp, actor=actor, page=1, page_size=30)
+    assert first["total"] == 499
+    assert first["pages"] == 17
+    assert len(first["entries"]) == 30
+    assert len(pp.media_calls[0]) == 30  # 只给这一页补图
+
+    last = materialize_draft_search(scan, product_processing=pp, actor=actor, page=17, page_size=30)
+    assert len(last["entries"]) == 19  # 499 - 16*30
+    assert len(pp.media_calls[-1]) == 19
+
+
+def test_search_respects_source_filter_and_skips_published() -> None:
+    """搜索也要认「仅 AI / 仅 POD」和已发布剔除，否则 tab 上的数字对不上列表。"""
+    from wh_local.modules.temu_publish.library import materialize_draft_search, scan_draft_library
+    from wh_local.session import Actor
+
+    actor = Actor(id="x", username="x", role="admin", workspace_id="default")
+    pp = _WholeTaskAi(total=40)
+    scan = scan_draft_library(product_processing=pp, pod_service=None, actor=actor, query="商品")
+
+    only_pod = materialize_draft_search(
+        scan, product_processing=pp, actor=actor, source="pod", page=1, page_size=30
+    )
+    assert only_pod["entries"] == [] and only_pod["total"] == 0
+
+    dropped = materialize_draft_search(
+        scan,
+        product_processing=pp,
+        actor=actor,
+        page=1,
+        page_size=30,
+        exclude_ids={"ai:7:0"},
+    )
+    assert dropped["total"] == 39
+    assert all(entry["id"] != "ai:7:0" for entry in dropped["entries"])
+
+
+def test_draft_library_search_endpoint_scans_whole_task(tmp_path: Path) -> None:
+    """接口层：带 q 时走全量扫描，且命中集合按关键字缓存（翻页/切来源不重扫）。"""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from wh_local.modules.temu_publish.router import create_temu_publish_router
+    from wh_local.session import Actor, actor_from_authorization
+
+    pp = _WholeTaskAi(total=60)
+    scans = {"n": 0}
+    original = pp.task_search_preview
+
+    def counting_search(*args, **kwargs):  # noqa: ANN001, ANN202
+        scans["n"] += 1
+        return original(*args, **kwargs)
+
+    pp.task_search_preview = counting_search
+
+    db_path = tmp_path / "runtime.sqlite3"
+    init_db(db_path)
+    app = FastAPI()
+    app.include_router(create_temu_publish_router(db_path, product_processing=pp))
+    app.dependency_overrides[actor_from_authorization] = lambda: Actor(
+        id="search-tester", username="t", role="admin", workspace_id="default"
+    )
+    http = TestClient(app)
+
+    # 第 48 个商品，普通列表（前 20 个）里没有它
+    found = http.get("/api/temu-publish/draft-library?q=商品48")
+    assert found.status_code == 200
+    body = found.json()
+    assert body["total"] == 1
+    assert body["entries"][0]["title"] == "商品48"
+    assert body["entries"][0]["images"] == ["/api/x/48.jpg"]
+    # 计数跟着命中走
+    assert body["counts"]["ai"] == 1
+    assert body["has_more"] is False
+
+    after_first = scans["n"]
+    assert after_first >= 1
+
+    # 同一个关键字再查一次（翻页 / 切来源）不再扫任务
+    again = http.get("/api/temu-publish/draft-library?q=商品48&page=1")
+    assert again.status_code == 200
+    assert scans["n"] == after_first
+
+
+def _real_pp_service(tmp_path: Path):  # noqa: ANN202
+    from wh_local.modules.product_processing.infrastructure.assets import ProductProcessingAssets
+    from wh_local.modules.product_processing.infrastructure.database import create_database
+    from wh_local.modules.product_processing.infrastructure.repository import (
+        ProductProcessingRepository,
+    )
+    from wh_local.modules.product_processing.service import ProductProcessingService
+
+    return ProductProcessingService(
+        ProductProcessingRepository(
+            create_database(f"sqlite:///{(tmp_path / 'pp.sqlite3').as_posix()}")
+        ),
+        ProductProcessingAssets(tmp_path / "assets"),
+    )
+
+
+def _seed_search_task(service, titles: list[str], categories: list[str], ws: str = "default") -> int:
+    drafts = []
+    for index, title in enumerate(titles):
+        draft, _ = service.create_draft(
+            {
+                "source_type": "manual",
+                "title": title,
+                "product_name": title,
+                "skc": f"SKC-{index}",
+                # 采集链路就是把类目路径放在 payload 顶层
+                "category_path": ["家居", categories[index]],
+            },
+            workspace_id=ws,
+        )
+        drafts.append(draft)
+    task = service.repository.create_task(
+        title="春季批次",
+        preflight_only=False,
+        settings={"target_site": "US", "target_language": "en"},
+        drafts=drafts,
+        idempotency_key=None,
+        workspace_id=ws,
+    )
+    results = [
+        {
+            "item_id": item["id"],
+            "status": "completed",
+            "result": {
+                "optimized_title": titles[pos],
+                "sku": f"SKU-{pos}",
+                "provider_status_classes": {"four_grid": "ok"},
+            },
+        }
+        for pos, item in enumerate(task["items"])
+    ]
+    service.repository.finish_task(
+        task["id"],
+        results,
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id=ws,
+    )
+    return int(task["id"])
+
+
+def test_task_search_matches_title_sku_category_in_sql(tmp_path: Path) -> None:
+    """关键字匹配下推到 SQLite（JSON1 + LIKE）：标题 / 货号 / 类目 / 通配符转义。
+
+    这条是「全量搜索」的底座：以前是把几百条 result_json 读进 Python 再比对，
+    现在一行 SQL 就筛完，命中多少才解析多少。
+    """
+    service = _real_pp_service(tmp_path)
+    titles = ["纯棉桌布", "涤纶桌布", "100%棉麻垫", "硅胶隔热垫"]
+    task_id = _seed_search_task(service, titles, ["桌布", "桌布", "餐垫", "餐垫"])
+
+    assert len(service.repository.search_task_items(task_id, "桌布")) == 2
+    # 货号
+    assert len(service.repository.search_task_items(task_id, "sku-2")) == 1
+    # 类目：raw_payload.category_path 是列表，也要能搜到
+    assert len(service.repository.search_task_items(task_id, "家居")) == 4
+    # 通配符必须转义：搜 "%" 只命中真的含 % 的那条，而不是「全部」
+    assert len(service.repository.search_task_items(task_id, "%")) == 1
+    assert len(service.repository.search_task_items(task_id, "100%")) == 1
+    # 搜的是批次名 → 整个任务都算命中
+    assert len(service.repository.search_task_items(task_id, "春季", match_all=True)) == 4
+    assert service.repository.search_task_items(task_id, "   ") == []
+
+    preview = service.task_search_preview(task_id, "桌布", workspace_id="default")
+    assert [item["title"] for item in preview["items"]] == ["纯棉桌布", "涤纶桌布"]
+    # 没投影图片，但「能不能导出」的结论要在
+    assert all(item["media_loaded"] is False for item in preview["items"])
+    assert all(item["exportable"] is True for item in preview["items"])
+    assert all(item["main_image"] == "" for item in preview["items"])
+
+
+def test_search_warns_when_media_projection_fails() -> None:
+    """图片投影挂了不能静默返回空列表：用户会以为库里没有这个商品。"""
+    from wh_local.modules.temu_publish.library import materialize_draft_search, scan_draft_library
+    from wh_local.session import Actor
+
+    class BrokenMedia(_WholeTaskAi):
+        def task_preview_media(self, task_id, draft_ids, *, workspace_id=""):  # noqa: ANN001
+            raise RuntimeError("media bundle broken")
+
+    actor = Actor(id="x", username="x", role="admin", workspace_id="default")
+    pp = BrokenMedia(total=40)
+    scan = scan_draft_library(product_processing=pp, pod_service=None, actor=actor, query="商品")
+    page = materialize_draft_search(scan, product_processing=pp, actor=actor, page=1, page_size=30)
+
+    assert page["entries"] == []  # 没图确实没法发布
+    assert any("图片读取失败" in warning for warning in page["warnings"])

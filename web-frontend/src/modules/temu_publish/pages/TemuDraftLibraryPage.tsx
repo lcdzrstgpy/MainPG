@@ -1470,7 +1470,9 @@ export function TemuDraftLibraryPage({
 
         <p className="temu-muted temu-draft-meta is-foot">
           {query ? `匹配 ${totalCount} 条 · ` : ""}
-          最近 8 个 AI 批次 / 6 个 POD 批次
+          {/* 搜索是在库里全量筛的（不是只筛当前这几页），这点必须说清楚，
+              否则用户会以为「搜不到 = 没有」 */}
+          {query ? "已在全部商品里搜过" : "最近 8 个 AI 批次 / 6 个 POD 批次"}
           {productTpl ? ` · 产品模板：${productTpl}` : ""}
           {variantTpl ? ` · 变种模板：${variantTpl}` : ""}
         </p>

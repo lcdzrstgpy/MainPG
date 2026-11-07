@@ -5337,6 +5337,100 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "excluded_draft_ids": sorted(excluded_ids),
         }
 
+    def task_search_preview(
+        self,
+        task_id: int,
+        needle: str,
+        *,
+        workspace_id: str = "local",
+        limit: int = 2000,
+        match_all: bool = False,
+    ) -> dict[str, Any]:
+        """按关键字在**整个任务**里搜商品项（成品库全量搜索用）。
+
+        和 ``task_preview`` 的区别只有两点：筛选在库里做（JSON1 + LIKE），
+        以及**不投影图片**（``media_limit=0`` 同款口径）。命中之后由调用方
+        按当前页补图片，所以几百个商品的任务也只付「几毫秒 SQL + 命中条数」的钱。
+        """
+        task = self._require_task_meta(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
+        completed_only = task["status"] == "cancelled"
+        matched_ids = self.repository.search_task_items(
+            task_id,
+            needle,
+            limit=max(1, int(limit)),
+            completed_only=completed_only,
+            match_all=match_all,
+        )
+        items = self.repository.get_task_items_by_ids(
+            task_id, matched_ids, completed_only=completed_only
+        )
+        draft_ids = [
+            int(item["product_draft_id"])
+            for item in items
+            if item.get("product_draft_id")
+        ]
+        draft_meta = (
+            self.repository.drafts_preview_meta(draft_ids, workspace_id=workspace_id)
+            if draft_ids
+            else {}
+        )
+        from .domain.preview_images import PreviewImageManifest  # noqa: PLC0415
+
+        empty_manifest = PreviewImageManifest().as_dict()
+        previews: list[dict[str, Any]] = []
+        for item in items:
+            result = item.get("result") or {}
+            draft_id = item.get("product_draft_id")
+            meta = draft_meta.get(int(draft_id)) if draft_id else {}
+            saved = (meta or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict):
+                saved = {}
+            previews.append(
+                {
+                    **self._preview_item(
+                        item,
+                        result,
+                        saved,
+                        preview_revision=int((meta or {}).get("preview_revision") or 0),
+                    ),
+                    "media_contract_version": int(
+                        (meta or {}).get("media_contract_version") or 1
+                    ),
+                    "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
+                    "media_loaded": False,
+                    "sku_availability": None,
+                    "dimension_image": None,
+                    # 和 task_preview 里 media_limit=0 的分支同一口径：图片留空，
+                    # 但「能不能导出」的结论要给（成品库靠它筛可发布条目）。
+                    "assets": [],
+                    "image_manifest": empty_manifest,
+                    "main_image": "",
+                    "carousel_images": [],
+                    "detail_images": [],
+                    **self.preview_images.lazy_export_readiness(
+                        result,
+                        title=str(
+                            (saved.get("title") if isinstance(saved, Mapping) else "")
+                            or result.get("optimized_title")
+                            or ""
+                        ).strip(),
+                    ),
+                }
+            )
+        return {
+            "task_id": int(task_id),
+            "item_count": len(previews),
+            "truncated": len(previews) >= max(1, int(limit)),
+            "items": previews,
+        }
+
     def task_preview_media(
         self,
         task_id: int,

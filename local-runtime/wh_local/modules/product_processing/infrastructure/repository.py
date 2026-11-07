@@ -1485,6 +1485,111 @@ class ProductProcessingRepository:
             rows = session.scalars(statement.order_by(ProcessingTaskItemRow.id)).all()
             return [self._item(row) for row in rows]
 
+    def get_task_items_by_ids(
+        self,
+        task_id: int,
+        item_ids: Iterable[int],
+        *,
+        completed_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """只读取指定的任务项（按关键字搜索命中后用）。"""
+        ids = list(dict.fromkeys(int(item) for item in item_ids))
+        if not ids:
+            return []
+        with self.database.sessions() as session:
+            statement = select(ProcessingTaskItemRow).where(
+                ProcessingTaskItemRow.task_id == int(task_id),
+                ProcessingTaskItemRow.id.in_(ids),
+            )
+            if completed_only:
+                statement = statement.where(ProcessingTaskItemRow.status == "completed")
+            rows = session.scalars(statement.order_by(ProcessingTaskItemRow.id)).all()
+            return [self._item(row) for row in rows]
+
+    def search_task_items(
+        self,
+        task_id: int,
+        needle: str,
+        *,
+        limit: int = 500,
+        completed_only: bool = False,
+        match_all: bool = False,
+    ) -> list[int]:
+        """在库内按关键字筛任务项，返回命中的 item id。
+
+        搜索必须扫全量（一个任务里可能几百个商品），但不该把几百条 result_json
+        读进 Python 再逐条比对 —— 那正好是「全量搜索」最贵的一步。这里把匹配
+        交给 SQLite 的 JSON1：标题 / 货号 / 类目都在库里直接比。
+
+        ``match_all=True``：搜的是批次名，整个任务都算命中（与列表里 subtitle
+        参与匹配的口径一致）。
+        """
+        text_needle = str(needle or "").strip().lower()
+        with self.database.sessions() as session:
+            statement = (
+                select(ProcessingTaskItemRow.id)
+                .select_from(ProcessingTaskItemRow)
+                .outerjoin(
+                    ProductDraftRow,
+                    ProductDraftRow.id == ProcessingTaskItemRow.product_draft_id,
+                )
+                .where(ProcessingTaskItemRow.task_id == int(task_id))
+            )
+            if completed_only:
+                statement = statement.where(ProcessingTaskItemRow.status == "completed")
+            if not match_all:
+                if not text_needle:
+                    return []
+                # LIKE 里的 % 和 _ 是通配符：用户输入必须转义，
+                # 否则搜「100%」会变成「以 100 开头」。
+                escaped = (
+                    text_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                )
+                pattern = f"%{escaped}%"
+                result_json = ProcessingTaskItemRow.result_json
+                statement = statement.where(
+                    or_(
+                        func.lower(func.coalesce(ProcessingTaskItemRow.title, "")).like(
+                            pattern, escape="\\"
+                        ),
+                        func.lower(_json_scalar(result_json, "$.optimized_title")).like(
+                            pattern, escape="\\"
+                        ),
+                        func.lower(_json_scalar(result_json, "$.sku")).like(
+                            pattern, escape="\\"
+                        ),
+                        func.lower(func.coalesce(ProductDraftRow.title, "")).like(
+                            pattern, escape="\\"
+                        ),
+                        func.lower(
+                            func.coalesce(
+                                _json_scalar(ProductDraftRow.preview_overrides_json, "$.title"), ""
+                            )
+                        ).like(pattern, escape="\\"),
+                        func.lower(
+                            func.coalesce(
+                                _json_scalar(ProductDraftRow.raw_payload_json, "$.category_path"),
+                                "",
+                            )
+                        ).like(pattern, escape="\\"),
+                        # 采集链路把类目放在 payload 顶层；手工/接口造的 payload
+                        # 可能套一层 raw_payload，两种都认。
+                        func.lower(
+                            func.coalesce(
+                                _json_scalar(
+                                    ProductDraftRow.raw_payload_json,
+                                    "$.raw_payload.category_path",
+                                ),
+                                "",
+                            )
+                        ).like(pattern, escape="\\"),
+                    )
+                )
+            rows = session.scalars(
+                statement.order_by(ProcessingTaskItemRow.id).limit(max(1, int(limit)))
+            ).all()
+        return [int(row) for row in rows]
+
     def task_item_preview_rows(
         self,
         task_id: int,

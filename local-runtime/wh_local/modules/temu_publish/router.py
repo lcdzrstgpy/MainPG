@@ -15,7 +15,12 @@ from .client import TemuCredentialMissing, TemuGatewayError, clear_shared_catalo
 from . import submissions as submission_ledger
 from .submissions import DuplicateSubmission
 from .gateway_sync import mark_provider_credentials_stale, sync_provider_credentials
-from .library import collect_all_draft_entries, paginate_draft_library
+from .library import (
+    collect_all_draft_entries,
+    materialize_draft_search,
+    paginate_draft_library,
+    scan_draft_library,
+)
 from .schemas import (
     DetailImageUploadRequest,
     DimensionCheckRequest,
@@ -103,6 +108,12 @@ _LIBRARY_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any]]] = {}
 _LIBRARY_CACHE_TTL = 180.0
 _LIBRARY_CACHE_LOCK = threading.Lock()
 
+# 搜索结果缓存：key = (账号, 归一化关键字)，存的是「扫完全库的命中集合」（不带图片），
+# 翻页/切来源都在它上面切，不用每页重扫。图片投影仍然按页做，所以缓存里没法存整页。
+_SEARCH_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_SEARCH_CACHE_TTL = 120.0
+_SEARCH_CACHE_MAX = 64
+
 
 def create_temu_publish_router(
     database_path: Path,
@@ -143,6 +154,56 @@ def create_temu_publish_router(
     def _service(actor: Actor) -> TemuPublishService:
         """凭证按账号隔离：每次请求都换成当前登录账号的店铺上下文。"""
         return service.with_owner(actor.id)
+
+    def _search_library(
+        actor: Actor,
+        needle: str,
+        *,
+        source: str,
+        page: int,
+        page_size: int,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        """全量搜索：扫全库 → 缓存命中集合 → 按页补图片。
+
+        缓存只存「扫完后命中的条目（AI 侧没图）」，因为图片投影是按页做的；
+        翻页、切来源筛选都在这份命中集合上切，不会重扫任务。
+        """
+        key = (actor.id, needle.lower())
+        now = time.time()
+        scan: dict[str, Any] | None = None
+        if not refresh:
+            with _LIBRARY_CACHE_LOCK:
+                hit = _SEARCH_CACHE.get(key)
+            if hit and now - hit[0] < _SEARCH_CACHE_TTL:
+                scan = hit[1]
+        if scan is None:
+            pod_service = pod_service_getter() if callable(pod_service_getter) else None
+            scan = scan_draft_library(
+                product_processing=product_processing,
+                pod_service=pod_service,
+                actor=actor,
+                query=needle,
+            )
+            with _LIBRARY_CACHE_LOCK:
+                if len(_SEARCH_CACHE) >= _SEARCH_CACHE_MAX:
+                    # 只留没过期的，别让缓存无限涨（关键字是用户随手打的）
+                    cutoff = now - _SEARCH_CACHE_TTL
+                    for stale in [k for k, v in _SEARCH_CACHE.items() if v[0] < cutoff]:
+                        _SEARCH_CACHE.pop(stale, None)
+                _SEARCH_CACHE[key] = (now, scan)
+
+        # 已发布过的商品照旧实时剔除（不走缓存，发布完刷新立刻消失）
+        published = submission_ledger.published_draft_ids(database_path, actor.id)
+        return materialize_draft_search(
+            scan,
+            product_processing=product_processing,
+            actor=actor,
+            source=source,
+            page=page,
+            page_size=page_size,
+            exclude_ids=published,
+        )
 
     def _handle(exc: Exception) -> HTTPException:
         if isinstance(exc, DuplicateSubmission):
@@ -296,7 +357,17 @@ def create_temu_publish_router(
 
         扫描任务/批次很贵，所以**全量聚合结果**按账号缓存 60 秒；
         来源筛选、关键字搜索、翻页都只在缓存上切片，翻页不会触发重扫。
+
+        带 ``q`` 时走另一条路：普通聚合只取每个任务前 20 个商品，
+        搜索必须把每个任务的任务项扫全，否则搜不到藏在后面的商品
+        （见 ``scan_draft_library``）。
         """
+        needle = str(q or "").strip()
+        if needle:
+            return _search_library(
+                actor, needle, source=source, page=page, page_size=page_size, refresh=refresh
+            )
+
         # 缓存要带上 item_offset：不同偏移拿的是不同那一页，共用缓存会串页
         key = (actor.id, limit, item_offset)
         now = time.time()
