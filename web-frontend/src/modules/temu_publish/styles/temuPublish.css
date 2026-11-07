@@ -7010,3 +7010,67 @@ textarea.temu-input {
   --temu-metal-lo: rgba(0, 0, 0, 0.55);
   --temu-metal-edge: rgba(0, 0, 0, 0.38);
 }
+
+/* 成品库首屏骨架：聚合要跑 8 个任务的预览（约 1 秒），空表格 + 一行小字
+   看着像卡死。骨架给的是「在干活」的确定感，比转圈更具体。 */
+.temu-draft-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.temu-draft-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-module-border, #e4ecf3);
+  border-radius: 10px;
+  background: var(--theme-module-surface, #fff);
+}
+
+.temu-skel {
+  flex: 0 0 auto;
+  height: 12px;
+  border-radius: 6px;
+  /* 16% 起步：12% 在浅色卡上一个白底上几乎看不见，看着像没加载 */
+  background: color-mix(in srgb, var(--temu-text) 20%, transparent);
+  animation: temu-skel-pulse 1.3s ease-in-out infinite;
+}
+
+.temu-skel.is-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+
+.temu-skel.is-title {
+  flex: 1 1 auto;
+  max-width: 320px;
+  height: 14px;
+}
+
+.temu-skel.is-mid {
+  flex: 0 1 120px;
+  min-width: 60px;
+}
+
+.temu-skel.is-mid.is-short {
+  flex-basis: 80px;
+}
+
+.temu-skel.is-num {
+  width: 56px;
+}
+
+@keyframes temu-skel-pulse {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .temu-skel {
+    animation: none;
+    opacity: 0.8;
+  }
+}

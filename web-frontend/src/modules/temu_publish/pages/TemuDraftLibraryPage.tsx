@@ -1196,15 +1196,31 @@ export function TemuDraftLibraryPage({
           )}
 
         {entries.length === 0 ? (
-          <p className="temu-empty">
-            {!data
-              ? "正在读取草稿…"
-              : query
+          // 首次进入（还没拿到过任何数据）先铺骨架：原来只有一行「正在读取草稿…」，
+          // 聚合要跑 8 个任务的预览（约 1 秒），这行小字看着像没反应，
+          // 而且 data 为 null 时 loading 初值还是 false，会先闪一下「暂无可用成品」。
+          !data ? (
+            <div className="temu-draft-skeleton" aria-busy="true" aria-live="polite">
+              {[0, 1, 2, 3, 4, 5].map((row) => (
+                <div className="temu-draft-skeleton-row" key={row}>
+                  <span className="temu-skel is-thumb" />
+                  <span className="temu-skel is-title" />
+                  <span className="temu-skel is-mid" />
+                  <span className="temu-skel is-mid is-short" />
+                  <span className="temu-skel is-num" />
+                </div>
+              ))}
+              <p className="temu-muted">正在聚合 AI 处理与 POD 成品…</p>
+            </div>
+          ) : (
+            <p className="temu-empty">
+              {query
                 ? `没有匹配「${query}」的成品：换个关键字，或清空搜索看全部。`
                 : hidden.length > 0
                   ? `当前页的 ${hidden.length} 条都被本机隐藏了，翻页或点「恢复隐藏」查看。`
                   : "暂无可用成品：先完成一批 AI 处理或 POD 生成。"}
-          </p>
+            </p>
+          )
         ) : (
           // 翻页时保留上一页内容并压暗，避免整块塌成「加载中」闪一下
           <div className={`temu-draft-table-wrap${loading ? " is-loading" : ""}`}>

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ...session import Actor
@@ -151,21 +152,37 @@ def paginate_draft_library(
 def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dict[str, Any]]:
     history = service.task_history(max(1, task_limit), actor.workspace_id)
     entries: list[dict[str, Any]] = []
+    finished: list[dict[str, Any]] = []
     for task in history.get("tasks") or []:
         if str(task.get("status")) not in AI_FINISHED_STATUSES:
             continue
         if int(task.get("success_count") or 0) <= 0:
             continue
-        task_id = int(task["task_id"])
+        finished.append(task)
+    if not finished:
+        return entries
+
+    # 每个任务的预览是一次独立的只读查询：串行跑 8 个实测约 1 秒，
+    # 并发 4 路能压到三分之一（本地库是 WAL，多读互不阻塞）。
+    # 单个任务失败只跳过它自己，和原来逐个 try/except 的语义一致。
+    def preview_one(task: dict[str, Any]) -> dict[str, Any] | None:
         try:
-            preview = service.task_preview(
-                task_id,
+            return service.task_preview(
+                int(task["task_id"]),
                 workspace_id=actor.workspace_id,
                 item_limit=20,
                 media_limit=20,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - 单个任务读不出来不该拖垮整库
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(4, len(finished))) as pool:
+        previews = list(pool.map(preview_one, finished))
+
+    for task, preview in zip(finished, previews):
+        if not preview:
             continue
+        task_id = int(task["task_id"])
         # 预览条目只有 8 个核心字段；描述、来源链接、变种属性都在草稿里。
         # 一次性批量读，避免逐条 get_draft 的 N+1。
         item_list = [

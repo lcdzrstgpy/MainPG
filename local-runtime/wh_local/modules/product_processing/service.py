@@ -7139,17 +7139,41 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "overrides": saved,
         }
 
+    def _output_root_resolved(self) -> Path:
+        """输出根目录的 resolve 结果只算一次。
+
+        Windows 上 `Path.resolve()` 要走文件系统（解析短路径/符号链接），
+        每张图都算一遍在首屏就是几十毫秒的纯浪费。
+        """
+        cached = getattr(self, "_output_root_resolved_cache", None)
+        if cached is None:
+            cached = self.assets.output_root.resolve()
+            self._output_root_resolved_cache = cached
+        return cached
+
     def _display_url(self, value: Any) -> str:
-        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；http(s) 外链原样返回。"""
+        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；已经是 URL 的原样返回。"""
         text = str(value or "").strip()
         if not text:
             return ""
-        if text.lower().startswith(("http://", "https://")):
+        # 已经是可用的 URL 就直接返回，别拿它当文件路径去碰文件系统。
+        # 实测成品库首屏 175 次调用**全是** `/api/product-processing/preview/assets/...`，
+        # 以前每条都走一次 Path.resolve()（Windows 会逐级 realpath + readlink），
+        # 光这一项就 0.26 秒。
+        if text.startswith(("http://", "https://", "/api/", "/pp-media/")):
             return text
+        root = self._output_root_resolved()
+        # 用 os.path.abspath 而不是 Path.resolve()：
+        # resolve 会解析符号链接（每级一次 _getfinalpathname），abspath 只做字符串规范化。
+        # 真的因为符号链接导致相对化失败时，再退回 resolve 重试。
+        candidate = Path(os.path.abspath(text))
         try:
-            relative = Path(text).resolve().relative_to(self.assets.output_root.resolve())
+            relative = candidate.relative_to(root)
         except (ValueError, OSError):
-            return text
+            try:
+                relative = Path(text).resolve().relative_to(root)
+            except (ValueError, OSError):
+                return text
         return f"/pp-media/{relative.as_posix()}"
 
     def process_workbook(

@@ -93,9 +93,14 @@ _PROVIDER_CREDENTIAL_ERRORS = frozenset(
 
 
 # 草稿库聚合结果短缓存：进页面/切页签回来不必重新扫 8 个任务 + 6 个批次。
-# key = (账号, limit)；发布/刷新会带 refresh=1 绕过。
+# key = (账号, limit)；「刷新」按钮会带 refresh=1 绕过。
+#
+# TTL 从 60 秒放到 180 秒：聚合本身要跑 8 次 task_preview（实测约 1 秒），
+# 60 秒意味着用户来回切几次页签就重扫一遍，体感就是「每次都慢」。
+# 加长不会让用户看到过期数据 —— 「发布成功的商品从库里消失」这一步不走缓存
+# （见 draft_library 里的 published_draft_ids，每次实时过滤）。
 _LIBRARY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
-_LIBRARY_CACHE_TTL = 60.0
+_LIBRARY_CACHE_TTL = 180.0
 _LIBRARY_CACHE_LOCK = threading.Lock()
 
 
