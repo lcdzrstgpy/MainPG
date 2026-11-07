@@ -115,6 +115,24 @@ _SEARCH_CACHE_TTL = 120.0
 _SEARCH_CACHE_MAX = 64
 
 
+def _evict_search_cache(now: float) -> None:
+    """缓存满了先删过期的，再按时间淘汰最老的。
+
+    一条命中集合可能带几百上千个条目（每个还带着变种列表），随手打几个关键字
+    就能塞满；只删「过期」不够 —— 用户连打十几个字时全是新鲜的，内存会一直涨。
+    """
+    if len(_SEARCH_CACHE) < _SEARCH_CACHE_MAX:
+        return
+    cutoff = now - _SEARCH_CACHE_TTL
+    for stale_key in [key for key, value in _SEARCH_CACHE.items() if value[0] < cutoff]:
+        _SEARCH_CACHE.pop(stale_key, None)
+    if len(_SEARCH_CACHE) < _SEARCH_CACHE_MAX:
+        return
+    overflow = len(_SEARCH_CACHE) - _SEARCH_CACHE_MAX + 1
+    for oldest_key, _value in sorted(_SEARCH_CACHE.items(), key=lambda item: item[1][0])[:overflow]:
+        _SEARCH_CACHE.pop(oldest_key, None)
+
+
 def create_temu_publish_router(
     database_path: Path,
     *,
@@ -186,11 +204,7 @@ def create_temu_publish_router(
                 query=needle,
             )
             with _LIBRARY_CACHE_LOCK:
-                if len(_SEARCH_CACHE) >= _SEARCH_CACHE_MAX:
-                    # 只留没过期的，别让缓存无限涨（关键字是用户随手打的）
-                    cutoff = now - _SEARCH_CACHE_TTL
-                    for stale in [k for k, v in _SEARCH_CACHE.items() if v[0] < cutoff]:
-                        _SEARCH_CACHE.pop(stale, None)
+                _evict_search_cache(now)
                 _SEARCH_CACHE[key] = (now, scan)
 
         # 已发布过的商品照旧实时剔除（不走缓存，发布完刷新立刻消失）

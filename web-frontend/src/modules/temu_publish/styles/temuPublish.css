@@ -926,6 +926,8 @@ textarea.temu-input {
   font-size: 0.6rem;
   font-weight: 800;
   line-height: 1.5;
+  /* 角标压在缩略图角上，别把「点图放大」的点击吃掉 */
+  pointer-events: none;
 }
 .temu-draft-table .temu-draft-title {
   display: -webkit-box;

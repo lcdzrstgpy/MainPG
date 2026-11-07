@@ -3782,6 +3782,30 @@ class _WholeTaskAi:
             "has_more": end < self.total,
         }
 
+    def search_task_items_bulk(
+        self,
+        task_ids,
+        needle: str,
+        *,
+        limit_per_task: int = 2000,
+        cancelled_task_ids=(),
+        match_all: bool = False,
+    ) -> dict[int, list[int]]:
+        """模拟库内批量匹配（真实实现一条 SQL 查完所有批次）。"""
+        out: dict[int, list[int]] = {}
+        for task_id in task_ids:
+            hits: list[int] = []
+            for k in range(self.total):
+                title = "蓝色桌布" if k == 480 else f"商品{k}"
+                if not match_all and needle.lower() not in f"{title} sku-{k}".lower():
+                    continue
+                hits.append(k)
+                if len(hits) >= limit_per_task:
+                    break
+            if hits:
+                out[int(task_id)] = hits
+        return out
+
     def task_search_preview(
         self,
         task_id: int,
@@ -3790,14 +3814,16 @@ class _WholeTaskAi:
         workspace_id: str = "",
         limit: int = 2000,
         match_all: bool = False,
+        matched_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         """库里做匹配的那份（这里用 Python 模拟 SQL 行为）。"""
+        if matched_ids is None:
+            matched_ids = self.search_task_items_bulk(
+                [task_id], needle, limit_per_task=limit, match_all=match_all
+            ).get(int(task_id), [])
         hits = []
-        for k in range(self.total):
+        for k in matched_ids[:limit]:
             title = "蓝色桌布" if k == 480 else f"商品{k}"
-            haystack = f"{title} sku-{k}".lower()
-            if not match_all and needle.lower() not in haystack:
-                continue
             hits.append(
                 {
                     "item_id": k,
@@ -3812,8 +3838,6 @@ class _WholeTaskAi:
                     "core_fields": {"sku": f"SKU-{k}"},
                 }
             )
-            if len(hits) >= limit:
-                break
         return {
             "task_id": task_id,
             "item_count": len(hits),
@@ -4088,3 +4112,57 @@ def test_search_warns_when_media_projection_fails() -> None:
 
     assert page["entries"] == []  # 没图确实没法发布
     assert any("图片读取失败" in warning for warning in page["warnings"])
+
+
+def test_search_cache_evicts_oldest_when_full() -> None:
+    """搜索结果缓存要有上限：一条命中集合可能上千条，连打十几个关键字不能把内存吃光。"""
+    from wh_local.modules.temu_publish import router as router_module
+
+    cache = router_module._SEARCH_CACHE
+    cache.clear()
+    try:
+        limit = router_module._SEARCH_CACHE_MAX
+        now = 1_000_000.0
+        # 全是「新鲜」的（没过期）：只删过期的那种清理在这里不够
+        for index in range(limit + 20):
+            cache[("u", f"q{index}")] = (now - index, {"ai": [], "pod": []})
+        router_module._evict_search_cache(now)
+        assert len(cache) <= limit
+        # 淘汰的是最老的（时间戳最小），不是刚刚查的
+        assert ("u", "q0") in cache
+        assert ("u", f"q{limit + 19}") not in cache
+    finally:
+        cache.clear()
+
+
+def test_search_cache_drops_expired_entries() -> None:
+    """过期条目优先清掉，别占着位置。"""
+    from wh_local.modules.temu_publish import router as router_module
+
+    cache = router_module._SEARCH_CACHE
+    cache.clear()
+    try:
+        now = 1_000_000.0
+        ttl = router_module._SEARCH_CACHE_TTL
+        for index in range(router_module._SEARCH_CACHE_MAX):
+            cache[("u", f"old{index}")] = (now - ttl - 10, {})
+        router_module._evict_search_cache(now)
+        assert cache == {}
+    finally:
+        cache.clear()
+
+
+def test_list_task_summaries_skips_items(tmp_path: Path) -> None:
+    """批次摘要不读任务条目：搜全库只用批次号/标题/状态，别把 result_json 全拖出来。"""
+    service = _real_pp_service(tmp_path)
+    task_id = _seed_search_task(service, ["纯棉桌布", "涤纶桌布"], ["桌布", "桌布"])
+
+    tasks, total = service.repository.list_task_summaries(10, "default")
+    assert total == 1
+    assert len(tasks) == 1
+    summary = tasks[0]
+    assert summary["task_id"] == task_id
+    assert summary["status"] == "completed"
+    assert summary["success_count"] == 2
+    # 明确不该带的字段（带 items 就要把整任务 result_json 读出来）
+    assert "items" not in summary

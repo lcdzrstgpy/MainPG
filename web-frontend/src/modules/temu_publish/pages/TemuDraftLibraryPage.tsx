@@ -486,10 +486,18 @@ export function TemuDraftLibraryPage({
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
 
+  /**
+   * 请求序号：搜索是边打边发的，两个请求可能乱序回来。
+   * 只有「最后一次」的结果才允许写进状态，否则用户会看到上一秒那个关键字的列表
+   * （或者刚清空的搜索又被旧结果填回来）。
+   */
+  const loadSeqRef = useRef(0);
+
   const load = async (
     refresh = false,
     override?: { page?: number; filter?: Filter; query?: string },
   ) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError("");
     try {
@@ -502,6 +510,7 @@ export function TemuDraftLibraryPage({
         itemOffset,
         refresh,
       });
+      if (seq !== loadSeqRef.current) return; // 已经有更新的请求了，丢掉这份结果
       setData(result);
       if (itemOffset > 0) {
         // 「加载更多」拿到的是每批的下一段，和第一页不重叠 → 追加而不是替换
@@ -516,9 +525,11 @@ export function TemuDraftLibraryPage({
       // 后端会把越界页码夹回最后一页，以前端返回值为准
       setPage(result.page);
     } catch (cause) {
+      if (seq !== loadSeqRef.current) return;
       setError(errorMessage(cause));
     } finally {
-      setLoading(false);
+      // 旧请求收尾时不能把 loading 关掉：新请求还在飞
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   };
 

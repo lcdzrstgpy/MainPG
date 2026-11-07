@@ -27,6 +27,10 @@ MAX_PAGE_SIZE = 100
 # 全量搜索的扫描上限：单个任务最多返回多少条命中。
 # 正常任务几十到几百个；真出现几千个的异常任务时搜索不能一直读，扫到这里就停并提示。
 SEARCH_MAX_ITEMS = 2000
+# 搜索要扫多少个 AI 批次。列表为了首屏快只看最近 8 个批次，
+# 但「搜自己的商品」不能只管这 8 个 —— 用户 28 个批次里的老商品也必须搜得到。
+# 40 个批次 × 每批几毫秒 SQL（匹配在库里做），实测仍在一百多毫秒。
+SEARCH_TASK_LIMIT = 40
 
 
 def collect_draft_library(
@@ -174,14 +178,15 @@ def scan_draft_library(
     pod_service: Any,
     actor: Actor,
     query: str,
-    task_limit: int = 8,
+    task_limit: int = SEARCH_TASK_LIMIT,
     batch_limit: int = 6,
 ) -> dict[str, Any]:
     """全量搜索的第一趟：在**整个库**里按关键字筛，先不投影图片。
 
-    普通浏览只聚合每个任务的前 20 个商品（一屏够用、成本恒定），所以搜索
-    不能复用那份结果 —— 用户搜「蓝色桌布」，这条可能在某个任务的第 480 个。
-    这里把每个任务的任务项全部扫一遍（纯元数据），命中之后再按页补图片。
+    普通浏览只聚合最近 8 个批次、每个批次前 20 个商品（一屏够用、成本恒定），
+    所以搜索不能复用那份结果 —— 用户搜「蓝色桌布」，这条可能在某个任务的第 480 个，
+    甚至在列表根本没显示的老批次里。这里把每个任务的任务项全部扫一遍（匹配在库里做），
+    命中之后再按页补图片。
 
     返回的 AI 条目 **images 为空**，由 `materialize_draft_search` 补。
     """
@@ -284,6 +289,24 @@ def materialize_draft_search(
     }
 
 
+def _task_summaries(service: Any, workspace_id: str, task_limit: int) -> tuple[list[dict[str, Any]], int]:
+    """取最近若干个批次的轻量摘要（不读任务条目）。
+
+    有轻量接口就用它：`task_history` 会把每个任务的条目一起读出来，
+    搜全库时那是纯浪费。测试里的假服务没有这个方法，退回 `task_history`。
+    """
+    limit = max(1, task_limit)
+    summaries = getattr(service.repository, "list_task_summaries", None)
+    if callable(summaries):
+        try:
+            tasks, total = summaries(limit, workspace_id)
+            return list(tasks or []), int(total or 0)
+        except Exception:  # noqa: BLE001 - 退回历史接口，别让搜索直接失败
+            pass
+    history = service.task_history(limit, workspace_id)
+    return list(history.get("tasks") or []), int(history.get("total") or 0)
+
+
 def _scan_ai_matches(
     service: Any,
     actor: Actor,
@@ -292,9 +315,12 @@ def _scan_ai_matches(
     warnings: list[str],
 ) -> list[dict[str, Any]]:
     """并发扫最近若干个任务的全部任务项，返回关键字命中的条目（无图片）。"""
-    history = service.task_history(max(1, task_limit), actor.workspace_id)
+    tasks, total_tasks = _task_summaries(service, actor.workspace_id, task_limit)
+    # 批次比上限还多 → 更早的批次没搜到，必须说出来，别让用户以为「搜不到＝没有」
+    if total_tasks > max(1, task_limit):
+        warnings.append(f"批次太多，只搜了最近 {len(tasks)} 个批次里的商品")
     finished: list[dict[str, Any]] = []
-    for task in history.get("tasks") or []:
+    for task in tasks:
         if str(task.get("status")) not in AI_FINISHED_STATUSES:
             continue
         if int(task.get("success_count") or 0) <= 0:
@@ -303,9 +329,49 @@ def _scan_ai_matches(
     if not finished:
         return []
 
+    # 匹配一次查完所有批次（每个批次开一次会话的话，会话开销比查询本身还贵）。
+    # 「搜批次名」的批次单独走 match_all：整个批次都算命中。
+    title_hits = [task for task in finished if needle in str(task.get("title") or "").lower()]
+    others = [task for task in finished if task not in title_hits]
+    matched: dict[int, list[int]] = {}
+    try:
+        if others:
+            found = service.repository.search_task_items_bulk(
+                [int(task["task_id"]) for task in others],
+                needle,
+                limit_per_task=SEARCH_MAX_ITEMS,
+                cancelled_task_ids=[
+                    int(task["task_id"])
+                    for task in others
+                    if str(task.get("status")) == "cancelled"
+                ],
+            )
+            # 没命中的批次也要留个空列表：「查过、没中」和「还没查」必须分得开，
+            # 否则每个批次都要再单独查一次库（25 个批次多花 0.15 秒）。
+            for task in others:
+                matched[int(task["task_id"])] = found.get(int(task["task_id"]), [])
+        if title_hits:
+            found = service.repository.search_task_items_bulk(
+                [int(task["task_id"]) for task in title_hits],
+                needle,
+                limit_per_task=SEARCH_MAX_ITEMS,
+                match_all=True,
+            )
+            for task in title_hits:
+                matched[int(task["task_id"])] = found.get(int(task["task_id"]), [])
+    except Exception:  # noqa: BLE001 - 查询挂掉就让下面逐个任务自己查，别整页空
+        matched = {}
+
     def scan_one(task: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            return _scan_ai_task(service, actor, task, needle, warnings)
+            return _scan_ai_task(
+                service,
+                actor,
+                task,
+                needle,
+                warnings,
+                matched.get(int(task["task_id"])),
+            )
         except Exception:  # noqa: BLE001 - 单个任务扫挂了只跳过它自己
             return []
 
@@ -320,8 +386,12 @@ def _scan_ai_task(
     task: dict[str, Any],
     needle: str,
     warnings: list[str],
+    matched_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """扫一个任务：匹配在库里做（JSON1 + LIKE），只为命中的条目建条目。"""
+    # 批量匹配已经明确「这个批次一条都没中」→ 连任务元数据都不用读
+    if matched_ids is not None and not matched_ids:
+        return []
     task_id = int(task["task_id"])
     task_title = str(task.get("title") or "")
     # 搜的是批次名 → 整个任务都算命中（列表里 subtitle 也参与匹配）
@@ -332,6 +402,7 @@ def _scan_ai_task(
         workspace_id=actor.workspace_id,
         limit=SEARCH_MAX_ITEMS,
         match_all=match_all,
+        matched_ids=matched_ids,
     )
     items = preview.get("items") or []
     if preview.get("truncated"):

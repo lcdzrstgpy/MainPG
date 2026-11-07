@@ -5345,12 +5345,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str = "local",
         limit: int = 2000,
         match_all: bool = False,
+        matched_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         """按关键字在**整个任务**里搜商品项（成品库全量搜索用）。
 
         和 ``task_preview`` 的区别只有两点：筛选在库里做（JSON1 + LIKE），
         以及**不投影图片**（``media_limit=0`` 同款口径）。命中之后由调用方
         按当前页补图片，所以几百个商品的任务也只付「几毫秒 SQL + 命中条数」的钱。
+
+        ``matched_ids``：调用方已经用 ``search_task_items_bulk`` 一次查完了
+        所有批次，这里就不再重复查一遍库。
         """
         task = self._require_task_meta(task_id, workspace_id)
         if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
@@ -5361,13 +5365,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             if str(value).isdigit()
         }
         completed_only = task["status"] == "cancelled"
-        matched_ids = self.repository.search_task_items(
-            task_id,
-            needle,
-            limit=max(1, int(limit)),
-            completed_only=completed_only,
-            match_all=match_all,
-        )
+        if matched_ids is None:
+            matched_ids = self.repository.search_task_items(
+                task_id,
+                needle,
+                limit=max(1, int(limit)),
+                completed_only=completed_only,
+                match_all=match_all,
+            )
+        else:
+            matched_ids = [int(value) for value in matched_ids][: max(1, int(limit))]
         items = self.repository.get_task_items_by_ids(
             task_id, matched_ids, completed_only=completed_only
         )
