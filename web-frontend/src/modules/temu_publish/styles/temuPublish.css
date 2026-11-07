@@ -7074,3 +7074,19 @@ textarea.temu-input {
     opacity: 0.8;
   }
 }
+
+/* 「加载更多」：批次里超过 20 个商品时的出口。
+   以前这批只显示前 20 个、界面还写「共 20 条」，用户以为就这些。 */
+.temu-draft-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0 4px;
+  padding: 9px 12px;
+  border: 1px dashed var(--theme-module-border-strong, #cfdae4);
+  border-radius: 10px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  font-size: 12px;
+}

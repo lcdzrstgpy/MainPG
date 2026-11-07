@@ -99,7 +99,7 @@ _PROVIDER_CREDENTIAL_ERRORS = frozenset(
 # 60 秒意味着用户来回切几次页签就重扫一遍，体感就是「每次都慢」。
 # 加长不会让用户看到过期数据 —— 「发布成功的商品从库里消失」这一步不走缓存
 # （见 draft_library 里的 published_draft_ids，每次实时过滤）。
-_LIBRARY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+_LIBRARY_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any]]] = {}
 _LIBRARY_CACHE_TTL = 180.0
 _LIBRARY_CACHE_LOCK = threading.Lock()
 
@@ -283,7 +283,13 @@ def create_temu_publish_router(
         page_size: int = Query(default=30, ge=1, le=100),
         source: str = Query(default="", description="ai / pod，留空=全部"),
         q: str = Query(default="", max_length=120, description="标题/货号/类目关键字"),
-        refresh: bool = Query(default=False, description="true=跳过 60 秒缓存，强制重扫"),
+        item_offset: int = Query(
+            default=0,
+            ge=0,
+            le=10000,
+            description="每个任务内的起始下标：点「加载更多」时按一页（20）递增，用来取同一个批次里后面的商品",
+        ),
+        refresh: bool = Query(default=False, description="true=跳过缓存，强制重扫"),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         """聚合 AI 处理结果与 POD 成品，供发布页一键带入（服务端分页）。
@@ -291,7 +297,8 @@ def create_temu_publish_router(
         扫描任务/批次很贵，所以**全量聚合结果**按账号缓存 60 秒；
         来源筛选、关键字搜索、翻页都只在缓存上切片，翻页不会触发重扫。
         """
-        key = (actor.id, limit)
+        # 缓存要带上 item_offset：不同偏移拿的是不同那一页，共用缓存会串页
+        key = (actor.id, limit, item_offset)
         now = time.time()
         cached: dict[str, Any] | None = None
         if not refresh:
@@ -307,6 +314,7 @@ def create_temu_publish_router(
                 pod_service=pod_service,
                 actor=actor,
                 limit=limit,
+                item_offset=item_offset,
             )
             with _LIBRARY_CACHE_LOCK:
                 _LIBRARY_CACHE[key] = (now, cached)

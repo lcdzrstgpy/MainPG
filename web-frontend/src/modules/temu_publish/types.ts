@@ -352,6 +352,13 @@ export type TemuDraftLibrary = {
   page: number;
   page_size: number;
   pages: number;
+  /**
+   * 还有没取出来的商品：某个处理批次里的商品数超过「每批一页（20）」时为 true。
+   * 为 true 时界面显示「加载更多」，点一次把 item_offset 推进 20 再取一遍。
+   */
+  has_more?: boolean;
+  /** 当前每个批次已经取到第几个（0 起）。界面用它显示「已加载到第 N 个 / 批」。 */
+  item_offset?: number;
   source: "all" | "ai" | "pod";
   query: string;
 };

@@ -102,6 +102,8 @@ export const temuPublishApi = {
     source?: "" | "ai" | "pod";
     q?: string;
     refresh?: boolean;
+    /** 每个批次内的起始下标：「加载更多」时按一页递增，用来取同一批次里后面的商品 */
+    itemOffset?: number;
   } = {}) =>
     httpJson<TemuDraftLibrary>(
       `${BASE}/draft-library${query({
@@ -109,6 +111,7 @@ export const temuPublishApi = {
         page_size: params.pageSize ?? 30,
         source: params.source ?? "",
         q: params.q ?? "",
+        item_offset: params.itemOffset ?? 0,
         refresh: params.refresh ? "true" : "",
       })}`,
     ),

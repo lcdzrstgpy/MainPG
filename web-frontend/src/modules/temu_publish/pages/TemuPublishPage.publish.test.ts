@@ -1014,7 +1014,9 @@ test("草稿库搜索防抖 + 页签切换回到第一页", () => {
 
   assert.match(library, /const SEARCH_DEBOUNCE_MS = 300;/);
   assert.match(library, /const timer = window\.setTimeout\(\(\) => \{/);
-  assert.match(library, /if \(next !== query\) \{\n\s*setQuery\(next\);\n\s*setPage\(1\);/);
+  // 改关键字要回到第一页，并且清掉「加载更多」的追加（否则两批数据混在一起）
+  assert.match(library, /if \(next !== query\) \{\n\s*setQuery\(next\);\n\s*goPage\(1\);/);
+  assert.match(library, /const goPage = \(next: number\) => \{\n\s*setItemOffset\(0\);\n\s*setDeepEntries\(\[\]\);/);
   // 切页签清空勾选（勾选数与可见条数必须一致）
   assert.match(library, /setFilter\(key\);/);
 });
@@ -2500,4 +2502,27 @@ test("尺码表：店里已有的表要能点选，不用去后台抄 ID", () =>
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
   assert.match(css, /\.is-console \.temu-sizechart-chip \{/);
   assert.match(css, /\.is-console \.temu-sizechart-chip\.is-picked \{/);
+});
+
+test("成品库：批次里超过 20 个时能「加载更多」，不再只显示前 20 个", () => {
+  // 用户有 500 个品时发现：一个批次只显示前 20 个，界面还写「共 20 条」，
+  // 剩下 480 个既看不到、也没有任何提示。
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  // 请求带每批偏移
+  assert.match(library, /const \[itemOffset, setItemOffset\] = useState\(0\);/);
+  assert.match(library, /itemOffset,\n\s*refresh,/);
+  // offset > 0 时追加而不是替换（否则「加载更多」会把第一页顶掉）
+  assert.match(library, /if \(itemOffset > 0\) \{[\s\S]{0,220}setDeepEntries\(\(prev\) => \{/);
+  assert.match(library, /\[\.\.\.\(data\?\.entries \?\? \[\]\), \.\.\.deepEntries\]/);
+  // 切页/换筛选要清零，否则两批数据混在一起
+  assert.match(library, /const goPage = \(next: number\) => \{[\s\S]{0,120}setItemOffset\(0\);[\s\S]{0,80}setDeepEntries\(\[\]\);/);
+  // 按钮和提示
+  assert.match(library, /每个批次已加载前 \{itemOffset \+ 20\} 个，还有更多/);
+  assert.match(library, /onClick=\{\(\) => setItemOffset\(\(current\) => current \+ 20\)\}/);
+  assert.match(library, /\{data\?\.has_more \? \(/);
+  // 后端契约
+  assert.match(types, /has_more\?: boolean;/);
+  assert.match(types, /item_offset\?: number;/);
 });

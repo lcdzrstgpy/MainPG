@@ -442,6 +442,14 @@ export function TemuDraftLibraryPage({
   const [remarkText, setRemarkText] = useState("");
   const [deleteTargets, setDeleteTargets] = useState<string[]>([]);
   const [page, setPage] = useState(1);
+  /**
+   * 每个批次的起始偏移：后端每次只取每批的一页（20 个），
+   * 点「加载更多」把它推进 20 —— 一个批次里放 500 个商品也能一个个翻出来，
+   * 而每次请求的成本恒定（不会因为 500 而变慢）。
+   */
+  const [itemOffset, setItemOffset] = useState(0);
+  /** 后续页追加进来的条目（第一页仍在 data.entries 里，避免重复拉） */
+  const [deepEntries, setDeepEntries] = useState<TemuDraftEntry[]>([]);
   /** 输入框里的即时值；防抖 300ms 后才写进 query 触发请求 */
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
@@ -491,9 +499,20 @@ export function TemuDraftLibraryPage({
         pageSize: PAGE_SIZE,
         source: nextFilter === "all" ? "" : nextFilter,
         q: override?.query ?? query,
+        itemOffset,
         refresh,
       });
       setData(result);
+      if (itemOffset > 0) {
+        // 「加载更多」拿到的是每批的下一段，和第一页不重叠 → 追加而不是替换
+        setDeepEntries((prev) => {
+          const merged = new Map(prev.map((entry) => [entry.id, entry]));
+          for (const entry of result.entries) merged.set(entry.id, entry);
+          return [...merged.values()];
+        });
+      } else {
+        setDeepEntries([]);
+      }
       // 后端会把越界页码夹回最后一页，以前端返回值为准
       setPage(result.page);
     } catch (cause) {
@@ -503,11 +522,21 @@ export function TemuDraftLibraryPage({
     }
   };
 
+  /**
+   * 切页 / 换筛选 / 改关键字：把「加载更多」的进度一起归零。
+   * 不归零的话，上一屏追加进来的条目会跟新结果混在一起（数量对不上、还删不掉）。
+   */
+  const goPage = (next: number) => {
+    setItemOffset(0);
+    setDeepEntries([]);
+    setPage(next);
+  };
+
   // 页码 / 页签 / 关键字任一变化都走一次请求：翻页只拉这一页，不再一次拉 80 条
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, filter, query]);
+  }, [page, filter, query, itemOffset]);
 
   // 翻页、换页签、改关键字都清空勾选：批量操作必须只作用于「你现在看得见的这些」，
   // 否则跨页残留的勾选会让人以为在发 30 条、实际发了 60 条。
@@ -521,7 +550,7 @@ export function TemuDraftLibraryPage({
       const next = queryInput.trim();
       if (next !== query) {
         setQuery(next);
-        setPage(1);
+        goPage(1);
       }
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -539,10 +568,10 @@ export function TemuDraftLibraryPage({
 
   // 本页数据：来源筛选与分页都已在后端完成，这里只合并「本机编辑」并剔除本机隐藏
   const entries = useMemo(
-    () => (data?.entries ?? [])
+    () => [...(data?.entries ?? []), ...deepEntries]
       .filter((entry) => !hidden.includes(entry.id))
       .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry)),
-    [data, edits, hidden],
+    [data, deepEntries, edits, hidden],
   );
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
@@ -1042,6 +1071,7 @@ export function TemuDraftLibraryPage({
               className={`temu-library-stat${tone ? ` is-${tone}` : ""}${filter === key ? " is-active" : ""}`}
               onClick={() => {
                 setFilter(key);
+                goPage(1);
                 // 切筛选清空勾选：勾选数与「当前页可见待发布条数」必须一致，
                 // 否则批量发布只发可见的那些，界面上的数字会误导人
                 setSelected(new Set());
@@ -1445,6 +1475,25 @@ export function TemuDraftLibraryPage({
           {variantTpl ? ` · 变种模板：${variantTpl}` : ""}
         </p>
 
+        {/* 每个批次每次只取一页（20 个）：批次里放了 500 个商品时，
+            以前只显示前 20 个、也没有任何提示。这里明确告诉用户「加载到第几个」，
+            点一下让后端把每批的偏移往后推一页。成本恒定，不会因为 500 而变慢。 */}
+        {data?.has_more ? (
+          <div className="temu-draft-more">
+            <span className="temu-muted">
+              每个批次已加载前 {itemOffset + 20} 个，还有更多
+            </span>
+            <button
+              type="button"
+              className="temu-btn temu-btn-sm"
+              disabled={loading}
+              onClick={() => setItemOffset((current) => current + 20)}
+            >
+              {loading ? "加载中…" : "加载更多"}
+            </button>
+          </div>
+        ) : null}
+
         {totalCount > 0 && (
           <div className="temu-draft-pager">
             <span>
@@ -1453,13 +1502,13 @@ export function TemuDraftLibraryPage({
               {hidden.length > 0 ? `（另有 ${hidden.length} 条本机隐藏）` : ""}
             </span>
             <div className="temu-draft-pager-ctrl">
-              <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>
+              <button type="button" disabled={currentPage <= 1} onClick={() => goPage(currentPage - 1)}>
                 ‹
               </button>
               <button
                 type="button"
                 disabled={currentPage >= totalPages}
-                onClick={() => setPage(currentPage + 1)}
+                onClick={() => goPage(currentPage + 1)}
               >
                 ›
               </button>
@@ -1471,7 +1520,7 @@ export function TemuDraftLibraryPage({
                 value={currentPage}
                 onChange={(event) => {
                   const next = Number(event.target.value);
-                  if (Number.isFinite(next)) setPage(Math.min(Math.max(1, next), totalPages));
+                  if (Number.isFinite(next)) goPage(Math.min(Math.max(1, next), totalPages));
                 }}
               />
               <span>/ {totalPages} 页 · {PAGE_SIZE} 条/页</span>

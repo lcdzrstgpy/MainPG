@@ -62,14 +62,23 @@ def collect_all_draft_entries(
     limit: int = 60,
     task_limit: int = 8,
     batch_limit: int = 6,
+    item_limit: int = 20,
+    item_offset: int = 0,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     ai_entries: list[dict[str, Any]] = []
     pod_entries: list[dict[str, Any]] = []
+    ai_has_more = False
 
     if product_processing is not None:
         try:
-            ai_entries = _collect_ai_entries(product_processing, actor, task_limit)
+            ai_entries, ai_has_more = _collect_ai_entries(
+                product_processing,
+                actor,
+                task_limit,
+                item_limit=item_limit,
+                item_offset=item_offset,
+            )
         except Exception as exc:  # noqa: BLE001 - 单个来源失败不拖垮草稿库
             warnings.append(f"AI 处理结果读取失败：{exc}")
 
@@ -93,6 +102,9 @@ def collect_all_draft_entries(
     return {
         "entries": entries,
         "warnings": warnings,
+        # 还有没取出来的商品（某个任务的 item_count > offset + limit）→ 前端给「加载更多」
+        "has_more": ai_has_more,
+        "item_offset": max(0, int(item_offset)),
         "counts": {
             "ai": sum(1 for item in entries if item["source"] == "ai"),
             "pod": sum(1 for item in entries if item["source"] == "pod"),
@@ -144,12 +156,28 @@ def paginate_draft_library(
         "page": current,
         "page_size": size,
         "pages": pages,
+        # 是否还有未加载的商品（跨任务汇总）：True 时前端显示「加载更多」
+        "has_more": bool(payload.get("has_more")),
+        "item_offset": int(payload.get("item_offset") or 0),
         "source": wanted if wanted in {"ai", "pod"} else "all",
         "query": str(query or "").strip(),
     }
 
 
-def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dict[str, Any]]:
+def _collect_ai_entries(
+    service: Any,
+    actor: Actor,
+    task_limit: int,
+    *,
+    item_limit: int = 20,
+    item_offset: int = 0,
+) -> list[dict[str, Any]]:
+    """聚合最近若干个任务里「可导出」的商品。
+
+    `item_limit` / `item_offset` 透传给 `task_preview`（它对任务项是真 LIMIT/OFFSET），
+    所以「一个任务里有 500 个商品」不再被截成前 20 个 —— 前端点「加载更多」时
+    调大 offset 就能把后面的取出来，而成本恒定（每批只取一页）。
+    """
     history = service.task_history(max(1, task_limit), actor.workspace_id)
     entries: list[dict[str, Any]] = []
     finished: list[dict[str, Any]] = []
@@ -165,13 +193,21 @@ def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dic
     # 每个任务的预览是一次独立的只读查询：串行跑 8 个实测约 1 秒，
     # 并发 4 路能压到三分之一（本地库是 WAL，多读互不阻塞）。
     # 单个任务失败只跳过它自己，和原来逐个 try/except 的语义一致。
+    #
+    # 图片只投影前 60 条：再多就是给收件箱里的缩略图付全尺寸的代价，
+    # 而一屏也就看 10 条左右。
+    page_limit = max(1, int(item_limit))
+    page_offset = max(0, int(item_offset))
+    media_limit = min(page_limit, 60)
+
     def preview_one(task: dict[str, Any]) -> dict[str, Any] | None:
         try:
             return service.task_preview(
                 int(task["task_id"]),
                 workspace_id=actor.workspace_id,
-                item_limit=20,
-                media_limit=20,
+                item_limit=page_limit,
+                item_offset=page_offset,
+                media_limit=media_limit,
             )
         except Exception:  # noqa: BLE001 - 单个任务读不出来不该拖垮整库
             return None
@@ -179,9 +215,13 @@ def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dic
     with ThreadPoolExecutor(max_workers=min(4, len(finished))) as pool:
         previews = list(pool.map(preview_one, finished))
 
+    has_more = False
     for task, preview in zip(finished, previews):
         if not preview:
             continue
+        # 这个任务还有没取出来的商品（item_count 是任务内总数）→ 前端可以「加载更多」
+        if preview.get("has_more"):
+            has_more = True
         task_id = int(task["task_id"])
         # 预览条目只有 8 个核心字段；描述、来源链接、变种属性都在草稿里。
         # 一次性批量读，避免逐条 get_draft 的 N+1。
@@ -260,7 +300,7 @@ def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dic
                     **_draft_extra_fields(drafts_by_id.get(int(item.get("product_draft_id") or 0))),
                 }
             )
-    return entries
+    return entries, has_more
 
 
 def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[dict[str, Any]]:

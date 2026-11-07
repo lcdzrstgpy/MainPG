@@ -3661,3 +3661,64 @@ def test_size_charts_exposes_pickable_tables(tmp_path: Path) -> None:
     assert info["count"] == 3
     # 原始结构照旧保留，排查时还要看它
     assert info["raw"][0] == {"businessId": 908812, "name": "女装标准尺码表"}
+
+
+def test_draft_library_pages_inside_a_big_task(tmp_path: Path) -> None:
+    """一个批次里放 500 个商品时，靠 item_offset 一页页翻出来。
+
+    以前固定 item_limit=20，500 个只能看到前 20 个，界面还写「共 20 条」。
+    现在每页取 20、has_more 告诉前端还能继续，成本恒定（不随 500 增长）。
+    """
+    from wh_local.modules.temu_publish.library import collect_all_draft_entries, paginate_draft_library
+    from wh_local.session import Actor
+
+    class _Repo:
+        def get_drafts(self, ids, workspace_id=""):
+            return []
+
+    class _PP:
+        total = 500
+
+        def __init__(self) -> None:
+            self.repository = _Repo()
+
+        def task_history(self, limit, ws):
+            return {"tasks": [{"task_id": 1, "status": "completed", "success_count": self.total,
+                               "updated_at": "2026-11-01T10:00:00", "title": "大批次"}]}
+
+        def task_preview(self, task_id, *, workspace_id, item_limit, item_offset, media_limit):
+            end = min(self.total, item_offset + item_limit)
+            return {
+                "items": [
+                    {"item_id": k, "product_draft_id": 1000 + k, "exportable": True, "excluded": False,
+                     "title": f"商品{k}", "status": "completed",
+                     "carousel_images": [f"/api/x/{k}.jpg"], "detail_images": [],
+                     "main_image": f"/api/x/{k}.jpg", "core_fields": {}}
+                    for k in range(item_offset, end)
+                ],
+                "item_count": self.total,
+                "item_offset": item_offset,
+                "has_more": end < self.total,
+            }
+
+    actor = Actor(id="x", username="x", role="admin", workspace_id="default")
+    pp = _PP()
+    seen: list[str] = []
+    offset = 0
+    rounds = 0
+    while True:
+        payload = collect_all_draft_entries(
+            product_processing=pp, pod_service=None, actor=actor, limit=200, item_offset=offset
+        )
+        page = paginate_draft_library(payload, page=1, page_size=30)
+        seen.extend(entry["title"] for entry in page["entries"])
+        rounds += 1
+        if not page["has_more"]:
+            break
+        offset += 20
+        assert rounds < 100, "翻页没有终止"
+
+    assert rounds == 25  # 500 / 20
+    assert len(seen) == 500
+    assert len(set(seen)) == 500  # 没有重复
+    assert seen[0] == "商品0" and seen[-1] == "商品499"
