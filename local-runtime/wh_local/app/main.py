@@ -1128,7 +1128,58 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         )
     )
 
+    _warm_route_contexts(app)
     return app
+
+
+# 启动时预热的路由前缀：这些是打开频率最高的页面（成品库 / 商品处理 / POD / 数据信息）。
+# 每条只要打一次不带 token 的请求，走到 401 就够 —— 编译在依赖解析阶段已经发生。
+_WARM_ROUTE_PATHS: tuple[str, ...] = (
+    "/api/temu-publish/draft-library",
+    "/api/product-processing/tasks/active-count",
+    "/api/pod-customization/batches",
+    "/api/sourcing-ledger/sites",
+)
+
+
+def _warm_route_contexts(app: Any) -> None:
+    """把 FastAPI「首次访问某组路由要构建依赖上下文」的成本挪到启动阶段。
+
+    实测：应用刚起来第一次打开成品库，`fastapi.routing._build_effective_context`
+    就占 1.47 秒（按 router 分组，每组一次）—— 用户看到的是「加载慢」，
+    实际是框架在编译依赖树，跟我们的聚合查询无关。预热后首次访问
+    1.57s → 0.83s，剩下的才是真正要优化的业务耗时。
+
+    只在同步上下文里跑（`create_app` 通常在 uvicorn 启动线程里调用）；
+    已在事件循环里就跳过，别在这里跟调用方抢 loop。
+    """
+    if os.environ.get("WH_SKIP_ROUTE_WARM"):
+        # 测试环境关掉：每个用例都 create_app 时，预热纯属浪费好几分钟
+        return
+    try:
+        import asyncio
+
+        import httpx
+    except Exception:  # noqa: BLE001 - 预热失败不该挡住应用启动
+        return
+
+    async def _warm() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://warm.local") as client:
+            for path in _WARM_ROUTE_PATHS:
+                try:
+                    # 不带 token → 依赖解析完就 401，不会真的查库或调网关
+                    await client.get(path, timeout=10.0)
+                except Exception:  # noqa: BLE001
+                    continue
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_warm())
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _frontend_dist_dir() -> Path:
