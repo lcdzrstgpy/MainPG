@@ -1184,7 +1184,8 @@ test("按钮体系：一套尺寸、层级不互相覆盖、交互反馈齐全",
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
   // 尺寸只剩两档：34 / 28（原来 34 / 26 / 26 三套）
-  assert.match(css, /\.is-console \.temu-btn-sm,\s*\n\.is-console \.temu-btn\.is-small \{/);
+  // 不带 .is-console 前缀：成品库、批量弹窗（portal 到 body）都在用小号按钮
+  assert.match(css, /\.temu-btn-sm,\s*\n\.temu-btn\.is-small \{/);
   assert.match(css, /min-height: 34px;\s*\n\s*padding: 0 15px;/);
 
   // 顶部操作区那条"浅底灰字"必须排除主按钮：它选择器比 .temu-btn-primary 具体，
@@ -2163,8 +2164,9 @@ test("基本信息区块内部分段：类目一段、属性一段，属性不�
   assert.match(page, /className="temu-field-note"/);
   assert.match(css, /\.is-console \.temu-sec > \.temu-field-attrs \{[\s\S]{0,160}border-top: 1px solid/);
 
-  // 必填属性去掉第二层边框（外层卡片已经有边），只留淡底
-  assert.match(css, /\.is-console \.temu-attr-required \{[\s\S]{0,140}border: 0;/);
+  // 必填属性去掉第二层边框（外层卡片已经有边），只留淡底。
+  // 不带 .is-console 前缀：批量发布弹窗（portal 到 body）里也要这一整块的底与内边距
+  assert.match(css, /\.temu-attr-required \{[\s\S]{0,140}border: 0;/);
   // 3 列：220px 时下拉文字会被压窄
   assert.match(css, /\.is-console \.temu-attr-grid \{[\s\S]{0,100}minmax\(260px, 1fr\)/);
 });

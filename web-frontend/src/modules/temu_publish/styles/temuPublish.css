@@ -2171,9 +2171,11 @@ textarea.temu-input {
   line-height: 1;
 }
 
-/* 属性：选填区（常驻展开，不再折叠）+ 高级设置（可折叠） */
-.is-console .temu-optional-attrs,
-.is-console .temu-advanced {
+/* 属性：选填区（常驻展开，不再折叠）+ 高级设置（可折叠）。
+   ⚠️ 选填区的样式**不能带 .is-console 前缀**：批量发布弹窗是 createPortal 到 body 的，
+   不在 .is-console 里，只写前缀的话那块在弹窗里就是没边框没内边距的一团字
+   （2026-11-07 从折叠改常驻时踩过一次）。高级设置只在发布页，保留前缀。 */
+.temu-optional-attrs {
   padding: 10px 12px;
   border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
   border-radius: var(--radius-md, 10px);
@@ -2181,11 +2183,18 @@ textarea.temu-input {
 }
 
 /* 选填属性的标题只是一行说明：点不动，也就不会有人「收起来忘了展开」 */
-.is-console .temu-optional-attrs-head {
+.temu-optional-attrs-head {
   margin-bottom: 10px;
   color: var(--theme-text-secondary, #3b5f7d);
   font-size: 12.5px;
   font-weight: 600;
+}
+
+.is-console .temu-advanced {
+  padding: 10px 12px;
+  border: 1px dashed var(--theme-module-border-strong, #bcd6ec);
+  border-radius: var(--radius-md, 10px);
+  background: var(--theme-module-surface-soft, #f8fbfe);
 }
 
 .is-console .temu-advanced > summary {
@@ -2532,7 +2541,8 @@ textarea.temu-input {
   margin-left: auto;
 }
 
-.is-console .temu-btn-sm {
+/* 小号按钮：成品库等非 .is-console 页面也在用，别只写在 .is-console 下 */
+.temu-btn-sm {
   min-height: 26px;
   padding: 3px 10px;
   font-size: 12px;
@@ -3823,8 +3833,8 @@ textarea.temu-input {
 }
 
 /* 小号：28px（原来 26px 配 12px 字偏挤）；is-small 与 temu-btn-sm 统一成一套 */
-.is-console .temu-btn-sm,
-.is-console .temu-btn.is-small {
+.temu-btn-sm,
+.temu-btn.is-small {
   min-height: 28px;
   padding: 0 11px;
   font-size: 12.5px;
@@ -4974,15 +4984,17 @@ textarea.temu-input {
   font-size: 11px;
 }
 
-/* 必填属性：整块加边框 + 淡底，顶部一行说明「几项、缺了会怎样」 */
-.is-console .temu-attr-required {
+/* 必填属性：整块加边框 + 淡底，顶部一行说明「几项、缺了会怎样」。
+   ⚠️ 不带 .is-console 前缀：批量发布弹窗（createPortal 到 body）里也要这一整块，
+   只写前缀的话弹窗里就是没框没底的一团字。 */
+.temu-attr-required {
   padding: 12px 14px 14px;
   border: 1px solid var(--theme-module-border-strong, #d5e0e9);
   border-radius: 10px;
   background: var(--theme-module-surface-soft, #f7fafc);
 }
 
-.is-console .temu-attr-required-head {
+.temu-attr-required-head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -4990,19 +5002,19 @@ textarea.temu-input {
   margin-bottom: 10px;
 }
 
-.is-console .temu-attr-required-head strong {
+.temu-attr-required-head strong {
   font-size: 13px;
   font-weight: 700;
   color: var(--temu-text);
 }
 
-.is-console .temu-attr-required-head > span {
+.temu-attr-required-head > span {
   color: var(--temu-text-muted);
   font-size: 11.5px;
 }
 
 /* 必填属性的字段名再粗一档，跟选填属性明显区分 */
-.is-console .temu-attr-required .temu-field > span {
+.temu-attr-required .temu-field > span {
   font-weight: 600;
   color: var(--temu-text);
 }
@@ -6498,7 +6510,7 @@ textarea.temu-input {
 }
 
 /* 必填属性：卡里不套卡 —— 去掉这层 1px 边框，只保留淡底区分 */
-.is-console .temu-attr-required {
+.temu-attr-required {
   padding: 16px 18px 18px;
   border: 0;
   border-radius: 12px;

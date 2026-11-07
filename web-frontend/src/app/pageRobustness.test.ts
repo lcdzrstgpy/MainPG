@@ -91,7 +91,11 @@ test("发布页：选填属性常驻展开，不能改成折叠块", () => {
   assert.match(form, /<div className="temu-optional-attrs-head">/);
 
   const css = read("../modules/temu_publish/styles/temuPublish.css");
-  assert.match(css, /\.is-console \.temu-optional-attrs-head \{/);
+  // 样式不能只写在 .is-console 下：批量发布弹窗是 portal 到 body 的，
+  // 不在 .is-console 里，选填区在弹窗里会变成没边框没内边距的一团字
+  assert.match(css, /^\.temu-optional-attrs \{/m);
+  assert.match(css, /^\.temu-optional-attrs-head \{/m);
+  assert.doesNotMatch(css, /\.is-console \.temu-optional-attrs/);
   // 高级设置仍可折叠，别把它的 summary 样式一起删了
   assert.match(css, /\.is-console \.temu-advanced > summary \{/);
 });
