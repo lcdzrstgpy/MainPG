@@ -80,3 +80,18 @@ test("成品库：缩略图「+N」角标和「加载更多」不能共用同一
   assert.match(page, /className="temu-draft-load-more"/, "「加载更多」要用自己的类名");
   assert.match(page, /className="temu-draft-more"/, "缩略图角标仍用 temu-draft-more");
 });
+
+test("发布页：选填属性常驻展开，不能改成折叠块", () => {
+  // 选填项里有「下级属性的开关」，折起来就没人知道漏了哪几项能开
+  // （2026-11-07 用户要求：选填不要缩起来）。
+  const form = read("../modules/temu_publish/components/TemuPropertyForm.tsx");
+  assert.doesNotMatch(form, /<details[^>]*temu-optional-attrs/);
+  assert.doesNotMatch(form, /<summary>\s*选填属性/);
+  assert.match(form, /<div className="temu-optional-attrs">/);
+  assert.match(form, /<div className="temu-optional-attrs-head">/);
+
+  const css = read("../modules/temu_publish/styles/temuPublish.css");
+  assert.match(css, /\.is-console \.temu-optional-attrs-head \{/);
+  // 高级设置仍可折叠，别把它的 summary 样式一起删了
+  assert.match(css, /\.is-console \.temu-advanced > summary \{/);
+});

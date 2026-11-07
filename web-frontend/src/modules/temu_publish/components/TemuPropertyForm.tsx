@@ -155,14 +155,16 @@ export function TemuPropertyForm({
         </div>
       )}
       {groups.optional.length > 0 && (
-        <details className="temu-optional-attrs">
-          <summary>
+        // 选填属性不做折叠：这些项里有「下级属性的开关」，藏起来用户根本不知道
+        // 自己漏了哪几项能开（折叠过一次就再没人展开）。标题只留说明作用。
+        <div className="temu-optional-attrs">
+          <div className="temu-optional-attrs-head">
             选填属性 {groups.optional.length} 项（{optionalHint}）
-          </summary>
+          </div>
           <div className="temu-attr-grid">
             {groups.optional.map((item) => attrGroup(item, false))}
           </div>
-        </details>
+        </div>
       )}
       {groups.required.length === 0 && groups.optional.length === 0 && (
         <p className="temu-empty">这个分类没有可填属性。</p>

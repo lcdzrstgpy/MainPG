@@ -2171,7 +2171,7 @@ textarea.temu-input {
   line-height: 1;
 }
 
-/* 属性：选填折叠 */
+/* 属性：选填区（常驻展开，不再折叠）+ 高级设置（可折叠） */
 .is-console .temu-optional-attrs,
 .is-console .temu-advanced {
   padding: 10px 12px;
@@ -2180,7 +2180,14 @@ textarea.temu-input {
   background: var(--theme-module-surface-soft, #f8fbfe);
 }
 
-.is-console .temu-optional-attrs > summary,
+/* 选填属性的标题只是一行说明：点不动，也就不会有人「收起来忘了展开」 */
+.is-console .temu-optional-attrs-head {
+  margin-bottom: 10px;
+  color: var(--theme-text-secondary, #3b5f7d);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
 .is-console .temu-advanced > summary {
   color: var(--theme-text-secondary, #3b5f7d);
   font-size: 12.5px;
@@ -2188,7 +2195,6 @@ textarea.temu-input {
   cursor: pointer;
 }
 
-.is-console .temu-optional-attrs[open] > summary,
 .is-console .temu-advanced[open] > summary {
   margin-bottom: 10px;
 }
