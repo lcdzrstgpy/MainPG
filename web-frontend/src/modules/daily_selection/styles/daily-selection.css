@@ -1,29 +1,5 @@
 .daily-selection-page { display: grid; gap: 18px; color: #17283f; }
-/* 滚动侵蚀：右侧颜色随滚动从右往左啃进渐变（--wipe 由 useScrollWipe 写 0..100）。
-   上层是「右侧色 + 6% 羽化边」，下层是原来的整条渐变；羽化边只吃颜色，不碰文字/按钮。
-   ⚠️ 这张卡的渐变目前是写死的蓝→青，所以啃的颜色也先写死同款尾巴色；
-   推广到其它 hero 卡时，两边一起换成 --theme-hero-gradient / --theme-hero-accent。 */
-.daily-page-heading {
-  --wipe: 0;
-  --wipe-accent: #20b9ac;
-  min-height: 142px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: clamp(24px, 3vw, 34px);
-  overflow: hidden;
-  border: 1px solid #1b91bd;
-  border-radius: 18px;
-  color: #fff;
-  background:
-    linear-gradient(90deg, transparent calc(100% - var(--wipe) * 1% - 6%), var(--wipe-accent) calc(100% - var(--wipe) * 1%)),
-    linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%);
-  box-shadow: 0 14px 34px rgba(12, 91, 139, .18);
-}
-@media (prefers-reduced-motion: reduce) {
-  .daily-page-heading { --wipe: 0 !important; }
-}
+.daily-page-heading { min-height: 142px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: clamp(24px, 3vw, 34px); overflow: hidden; border: 1px solid #1b91bd; border-radius: 18px; color: #fff; background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%); box-shadow: 0 14px 34px rgba(12, 91, 139, .18); }
 .daily-page-heading h1 { margin: 2px 0 4px; color: #fff; font-size: clamp(1.9rem, 3vw, 2.65rem); letter-spacing: -.045em; }
 .daily-page-heading p { margin: 0; color: #d9f1fb; }
 .daily-page-heading .daily-kicker { color: #9de7f3; font-size: .68rem; font-weight: 850; letter-spacing: .14em; }

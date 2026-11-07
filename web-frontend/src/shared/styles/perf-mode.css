@@ -63,9 +63,3 @@ html[data-perf-mode="on"] .sidebar-selection-thumb,
 html[data-perf-mode="on"] .page-tab-thumb {
   transition: none !important;
 }
-
-/* 7) hero 卡的「滚动侵蚀」动效（useScrollWipe 写 --wipe）：流畅模式下停在初始态。
-      切换模式的瞬间就要生效，不能等下一次滚动事件才回落。 */
-html[data-perf-mode="on"] .daily-page-heading {
-  --wipe: 0 !important;
-}
