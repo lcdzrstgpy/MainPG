@@ -15,6 +15,7 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
+import { useScrollWipe } from "../../../shared/hooks/useScrollWipe";
 import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
@@ -339,6 +340,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
+  // hero 卡的「滚动侵蚀」：右侧颜色随滚动啃向左边（双层渐变见 daily-selection.css）。
+  // 两个视图各有一张卡、且互斥渲染，共用一个 ref 就够。
+  const headingWipeRef = useScrollWipe<HTMLElement>();
   const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
@@ -1212,7 +1216,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       )}
       {!collectionView && (
         <>
-      <section className="daily-page-heading">
+      <section className="daily-page-heading" ref={headingWipeRef}>
         <div>
           <p className="daily-kicker">DAILY PRODUCT DISCOVERY</p>
           <h1>每日选品</h1>
@@ -1347,7 +1351,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
       {collectionView && (
         <div className="daily-collection-workspace">
-          <section className="daily-page-heading">
+          <section className="daily-page-heading" ref={headingWipeRef}>
             <div>
               <p className="daily-kicker">DAILY PRODUCT DISCOVERY</p>
               <h1>每日选品</h1>
