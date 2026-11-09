@@ -4635,18 +4635,18 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <strong>「我的授权」里能看到这条授权</strong>
                 </div>
                 <p>
-                  授权成功后，页面下方「我的授权」会多一条「自研应用管理系统」，右边操作列是「取消授权」，
+                  授权成功后，页面下方「我的授权」里会多出这次授权的记录，右边操作列是「取消授权」，
                   有效期约 90 天；到期前点「取消授权」再重新获取一次就行。
                 </p>
                 <img
                   className="temu-help-shot"
                   src="/help/temu-auth-page.png"
-                  alt="授权管理（商品）页的「我的授权」：自研应用管理系统"
+                  alt="授权管理（商品）页的「我的授权」：能看到这次授权记录"
                   title="点击看大图"
                   onClick={() =>
                     setImagePreview({
                       src: "/help/temu-auth-page.png",
-                      alt: "授权管理（商品）页的「我的授权」：自研应用管理系统",
+                      alt: "授权管理（商品）页的「我的授权」：能看到这次授权记录",
                     })
                   }
                 />
