@@ -892,7 +892,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         setSpecMismatch(findSpecMismatches(attrs, rows));
       })
       .catch(() => {
-        // 拉不到就维持空白：用户点一下类目还能重试
+        // 拉不到（后端刚重启/网关抖动）不能把一次性标记留在 true：
+        // 那样这次挂载内属性区永远空白。清掉后，下一次换类目/重套类目还会再试。
+        restoredAttrsLoadedRef.current = false;
       });
   }, [categoryPath, attributes, rows]);
 
@@ -1028,6 +1030,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           setStatus(settingsR.value);
         } else {
           missed.push("店铺凭证");
+          // 店铺凭证没取到（后端刚重启/网络抖动）时 status 停在 null，而标题自动匹配
+          // 被 status.configured.ready 门控 —— 没有这层重试，草稿库点「编辑」带入的
+          // 没记忆过类目的草稿就永远不触发属性加载，界面看着是「点了没反应」还不报错。
+          // 静默重试三次（2s/5s/10s），取到为止；仍失败就维持「点刷新重试」的原语义。
+          void (async () => {
+            for (const delay of [2000, 5000, 10000]) {
+              await new Promise((resolve) => setTimeout(resolve, delay));
+              if (!alive) return;
+              try {
+                const fresh = await temuPublishApi.settings();
+                if (alive) setStatus(fresh);
+                return;
+              } catch {
+                // 继续下一次重试
+              }
+            }
+          })();
         }
         if (catsR.ok) {
           setCategoryOptions(catsR.value.categoryDTOList ?? []);

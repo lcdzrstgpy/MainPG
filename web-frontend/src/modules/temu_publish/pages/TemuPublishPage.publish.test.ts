@@ -536,6 +536,22 @@ test("标题自动匹配类目：防抖匹配、没手动选过才自动套用",
   assert.match(page, /className="temu-title-match"/);
 });
 
+test("属性自动加载的恢复链：settings 拉挂要静默重试，属性补拉失败要允许再试", () => {
+  // 自动匹配被 status.configured.ready 门控：settings 在进页面那一刻失败
+  // （后端刚重启/网络抖动）时 status 停在 null，没有重试的话草稿库点「编辑」
+  // 带入的没记忆过类目的草稿永远不触发属性加载，界面像「点了没反应」。
+  assert.match(page, /missed\.push\("店铺凭证"\);\n {10,}\/\/ 店铺凭证没取到/);
+  assert.match(page, /for \(const delay of \[2000, 5000, 10000\]\)/);
+  assert.match(page, /const fresh = await temuPublishApi\.settings\(\);/);
+  // 恢复类目后的属性补拉是一次性的：拉失败必须清掉标记，否则属性区
+  // 在这次挂载内永远空白（换类目/重套类目也不会再试）。
+  assert.match(
+    page,
+    /restoredAttrsLoadedRef\.current = false;/,
+    "属性补拉失败后要清一次性标记，允许后续重试",
+  );
+});
+
 test("换草稿：上一条商品的类目和推荐列表不能留在新商品上", () => {
   // 从草稿带入但没有存过类目时，清空并重新按标题匹配
   assert.match(page, /} else \{\n {4,}\/\/ 上一条商品的类目\/属性也必须清掉/);
