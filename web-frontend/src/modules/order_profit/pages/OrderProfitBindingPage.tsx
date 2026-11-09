@@ -108,6 +108,7 @@ export function OrderProfitBindingPage({ isActive = true }: { isActive?: boolean
         title="校验并绑定"
         desc="账号必须是采集服务器上已登录过的 Temu 店铺；客户端不会保存你的密码。"
         icon="cloud"
+        scene="shop"
       >
         <div className="op-filter-card">
           <div className="op-filter-row">
@@ -159,6 +160,7 @@ export function OrderProfitBindingPage({ isActive = true }: { isActive?: boolean
         title="已绑定店铺"
         desc="解绑后该店铺数据不再对本客户端可见。"
         icon="link"
+        scene="result"
         meta={<span className="op-chip">{bindings.length} 个</span>}
       >
         {loading ? null : bindings.length ? (

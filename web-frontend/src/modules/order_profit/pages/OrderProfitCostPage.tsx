@@ -270,6 +270,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
         title="链接成本"
         desc="按「店铺 → 链接」聚合，成本按链接（SKC）的单件成本提交，只提交改动行。"
         icon="link"
+        scene="orders"
         meta={
           <>
             <span className="op-chip">{numberText(total)} 个链接</span>
