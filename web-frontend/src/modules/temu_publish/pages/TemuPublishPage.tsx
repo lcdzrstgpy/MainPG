@@ -4608,30 +4608,32 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <section className="temu-help-step">
                 <div className="temu-help-step-head">
                   <i>2</i>
-                  <strong>在「我的授权」里找到「自研应用管理系统」</strong>
+                  <strong>点「获取授权」→ 选对接系统 → 确认</strong>
                 </div>
                 <p>
-                  授权管理页往下拉到「我的授权」，找到「自研应用管理系统」那一行，点开后复制里面的
-                  access_token（整串，别只复制一半）。
+                  点页面里的「获取授权」。弹窗第一步写着「如需使用自研系统对接，请联系对接运营进行对接」：
+                  下拉里显示「无可选系统」时点旁边的「向运营申请」，让对接运营把系统开出来；
+                  开通后在下拉里选上系统，点「确认」。
                 </p>
                 <img
                   className="temu-help-shot"
-                  src="/help/temu-auth-page.png"
-                  alt="授权管理（商品）页：我的授权 → 自研应用管理系统"
+                  src="/help/temu-auth-grant.png"
+                  alt="获取授权弹窗：联系对接运营 → 选择对接系统"
                   title="点击看大图"
                   onClick={() =>
                     setImagePreview({
-                      src: "/help/temu-auth-page.png",
-                      alt: "授权管理（商品）页：我的授权 → 自研应用管理系统",
+                      src: "/help/temu-auth-grant.png",
+                      alt: "获取授权弹窗：联系对接运营 → 选择对接系统",
                     })
                   }
                 />
               </section>
 
               <p className="temu-help-note">
-                那一行右侧显示「取消授权」说明这个店已经授权过；要换新的 token 就先取消、再重新授权。
-                token 有有效期（页面上会显示到期日），过期前用同样的步骤换一次就行。
-                拿到后粘到下面「新增店铺」的输入框，点「校验并保存为店铺」。截图可以点开看大图。
+                授权成功后，「我的授权」里会多一条「自研应用管理系统」，有效期约 90 天，到期前在操作列
+                「取消授权」再重新获取。拿到 access_token 后整串粘到下面「新增店铺」，点
+                「校验并保存为店铺」——注意别把「服务商凭据」和它混了，那是服务器下发的，不用填。
+                找不到 token 就直接问对接运营。截图可以点开看大图。
               </p>
             </div>
           </div>,

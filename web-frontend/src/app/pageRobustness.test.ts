@@ -167,7 +167,7 @@ test("海外上架：店铺授权的「?」能打开图文说明，两张图都�
   assert.match(page, /className="temu-help-dot"/, "店铺授权旁要有问号按钮");
   assert.match(page, /onClick=\{\(\) => setTokenHelpOpen\(true\)\}/);
   assert.match(page, /temu-help-dialog/, "点开要有说明弹窗");
-  for (const img of ["temu-auth-menu.png", "temu-auth-page.png"]) {
+  for (const img of ["temu-auth-menu.png", "temu-auth-grant.png"]) {
     assert.match(page, new RegExp(img), `弹窗里要引用 ${img}`);
     assert.ok(existsSync(new URL(`../../public/help/${img}`, import.meta.url)), `缺少 public/help/${img}`);
   }
