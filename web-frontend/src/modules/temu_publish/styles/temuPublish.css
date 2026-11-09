@@ -4444,10 +4444,13 @@ textarea.temu-input {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 0 14px;
+  /* 上下各吃掉一部分 16px 的 page grid gap：这张条是「流程卡」不是独立区块，
+     离页头（4px）和下面的内容（6px）都该贴着 —— 原来是 16px + 14px = 30px，
+     中间空出一大条。 */
+  margin: -12px 0 -10px;
   /* 做成一张「浮起的流程卡」而不是贴着页头的工具条：
      圆角 + 细描边 + 很淡的投影，滚动时才有层次感 */
-  padding: 8px 12px;
+  padding: 6px 12px;
   border: 1px solid var(--theme-module-border, #edf3f8);
   border-radius: 14px;
   background: color-mix(in srgb, var(--theme-card-bg-solid, #fff) 94%, transparent);
