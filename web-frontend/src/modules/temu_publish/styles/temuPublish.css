@@ -4568,7 +4568,7 @@ textarea.temu-input {
 
 /* 完成态的对勾是 SVG 画的（见 components/CheckGlyph.tsx）：
    字符「✓」的粗细和垂直居中全看字体，换个主题字体就歪，22px 圆里最明显。 */
-.temu-check {
+.temu-tick {
   display: block;
   width: 12px;
   height: 12px;
@@ -4576,21 +4576,21 @@ textarea.temu-input {
   transform: translateY(-0.3px);
 }
 
-.is-console .temu-sec-num .temu-check {
+.is-console .temu-sec-num .temu-tick {
   width: 13px;
   height: 13px;
 }
 
-.is-console .temu-rail-dot .temu-check {
+.is-console .temu-rail-dot .temu-tick {
   width: 10px;
   height: 10px;
 }
 
 /* 打勾的瞬间轻轻弹一下；关掉动效的用户直接看到勾，不做动画 */
 @media (prefers-reduced-motion: no-preference) {
-  .temu-stepbar-item.is-done .temu-check,
-  .is-console .temu-sec-num.is-done .temu-check,
-  .is-console .temu-rail-list li.is-done .temu-check {
+  .temu-stepbar-item.is-done .temu-tick,
+  .is-console .temu-sec-num.is-done .temu-tick,
+  .is-console .temu-rail-list li.is-done .temu-tick {
     animation: temu-check-pop 0.22s cubic-bezier(0.22, 1.2, 0.36, 1) both;
   }
 }

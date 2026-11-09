@@ -131,4 +131,13 @@ test("发布页：完成态对勾用 SVG，不用字符 ✓", () => {
     "步骤条 / 区块徽标 / 右侧清单点三处都要换成 SVG",
   );
   assert.doesNotMatch(page, /\{step\.done \? "✓"/);
+
+  // 类名不能用 temu-check：那个类被「勾选卡片」占着（min-height:34px + 虚线框），
+  // SVG 套上去会被撑成一块白框 —— 2026-11-09 就是这么翻车的。
+  const glyph = read("../modules/temu_publish/components/CheckGlyph.tsx");
+  assert.match(glyph, /className="temu-tick"/);
+  assert.match(
+    read("../modules/temu_publish/styles/temuPublish.css"),
+    /^\.temu-tick \{/m,
+  );
 });

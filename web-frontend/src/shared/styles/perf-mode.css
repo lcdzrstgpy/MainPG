@@ -65,6 +65,6 @@ html[data-perf-mode="on"] .page-tab-thumb {
 }
 
 /* 8) 发布页步骤条「完成」对勾的弹入动画：流畅模式下不做，直接显示勾。 */
-html[data-perf-mode="on"] .temu-check {
+html[data-perf-mode="on"] .temu-tick {
   animation: none !important;
 }
