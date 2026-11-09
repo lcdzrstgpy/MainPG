@@ -248,6 +248,7 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
             group["claims"].append(
                 {
                     "client_id": claim["client_id"],
+                    "claimed_by": claim["claimed_by"] or claim["label"] or claim["client_id"],
                     "label": claim["label"] or claim["client_id"],
                     "bound_at": claim["bound_at"],
                 }

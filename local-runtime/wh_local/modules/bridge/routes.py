@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from ...session import Actor, actor_from_authorization
 from .client import BridgeApiClient, BridgeApiError
 
 
@@ -62,9 +63,13 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
             raise _error(error) from error
 
     @router.post("/bindings")
-    def bind(request: BindRequest) -> dict[str, Any]:
+    def bind(
+        request: BindRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
         try:
-            return client.bind(request.phone, request.password)
+            # 认领记录展示的是用户登录账号，而不是设备标识。
+            return client.bind(request.phone, request.password, label=actor.username)
         except BaseException as error:
             raise _error(error) from error
 
@@ -72,13 +77,6 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
     def unbind(account_id: str) -> dict[str, Any]:
         try:
             return client.unbind(account_id)
-        except BaseException as error:
-            raise _error(error) from error
-
-    @router.get("/claims")
-    def claims() -> dict[str, Any]:
-        try:
-            return client.claims()
         except BaseException as error:
             raise _error(error) from error
 

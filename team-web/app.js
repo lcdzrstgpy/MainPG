@@ -6,6 +6,9 @@
   var HIDDEN_STORES_KEY = "mainpg_team_hidden_stores";
   var API = location.origin + "/team-api";
   var AUTH = location.origin + "/auth-api";
+  // 采集服务器的成本桥接接口（测试期共享密钥鉴权，只读认领记录）。
+  var BRIDGE = location.origin + "/bridge-api";
+  var BRIDGE_KEY = "ee669bf2024459b4355b59947d603267e3186c9dabec0c64";
 
   var state = {
     token: localStorage.getItem(TOKEN_KEY) || "",
@@ -129,6 +132,20 @@
     return payload;
   }
 
+  async function bridgeApi(path) {
+    var response = await fetch(BRIDGE + path, {
+      headers: { "X-Bridge-Key": BRIDGE_KEY, Accept: "application/json" },
+    });
+    var payload = await response.json().catch(function () {
+      return {};
+    });
+    if (!response.ok) {
+      var detail = payload.detail;
+      throw new Error(typeof detail === "string" ? detail : "认领记录请求失败 " + response.status);
+    }
+    return payload;
+  }
+
   async function login(event) {
     event.preventDefault();
     var username = $("#loginUsername").value.trim();
@@ -215,12 +232,12 @@
       ? "把这个账号 ID 交给管理员，即可被加入组长组"
       : "";
     $("#scopeLabel").textContent = scope.is_leader
-      ? "团队数据 · " + accountCount + " 个账号"
-      : "我的店铺";
+      ? "团队销售回款 · " + accountCount + " 个账号"
+      : "我的销售回款";
     $("#rangeLabel").textContent = state.range === "all"
       ? (data.start ? "全部日期 · " + data.start + " ~ " + data.end : "全部日期（暂无数据）")
       : data.start + " ~ " + data.end;
-    countUp($("#totalGmv"), totals.gmv_cny || 0, money);
+    countUp($("#totalPayback"), totals.settlement_payback_cny || 0, money);
 
     countUp($("#kpiOrders"), totals.order_count || 0, integer);
     $("#kpiOrdersSub").textContent = "子订单 " + integer(totals.sub_order_count);
@@ -232,7 +249,7 @@
     $("#kpiPaybackSub").textContent = "结算回款合计";
     countUp($("#kpiExpense"), totals.finance_expense_cny || 0, money);
     $("#kpiExpenseSub").textContent = "对账中心支出";
-    countUp($("#kpiAov"), totals.avg_order_value || 0, money);
+    countUp($("#kpiAov"), totals.order_count ? (Number(totals.settlement_payback_cny || 0) / Number(totals.order_count)) : 0, money);
 
     $("#storeCountPill").textContent = storeCount === allStores.length
       ? storeCount + " 家店铺"
@@ -510,7 +527,7 @@
       }
     });
     function blank() {
-      return dates.map(function () { return { order_count: 0, gmv_cny: 0 }; });
+      return dates.map(function () { return { order_count: 0, settlement_payback_cny: 0 }; });
     }
     var series = (data.series || []).map(function (item) {
       var points = blank();
@@ -519,7 +536,7 @@
         var target = indexOf[key];
         if (target == null) return;
         points[target].order_count += Number(point.order_count || 0);
-        points[target].gmv_cny += Number(point.gmv_cny || 0);
+        points[target].settlement_payback_cny += Number(point.settlement_payback_cny || 0);
       });
       return { store_code: item.store_code, store_name: item.store_name, points: points };
     });
@@ -529,7 +546,7 @@
       var target = indexOf[key];
       if (target == null) return;
       totals[target].order_count += Number(point.order_count || 0);
-      totals[target].gmv_cny += Number(point.gmv_cny || 0);
+      totals[target].settlement_payback_cny += Number(point.settlement_payback_cny || 0);
     });
     return { dates: dates, series: series, totals: totals, series_total: data.series_total };
   }
@@ -548,7 +565,7 @@
     if (total && total > series.length) {
       var more = document.createElement("span");
       more.className = "item";
-      more.textContent = "另有 " + (total - series.length) + " 家店铺未显示（按 GMV 取前 " + series.length + "）";
+      more.textContent = "另有 " + (total - series.length) + " 家店铺未显示（按销售回款取前 " + series.length + "）";
       el.appendChild(more);
     }
   }
@@ -583,7 +600,7 @@
         name: "总计",
         color: CHART_COLORS[0],
         values: data.totals.slice(start, end + 1).map(function (row) { return row.order_count; }),
-        amount: data.totals.slice(start, end + 1).map(function (row) { return row.gmv_cny; }),
+        amount: data.totals.slice(start, end + 1).map(function (row) { return row.settlement_payback_cny; }),
       }];
     } else {
       series = (data.series || []).map(function (item, index) {
@@ -594,7 +611,7 @@
             return point.order_count;
           }),
           amount: (item.points || []).slice(start, end + 1).map(function (point) {
-            return point.gmv_cny;
+            return point.settlement_payback_cny;
           }),
         };
       });
@@ -674,7 +691,7 @@
     var max = Math.max.apply(
       null,
       rows.map(function (row) {
-        return Number(row.gmv_cny || 0);
+        return Number(row.settlement_payback_cny || 0);
       }).concat([1])
     );
     rows.slice(0, 6).forEach(function (row, index) {
@@ -682,11 +699,11 @@
       item.className = "rank";
       item.innerHTML =
         "<div class='rank-top'><span>" + escapeHtml(row.label || row.key || "-") +
-        "</span><em>¥" + money(row.gmv_cny) + "</em></div>" +
+        "</span><em>¥" + money(row.settlement_payback_cny) + "</em></div>" +
         "<div class='rank-bar'><i></i></div>";
       el.appendChild(item);
       var bar = item.querySelector("i");
-      var ratio = Math.max(2, (Number(row.gmv_cny || 0) / max) * 100);
+      var ratio = Math.max(2, (Number(row.settlement_payback_cny || 0) / max) * 100);
       window.setTimeout(function () {
         bar.style.width = ratio + "%";
       }, 60 + index * 60);
@@ -717,7 +734,6 @@
         "<td class='store-name'>" + escapeHtml(store.store_name || "-") + "</td>" +
         "<td class='code'>" + escapeHtml(store.store_code || "-") + "</td>" +
         "<td>" + escapeHtml(store.staff_no || store.username || "-") + "</td>" +
-        "<td class='num'>¥" + money(stat.gmv_cny) + "</td>" +
         "<td class='num'>" + integer(stat.order_count) + "</td>" +
         "<td class='num'>¥" + money(stat.settlement_payback_cny) + "</td>" +
         "<td class='num'>¥" + money(stat.finance_expense_cny) + "</td>" +
@@ -892,7 +908,6 @@
     var parents = {};
     var subCount = 0;
     var itemCount = 0;
-    var gmv = 0;
     var payback = 0;
     var profit = 0;
     rows.forEach(function (row) {
@@ -900,7 +915,6 @@
       parents[String(p.parent_order_sn || row.key)] = true;
       subCount += 1;
       itemCount += Number(p.quantity || 0);
-      gmv += Number(p.gmv_cny || 0);
       payback += Number(p.sales_payback || 0);
       profit += Number(p.profit_estimate_cny || 0);
     });
@@ -911,15 +925,11 @@
       tr.innerHTML =
         "<td class='store-name'>" + escapeHtml(names[row.store_code] || row.store_code) + "</td>" +
         "<td class='code'>" + escapeHtml(p.parent_order_sn || "-") + "</td>" +
-        "<td>" + escapeHtml(p.site || "-") + "</td>" +
         "<td>" + statusBadge(p.order_status) + "</td>" +
         "<td>" + escapeHtml(shortTime(p.order_time)) + "</td>" +
         "<td class='num'>" + escapeHtml((p.sku_id || "-") + " / " + integer(p.quantity)) + "</td>" +
-        "<td class='num'>¥" + money(p.gmv_cny) + "</td>" +
         "<td class='num'>¥" + money(p.sales_payback) + "</td>" +
-        "<td class='num neg'>¥" + money(p.sales_reversal) + "</td>" +
         "<td class='num'>¥" + money(p.purchase_cost_cny) + "</td>" +
-        "<td class='num'>¥" + money(p.head_freight_cny) + "</td>" +
         "<td class='num'>¥" + money(p.tail_freight_cny) + "</td>" +
         "<td class='num " + (Number(p.profit_estimate_cny || 0) < 0 ? "neg" : "pos") + "'>¥" +
         money(p.profit_estimate_cny) + "</td>";
@@ -929,7 +939,6 @@
       sumCard("订单数", integer(Object.keys(parents).length)) +
       sumCard("子订单", integer(subCount)) +
       sumCard("件数", integer(itemCount)) +
-      sumCard("GMV", "¥" + money(gmv)) +
       sumCard("销售回款", "¥" + money(payback)) +
       sumCard("预估利润", "¥" + money(profit));
     renderPager("#orderPager", "orders", info, paintOrders);
@@ -1354,6 +1363,50 @@
     syncStoreFilter(data, stores.length);
   }
 
+  function siteText(site) {
+    return { us: "美国", eu: "欧区", global: "全球" }[site] || site || "-";
+  }
+
+  function claimTime(value) {
+    if (!value) return "-";
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value).replace("T", " ").slice(0, 16);
+    return date.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
+  }
+
+  function renderClaims(data) {
+    var accounts = (data && data.accounts) || [];
+    var rows = [];
+    accounts.forEach(function (shop) {
+      var claims = shop.claims || [];
+      if (!claims.length) {
+        rows.push({ shop: shop, claim: null });
+        return;
+      }
+      claims.forEach(function (claim) {
+        rows.push({ shop: shop, claim: claim });
+      });
+    });
+    var total = rows.filter(function (row) { return row.claim; }).length;
+    var hint = $("#claimsHint");
+    if (hint) hint.textContent = accounts.length + " 家店铺 · " + total + " 条认领";
+    var empty = $("#claimsEmpty");
+    if (empty) empty.hidden = rows.length > 0;
+    var body = $("#claimRows");
+    if (!body) return;
+    body.innerHTML = rows.map(function (row) {
+      var shop = row.shop || {};
+      var claim = row.claim || {};
+      return "<tr>" +
+        "<td class='store-name'>" + escapeHtml(shop.shop_name || shop.account_id || "-") + "</td>" +
+        "<td>" + escapeHtml(shop.phone_tail || "-") + "</td>" +
+        "<td>" + escapeHtml(siteText(shop.site)) + "</td>" +
+        "<td>" + escapeHtml(claim.claimed_by || claim.label || "-") + "</td>" +
+        "<td>" + escapeHtml(claimTime(claim.bound_at)) + "</td>" +
+        "</tr>";
+    }).join("");
+  }
+
   async function deleteStore(code, name) {
     if (!code) return;
     var label = name || code;
@@ -1472,9 +1525,9 @@
       "</article>";
   }
 
-  /** 只统计「利润算得出来」的订单：这类订单的 GMV 与各项成本能对得上。 */
+  /** 只统计「利润算得出来」的订单，并把回款拆成成本与利润。 */
   function bossOrderCosts(rows) {
-    var summary = { count: 0, incomplete: 0, gmv: 0, commission: 0, purchase: 0, head: 0, tail: 0, profit: 0 };
+    var summary = { count: 0, incomplete: 0, revenue: 0, purchase: 0, head: 0, tail: 0, profit: 0 };
     (rows || []).forEach(function (row) {
       if (row.kind !== "order") return;
       var payload = row.payload || {};
@@ -1483,13 +1536,13 @@
         return;
       }
       summary.count += 1;
-      summary.gmv += bossNumber(payload.gmv_cny);
-      summary.commission += bossNumber(payload.commission_cny);
       summary.purchase += bossNumber(payload.purchase_cost_cny);
       summary.head += bossNumber(payload.head_freight_cny);
       summary.tail += bossNumber(payload.tail_freight_cny);
       summary.profit += bossNumber(payload.profit_estimate_cny);
     });
+    // 订单利润已按「回款 − 成本」算出，反推回款起点，保证瀑布图能扣到同一个净利。
+    summary.revenue = summary.profit + summary.purchase + summary.head + summary.tail;
     return summary;
   }
 
@@ -1537,16 +1590,13 @@
     var penalty = expenses.penalty;
     var otherCost = Math.max(0, financeTotal - adCost - penalty);
 
-    var sales = bossNumber(totals.gmv_cny);
-    var hasCostChain = costs.count > 0;
-    var chainSales = hasCostChain ? costs.gmv : sales;
+    var payback = bossNumber(totals.settlement_payback_cny);
+    var hasCostChain = costs.count > 0 && costs.revenue > 0;
+    var chainSales = hasCostChain ? costs.revenue : payback;
     var orderProfit = hasCostChain
       ? costs.profit
       : (totals.profit_cny == null ? null : bossNumber(totals.profit_cny));
     var netProfit = orderProfit == null ? null : orderProfit - financeTotal;
-    var payback = bossNumber(totals.settlement_payback_cny);
-    var pendingCash = Math.max(0, sales - payback);
-    var paybackRate = sales > 0 ? payback / sales : null;
 
     var prevNet = null;
     if (prevTotals && prevTotals.profit_cny != null) {
@@ -1554,7 +1604,7 @@
     }
 
     var trendDates = trend.map(function (row) { return String(row.key || row.label || ""); });
-    var gmvSeries = trend.map(function (row) { return bossNumber(row.gmv_cny); });
+    var paybackSeries = trend.map(function (row) { return bossNumber(row.settlement_payback_cny); });
     var netSeries = trend.map(function (row) {
       if (row.profit_cny == null) return 0;
       return bossNumber(row.profit_cny) - bossNumber(row.finance_expense_cny);
@@ -1603,44 +1653,31 @@
         format: "money",
         display: netProfit == null ? "—" : bossMoney(netProfit),
         tone: netProfit == null ? "" : (netProfit >= 0 ? "is-good" : "is-bad"),
-        tip: "订单利润减去广告、罚款等费用，才是真正落袋的钱。",
-        hint: "扣掉货款、运费、佣金、广告和罚款后，真正赚到的钱。",
+        tip: "回款扣掉采购、运费和广告罚款后，真正落袋的钱。",
+        hint: "扣掉成本、运费、广告和罚款后，真正赚到的钱。",
         foot: bossDeltaChip(bossDelta(netProfit, prevNet)) +
           "<span class='boss-delta-label'>利润完整 " + profitStores + "/" + storeRows.length + " 店</span>",
         spark: bossSparkline(netSeries, netProfit != null && netProfit < 0 ? BOSS_COLOR.danger : BOSS_COLOR.brand)
       }) +
       bossHeroCard({
-        label: "销售额",
-        raw: sales,
-        format: "money",
-        display: bossMoney(sales),
-        tip: "买家一共付了多少钱，还没有扣任何成本。",
-        hint: "买家一共付了多少钱，还没扣成本。",
-        foot: bossDeltaChip(bossDelta(sales, prevTotals ? prevTotals.gmv_cny : null)),
-        spark: bossSparkline(gmvSeries, BOSS_COLOR.blue)
-      }) +
-      bossHeroCard({
-        label: "已回款",
+        label: "销售回款",
         raw: payback,
         format: "money",
         display: bossMoney(payback),
-        tip: "平台已经结算到账的钱，和销售额不是一回事。",
-        hint: "平台已经结算到账的钱，通常比销售额晚一段时间。",
-        foot: "<span class='boss-delta-label'>回款率 " + (paybackRate == null ? "—" : (paybackRate * 100).toFixed(0) + "%") + "</span>",
-        spark: bossSparkline(trend.map(function (row) { return bossNumber(row.settlement_payback_cny); }), BOSS_COLOR.amber)
+        tip: "平台已经结算到账的钱（销售回款 + 运费回款 − 冲回）。",
+        hint: "平台已结算到账的钱，待处理款项还没到账。",
+        foot: "<span class='boss-delta-label'>按结算中心实际回款</span>",
+        spark: bossSparkline(paybackSeries, BOSS_COLOR.amber)
       }) +
       bossHeroCard({
-        label: "待回款",
-        raw: pendingCash,
-        format: "money",
-        display: bossMoney(pendingCash),
-        tone: pendingCash > 0 ? "is-pending" : "",
-        tip: "卖出去但平台还没结算的钱，通常压在账期里。",
-        hint: "卖出去了、还没结算的钱，压在平台账期里。",
-        foot: "<span class='boss-delta-label'>销售额 − 已回款</span>",
-        spark: bossSparkline(trend.map(function (row) {
-          return Math.max(0, bossNumber(row.gmv_cny) - bossNumber(row.settlement_payback_cny));
-        }), BOSS_COLOR.slate)
+        label: "订单数",
+        raw: totals.order_count || 0,
+        format: "int",
+        display: integer(totals.order_count),
+        tip: "本期在 Temu 产生的父订单数量。",
+        hint: "只统计本期有上报数据的订单。",
+        foot: "<span class='boss-delta-label'>子订单 " + integer(totals.sub_order_count) + "</span>",
+        spark: bossSparkline(trend.map(function (row) { return bossNumber(row.order_count); }), BOSS_COLOR.blue)
       });
 
     document.querySelectorAll("#bossHero .boss-card-value").forEach(function (el) {
@@ -1678,11 +1715,11 @@
     $("#bossTrendHint").textContent = (trendDates.length ? trendDates[0] + " ~ " + trendDates[trendDates.length - 1] : "—") +
       " · 净利只统计已核算成本的订单";
     drawBossTrend($("#bossTrendChart"), trendDates, [
-      { name: "销售额", color: BOSS_COLOR.blue, values: gmvSeries },
+      { name: "销售回款", color: BOSS_COLOR.blue, values: paybackSeries },
       { name: "净利", color: BOSS_COLOR.brand, values: netSeries }
     ]);
     $("#bossTrendLegend").innerHTML = [
-      { name: "销售额", color: BOSS_COLOR.blue },
+      { name: "销售回款", color: BOSS_COLOR.blue },
       { name: "净利（已扣费用）", color: BOSS_COLOR.brand }
     ].map(function (item) {
       return "<span class='item'><i class='dot' style='background:" + item.color + "'></i>" +
@@ -1696,11 +1733,10 @@
     var base = state.chainSales > 0 ? state.chainSales : 0;
     var running = base;
     var rows = [];
-    rows.push({ label: "销售额", value: base, kind: "is-start" });
+    rows.push({ label: "销售回款", value: base, kind: "is-start" });
 
     if (state.hasCostChain) {
       [
-        { label: "平台佣金", value: state.costs.commission, hint: "平台按成交金额收取的佣金" },
         { label: "采购成本", value: state.costs.purchase, hint: "商品进货花的钱" },
         { label: "头程运费", value: state.costs.head, hint: "从国内发到平台仓库的运费" },
         { label: "尾程运费", value: state.costs.tail, hint: "平台配送给买家的运费" }
@@ -1724,7 +1760,7 @@
         label: state.hasCostChain ? "订单利润" : "订单利润（汇总）",
         value: Math.max(0, running),
         kind: "is-subtotal",
-        hint: state.hasCostChain ? "销售额扣掉佣金、采购和运费后剩下的钱" : "平台订单利润合计，成本明细暂未拆分"
+        hint: state.hasCostChain ? "回款扣掉采购和运费后剩下的钱" : "平台订单利润合计，成本明细暂未拆分"
       });
     }
 
@@ -1931,14 +1967,14 @@
       return {
         name: String(row.label || row.username || row.key || "—"),
         net: profit == null ? null : profit - expense,
-        gmv: bossNumber(row.gmv_cny),
+        payback: bossNumber(row.settlement_payback_cny),
         orders: bossNumber(row.order_count)
       };
     });
     var hasNet = rows.some(function (row) { return row.net != null; });
     rows.sort(function (left, right) {
-      var a = hasNet ? (left.net == null ? -Infinity : left.net) : left.gmv;
-      var b = hasNet ? (right.net == null ? -Infinity : right.net) : right.gmv;
+      var a = hasNet ? (left.net == null ? -Infinity : left.net) : left.payback;
+      var b = hasNet ? (right.net == null ? -Infinity : right.net) : right.payback;
       return b - a;
     });
     rows = rows.slice(0, 8);
@@ -1947,36 +1983,36 @@
       return;
     }
     var maxValue = Math.max.apply(null, rows.map(function (row) {
-      return Math.abs(hasNet ? (row.net || 0) : row.gmv);
+      return Math.abs(hasNet ? (row.net || 0) : row.payback);
     }).concat([1]));
     $("#bossRankHint").textContent = hasNet
       ? "净利 = 订单利润 − 费用（按" + (mode === "staff" ? "员工" : "店铺") + "）"
-      : "利润数据不足，先按销售额排序";
+      : "利润数据不足，先按销售回款排序";
     el.innerHTML = rows.map(function (row, index) {
-      var value = hasNet ? (row.net || 0) : row.gmv;
+      var value = hasNet ? (row.net || 0) : row.payback;
       var width = Math.max(4, Math.round((Math.abs(value) / maxValue) * 100));
       var tone = hasNet && value < 0 ? " is-negative" : "";
       var valueText = hasNet
         ? (row.net == null ? "利润待补" : bossMoney(row.net))
-        : bossMoney(row.gmv);
+        : bossMoney(row.payback);
       return "<div class='boss-rank-row" + tone + "'>" +
         "<span class='boss-rank-no'>" + (index + 1) + "</span>" +
         "<div class='boss-rank-body'>" +
           "<div class='boss-rank-top'><strong>" + escapeHtml(row.name) + "</strong>" +
           "<span class='boss-rank-net'>" + valueText + "</span></div>" +
           "<div class='boss-rank-track'><i style='width:" + width + "%'></i></div>" +
-          "<small>销售额 " + bossMoney(row.gmv) + " · 订单 " + integer(row.orders) + "</small>" +
+          "<small>销售回款 " + bossMoney(row.payback) + " · 订单 " + integer(row.orders) + "</small>" +
         "</div>" +
       "</div>";
     }).join("");
   }
 
-  /** 驾驶舱趋势：同时画销售额和净利，负值也能落在坐标里。 */
+  /** 驾驶舱趋势：同时画销售回款和净利，负值也能落在坐标里。 */
   function drawBossTrend(el, dates, series) {
     if (!el) return;
     el.innerHTML = "";
     if (!dates.length || !series.length) {
-      el.innerHTML = "<div class='empty'><strong>这段时间没有走势</strong><p>员工提交周汇总后，这里会显示每天的销售额和净利。</p></div>";
+      el.innerHTML = "<div class='empty'><strong>这段时间没有走势</strong><p>员工提交周汇总后，这里会显示每天的销售回款和净利。</p></div>";
       return;
     }
     var width = el.clientWidth || 720;
@@ -2153,6 +2189,9 @@
       } else if (state.page === "stores") {
         var stores = await api("/overview?top=1&" + rangeParams());
         renderStoresPage(stores);
+      } else if (state.page === "claims") {
+        var claims = await bridgeApi("/claims");
+        renderClaims(claims);
       }
     } catch (error) {
       toast(error.message || String(error));

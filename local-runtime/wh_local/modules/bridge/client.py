@@ -45,13 +45,13 @@ class BridgeApiClient:
     def bindings(self) -> dict[str, Any]:
         return self._request("GET", "/bindings", params={"client_id": self._client_id})
 
-    def bind(self, phone: str, password: str) -> dict[str, Any]:
+    def bind(self, phone: str, password: str, *, label: str = "") -> dict[str, Any]:
         return self._request(
             "POST",
             "/bindings",
             payload={
                 "client_id": self._client_id,
-                "label": self._label,
+                "label": str(label or "").strip() or self._label,
                 "phone": phone,
                 "password": password,
             },
@@ -70,9 +70,6 @@ class BridgeApiClient:
         }
         params["client_id"] = self._client_id
         return self._request("GET", "/items", params=params)
-
-    def claims(self) -> dict[str, Any]:
-        return self._request("GET", "/claims")
 
     def costs(self) -> dict[str, Any]:
         return self._request("GET", "/costs", params={"client_id": self._client_id})

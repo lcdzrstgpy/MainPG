@@ -29,7 +29,6 @@ export type WorkspaceModuleId =
   | "order_profit_funds"
   | "order_profit_binding"
   | "order_profit_costs"
-  | "order_profit_claims"
   | "order_profit_accounts"
   | "order_profit_capture"
   | "order_profit_home"
@@ -285,14 +284,6 @@ const orderProfitCostModule: WorkspaceModule = {
   description: "手动同步已绑定店铺的链接数据并回填单件成本",
 };
 
-const orderProfitClaimsModule: WorkspaceModule = {
-  id: "order_profit_claims",
-  label: "认领记录",
-  icon: "",
-  iconClass: "iconfont icon-history",
-  description: "查看每个店铺被哪些工作台账号认领及认领时间",
-};
-
 const orderProfitModules: WorkspaceModule[] = [
   {
     id: "order_profit_overview",
@@ -506,9 +497,9 @@ const orderProfitWorkflow: WorkspaceNavigationGroup = {
   label: "店铺数据管理",
   icon: "",
   iconClass: "iconfont icon-accountbook-fill",
-  description: "校验账号绑定店铺、手动同步链接数据、回填成本并留档认领记录",
+  description: "校验账号绑定店铺、手动同步链接数据并回填成本",
   defaultChildId: "order_profit_binding",
-  children: [orderProfitBindingModule, orderProfitCostModule, orderProfitClaimsModule, ...orderProfitModules],
+  children: [orderProfitBindingModule, orderProfitCostModule, ...orderProfitModules],
 };
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
@@ -595,7 +586,6 @@ export const workspacePageModules: WorkspaceModule[] = [
   ...orderProfitModules,
   orderProfitBindingModule,
   orderProfitCostModule,
-  orderProfitClaimsModule,
   ...orderProfitLegacyModules,
   personalCenter,
 ];

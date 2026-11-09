@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS bridge_clients (
 CREATE TABLE IF NOT EXISTS bridge_bindings (
     client_id  TEXT NOT NULL,
     account_id TEXT NOT NULL,
+    claimed_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     PRIMARY KEY (client_id, account_id)
 );
@@ -121,6 +122,15 @@ class CollectorStore:
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # 旧库补列：认领账号按登录账号记录，历史行回退到客户端标签。
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(bridge_bindings)").fetchall()
+            }
+            if "claimed_by" not in columns:
+                conn.execute(
+                    "ALTER TABLE bridge_bindings ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''"
+                )
 
     # ---------- 账号 ----------
 
@@ -381,7 +391,7 @@ class CollectorStore:
         """所有客户端的认领记录（跨店铺），供服务端与客户端审计。"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT b.account_id, b.client_id, b.created_at, c.label "
+                "SELECT b.account_id, b.client_id, b.claimed_by, b.created_at, c.label "
                 "FROM bridge_bindings b "
                 "LEFT JOIN bridge_clients c ON c.client_id = b.client_id "
                 "ORDER BY b.account_id ASC, b.created_at ASC"
@@ -390,6 +400,7 @@ class CollectorStore:
             {
                 "account_id": str(row["account_id"]),
                 "client_id": str(row["client_id"]),
+                "claimed_by": str(row["claimed_by"] or ""),
                 "label": str(row["label"] or ""),
                 "bound_at": str(row["created_at"]),
             }
@@ -430,9 +441,9 @@ class CollectorStore:
                 (client_id, account["id"]),
             ).fetchone()
             conn.execute(
-                "INSERT INTO bridge_bindings (client_id, account_id, created_at) "
-                "VALUES (?, ?, ?) ON CONFLICT(client_id, account_id) DO NOTHING",
-                (client_id, account["id"], now),
+                "INSERT INTO bridge_bindings (client_id, account_id, claimed_by, created_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(client_id, account_id) DO NOTHING",
+                (client_id, account["id"], display, now),
             )
         return {
             "ok": True,
