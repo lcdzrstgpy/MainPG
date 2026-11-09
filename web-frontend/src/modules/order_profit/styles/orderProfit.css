@@ -525,6 +525,12 @@
 .op-chip.is-warn { color: var(--op-warning); border-color: rgba(180, 83, 9, .28); background: rgba(245, 158, 11, .1); }
 .op-chip.is-ok { color: var(--op-positive); border-color: rgba(15, 157, 110, .26); background: rgba(15, 157, 110, .08); }
 .op-chip.is-error { color: var(--op-negative); border-color: rgba(220, 38, 38, .26); background: rgba(220, 38, 38, .08); }
+.op-chip-warn-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: color-mix(in srgb, var(--op-border) 70%, transparent);
+}
 
 .op-detail-row > td {
   padding: 0 12px 12px 42px !important;

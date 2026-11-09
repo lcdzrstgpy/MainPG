@@ -259,6 +259,7 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
         date_from: str = Query(default=""),
         date_to: str = Query(default=""),
         keyword: str = Query(default=""),
+        missing_cost: int = Query(default=0),
         page: int = Query(default=1),
         page_size: int = Query(default=50),
     ) -> dict[str, Any]:
@@ -274,6 +275,8 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
             date_to.strip(),
             keyword,
         )
+        if missing_cost:
+            rows = [row for row in rows if row.get("unit_cost") is None]
         size = max(1, min(200, int(page_size)))
         current = max(1, int(page))
         start = (current - 1) * size

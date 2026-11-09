@@ -55,6 +55,7 @@ type ItemsParams = {
   date_from?: string;
   date_to?: string;
   keyword?: string;
+  missing_cost?: number;
   page?: number;
   page_size?: number;
 };

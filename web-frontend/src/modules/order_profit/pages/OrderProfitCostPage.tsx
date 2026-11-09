@@ -45,6 +45,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [statusFilter, setStatusFilter] = useState("");
+  const [missingOnly, setMissingOnly] = useState(false);
   const [shopFilter, setShopFilter] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -98,6 +99,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
         date_from: dateFrom,
         date_to: dateTo,
         keyword,
+        missing_cost: missingOnly ? 1 : undefined,
         page,
         page_size: pageSize,
       })
@@ -130,6 +132,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
     bindings.length,
     shopFilterKey,
     statusFilter,
+    missingOnly,
     dateFrom,
     dateTo,
     keyword,
@@ -332,6 +335,18 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
                     {tab.label}
                   </button>
                 ))}
+                <span className="op-chip-warn-divider" aria-hidden="true" />
+                <button
+                  type="button"
+                  className={`op-chip${missingOnly ? " is-warn" : ""}`}
+                  aria-pressed={missingOnly}
+                  onClick={() => {
+                    setMissingOnly((previous) => !previous);
+                    setPage(1);
+                  }}
+                >
+                  只看成本缺失
+                </button>
               </div>
               <div className="op-filter-row">
                 <label className="op-field op-field-slim">
@@ -387,6 +402,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
                     type="button"
                     onClick={() => {
                       setStatusFilter("");
+                      setMissingOnly(false);
                       setShopFilter([]);
                       setDateFrom("");
                       setDateTo("");

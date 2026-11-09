@@ -82,6 +82,7 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
         date_from: str = Query(default=""),
         date_to: str = Query(default=""),
         keyword: str = Query(default=""),
+        missing_cost: int = Query(default=0),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
@@ -92,6 +93,7 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
                 date_from=date_from,
                 date_to=date_to,
                 keyword=keyword,
+                missing_cost=missing_cost,
                 page=page,
                 page_size=page_size,
             )
