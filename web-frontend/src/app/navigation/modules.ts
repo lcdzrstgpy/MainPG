@@ -298,13 +298,6 @@ const orderProfitModules: WorkspaceModule[] = [
     description: "对账中心流水与结算回款",
   },
   {
-    id: "order_profit_accounts",
-    label: "店铺账号",
-    icon: "",
-    iconClass: "iconfont icon-user",
-    description: "多账号独立浏览器、自动登录与验证码在线等待",
-  },
-  {
     id: "order_profit_capture",
     label: "数据采集",
     icon: "",
@@ -313,10 +306,17 @@ const orderProfitModules: WorkspaceModule[] = [
   },
   {
     id: "order_profit_records",
-    label: "采集记录",
+    label: "入库记录",
     icon: "",
     iconClass: "iconfont icon-time-circle",
-    description: "最近一次入库记录与采集批次",
+    description: "订单列表/详情采集写入的批次与入库结果",
+  },
+  {
+    id: "order_profit_accounts",
+    label: "店铺账号",
+    icon: "",
+    iconClass: "iconfont icon-user",
+    description: "多账号独立浏览器、自动登录与验证码在线等待",
   },
 ];
 
@@ -448,9 +448,10 @@ const podWorkflow: WorkspaceNavigationGroup = {
   label: "POD定制",
   icon: "",
   iconClass: "iconfont icon-skin",
-  description: "POD 全款直出、印花创作、自由创意、爆款复刻与爆款裂变",
-  defaultChildId: "pod_customization",
-  children: [podCustomization, podSemiCustomization, podFreeCustomization, podReplica, podFission],
+  description: "POD 自由创意、全款直出、印花创作、爆款复刻与爆款裂变",
+  // 自由创意是 POD 首项，也是点开分组时的默认落地页。
+  defaultChildId: "pod_free_customization",
+  children: [podFreeCustomization, podCustomization, podSemiCustomization, podReplica, podFission],
 };
 
 const aiVideoWorkflow: WorkspaceNavigationGroup = {

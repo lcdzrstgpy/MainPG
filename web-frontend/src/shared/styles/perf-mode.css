@@ -20,12 +20,11 @@ html[data-perf-mode="on"] .dashboard-meteor {
   display: none !important;
 }
 
-/* 3) 顶栏/侧栏流光、涟漪与登录页扫光停在原地（静态样式照旧，只是不再循环动画）。 */
+/* 3) 顶栏/侧栏流光与涟漪停在原地（静态样式照旧，只是不再循环动画）。 */
 html[data-perf-mode="on"] .topbar-card::before,
 html[data-perf-mode="on"] .topbar-card::after,
 html[data-perf-mode="on"] .sidebar-card::before,
-html[data-perf-mode="on"] .sidebar-card::after,
-html[data-perf-mode="on"] .auth-screen::before {
+html[data-perf-mode="on"] .sidebar-card::after {
   animation: none !important;
 }
 
@@ -43,15 +42,7 @@ html[data-perf-mode="on"] .workspace-tab-panel.is-active > * > [class*="-panel"]
   animation: none !important;
 }
 
-/* 5) 登录页美化动效：流动光斑直接隐藏（同仪表盘光斑的处置），
-      玻璃卡与品牌区的入场动画直接到位。 */
-html[data-perf-mode="on"] .auth-halo {
-  display: none !important;
-}
-html[data-perf-mode="on"] .auth-form-card,
-html[data-perf-mode="on"] .auth-brand-card > * {
-  animation: none !important;
-}
+/* 5) 登录页的 logo 位移与入场动画在 auth-apple.css 里按 data-perf-mode 关闭。 */
 
 /* 6) 框架级「布局过渡」在流畅模式下瞬时到位。侧栏折叠改的是 grid 列宽、子菜单展开改的是
       grid-template-rows —— 两者都**逐帧重排**（不只是重绘），弱机上最容易掉帧；

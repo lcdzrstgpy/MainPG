@@ -372,6 +372,33 @@ export type CaptureBatch = {
   created_at: string;
 };
 
+export type CaptureRunStep = {
+  key: string;
+  label: string;
+  state: string;
+  detail?: string;
+};
+
+export type CaptureRunSummary = {
+  command_id: number;
+  command_type: string;
+  status: string;
+  ok: boolean;
+  status_text: string;
+  error: string;
+  help: string;
+  shop_name: string;
+  incremental: boolean;
+  resource: string;
+  results: CaptureRunStep[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type CaptureRunList = {
+  items: CaptureRunSummary[];
+};
+
 export type CaptureBatches = {
   batches: CaptureBatch[];
   latest: CaptureBatch | null;
@@ -449,6 +476,11 @@ export type StoreMetrics = {
   cancel_pending: number;
   ship_timeliness: number | null;
   delivery_timeliness: number | null;
+  /** 首页「商品上新状态」：价格申报中 / 未发布到站点 / 已发布到站点 / 已下架。 */
+  listing_price_pending?: number;
+  listing_not_published?: number;
+  listing_published?: number;
+  listing_delisted?: number;
   captured_at: string;
   updated_at?: string;
 };
@@ -565,4 +597,42 @@ export type TeamLinksPayload = {
   pending_out_count?: number;
   pending_in_count?: number;
   linked_by_count?: number;
+};
+
+/** 提交前确认弹窗用：本账号全部店铺与各自待提交的数据量。 */
+export type TeamRollupPreviewStore = {
+  name: string;
+  store_code: string;
+  code_status: string;
+  day_count: number;
+  first_date: string;
+  last_date: string;
+};
+
+export type TeamRollupPreview = {
+  week_start: string;
+  week_end: string;
+  stores: TeamRollupPreviewStore[];
+  day_count: number;
+  batch_count: number;
+  missing_code_shops: string[];
+  account: { username?: string; staff_no?: string };
+};
+
+/** 提交结果：服务器汇总 + 本次逐店提交的数据量。 */
+export type TeamRollupSubmitResult = {
+  ok: boolean;
+  week_start?: string;
+  created?: number;
+  updated?: number;
+  stale?: number;
+  skipped?: { store_code: string; reason: string }[];
+  status_text?: string;
+  reason?: string;
+  day_count?: number;
+  record_count?: number;
+  batch_count?: number;
+  stores?: { name: string; store_code: string; day_count: number; record_count: number }[];
+  pending_local_shops?: { name: string; store_code: string; reason: string }[];
+  account?: { username?: string; staff_no?: string };
 };

@@ -63,7 +63,9 @@ from .prompts import (
 # v25：去掉「主元素至少重复 3 次」，改为「图案可以重复，但主元素必须是本款最大图案」。
 # v26：删除 60-30-10 配色权重——每款只注入「主题强关联色 + 建议点缀色」两组、不绑比例，
 #      主色归属交给生图模型。
-COLUMN_PROMPT_VERSION = "v26"
+# v27：素材图轮（hero）独立重写为纯白素材图：只继承产品与图案，场景/道具/光线全部重置，
+#      构图模板只提供机位；与派生细节轮的锚点连续性口径分开。
+COLUMN_PROMPT_VERSION = "v27"
 
 _QUADRANT_POSITIONS = ("TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT")
 
@@ -302,11 +304,6 @@ def _default_round_direction(role: str, *, flat_product: bool) -> str:
             "Natural eye-level 3/4 hero angle: the complete product with its full silhouette in frame, "
             "centred with generous negative space, shot wide rather than cropped."
         )
-    if role == "hero":
-        return (
-            "Neutral ecommerce angle: the complete product centred on a clean neutral background with "
-            "no props, straight-on framing, full design sharply visible."
-        )
     if role == "detail_b":
         return (
             "A different close structural/material detail of the same product, from a three-quarter "
@@ -481,16 +478,97 @@ def _b2_block(
         "reference images.",
         _CAMERA_MUST_DIFFER,
     ]
-    if role == "hero":
-        lines.append(
-            "MATERIAL PANEL: unless the direction above specifies another background, use a clean "
-            "neutral ecommerce background with no props; the full design must stay sharply visible."
-        )
     if flat_product:
         lines.extend((
             "FLAT PRODUCT COMPOSITION OVERRIDE: this is a flat sheet product. All four quadrants are "
             "TOP-DOWN flat lays; never a corner, rim, side profile or three-quarter view.",
             "The product stays flat on the tabletop with no overhang, drape, thickness or 3D structure.",
+        ))
+    return lines
+
+
+_DEFAULT_MATERIAL_DIRECTION = (
+    "Straight-on standard ecommerce product shot: the complete product centred and fully in frame "
+    "at a neutral eye level, with the whole design sharply visible."
+)
+
+# 素材图轮不再继承锚点场景：统一白底棚拍，构图模板只负责机位。
+_MATERIAL_BACKGROUND_LOCK = (
+    "PURE WHITE BACKGROUND LOCK — every quadrant is shot on a seamless pure-white background "
+    "(#FFFFFF):\n"
+    "- No room, wall, floor line, table surface, window, fireplace, furniture or drapery; no "
+    "environmental element of any kind.\n"
+    "- No supporting props, decorative objects, plants, food, tableware or textiles.\n"
+    "- No gradient, vignette, texture, pattern or coloured cast on the background. Never repeat, "
+    "bleed or float any printed motif outside the product.\n"
+    "- Even neutral studio lighting: soft and shadowless, or only a subtle soft contact shadow "
+    "directly beneath the product; no warm ambient light and no window light.\n"
+    "- PRODUCT FRAMING: the complete product centred in its panel, occupying about 70-80% of the "
+    "panel with even margins on all four sides; never cropped; its edges must separate clearly "
+    "from the white background through value and edge contrast; the panel divider stays outside "
+    "the product."
+)
+
+
+def _material_round_direction(
+    composition: Mapping[str, Mapping[str, str]] | None,
+    *,
+    flat_product: bool,
+) -> str:
+    """素材图机位：优先用构图模板 panel_4，缺失时回退白底素材图默认机位。"""
+    direction = _composition_slot(composition, "hero")
+    if direction:
+        return direction
+    if flat_product:
+        return _FLAT_LISTING_PANEL_LINES[3]
+    return _DEFAULT_MATERIAL_DIRECTION
+
+
+def _material_round_lines(
+    *,
+    composition: Mapping[str, Mapping[str, str]] | None,
+    flat_product: bool,
+) -> list[str]:
+    """素材图轮：只继承产品与图案，场景重置为纯白棚拍；构图模板仅提供机位。"""
+    direction = _material_round_direction(composition, flat_product=flat_product)
+    lines = [
+        "=== ROUND 素材图 · MATERIAL IMAGE — clean white-background product shot ===",
+        "This call produces the SAME four styles of the same contact sheet as the four attached "
+        "reference images, reshot as clean marketplace material images. Each quadrant keeps its "
+        "own product and its own printed artwork, but this round starts from a clean studio "
+        "setup: the anchor's scene is not reused.",
+        _OUTPUT_FORMAT_LOCK,
+        _ANCHOR_BINDING,
+        _RIGID_ARTWORK_LOCK,
+        "MATERIAL IDENTITY LOCK — inherit ONLY the product from its own reference image: "
+        "silhouette, structure, seams, hardware, material, base colour and printed artwork must "
+        "stay identical. Do NOT inherit the reference's scene, set surface, background, props, "
+        "decor, light direction, colour temperature or shadows. This is a new clean studio shot, "
+        "not a re-shoot of the anchor scene.",
+        _QUADRANT_ISOLATION_LOCK,
+        _NO_QUADRANT_LABELS,
+        "GEOMETRY LOCK: keep the silhouette, seam lines, panel divisions, hardware positions and "
+        "proportions of its own reference exactly; never redraw, reshape or re-proportion the "
+        "product.",
+        _PRODUCT_FORM_LOCK,
+        _FLAT_PRINT_LOCK,
+        "",
+        "=== PART 2 · MATERIAL IMAGE BACKGROUND, LIGHTING & FRAMING ===",
+        _MATERIAL_BACKGROUND_LOCK,
+        f"MATERIAL SHOT DIRECTION (composition): {direction}",
+        "CAMERA-ONLY CLAUSE: this direction controls camera angle, shot distance, crop and "
+        "framing only. It never adds a scene, background, props or any product element. If it "
+        "conflicts with the pure-white background rule above, the pure-white background rule wins.",
+        "FINAL CHECK — four equal panels, one clean divider, four different designs; every "
+        "product complete on its own pure-white background with no props, no environment and no "
+        "motif outside the product.",
+    ]
+    if flat_product:
+        lines.extend((
+            "FLAT PRODUCT COMPOSITION OVERRIDE: this is a flat sheet product. All four quadrants "
+            "are TOP-DOWN flat lays; never a corner, rim, side profile or three-quarter view.",
+            "The product stays flat on the white surface with no overhang, drape, thickness or 3D "
+            "structure.",
         ))
     return lines
 
@@ -554,6 +632,10 @@ def build_column_round_prompt(
             "FINAL CHECK — four equal panels, one clean divider, four DIFFERENT designs from one "
             "collection, one shared camera and one shared set, no text or labels."
         )
+    elif role == "hero":
+        parts = _material_round_lines(
+            composition=composition, flat_product=flat_product
+        )
     else:
         direction = _round_direction(
             role, composition=composition, flat_product=flat_product
@@ -594,6 +676,13 @@ def build_column_round_prompt(
                 "The first result was invalid: it was not a usable four-panel sheet or a panel was "
                 "blank. Return a complete 2x2 sheet with four valid panels, keeping every quadrant's "
                 "assigned recipe exactly as specified."
+            )
+        elif role == "hero":
+            parts.append(
+                "The first result was invalid: it was not a usable four-panel sheet, a panel was "
+                "blank, or the pure-white material setup was not respected. Return four valid "
+                "panels, each anchored to its own reference product, on a pure-white background "
+                "with no props or environment; do not redesign the artwork."
             )
         else:
             parts.append(

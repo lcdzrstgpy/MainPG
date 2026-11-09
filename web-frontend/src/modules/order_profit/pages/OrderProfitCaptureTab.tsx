@@ -1,15 +1,35 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { showToast } from "../../../shared/components/toastStore";
-import { getAuthAccount } from "../../../transport/http/client";
 import { orderProfitApi } from "../api/orderProfitApi";
-import { ShopConfirmDialog } from "../components/ShopConfirmDialog";
+import { CaptureCenterCard } from "../components/CaptureCenterCard";
+import { ShopDataGlyph } from "../components/ShopDataGlyph";
+import { ShopDataScene } from "../components/ShopDataScene";
+import { EmptyBlock } from "../components/ShopDataPrimitives";
+import { TeamRollupDialog } from "../components/TeamRollupDialog";
+import {
+  captureStatusChip,
+  isActiveCaptureStatus,
+  resolveSyncKind,
+  RETRYABLE_CAPTURE_STEPS,
+  summarizeCaptureResults,
+} from "../data/captureTaskModel";
+import {
+  clearActiveCaptureTask,
+  loadActiveCaptureTask,
+  loadLastFullSyncAt,
+  saveActiveCaptureTask,
+  saveLastFullSyncAt,
+} from "../data/captureTaskStorage";
 import { money, numberText } from "../format";
 import type {
+  CaptureRunSummary,
   OrderProfitCaptureStatus,
   OrderProfitSettings,
   PluginSession,
   ProfitShop,
+  TeamRollupPreview,
+  TeamRollupSubmitResult,
 } from "../types";
 
 export function OrderProfitCaptureTab({
@@ -17,15 +37,12 @@ export function OrderProfitCaptureTab({
   onCaptured,
   onOpenAccounts,
   refreshToken = 0,
-  onShopChanged,
 }: {
   isActive: boolean;
   onCaptured: () => void;
   onOpenAccounts?: () => void;
   /** 页头切换店铺后自增，用来重新拉取当前采集店铺。 */
   refreshToken?: number;
-  /** 采集页自己切店铺时，把页头下拉同步过去。 */
-  onShopChanged?: (name: string) => void;
 }) {
   const [sessions, setSessions] = useState<PluginSession[]>([]);
   const [sessionId, setSessionId] = useState("");
@@ -40,33 +57,18 @@ export function OrderProfitCaptureTab({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<OrderProfitCaptureStatus | null>(null);
-  const [shops, setShops] = useState<ProfitShop[]>([]);
   const [activeShop, setActiveShop] = useState<ProfitShop | null>(null);
-  const [newShopName, setNewShopName] = useState("");
-  const [newShopNote, setNewShopNote] = useState("");
   const [shopBusy, setShopBusy] = useState(false);
-  const [staffNoNeeded, setStaffNoNeeded] = useState(false);
-  const [staffNoInput, setStaffNoInput] = useState("");
-  const [confirmState, setConfirmState] = useState<{
-    label: string;
-    run: () => Promise<void>;
-  } | null>(null);
+  const [lastFullAt, setLastFullAt] = useState(0);
+  const [recentRuns, setRecentRuns] = useState<CaptureRunSummary[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
   const [submitBusy, setSubmitBusy] = useState(false);
   const [submitText, setSubmitText] = useState("");
+  const [rollupPreview, setRollupPreview] = useState<TeamRollupPreview | null>(null);
+  const [rollupResult, setRollupResult] = useState<TeamRollupSubmitResult | null>(null);
   const pollTimer = useRef<number | null>(null);
   // 记住当前指令号：刚下发时 status 还没回来，终止按钮也要能停。
   const activeCommandIdRef = useRef(0);
-  const account = getAuthAccount<{ username?: string }>() ?? {};
-
-  /** 采集前统一走一次店铺确认，避免把数据录到别的店。 */
-  const requestRun = (label: string, run: () => Promise<void>) => {
-    if (busy) return;
-    if (!activeShop) {
-      showToast("请先绑定并选中目标店铺，再开始采集", "error");
-      return;
-    }
-    setConfirmState({ label, run });
-  };
 
   /** 采集前重新拉一次会话：插件重连会换新 session，用旧 id 会让指令一直排队。 */
   const resolveSessionId = async (): Promise<string> => {
@@ -92,6 +94,22 @@ export function OrderProfitCaptureTab({
     }
   };
 
+  const refreshRecent = useCallback(async () => {
+    setRecentLoading(true);
+    try {
+      const payload = await orderProfitApi.recentCaptures(6);
+      setRecentRuns(payload.items || []);
+    } catch {
+      // 采集中心读取失败不影响采集本身，保留上一次结果。
+    } finally {
+      setRecentLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isActive) void refreshRecent();
+  }, [isActive, refreshRecent, refreshToken]);
+
   useEffect(() => {
     if (!isActive) {
       clearPoll();
@@ -114,7 +132,6 @@ export function OrderProfitCaptureTab({
           if (newestOnline) return newestOnline.session_id;
           return current || list[0]?.session_id || "";
         });
-        setShops(shopPayload.shops || []);
         setActiveShop(shopPayload.active || null);
         // 接口回包里没有 settings（后端异常时可能回空对象、老版本后端也可能没这个字段）时
         // 不能直接解引用 —— 一抛就是整页白屏（渲染期 TypeError 只能靠错误边界兜）。
@@ -141,14 +158,36 @@ export function OrderProfitCaptureTab({
 
   useEffect(() => () => clearPoll(), []);
 
+  // “上次全量”按店铺分别记录：切到从未全量过的店铺时必须重新走全量。
+  useEffect(() => {
+    setLastFullAt(loadLastFullSyncAt(activeShop?.name || ""));
+  }, [activeShop?.name]);
+
+  /** 采集进入终态时清掉持久化任务；全量成功才刷新“上次全量”时间。 */
+  const finishTask = (commandId: number, success: boolean) => {
+    const task = loadActiveCaptureTask();
+    if (!task || task.commandId !== commandId) return;
+    if (success && task.kind === "full") {
+      const now = Date.now();
+      saveLastFullSyncAt(now, task.shopName || activeShop?.name || "");
+      setLastFullAt(now);
+    }
+    clearActiveCaptureTask(commandId);
+  };
+
   const pollStatus = async (commandId: number) => {
     try {
       const next = await orderProfitApi.captureStatus(commandId);
       setStatus(next);
       if (next.status === "succeeded") {
         setBusy(false);
-        if (next.command_type === "temu_capture_all") {
-          showToast(next.status_text || "一键采集完成", next.ok ? "success" : "error");
+        finishTask(commandId, next.ok);
+        void refreshRecent();
+        if (next.command_type === "temu_capture_all" || next.command_type === "temu_capture_incremental") {
+          showToast(next.status_text || "采集完成", next.ok ? "success" : "error");
+          if (next.ok) onCaptured();
+        } else if (next.command_type === "temu_capture_resource") {
+          showToast(next.status_text || "补采完成", next.ok ? "success" : "error");
           if (next.ok) onCaptured();
         } else if (next.ok && next.ingested) {
           showToast(`采集完成：${next.order_count} 单 / ${next.sub_order_count} 条子订单`, "success");
@@ -160,6 +199,8 @@ export function OrderProfitCaptureTab({
       }
       if (next.status === "failed" || next.status === "cancelled") {
         setBusy(false);
+        finishTask(commandId, false);
+        void refreshRecent();
         showToast(
           next.status_text || next.error || (next.status === "cancelled" ? "采集已终止" : "订单采集失败"),
           next.status === "cancelled" ? "info" : "error",
@@ -173,12 +214,36 @@ export function OrderProfitCaptureTab({
       pollTimer.current = window.setTimeout(() => void pollStatus(commandId), 1500);
     } catch (cause) {
       setBusy(false);
+      clearActiveCaptureTask(commandId);
       showToast(cause instanceof Error ? cause.message : String(cause), "error");
     }
   };
 
-  const startAll = async (incremental = false) => {
+  /** 等待单条补采指令结束；不用主轮询定时器，用户终止后也能及时退出。 */
+  const waitForCommand = async (commandId: number): Promise<OrderProfitCaptureStatus | null> => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      try {
+        const next = await orderProfitApi.captureStatus(commandId);
+        setStatus(next);
+        if (next.status === "succeeded" || next.status === "failed" || next.status === "cancelled") {
+          finishTask(commandId, next.status === "succeeded" && next.ok);
+          return next;
+        }
+      } catch {
+        clearActiveCaptureTask(commandId);
+        return null;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1500));
+    }
+    return null;
+  };
+
+  const retryFailedSteps = async (run: Pick<CaptureRunSummary, "results" | "shop_name">) => {
     if (busy) return;
+    const failed = run.results.filter(
+      (row) => row.state === "failed" && RETRYABLE_CAPTURE_STEPS.has(row.key),
+    );
+    if (!failed.length) return;
     const activeSession = await resolveSessionId();
     if (!activeSession) {
       showToast("请先在插件弹窗点「连接插件」，并保持 Temu 页面打开", "error");
@@ -186,15 +251,105 @@ export function OrderProfitCaptureTab({
     }
     clearPoll();
     setBusy(true);
+    setError("");
+    let done = 0;
+    let stopped = false;
+    try {
+      for (const row of failed) {
+        try {
+          const command = await orderProfitApi.startResourceCapture(activeSession, row.key);
+          activeCommandIdRef.current = command.command_id;
+          saveActiveCaptureTask({
+            commandId: command.command_id,
+            kind: "resource",
+            label: `补采 ${row.label || row.key}`,
+            shopName: run.shop_name || activeShop?.name || "",
+            startedAt: Date.now(),
+          });
+          const result = await waitForCommand(command.command_id);
+          if (!result || result.status === "cancelled") {
+            stopped = true;
+            break;
+          }
+          done += 1;
+        } catch (cause) {
+          // 某一项下发失败不阻塞后续步骤，逐项提示后继续。
+          showToast(
+            `${row.label || row.key}：${cause instanceof Error ? cause.message : String(cause)}`,
+            "error",
+          );
+        }
+      }
+      if (!stopped) showToast(`补采结束：已执行 ${done}/${failed.length} 项`, "success");
+    } finally {
+      setBusy(false);
+      activeCommandIdRef.current = 0;
+      await refreshRecent();
+      onCaptured();
+    }
+  };
+
+  // 页面切走/刷新后回到采集页：恢复仍在跑的任务，而不是显示“还没有采集任务”。
+  const restoredCommandRef = useRef(0);
+  useEffect(() => {
+    if (!isActive) return;
+    const task = loadActiveCaptureTask();
+    if (!task || restoredCommandRef.current === task.commandId) return;
+    restoredCommandRef.current = task.commandId;
+    let cancelled = false;
+    const restore = async () => {
+      try {
+        const next = await orderProfitApi.captureStatus(task.commandId);
+        if (cancelled) return;
+        if (isActiveCaptureStatus(next.status)) {
+          setStatus(next);
+          setBusy(true);
+          await pollStatus(task.commandId);
+        } else {
+          clearActiveCaptureTask(task.commandId);
+        }
+      } catch {
+        if (!cancelled) clearActiveCaptureTask(task.commandId);
+      }
+    };
+    void restore();
+    return () => {
+      cancelled = true;
+    };
+  }, [isActive]);
+
+  const startSync = async (requested: "auto" | "full" | "incremental") => {
+    if (busy) return;
+    if (!activeShop) {
+      showToast("请先绑定并选中目标店铺，再开始采集", "error");
+      return;
+    }
+    const activeSession = await resolveSessionId();
+    if (!activeSession) {
+      showToast("请先在插件弹窗点「连接插件」，并保持 Temu 页面打开", "error");
+      return;
+    }
+    const incremental = requested === "auto"
+      ? resolveSyncKind({ now: Date.now(), lastFullAt }) === "incremental"
+      : requested === "incremental";
+    clearPoll();
+    setBusy(true);
     setStatus(null);
     setError("");
     try {
-      const command = await orderProfitApi.startCaptureAll(activeSession, incremental);
+      const command = await orderProfitApi.startCaptureAll(activeSession, incremental, activeShop.name);
       activeCommandIdRef.current = command.command_id;
+      saveActiveCaptureTask({
+        commandId: command.command_id,
+        kind: incremental ? "incremental" : "full",
+        label: incremental ? "增量同步" : "全量同步",
+        shopName: activeShop.name,
+        startedAt: Date.now(),
+      });
       showToast(
         incremental
-          ? "已下发增量更新：只补最新数据（订单/流水只读第一页，详情补最近 20 单）"
-          : "已下发一键全量采集：插件会自动切页采集并直接入库",
+          ? "已开始增量同步：只补最新数据，失败项可在下方单独重试"
+          : "已开始全量同步：依次采集 6 类数据，采集中可以离开本页",
         "info",
       );
       await pollStatus(command.command_id);
@@ -225,72 +380,11 @@ export function OrderProfitCaptureTab({
     }
   };
 
-  const bindShop = async () => {
-    const name = newShopName.trim();
-    if (!name) {
-      showToast("请输入店铺名称", "error");
-      return;
-    }
-    setShopBusy(true);
-    try {
-      const payload = await orderProfitApi.bindShop({
-        name,
-        note: newShopNote.trim(),
-      });
-      setShops(payload.shops || []);
-      setActiveShop(payload.shop || payload.active || null);
-      setNewShopName("");
-      setNewShopNote("");
-      const backfilled = Number(payload.backfilled || 0);
-      const code = payload.shop?.store_code || "";
-      showToast(
-        payload.sync_warning
-          ? `${payload.sync_warning}（店铺码：${code}）`
-          : backfilled
-            ? `已绑定店铺「${name}」（${code}），并把 ${backfilled} 行未归类历史数据归入该店铺`
-            : `已绑定店铺「${name}」（${code}），采集结果会归到这个店铺`,
-        payload.sync_warning ? "info" : "success",
-      );
-      onCaptured();
-    } catch (cause) {
-      // 团队服务还没拿到员工标识：先让用户填一次，再自动重试绑定。
-      if (String(cause instanceof Error ? cause.message : cause).includes("staff_no_required")) {
-        setStaffNoNeeded(true);
-        showToast("首次创建店铺需要先填写员工标识，填好后再点一次绑定", "info");
-        return;
-      }
-      showToast(cause instanceof Error ? cause.message : String(cause), "error");
-    } finally {
-      setShopBusy(false);
-    }
-  };
-
-  const saveStaffNo = async () => {
-    const value = staffNoInput.trim();
-    if (!value) {
-      showToast("请填写员工标识（用于辨识和后续提交）", "error");
-      return;
-    }
-    setShopBusy(true);
-    try {
-      await orderProfitApi.saveTeamProfile(value);
-      setStaffNoNeeded(false);
-      setStaffNoInput("");
-      showToast("员工标识已保存，正在重新绑定店铺", "success");
-      await bindShop();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause), "error");
-    } finally {
-      setShopBusy(false);
-    }
-  };
-
   const syncShopCode = async (shopId: string) => {
     if (!shopId) return;
     setShopBusy(true);
     try {
       const payload = await orderProfitApi.syncShopCode(shopId);
-      setShops(payload.shops || []);
       setActiveShop(payload.shop || null);
       showToast(`店铺码已同步为 ${payload.shop?.store_code || ""}`, "success");
     } catch (cause) {
@@ -300,17 +394,13 @@ export function OrderProfitCaptureTab({
     }
   };
 
-  const submitTeamRollup = async () => {
+  /** 先拉一次预览，弹窗里确认「哪些店铺 → 哪个服务器账号」后再真正提交。 */
+  const openRollupDialog = async () => {
+    if (submitBusy) return;
     setSubmitBusy(true);
     try {
-      const payload = await orderProfitApi.submitTeamRollup();
-      const pending = payload.pending_local_shops?.length || 0;
-      const text = payload.ok
-        ? `已提交 ${payload.week_start} 的本周汇总：新增 ${payload.created ?? 0} 天、更新 ${payload.updated ?? 0} 天、跳过 ${payload.stale ?? 0} 天`
-          + (pending ? `；还有 ${pending} 家店铺是本地临时码，未提交` : "")
-        : payload.status_text || "没有可提交的数据";
-      setSubmitText(text);
-      showToast(text, payload.ok ? "success" : "info");
+      const preview = await orderProfitApi.teamRollupPreview();
+      setRollupPreview(preview);
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
@@ -318,46 +408,23 @@ export function OrderProfitCaptureTab({
     }
   };
 
-  const cleanupUnboundShops = async () => {
-    if (!window.confirm("清理所有未与「店铺账号」绑定的店铺？\n只从店铺下拉里移除，已采集的订单数据不会删除。")) {
-      return;
-    }
-    setShopBusy(true);
+  const submitTeamRollup = async (weekStart: string) => {
+    setSubmitBusy(true);
     try {
-      const result = await orderProfitApi.cleanupShops();
-      const payload = await orderProfitApi.listShops();
-      setShops(payload.shops || []);
-      setActiveShop(payload.active || null);
-      showToast(
-        result.deleted ? `已清理 ${result.deleted} 个未绑定店铺` : "没有需要清理的店铺",
-        result.deleted ? "success" : "info",
-      );
+      const payload = await orderProfitApi.submitTeamRollup(weekStart);
+      setRollupPreview(null);
+      setRollupResult(payload);
+      const pending = payload.pending_local_shops?.length || 0;
+      const text = payload.ok
+        ? `已提交 ${payload.week_start} 的本周汇总：${payload.stores?.length ?? 0} 家店铺、新增 ${payload.created ?? 0} 天、更新 ${payload.updated ?? 0} 天、跳过 ${payload.stale ?? 0} 天`
+          + (pending ? `；还有 ${pending} 家店铺没有店铺码，未提交` : "")
+        : payload.status_text || "没有可提交的数据";
+      setSubmitText(text);
+      showToast(text, payload.ok ? "success" : "info");
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
-      setShopBusy(false);
-    }
-  };
-
-  const switchShop = async (shopId: string) => {
-    if (!shopId) return;
-    setShopBusy(true);
-    try {
-      const payload = await orderProfitApi.activateShop(shopId);
-      setShops(payload.shops || []);
-      setActiveShop(payload.shop || null);
-      if (payload.shop?.name) onShopChanged?.(payload.shop.name);
-      const backfilled = Number(payload.backfilled || 0);
-      showToast(
-        `当前采集店铺已切换为「${payload.shop?.name || ""}」`
-          + (backfilled ? `，${backfilled} 行未归类数据已归入该店铺` : ""),
-        "success",
-      );
-      onCaptured();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause), "error");
-    } finally {
-      setShopBusy(false);
+      setSubmitBusy(false);
     }
   };
 
@@ -375,6 +442,13 @@ export function OrderProfitCaptureTab({
     try {
       const command = await orderProfitApi.startResourceCapture(activeSession, resource);
       activeCommandIdRef.current = command.command_id;
+      saveActiveCaptureTask({
+        commandId: command.command_id,
+        kind: "resource",
+        label: `补采 ${label}`,
+        shopName: activeShop?.name || "",
+        startedAt: Date.now(),
+      });
       showToast(`已重新采集「${label}」`, "info");
       await pollStatus(command.command_id);
     } catch (cause) {
@@ -387,6 +461,24 @@ export function OrderProfitCaptureTab({
   const liveSteps = status?.progress?.steps || [];
   const finalSteps = status?.results || [];
   const stepRows = finalSteps.length ? finalSteps : liveSteps;
+  const resultSummary = summarizeCaptureResults(status?.results);
+  const failedSteps = (status?.results || []).filter(
+    (row) => row.state === "failed" && RETRYABLE_CAPTURE_STEPS.has(row.key),
+  );
+  const statusChip = status
+    ? captureStatusChip(status.status, status.ok, status.results)
+    : { label: "未开始", tone: "" as const };
+  // 指令结束后强制收口到 100%：最后一条进度可能停在“最后一步运行中”（例如 5/6 = 83%）。
+  const progressPercent = status
+    ? status.status === "succeeded" ? 100 : status.progress?.percent ?? 0
+    : 0;
+  const progressLabel = status?.status === "succeeded"
+    ? "采集完成"
+    : status?.progress?.step_label || "采集中";
+  const progressStepText = status?.status === "succeeded" || !status?.progress?.step_total
+    ? ""
+    : `（${status.progress.step}/${status.progress.step_total}）`;
+  const nextSyncKind = resolveSyncKind({ now: Date.now(), lastFullAt });
 
   const saveSettings = async () => {
     try {
@@ -411,11 +503,33 @@ export function OrderProfitCaptureTab({
       <div className="op-capture-layout">
         <div className="op-card op-capture-panel">
           <div className="op-panel-head">
-            <strong>采集设置</strong>
+            <div className="op-step-copy">
+              <span className="op-step-label">第 1 步</span>
+              <ShopDataGlyph name="source" className="op-step-glyph" />
+              <strong>准备采集</strong>
+            </div>
+            <span className="op-chip">6 类数据</span>
+          </div>
+          <p className="op-hint">确认插件在线、写入店铺正确，再开始同步；采集期间可以离开本页。</p>
+
+          <div className="op-preflight" aria-label="采集前置检查">
             <span className={`op-chip ${selected?.online ? "is-ok" : "is-warn"}`}>
-              {selected?.online ? "插件在线" : "插件离线"}
+              插件{selected?.online ? "在线" : "未连接"}
+            </span>
+            <span className={`op-chip ${activeShop ? "is-ok" : "is-warn"}`}>
+              {activeShop ? `写入：${activeShop.name}` : "写入店铺未绑定"}
+            </span>
+            <span className={`op-chip ${lastFullAt ? "" : "is-warn"}`}>
+              {lastFullAt ? `上次全量：${formatDay(lastFullAt)}` : "尚未全量同步"}
             </span>
           </div>
+          {!selected?.online ? (
+            <p className="op-hint">
+              插件未连接：在浏览器工具栏打开「界野采集助手」，点「连接插件」；设备配对在「系统设置 → 插件设置」。
+            </p>
+          ) : null}
+
+          <ShopDataScene variant="prepare" className="op-capture-scene" />
 
           <div className="op-shop-block">
             <div className="op-panel-head">
@@ -426,57 +540,22 @@ export function OrderProfitCaptureTab({
                   : "未绑定"}
               </span>
             </div>
-            <label className="op-field">
-              <span>已绑定店铺</span>
-              <select
-                value={activeShop?.id || ""}
-                disabled={shopBusy || !shops.length}
-                onChange={(event) => void switchShop(event.target.value)}
-              >
-                {!shops.length ? <option value="">还没有绑定店铺</option> : null}
-                {shops.map((shop) => (
-                  <option key={shop.id} value={shop.id}>
-                    {shop.name}
-                    {shop.store_code ? ` · ${shop.store_code}` : ""}
-                    {shop.is_active ? "（当前采集）" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="op-shop-form">
-              <span className="op-hint">店铺来自「店铺账号」登录后的自动读取。</span>
-              <div className="op-filter-actions">
-                {onOpenAccounts ? (
-                  <button type="button" className="op-btn op-btn-primary" onClick={onOpenAccounts}>
-                    去店铺账号绑定
-                  </button>
-                ) : null}
-                <button type="button" className="op-btn" disabled={shopBusy} onClick={() => void cleanupUnboundShops()}>
-                  清理未绑定店铺
-                </button>
-              </div>
-            </div>
-            {staffNoNeeded ? (
-              <div className="op-shop-form">
-                <label className="op-field">
-                  <span>员工标识（首次必填）</span>
-                  <input
-                    type="text"
-                    value={staffNoInput}
-                    placeholder="例如 张三 / zhang-san"
-                    onChange={(event) => setStaffNoInput(event.target.value)}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="op-btn op-btn-primary"
-                  disabled={shopBusy}
-                  onClick={() => void saveStaffNo()}
-                >
-                  {shopBusy ? "保存中…" : "保存标识并绑定"}
-                </button>
-              </div>
+            <p className="op-hint">
+              采集写入「{activeShop?.name || "未绑定"}」；在页面顶部「当前店铺」切换。
+              如果浏览器当前登录的是其他店铺，插件会停止采集。
+            </p>
+            {!activeShop ? (
+              <p className="op-hint">
+                还没有绑定店铺：去「店铺账号」新增 Temu 账号并点「开始绑定」，登录后会自动读取店铺。
+              </p>
             ) : null}
+            <div className="op-filter-actions">
+              {onOpenAccounts ? (
+                <button type="button" className="op-btn op-btn-primary" onClick={onOpenAccounts}>
+                  {activeShop ? "切换 / 绑定店铺" : "去绑定店铺"}
+                </button>
+              ) : null}
+            </div>
             {activeShop?.code_status === "local" ? (
               <div className="op-shop-form">
                 <span className="op-hint">当前是本地临时码 {activeShop.store_code}，联网后可换成正式店铺码。</span>
@@ -492,134 +571,202 @@ export function OrderProfitCaptureTab({
             ) : null}
           </div>
 
-          <p className="op-hint">
-            插件配对与设备管理已移到「系统设置 → 插件设置」，这里只负责发起采集和查看进度。
-          </p>
-
-          <label className="op-field">
-            <span>插件会话</span>
-            <select value={sessionId} onChange={(event) => setSessionId(event.target.value)}>
-              {!sessions.length ? <option value="">未发现插件会话</option> : null}
-              {sessions.map((session) => (
-                <option key={session.session_id} value={session.session_id}>
-                  {session.device_name ? `[${session.device_name}] ` : ""}
-                  {session.browser} · v{session.plugin_version || "?"} · {session.online ? "在线" : "离线"}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="op-capture-step-head">
+            <span className="op-step-label">第 2 步</span>
+            <ShopDataGlyph name="cloud" className="op-step-glyph" />
+            <strong>开始同步</strong>
+          </div>
 
           <div className="op-capture-actions">
             <button
               type="button"
               className="op-btn op-btn-primary"
               disabled={busy || !selected?.online}
-              onClick={() => requestRun("一键全量采集", () => startAll(false))}
+              onClick={() => void startSync("auto")}
             >
-              {busy ? "采集中…" : "一键全量采集"}
+              {busy ? "采集中…" : "同步最新数据"}
             </button>
-            <button
-              type="button"
-              className="op-btn"
-              disabled={busy || !selected?.online}
-              onClick={() => requestRun("增量更新", () => startAll(true))}
-            >
-              增量更新
-            </button>
-            <button
-              type="button"
-              className="op-btn"
-              disabled={!busy}
-              onClick={() => void stopCapture()}
-            >
-              终止采集
-            </button>
-          </div>
-
-          <div className="op-settings">
-            <div className="op-settings-head">
-              <strong>费率与汇率</strong>
-              <button type="button" className="op-link" onClick={() => void saveSettings()}>
-                保存
+            {busy ? (
+              <button
+                type="button"
+                className="op-btn"
+                onClick={() => void stopCapture()}
+              >
+                终止采集
               </button>
-            </div>
-            <div className="op-settings-grid">
-              <label className="op-field">
-                <span>USD → CNY</span>
-                <input type="number" min={0} step={0.01} value={rateInput} onChange={(event) => setRateInput(event.target.value)} />
-              </label>
-              <label className="op-field">
-                <span>佣金费率</span>
-                <div className="op-input-suffix">
-                  <input type="number" min={0} step={0.1} value={commissionInput} onChange={(event) => setCommissionInput(event.target.value)} />
-                  <span>%</span>
-                </div>
-              </label>
-              <label className="op-field">
-                <span>头程单价</span>
-                <div className="op-input-suffix">
-                  <input type="number" min={0} step={0.5} value={headInput} onChange={(event) => setHeadInput(event.target.value)} />
-                  <span>元/公斤</span>
-                </div>
-              </label>
-            </div>
-            <p className="op-hint">
-              当前保存值：汇率 {settings.usd_cny_rate} · 佣金 {(settings.commission_rate * 100).toFixed(2)}% · 头程 {settings.head_unit_price_cny} 元/公斤。
-            </p>
+            ) : (
+              <button
+                type="button"
+                className="op-btn"
+                onClick={() => void startSync("full")}
+              >
+                重新全量采集
+              </button>
+            )}
           </div>
+          {!busy ? (
+            <p className="op-hint">
+              {nextSyncKind === "incremental"
+                ? "将执行增量同步：只补最新数据；每 7 天会自动安排一次全量。"
+                : "将执行全量同步：依次采集店铺首页、流量、销量、对账、结算和订单。"}
+            </p>
+          ) : null}
+
+          <details className="op-disclosure">
+            <summary>
+              <ShopDataGlyph name="key" />
+              <span>插件与费率设置</span>
+              <small>
+                插件{selected?.online ? "在线" : "离线"} · 汇率 {settings.usd_cny_rate} · 佣金 {(settings.commission_rate * 100).toFixed(1)}%
+              </small>
+            </summary>
+            <div className="op-disclosure-body">
+              {sessions.length > 1 ? (
+                <label className="op-field">
+                  <span>插件会话</span>
+                  <select value={sessionId} onChange={(event) => setSessionId(event.target.value)}>
+                    {sessions.map((session) => (
+                      <option key={session.session_id} value={session.session_id}>
+                        {session.device_name ? `[${session.device_name}] ` : ""}
+                        {session.browser} · v{session.plugin_version || "?"} · {session.online ? "在线" : "离线"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <p className="op-hint">
+                  插件会话：
+                  {selected
+                    ? `${selected.browser} · v${selected.plugin_version || "?"} · ${selected.online ? "在线" : "离线"}`
+                    : "未发现"}
+                </p>
+              )}
+
+              <p className="op-hint">
+                插件配对与设备管理已移到「系统设置 → 插件设置」，这里只负责发起采集和查看进度。
+              </p>
+
+              <div className="op-settings">
+                <div className="op-settings-head">
+                  <strong>费率与汇率</strong>
+                  <button type="button" className="op-link" onClick={() => void saveSettings()}>
+                    保存
+                  </button>
+                </div>
+                <div className="op-settings-grid">
+                  <label className="op-field">
+                    <span>USD → CNY</span>
+                    <input type="number" min={0} step={0.01} value={rateInput} onChange={(event) => setRateInput(event.target.value)} />
+                  </label>
+                  <label className="op-field">
+                    <span>佣金费率</span>
+                    <div className="op-input-suffix">
+                      <input type="number" min={0} step={0.1} value={commissionInput} onChange={(event) => setCommissionInput(event.target.value)} />
+                      <span>%</span>
+                    </div>
+                  </label>
+                  <label className="op-field">
+                    <span>头程单价</span>
+                    <div className="op-input-suffix">
+                      <input type="number" min={0} step={0.5} value={headInput} onChange={(event) => setHeadInput(event.target.value)} />
+                      <span>元/公斤</span>
+                    </div>
+                  </label>
+                </div>
+                <p className="op-hint">
+                  当前保存值：汇率 {settings.usd_cny_rate} · 佣金 {(settings.commission_rate * 100).toFixed(2)}% · 头程 {settings.head_unit_price_cny} 元/公斤。
+                </p>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div className="op-capture-main">
-          <div className="op-card op-capture-result">
-            <div className="op-panel-head">
-              <strong>团队汇总</strong>
-              <span className="op-chip">每周六自动提交</span>
+          <details className="op-disclosure">
+            <summary>
+              <ShopDataGlyph name="team" />
+              <span>团队汇总</span>
+              <small>按「店铺 × 日期」汇总，每周六自动提交</small>
+            </summary>
+            <div className="op-disclosure-body">
+            <div className="op-team-intro">
+              <p className="op-hint">
+                按「店铺 × 日期」汇总本账号全部店铺的数据提交团队服务，每周六自动跑一次。
+              </p>
+              <ShopDataScene variant="team" className="op-team-scene" />
             </div>
-            <p className="op-hint">
-              按「店铺 × 日期」汇总本机数据提交团队服务，每周六自动跑一次。
-            </p>
             <div className="op-capture-actions">
               <button
                 type="button"
                 className="op-btn op-btn-primary"
                 disabled={submitBusy}
-                onClick={() => void submitTeamRollup()}
+                onClick={() => void openRollupDialog()}
               >
-                {submitBusy ? "提交中…" : "提交本周汇总"}
+                {submitBusy ? "读取中…" : "提交本机汇总"}
               </button>
             </div>
             {submitText ? <p className="op-capture-text">{submitText}</p> : null}
-          </div>
+            {rollupResult?.stores?.length ? (
+              <div className="op-rollup-result">
+                <div className="op-rollup-result-head">
+                  <strong>本次提交明细</strong>
+                  <span>
+                    {rollupResult.week_start} · 服务器新增 {rollupResult.created ?? 0} 天 / 更新{" "}
+                    {rollupResult.updated ?? 0} 天 / 跳过 {rollupResult.stale ?? 0} 天
+                  </span>
+                </div>
+                {rollupResult.stores.map((store) => (
+                  <div className="op-rollup-shop" key={store.store_code || store.name}>
+                    <strong>{store.name}</strong>
+                    <span>{store.store_code}</span>
+                    <em>
+                      {store.day_count} 天 / {store.record_count} 条明细
+                    </em>
+                  </div>
+                ))}
+                {rollupResult.pending_local_shops?.length ? (
+                  <p className="op-hint">
+                    未提交：
+                    {rollupResult.pending_local_shops.map((shop) => shop.name).join("、")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            </div>
+          </details>
 
           <div className="op-card op-capture-result">
             <div className="op-panel-head">
-              <strong>本次采集</strong>
-              <span className={`op-chip ${status?.status === "succeeded" && status.ok ? "is-ok" : status?.status === "failed" ? "is-error" : ""}`}>
-                {status ? statusLabel(status.status) : "未开始"}
+              <div className="op-step-copy">
+                <span className="op-step-label">第 3 步</span>
+                <ShopDataGlyph name="check" className="op-step-glyph" />
+                <strong>本次采集</strong>
+              </div>
+              <span className={`op-chip ${statusChip.tone}`}>
+                {statusChip.label}
               </span>
             </div>
             {status?.progress ? (
               <div className="op-progress">
                 <div className="op-progress-head">
                   <span>
-                    {status.progress.step_label || "采集中"}
-                    {status.progress.step_total
-                      ? `（${status.progress.step}/${status.progress.step_total}）`
-                      : ""}
+                    {progressLabel}
+                    {progressStepText}
                   </span>
-                  <strong>{status.progress.percent}%</strong>
+                  <strong>{progressPercent}%</strong>
                 </div>
                 <div className="op-progress-track">
-                  <div className="op-progress-bar" style={{ width: `${status.progress.percent}%` }} />
+                  <div className="op-progress-bar" style={{ width: `${progressPercent}%` }} />
                 </div>
                 {status.progress.detail ? <small>{status.progress.detail}</small> : null}
               </div>
             ) : null}
             {!status ? (
-              <div className="op-empty op-empty-compact">
-                <strong>还没有采集任务</strong>
-                <span>点「一键全量采集」开始。</span>
-              </div>
+              <EmptyBlock
+                art="capture"
+                title="还没有采集任务"
+                desc="点左侧「同步最新数据」开始；系统会自动选择增量或全量，并在下方逐步显示进度。"
+              />
             ) : (
               <div className="op-capture-body">
                 {status.command_type === "temu_capture_all" || status.command_type === "temu_capture_incremental" ? (
@@ -645,11 +792,32 @@ export function OrderProfitCaptureTab({
                   </div>
                 )}
 
+                {resultSummary.total > 0 ? (
+                  <div className="op-run-foot">
+                    <p className="op-capture-text">
+                      成功 {resultSummary.ok} · 跳过 {resultSummary.skipped} · 失败 {resultSummary.failed}
+                      {resultSummary.running ? ` · 进行中 ${resultSummary.running}` : ""}
+                    </p>
+                    {failedSteps.length && !busy ? (
+                      <button
+                        type="button"
+                        className="op-btn op-btn-sm"
+                        onClick={() => void retryFailedSteps({
+                          results: status.results || [],
+                          shop_name: activeShop?.name || "",
+                        })}
+                      >
+                        补采失败项（{failedSteps.length}）
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 {stepRows.length ? (
                   <div className="op-steps-grid">
                     {stepRows.map((item) => {
                       const retryable = ["skipped", "failed"].includes(item.state)
-                        && RETRYABLE_STEPS.has(item.key)
+                        && RETRYABLE_CAPTURE_STEPS.has(item.key)
                         && !busy;
                       return (
                         <article key={item.key} className={`op-step-card is-${item.state || "running"}`}>
@@ -679,20 +847,23 @@ export function OrderProfitCaptureTab({
             )}
           </div>
 
+          <CaptureCenterCard
+            runs={recentRuns}
+            loading={recentLoading}
+            busy={busy}
+            onRetry={(run) => void retryFailedSteps(run)}
+            onRefresh={() => void refreshRecent()}
+          />
+
         </div>
       </div>
 
-      <ShopConfirmDialog
-        open={confirmState !== null}
-        actionLabel={confirmState?.label || ""}
-        shop={activeShop}
-        username={account.username || ""}
-        onCancel={() => setConfirmState(null)}
-        onConfirm={() => {
-          const pending = confirmState;
-          setConfirmState(null);
-          if (pending) void pending.run();
-        }}
+      <TeamRollupDialog
+        open={rollupPreview !== null}
+        preview={rollupPreview}
+        busy={submitBusy}
+        onCancel={() => setRollupPreview(null)}
+        onConfirm={() => void submitTeamRollup(rollupPreview?.week_start || "")}
       />
     </section>
   );
@@ -705,17 +876,8 @@ const CAPTURE_STEP_STATE: Record<string, string> = {
   failed: "失败",
 };
 
-/** 这些步骤能单独重采（对应 /captures/resource 的资源名）。 */
-const RETRYABLE_STEPS = new Set(["store", "traffic", "sales", "finance", "settlement", "orders"]);
-
-function statusLabel(status: string): string {
-  const map: Record<string, string> = {
-    queued: "排队中",
-    sent: "已下发",
-    running: "采集中",
-    succeeded: "已完成",
-    failed: "失败",
-    cancelled: "已终止",
-  };
-  return map[status] || status || "未开始";
+function formatDay(timestamp: number): string {
+  if (!timestamp) return "—";
+  return new Date(timestamp).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
+

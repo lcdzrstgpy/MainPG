@@ -133,6 +133,20 @@ def _error_detail(error: urllib.error.HTTPError) -> str:
     detail = payload.get("detail")
     if isinstance(detail, str):
         return detail
+    # FastAPI 的参数校验失败是列表；原样丢掉只会让用户看到「团队服务返回 422」。
+    if isinstance(detail, list):
+        parts: list[str] = []
+        for item in detail:
+            if isinstance(item, dict):
+                location = ".".join(str(part) for part in item.get("loc") or [] if part != "body")
+                message = str(item.get("msg") or "")
+                if location and message:
+                    parts.append(f"{location}: {message}")
+                elif message:
+                    parts.append(message)
+            elif item:
+                parts.append(str(item))
+        return "；".join(part for part in parts if part)
     return ""
 
 

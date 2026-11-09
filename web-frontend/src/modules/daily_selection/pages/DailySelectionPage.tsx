@@ -19,6 +19,21 @@ import { toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
 import { CollectionModeCard, type CollectionModeSlide } from "../components/CollectionModeCard";
+import {
+  CANDIDATE_SORT_OPTIONS,
+  candidateAttributeEntries,
+  candidateGalleryUrls,
+  candidateSalesLabel,
+  candidateSkuPriceRange,
+  candidateTierEntries,
+  candidateWarningTags,
+  estimateQuote,
+  galleryCount,
+  isCandidateComplete,
+  recommendationTags,
+  sortCandidates,
+  type CandidateSortKey,
+} from "../data/candidatePresentation";
 
 /** 三个采集入口的背景轮播素材。定向=合规商品图；整店/插件=脱敏后的平台页截图（店名与供应商已模糊）。 */
 const COLLECTION_MODE_SLIDES: Record<"daily" | "shop" | "plugin", CollectionModeSlide[]> = {
@@ -47,6 +62,7 @@ import type {
   DailySelectionRunSummary,
   SelectionScope,
   SkuRepullState,
+  SourceVariantRecord,
   TargetSite,
 } from "../types";
 import "../styles/daily-selection.css";
@@ -222,6 +238,33 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
+/**
+ * 采集表单的首屏默认值：直接由当前方向预设带出，用户进来即可点「开始采集」，
+ * 不必先补平台/范围/数量。与「点击方向卡」走同一套默认，避免两条入口行为不一致。
+ */
+function directionFormDefaults(direction: Direction | undefined) {
+  return {
+    platform: "1688" as CollectionPlatform,
+    scope: "divergent" as SelectionScope,
+    site: direction?.site ?? ("US" as TargetSite),
+    keywords: direction ? direction.keywords.join("，") : "",
+    minPrice: direction ? String(direction.price[0]) : "",
+    maxPrice: direction ? String(direction.price[1]) : "",
+    minMoq: "2",
+    targetCount: direction ? String(direction.target) : "",
+    excludeRisks: true,
+  };
+}
+
+/** 把上下限压成一条摘要胶囊；两端都为空时返回 null，不占位置。 */
+function rangeChip(prefix: string, min: string, max: string, suffix = ""): string | null {
+  const lower = min.trim();
+  const upper = max.trim();
+  if (!lower && !upper) return null;
+  if (lower && upper) return `${prefix}${lower}–${upper}${suffix}`;
+  return lower ? `${prefix}≥${lower}${suffix}` : `${prefix}≤${upper}${suffix}`;
+}
+
 function formatRunDuration(createdAt: string, updatedAt: string): string {
   const start = new Date(createdAt).getTime();
   const end = new Date(updatedAt).getTime();
@@ -239,12 +282,13 @@ function formatMoney(value: number | string | null): string {
   return Number.isFinite(parsed) ? `¥${parsed.toFixed(2)}` : `¥${value}`;
 }
 
-function formatListedAt(value: string | null): string {
-  // OneBound 1688 接口不返回上架时间，空值不再显示“未知”误导，统一显示占位符。
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+/** SKU 行优先用上游给的规格文案，缺失时把属性拼成一行展示。 */
+function formatSkuSpec(record: SourceVariantRecord): string {
+  if (record.spec_text) return record.spec_text;
+  const attrs = Object.entries(record.attributes ?? {})
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join(" / ");
+  return attrs || "—";
 }
 
 function hasIncompleteSkuCandidates(run: DailySelectionRun): boolean {
@@ -358,23 +402,25 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     () => directions.find((item) => item.id === selectedDirectionId) ?? directions[0],
     [directions, selectedDirectionId],
   );
+  // 首屏默认值跟随当前方向预设，平台/范围/数量已就绪，不必逐项补填。
+  const initialFormDefaults = directionFormDefaults(selectedDirection);
   const [mode, setMode] = useState<CollectionMode>("keyword");
-  const [platform, setPlatform] = useState<CollectionPlatform | "">("");
-  const [keywords, setKeywords] = useState("");
+  const [platform, setPlatform] = useState<CollectionPlatform | "">(initialFormDefaults.platform);
+  const [keywords, setKeywords] = useState(initialFormDefaults.keywords);
   const [referenceImageUrl, setReferenceImageUrl] = useState("");
-  const [scope, setScope] = useState<SelectionScope | "">("");
-  const [site, setSite] = useState<TargetSite>("US");
-  const [minPrice, setMinPrice] = useState("");
-  const [maxPrice, setMaxPrice] = useState("");
-  const [minMoq, setMinMoq] = useState("");
+  const [scope, setScope] = useState<SelectionScope | "">(initialFormDefaults.scope);
+  const [site, setSite] = useState<TargetSite>(initialFormDefaults.site);
+  const [minPrice, setMinPrice] = useState(initialFormDefaults.minPrice);
+  const [maxPrice, setMaxPrice] = useState(initialFormDefaults.maxPrice);
+  const [minMoq, setMinMoq] = useState(initialFormDefaults.minMoq);
   const [minSkuCount, setMinSkuCount] = useState("");
   const [maxSkuCount, setMaxSkuCount] = useState("");
   const [minSkuPrice, setMinSkuPrice] = useState("");
   const [maxSkuPrice, setMaxSkuPrice] = useState("");
   const [minSkuStock, setMinSkuStock] = useState("");
   const [maxSkuStock, setMaxSkuStock] = useState("");
-  const [targetCount, setTargetCount] = useState("");
-  const [excludeRisks, setExcludeRisks] = useState(false);
+  const [targetCount, setTargetCount] = useState(initialFormDefaults.targetCount);
+  const [excludeRisks, setExcludeRisks] = useState(initialFormDefaults.excludeRisks);
   const [maxParallelCollect, setMaxParallelCollect] = useState(8);
   const [advancedCollectionOpen, setAdvancedCollectionOpen] = useState(false);
   const [runs, setRuns] = useState<DailySelectionRunSummary[]>([]);
@@ -383,6 +429,14 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [skuFilterMin, setSkuFilterMin] = useState("");
   const [skuFilterMax, setSkuFilterMax] = useState("");
   const [appliedSkuFilter, setAppliedSkuFilter] = useState<{ min: number | null; max: number | null }>({ min: null, max: null });
+  const [candidateSort, setCandidateSort] = useState<CandidateSortKey>("score");
+  const [onlyCompleteCandidates, setOnlyCompleteCandidates] = useState(false);
+  // 候选详情抽屉：记录候选 ID 而不是候选对象，避免批次刷新后抽屉里残留旧数据。
+  const [detailCandidateId, setDetailCandidateId] = useState<string | null>(null);
+  const [detailImageIndex, setDetailImageIndex] = useState(0);
+  const [quoteExchangeRate, setQuoteExchangeRate] = useState("7.2");
+  const [quoteSalePrice, setQuoteSalePrice] = useState("");
+  const [quoteFreightCny, setQuoteFreightCny] = useState("");
   const [busy, setBusy] = useState(false);
   const [collecting, setCollecting] = useState(false);
   const [collectionProgress, setCollectionProgress] = useState(0);
@@ -423,6 +477,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const collectionSettingsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const historyDrawerLayerRef = useRef<HTMLDivElement | null>(null);
   const historyDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const candidateDetailLayerRef = useRef<HTMLDivElement | null>(null);
   const shopCollectionPanelRef = useRef<ShopCollectionPanelHandle | null>(null);
   const pluginCapturePanelRef = useRef<PluginOneboundCapturePanelHandle | null>(null);
 
@@ -445,6 +500,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     moveFocusOutOf(historyDrawerLayerRef.current, historyDrawerTriggerRef.current);
     setHistoryDrawerOpen(false);
   }, []);
+  const closeCandidateDetail = useCallback(() => {
+    moveFocusOutOf(candidateDetailLayerRef.current, null);
+    setDetailCandidateId(null);
+  }, []);
 
   // 关闭态加 inert：抽屉隐藏后的 280ms 过渡窗口内仍可被 Tab 聚焦，inert 一并阻止，
   // 同时这也是 Chrome 针对该 aria-hidden 告警给出的推荐做法。
@@ -456,6 +515,10 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     const layer = historyDrawerLayerRef.current;
     if (layer) layer.inert = !historyDrawerOpen;
   }, [historyDrawerOpen]);
+  useEffect(() => {
+    const layer = candidateDetailLayerRef.current;
+    if (layer) layer.inert = !detailCandidateId;
+  }, [detailCandidateId]);
 
   useEffect(() => {
     if (isActive) return;
@@ -467,6 +530,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     setHistoryDrawerOpen(false);
     setPresetDialogOpen(false);
     setPendingDeleteDirection(null);
+    setDetailCandidateId(null);
   }, [isActive]);
 
   useEffect(() => {
@@ -478,15 +542,91 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [advancedCollectionOpen, closeCollectionSettings]);
 
+  useEffect(() => {
+    if (!detailCandidateId) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCandidateDetail();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [detailCandidateId, closeCandidateDetail]);
+
   const filteredCandidates = useMemo(() => {
     if (!activeRun) return [];
-    return activeRun.candidates.filter((candidate) => {
+    const visible = activeRun.candidates.filter((candidate) => {
       const skuCount = candidate.source_variant_records?.length ?? 0;
       if (appliedSkuFilter.min !== null && skuCount < appliedSkuFilter.min) return false;
       if (appliedSkuFilter.max !== null && skuCount > appliedSkuFilter.max) return false;
+      if (onlyCompleteCandidates && !isCandidateComplete(candidate)) return false;
       return true;
     });
-  }, [activeRun, appliedSkuFilter]);
+    return sortCandidates(visible, candidateSort);
+  }, [activeRun, appliedSkuFilter, candidateSort, onlyCompleteCandidates]);
+
+  const detailCandidate = useMemo(() => {
+    if (!activeRun || !detailCandidateId) return null;
+    return activeRun.candidates.find((candidate) => candidate.candidate_id === detailCandidateId) ?? null;
+  }, [activeRun, detailCandidateId]);
+  const detailGallery = useMemo(
+    () => (detailCandidate ? candidateGalleryUrls(detailCandidate) : []),
+    [detailCandidate],
+  );
+  const detailQuote = useMemo(
+    () => (detailCandidate
+      ? estimateQuote({
+        priceCny: detailCandidate.price_cny,
+        freightCny: quoteFreightCny,
+        exchangeRate: quoteExchangeRate,
+        salePriceUsd: quoteSalePrice,
+      })
+      : null),
+    [detailCandidate, quoteFreightCny, quoteExchangeRate, quoteSalePrice],
+  );
+
+  const detailTiers = useMemo(
+    () => (detailCandidate ? candidateTierEntries(detailCandidate) : []),
+    [detailCandidate],
+  );
+  const detailAttributes = useMemo(
+    () => (detailCandidate ? candidateAttributeEntries(detailCandidate) : []),
+    [detailCandidate],
+  );
+  const detailSkuPriceRange = useMemo(
+    () => (detailCandidate ? candidateSkuPriceRange(detailCandidate) : null),
+    [detailCandidate],
+  );
+  const detailWarnings = useMemo(
+    () => (detailCandidate ? candidateWarningTags(detailCandidate) : []),
+    [detailCandidate],
+  );
+  const detailRecommendations = useMemo(
+    () => (detailCandidate ? recommendationTags(detailCandidate) : []),
+    [detailCandidate],
+  );
+  // 详情长图可能很多，抽屉只预载前 16 张缩略图，避免一次打开抽屉触发几十个代理请求。
+  const detailImageUrls = detailGallery.slice(0, 16);
+  const activeDetailImage = detailImageUrls[Math.min(detailImageIndex, detailImageUrls.length - 1)] ?? null;
+  const detailQuoteDisplay = detailQuote
+    ? {
+      landedUsd: `$${detailQuote.landedCostUsd.toFixed(2)}`,
+      landedCny: formatMoney(detailQuote.landedCostCny),
+      profitUsd: detailQuote.profitUsd === null
+        ? "—"
+        : `${detailQuote.profitUsd < 0 ? "-" : ""}$${Math.abs(detailQuote.profitUsd).toFixed(2)}`,
+      marginRate: detailQuote.marginRate === null ? "—" : `${(detailQuote.marginRate * 100).toFixed(0)}%`,
+      breakEvenUsd: `$${detailQuote.breakEvenUsd.toFixed(2)}`,
+      isLoss: detailQuote.profitUsd !== null && detailQuote.profitUsd < 0,
+    }
+    : null;
+
+  const openCandidateDetail = useCallback((candidate: DailySelectionCandidate) => {
+    setDetailCandidateId(candidate.candidate_id);
+    setDetailImageIndex(0);
+    setQuoteSalePrice("");
+    setQuoteFreightCny(
+      candidate.freight_cny === null || candidate.freight_cny === undefined ? "" : String(candidate.freight_cny),
+    );
+  }, []);
 
   // 当前可勾选的候选（候选与已过滤候选均可勾选，采集到的商品可全部复核后入池）
   const selectableCandidates = filteredCandidates.filter(
@@ -495,6 +635,31 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   // 全选复选框状态：可勾选候选均被选中时为 true
   const allCandidatesSelected = selectableCandidates.length > 0
     && selectableCandidates.every((candidate) => selectedCandidates.includes(candidate.candidate_id));
+
+  // 首屏「生效条件」摘要：只把真正会参与下一次采集的条件压成胶囊，
+  // 用户不必展开高级设置就能确认价格/SKU/风险等限制是否生效。
+  const collectionFilterChips = useMemo(() => {
+    const chips: string[] = [];
+    if (platform) chips.push(platform === "taobao" ? "淘宝" : "1688");
+    if (scope) chips.push(scope === "exact" ? "精准匹配" : "发散相似款");
+    chips.push(SITE_LABELS[site]);
+    const price = rangeChip("¥", minPrice, maxPrice);
+    if (price) chips.push(price);
+    if (minMoq.trim()) chips.push(`起订 ≤ ${minMoq.trim()} 件`);
+    const skuCount = rangeChip("SKU ", minSkuCount, maxSkuCount, " 个");
+    if (skuCount) chips.push(skuCount);
+    const skuPrice = rangeChip("SKU 价 ¥", minSkuPrice, maxSkuPrice);
+    if (skuPrice) chips.push(skuPrice);
+    const skuStock = rangeChip("SKU 库存 ", minSkuStock, maxSkuStock);
+    if (skuStock) chips.push(skuStock);
+    if (excludeRisks) chips.push("排除高风险");
+    if (targetCount.trim()) chips.push(`目标 ${targetCount.trim()} 条`);
+    return chips;
+  }, [
+    excludeRisks, maxPrice, maxSkuCount, maxSkuPrice, maxSkuStock,
+    minMoq, minPrice, minSkuCount, minSkuPrice, minSkuStock,
+    platform, scope, site, targetCount,
+  ]);
 
   useEffect(() => {
     void refreshRuns();
@@ -826,16 +991,17 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   }
 
   function chooseDirection(direction: Direction) {
+    const defaults = directionFormDefaults(direction);
     setSelectedDirectionId(direction.id);
-    setPlatform("1688");
-    setKeywords(direction.keywords.join("，"));
-    setScope("divergent");
-    setSite(direction.site ?? "US");
-    setMinPrice(String(direction.price[0]));
-    setMaxPrice(String(direction.price[1]));
-    setMinMoq("2");
-    setTargetCount(String(direction.target));
-    setExcludeRisks(true);
+    setPlatform(defaults.platform);
+    setKeywords(defaults.keywords);
+    setScope(defaults.scope);
+    setSite(defaults.site);
+    setMinPrice(defaults.minPrice);
+    setMaxPrice(defaults.maxPrice);
+    setMinMoq(defaults.minMoq);
+    setTargetCount(defaults.targetCount);
+    setExcludeRisks(defaults.excludeRisks);
     setMaxParallelCollect(8);
   }
 
@@ -1024,6 +1190,11 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
     criteria.collection_platform = platform === "taobao" ? "taobao" : "1688";
     if (mode === "image") criteria.reference_image_url = referenceImageUrl.trim();
     return criteria;
+  }
+
+  function openCollectionSettings() {
+    setHistoryDrawerOpen(false);
+    setAdvancedCollectionOpen(true);
   }
 
   async function submitCollection(event: FormEvent<HTMLFormElement>) {
@@ -1374,6 +1545,36 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             )}
           </section>
           <section className="daily-collection-surface" aria-label="每日选品采集面板">
+            <div className="collection-entry-intro">
+              <div className="collection-entry-copy">
+                <span className="collection-entry-eyebrow">COLLECTION ENTRY</span>
+                <strong>选择采集入口</strong>
+                <small>三种入口共用同一套筛选、评分与入池规则，切换只改变货源来源。</small>
+              </div>
+              <svg className="collection-entry-art" viewBox="0 0 148 62" aria-hidden="true" focusable="false">
+                <defs>
+                  <linearGradient id="collectionEntryArtStroke" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stopColor="#38a9d6" />
+                    <stop offset="1" stopColor="#19bda3" />
+                  </linearGradient>
+                </defs>
+                <g stroke="url(#collectionEntryArtStroke)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none">
+                  <path d="M50 52h46" strokeDasharray="3 5" opacity=".55" />
+                  <path d="M60 30 75 22l15 8-15 8z" />
+                  <path d="M60 30v14l15 8 15-8V30" />
+                  <path d="M75 38v14" opacity=".7" />
+                  <circle cx="99" cy="17" r="7.5" />
+                  <path d="M105 23l7 7" />
+                  <path d="M121 35l1.8 4.2 4.2 1.8-4.2 1.8L121 47l-1.8-4.2L115 41l4.2-1.8z" strokeWidth="1.2" />
+                  <path d="M42 18l1.4 3.2 3.2 1.4-3.2 1.4L42 27l-1.4-3.2-3.2-1.4 3.2-1.4z" strokeWidth="1.2" opacity=".75" />
+                </g>
+                <g fill="#19bda3" opacity=".28">
+                  <circle cx="34" cy="42" r="1.4" />
+                  <circle cx="128" cy="18" r="1.2" />
+                  <circle cx="114" cy="52" r="1.1" />
+                </g>
+              </svg>
+            </div>
             <div
               className="collection-workspace-tabs"
               role="tablist"
@@ -1385,6 +1586,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 slides={COLLECTION_MODE_SLIDES.daily}
                 isActive={collectionWorkspaceMode === "daily"}
                 onSelect={() => setCollectionWorkspaceMode("daily")}
+                description="关键词 / 参考图 · 逐条拉详情"
               />
               <CollectionModeCard
                 label="整店采集"
@@ -1392,6 +1594,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 slides={COLLECTION_MODE_SLIDES.shop}
                 isActive={collectionWorkspaceMode === "shop"}
                 onSelect={() => setCollectionWorkspaceMode("shop")}
+                description="整店链接 · 批量筛款"
               />
               <CollectionModeCard
                 label="插件采集"
@@ -1399,6 +1602,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 slides={COLLECTION_MODE_SLIDES.plugin}
                 isActive={collectionWorkspaceMode === "plugin"}
                 onSelect={() => setCollectionWorkspaceMode("plugin")}
+                description="浏览器插件 · 一键收录"
               />
             </div>
             {collectionWorkspaceMode === "plugin" ? (
@@ -1437,13 +1641,26 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                 </label>
               )}
             </div>
+          </div>
+
+          {/* 生效条件摘要与提交区：摘要靠左说明"这次会怎么采"，主按钮靠右承担唯一主操作 */}
+          <div className="collection-summary-row">
+            <div className="collection-filter-summary" aria-label="当前生效条件">
+              <span className="collection-filter-summary-label">生效条件</span>
+              {collectionFilterChips.map((chip, index) => (
+                <span className="collection-filter-chip" key={`${index}-${chip}`}>{chip}</span>
+              ))}
+              <button type="button" className="collection-filter-edit" onClick={openCollectionSettings}>调整</button>
+            </div>
             <div className="collection-form-actions">
-              <button type="button" className="collection-mode-toggle" title={mode === "keyword" ? "切换为参考图采集：用公开图片 URL 搜索相似款" : "切换为关键词采集：用 1–5 个关键词搜索"} onClick={() => setMode(mode === "keyword" ? "image" : "keyword")}>
-                <span aria-hidden="true">⇄</span>{mode === "keyword" ? "切换到参考图采集" : "切换到关键词采集"}
-              </button>
-              <button type="button" className="collection-settings-entry" ref={collectionSettingsTriggerRef} aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" title="价格、SKU、并发与风险规则" onClick={() => { setHistoryDrawerOpen(false); setAdvancedCollectionOpen(true); }}>
-                <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
-              </button>
+              <div className="collection-secondary-actions">
+                <button type="button" className="collection-mode-toggle" title={mode === "keyword" ? "切换为参考图采集：用公开图片 URL 搜索相似款" : "切换为关键词采集：用 1–5 个关键词搜索"} onClick={() => setMode(mode === "keyword" ? "image" : "keyword")}>
+                  <span aria-hidden="true">⇄</span>{mode === "keyword" ? "参考图采集" : "关键词采集"}
+                </button>
+                <button type="button" className="collection-settings-entry" ref={collectionSettingsTriggerRef} aria-expanded={advancedCollectionOpen} aria-controls="collection-settings-drawer" title="价格、SKU、并发与风险规则" onClick={openCollectionSettings}>
+                  <span className="iconfont icon-setting" aria-hidden="true"></span>高级设置
+                </button>
+              </div>
               <button className="collect-button" type="submit" disabled={busy || collecting}>{collecting ? <><i className="app-spinner is-sm" aria-hidden="true" />采集中 {collectionProgress}%</> : "开始采集"}</button>
               {collecting && (
                 <button className="collect-cancel-button" type="button" disabled={cancelling} onClick={cancelCollection}>
@@ -1464,40 +1681,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         <div className="daily-panel-title results-title">
           <div><span className="title-icon">◇</span><strong>候选商品</strong></div>
           <div className="results-actions">
-            {activeRun && (
-              <div className="sku-filter">
-                <span className="sku-filter-label">SKU筛选</span>
-                <input
-                  type="number"
-                  min={0}
-                  placeholder="最小"
-                  value={skuFilterMin}
-                  onChange={(event) => setSkuFilterMin(event.target.value)}
-                  disabled={!activeRun}
-                />
-                <span className="sku-filter-separator">-</span>
-                <input
-                  type="number"
-                  min={0}
-                  placeholder="最大"
-                  value={skuFilterMax}
-                  onChange={(event) => setSkuFilterMax(event.target.value)}
-                  disabled={!activeRun}
-                />
-                <button
-                  type="button"
-                  className="sku-filter-button"
-                  disabled={!activeRun}
-                  onClick={() => {
-                    const min = skuFilterMin.trim() === "" ? null : Number(skuFilterMin);
-                    const max = skuFilterMax.trim() === "" ? null : Number(skuFilterMax);
-                    setAppliedSkuFilter({ min: Number.isFinite(min) ? min : null, max: Number.isFinite(max) ? max : null });
-                  }}
-                >
-                  筛选
-                </button>
-              </div>
-            )}
             {activeRun && <span>批次 {activeRun.run_id.slice(0, 8)} · {activeRun.candidate_count} 条</span>}
             <button type="button" ref={historyDrawerTriggerRef} className="history-drawer-trigger" onClick={() => { setAdvancedCollectionOpen(false); setHistoryDrawerOpen(true); }}><span aria-hidden="true">◷</span> 最近批次 <b>{runs.length}</b></button>
             {activeRun && (
@@ -1563,16 +1746,98 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             <button type="button" className="confirm-button" disabled={busy || selectedCandidates.length === 0} onClick={() => void confirmSelected()}>{busy && <i className="app-spinner is-sm" aria-hidden="true" />}确认入池（{selectedCandidates.length}）</button>
           </div>
         </div>
+        {activeRun && activeRun.candidates.length > 0 && (
+          <div className="results-filter-bar">
+            <label className="candidate-sort" title="候选排序方式">
+              <span className="candidate-sort-label">排序</span>
+              <select
+                value={candidateSort}
+                onChange={(event) => setCandidateSort(event.target.value as CandidateSortKey)}
+              >
+                {CANDIDATE_SORT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="sku-filter">
+              <span className="sku-filter-label">SKU筛选</span>
+              <input
+                type="number"
+                min={0}
+                placeholder="最小"
+                value={skuFilterMin}
+                onChange={(event) => setSkuFilterMin(event.target.value)}
+              />
+              <span className="sku-filter-separator">-</span>
+              <input
+                type="number"
+                min={0}
+                placeholder="最大"
+                value={skuFilterMax}
+                onChange={(event) => setSkuFilterMax(event.target.value)}
+              />
+              <button
+                type="button"
+                className="sku-filter-button"
+                onClick={() => {
+                  const min = skuFilterMin.trim() === "" ? null : Number(skuFilterMin);
+                  const max = skuFilterMax.trim() === "" ? null : Number(skuFilterMax);
+                  setAppliedSkuFilter({ min: Number.isFinite(min) ? min : null, max: Number.isFinite(max) ? max : null });
+                }}
+              >
+                筛选
+              </button>
+            </div>
+            <button
+              type="button"
+              className={`completeness-toggle ${onlyCompleteCandidates ? "is-active" : ""}`}
+              aria-pressed={onlyCompleteCandidates}
+              title="只看同时具备价格、主图和 SKU 的候选，避免选中后才发现缺资料"
+              onClick={() => setOnlyCompleteCandidates((current) => !current)}
+            >
+              只看完整数据
+            </button>
+            <span className="results-filter-summary">
+              当前展示 {filteredCandidates.length} / {activeRun.candidates.length} 条
+            </span>
+          </div>
+        )}
         {activeRun && filteredCandidates.length > 1 && (
           <p className="confirm-tip">
             <span aria-hidden="true">ⓘ</span>
             <span>提示：多个商品一起入池时，<b>多 SKU 商品会明显拖慢速度</b>。建议先用上方「SKU筛选」把最大 SKU 规格数调小，筛掉多 SKU 商品后再点「确认入池」。</span>
           </p>
         )}
-        {!activeRun && <div className="result-empty"><span>⌕</span><strong>等待采集结果</strong><p>选择采集方向并提交条件，候选商品将在这里展示。</p></div>}
+        {!activeRun && (
+          <div className="candidates-placeholder">
+            <div className="result-empty">
+              <span>{collecting ? "↻" : "⌕"}</span>
+              <strong>{collecting ? collectionProgressMessage : "等待采集结果"}</strong>
+              <p>
+                {collecting
+                  ? `正在采集并拉取详情，完成后候选会按综合分排序展示（${collectionProgress}%）。`
+                  : "选择采集方向并提交条件，候选商品将在这里展示。"}
+              </p>
+            </div>
+            <div className="candidate-skeleton-grid" aria-hidden="true">
+              {Array.from({ length: 10 }).map((_, index) => (
+                <div className={`candidate-skeleton ${collecting ? "is-loading" : ""}`} key={index}>
+                  <span className="candidate-skeleton-image" />
+                  <span className="candidate-skeleton-line" />
+                  <span className="candidate-skeleton-line is-short" />
+                  <span className="candidate-skeleton-facts" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {activeRun && activeRun.candidates.length === 0 && <div className="result-empty"><span>○</span><strong>本批次没有候选</strong><p>可以调整关键词、价格范围或关闭风险排除后重试。</p></div>}
         {activeRun && activeRun.candidates.length > 0 && filteredCandidates.length === 0 && (
-          <div className="result-empty"><span>○</span><strong>没有符合 SKU 筛选条件的候选商品</strong><p>请调整最小/最大 SKU 数量后重新筛选。</p></div>
+          <div className="result-empty">
+            <span>○</span>
+            <strong>{onlyCompleteCandidates ? "没有同时具备价格、主图和 SKU 的候选" : "没有符合筛选条件的候选商品"}</strong>
+            <p>可以放宽 SKU 数量或关闭「只看完整数据」后再试。</p>
+          </div>
         )}
         {activeRun && filteredCandidates.length > 0 && (
           <div className="candidate-grid">
@@ -1580,6 +1845,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               const selectable = candidate.status === "candidate" || candidate.status === "filtered";
               const checked = selectedCandidates.includes(candidate.candidate_id);
               const statusText = STATUS_LABELS[candidate.status] ?? candidate.status;
+              const warnings = candidateWarningTags(candidate);
+              const recommendations = recommendationTags(candidate);
+              const imageCount = galleryCount(candidate);
               return (
                 <article key={candidate.candidate_id} className={`candidate-card status-${candidate.status} ${checked ? "is-checked" : "is-removed"} ${!selectable ? "is-locked" : ""}`}>
                   <label
@@ -1607,6 +1875,9 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                     {candidate.main_image_url
                       ? <DailySelectionImage runId={activeRun.run_id} url={candidate.main_image_url} />
                       : <span>无有效图片</span>}
+                    {candidate.main_image_url && imageCount > 0 && (
+                      <span className="candidate-gallery-badge" title={`可展示图集 ${imageCount} 张`}>图集 {imageCount}</span>
+                    )}
                   </div>
                   <div className="candidate-body">
                     <a href={candidate.source_url} target="_blank" rel="noreferrer" title={candidate.source_title}>{candidate.source_title}</a>
@@ -1615,21 +1886,34 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       {candidate.query_keyword && <span title={`中心词：${candidate.query_keyword}`}>中心词 {candidate.query_keyword}</span>}
                       {candidate.selection_result_label && <span>{candidate.selection_result_label}</span>}
                       {candidate.status !== "candidate" && <span className="is-status">{statusText}</span>}
-                      {candidate.risk_tags.slice(0, 2).map((risk) => <span className="is-risk" key={risk}>{risk}</span>)}
                     </div>
                     <div className="candidate-facts">
                       <span><b>{formatMoney(candidate.price_cny)}</b><em>价格</em></span>
-                      <span title={candidate.listed_at ?? ""}><b>{formatListedAt(candidate.listed_at)}</b><em>上架时间</em></span>
+                      <span title={candidate.sales_text ?? "上游未返回销量"}><b>{candidateSalesLabel(candidate)}</b><em>销量</em></span>
                       <span><b>{candidate.min_order_quantity ?? "未知"}</b><em>起订</em></span>
                       <span title={`${candidate.source_variant_records?.length ?? 0} 个 SKU 规格`}><b>{candidate.source_variant_records?.length || "未知"}</b><em>SKU</em></span>
                     </div>
-                    <div className="candidate-meta"><span>{candidate.shop_name || "店铺待补齐"}</span><span>{candidate.location || "产地待补齐"}</span></div>
-                    {candidate.selection_reasons.length > 0 && (
+                    <div className="candidate-meta">
+                      <span title={[candidate.shop_name, candidate.location].filter(Boolean).join(" · ")}>
+                        {[candidate.shop_name, candidate.location].filter(Boolean).join(" · ") || "店铺与产地待补齐"}
+                      </span>
+                    </div>
+                    {(warnings.length > 0 || recommendations.length > 0) && (
                       <div className="candidate-reasons">
-                        {candidate.selection_reasons.slice(0, 2).map((reason) => <span key={reason}>{reason}</span>)}
+                        {warnings.slice(0, 2).map((label) => <span className="is-warning" key={label}>{label}</span>)}
+                        {recommendations.slice(0, 3).map((label) => <span key={label}>{label}</span>)}
                       </div>
                     )}
-                    {selectable && <button className="reject-button" type="button" disabled={busy} onClick={() => void reject(candidate)}>排除并反馈</button>}
+                    <div className="candidate-card-actions">
+                      <button
+                        className="candidate-detail-button"
+                        type="button"
+                        onClick={() => openCandidateDetail(candidate)}
+                      >
+                        详情
+                      </button>
+                      {selectable && <button className="reject-button" type="button" disabled={busy} onClick={() => void reject(candidate)}>排除并反馈</button>}
+                    </div>
                   </div>
                 </article>
               );
@@ -1741,6 +2025,204 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
           </div>
         </aside>
       </div>,
+        document.body,
+      )}
+      {/* 候选详情抽屉：同样 portal 到 body，避免被工作区面板的层叠上下文裁剪 */}
+      {createPortal(
+        <div
+          ref={candidateDetailLayerRef}
+          className={`candidate-detail-layer ${detailCandidate ? "is-open" : ""}`}
+          aria-hidden={!detailCandidate}
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) closeCandidateDetail();
+          }}
+        >
+          <aside
+            className="candidate-detail-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="candidate-detail-title"
+          >
+            {detailCandidate && activeRun && (
+              <>
+                <header className="candidate-detail-header">
+                  <div>
+                    <span>CANDIDATE DETAIL</span>
+                    <strong id="candidate-detail-title" title={detailCandidate.source_title}>{detailCandidate.source_title}</strong>
+                    <small>
+                      {detailCandidate.source_platform === "taobao" ? "淘宝" : "1688"}
+                      {" · "}
+                      {STATUS_LABELS[detailCandidate.status] ?? detailCandidate.status}
+                      {" · 综合分 "}
+                      {detailCandidate.selection_score}
+                    </small>
+                  </div>
+                  <button type="button" onClick={closeCandidateDetail} aria-label="关闭候选详情">×</button>
+                </header>
+                <div className="candidate-detail-body">
+                  <section className="candidate-detail-gallery">
+                    <div className="candidate-detail-stage">
+                      {activeDetailImage
+                        ? <DailySelectionImage runId={activeRun.run_id} url={activeDetailImage} />
+                        : <span>无有效图片</span>}
+                    </div>
+                    {detailImageUrls.length > 1 && (
+                      <div className="candidate-detail-thumbs">
+                        {detailImageUrls.map((url, index) => (
+                          <button
+                            key={`${url}-${index}`}
+                            type="button"
+                            className={index === detailImageIndex ? "is-active" : ""}
+                            onClick={() => setDetailImageIndex(index)}
+                            aria-label={`查看第 ${index + 1} 张图片`}
+                          >
+                            <DailySelectionImage runId={activeRun.run_id} url={url} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {detailGallery.length > detailImageUrls.length && (
+                      <p className="candidate-detail-gallery-more">共 {detailGallery.length} 张图片，这里展示前 {detailImageUrls.length} 张</p>
+                    )}
+                  </section>
+
+                  <section className="candidate-detail-section">
+                    <div className="candidate-detail-section-title"><strong>关键数据</strong><small>来自上游详情接口</small></div>
+                    <div className="candidate-detail-facts">
+                      <span><b>{formatMoney(detailCandidate.price_cny)}</b><em>采购价</em></span>
+                      <span><b>{candidateSalesLabel(detailCandidate)}</b><em>销量</em></span>
+                      <span><b>{detailCandidate.min_order_quantity ?? "未知"}</b><em>起订量</em></span>
+                      <span><b>{detailCandidate.source_variant_records?.length || "未知"}</b><em>SKU 规格</em></span>
+                      {detailSkuPriceRange && (
+                        <span><b>{formatMoney(detailSkuPriceRange.min)}–{formatMoney(detailSkuPriceRange.max)}</b><em>SKU 价格区间</em></span>
+                      )}
+                      <span><b>{detailCandidate.stock_quantity ?? "未知"}</b><em>库存</em></span>
+                      <span><b>{formatMoney(detailCandidate.freight_cny)}</b><em>单件运费</em></span>
+                      {detailCandidate.original_price_cny !== null && detailCandidate.original_price_cny !== undefined && (
+                        <span><b>{formatMoney(detailCandidate.original_price_cny)}</b><em>原价</em></span>
+                      )}
+                      {detailCandidate.shop_name && <span><b title={detailCandidate.shop_name}>{detailCandidate.shop_name}</b><em>店铺</em></span>}
+                      {detailCandidate.location && <span><b>{detailCandidate.location}</b><em>产地</em></span>}
+                      {detailCandidate.unit && <span><b>{detailCandidate.unit}</b><em>计价单位</em></span>}
+                      {detailCandidate.brand && <span><b>{detailCandidate.brand}</b><em>品牌</em></span>}
+                      {detailCandidate.category_path && (
+                        <span className="is-wide"><b title={detailCandidate.category_path}>{detailCandidate.category_path}</b><em>类目路径</em></span>
+                      )}
+                    </div>
+                  </section>
+
+                  <section className="candidate-detail-section">
+                    <div className="candidate-detail-section-title"><strong>风险与推荐依据</strong><small>完整清单，卡片上只显示前几条</small></div>
+                    <div className="candidate-detail-chips">
+                      {detailWarnings.map((label) => <span className="is-warning" key={`w-${label}`}>{label}</span>)}
+                      {detailRecommendations.map((label) => <span key={`r-${label}`}>{label}</span>)}
+                      {detailWarnings.length === 0 && detailRecommendations.length === 0 && <span className="is-muted">暂无风险与推荐标签</span>}
+                    </div>
+                  </section>
+
+                  <section className="candidate-detail-section">
+                    <div className="candidate-detail-section-title"><strong>阶梯价</strong><small>上游按起订量分档</small></div>
+                    {detailTiers.length === 0
+                      ? <p className="candidate-detail-empty">上游未返回阶梯价，采购价按单品价估算</p>
+                      : (
+                        <div className="candidate-detail-table-scroll">
+                          <table className="candidate-detail-table">
+                            <thead><tr><th>起订量</th><th>单价</th></tr></thead>
+                            <tbody>
+                              {detailTiers.map((tier) => (
+                                <tr key={`${tier.minOrderQuantity}-${tier.priceCny}`}>
+                                  <td>{tier.minOrderQuantity} 件起</td>
+                                  <td>{formatMoney(tier.priceCny)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                  </section>
+
+                  <section className="candidate-detail-section">
+                    <div className="candidate-detail-section-title">
+                      <strong>SKU 明细</strong>
+                      <small>{detailCandidate.source_variant_records?.length ?? 0} 条</small>
+                    </div>
+                    {(detailCandidate.source_variant_records?.length ?? 0) === 0
+                      ? <p className="candidate-detail-empty">未取到 SKU 明细，可在结果区用「补齐 SKU」重试</p>
+                      : (
+                        <div className="candidate-detail-table-scroll">
+                          <table className="candidate-detail-table">
+                            <thead><tr><th>规格</th><th>价格</th><th>起订</th><th>库存</th><th>销量</th></tr></thead>
+                            <tbody>
+                              {detailCandidate.source_variant_records.map((record) => {
+                                const spec = formatSkuSpec(record);
+                                return (
+                                  <tr key={record.sku_id}>
+                                    <td title={spec}>{spec}</td>
+                                    <td>{record.price_cny === null || record.price_cny === "" ? "—" : formatMoney(record.price_cny)}</td>
+                                    <td>{record.min_order_quantity ?? "—"}</td>
+                                    <td>{record.quantity ?? "—"}</td>
+                                    <td>{record.sales ?? "—"}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                  </section>
+
+                  <section className="candidate-detail-section">
+                    <div className="candidate-detail-section-title">
+                      <strong>商品属性</strong>
+                      <small>{detailAttributes.length} 项</small>
+                    </div>
+                    {detailAttributes.length === 0
+                      ? <p className="candidate-detail-empty">上游未返回结构化属性</p>
+                      : (
+                        <div className="candidate-detail-attributes">
+                          {detailAttributes.map((entry) => (
+                            <div key={entry.label}><span>{entry.label}</span><b>{entry.value}</b></div>
+                          ))}
+                        </div>
+                      )}
+                  </section>
+
+                  <section className="candidate-detail-section">
+                    <div className="candidate-detail-section-title"><strong>比价试算</strong><small>按单件采购价 + 运费折算</small></div>
+                    <div className="candidate-detail-quote-fields">
+                      <label><span>汇率（1 USD = ? CNY）</span><input type="number" min="0" step="0.01" value={quoteExchangeRate} onChange={(event) => setQuoteExchangeRate(event.target.value)} /></label>
+                      <label><span>预计售价（USD）</span><input type="number" min="0" step="0.01" placeholder="如 9.99" value={quoteSalePrice} onChange={(event) => setQuoteSalePrice(event.target.value)} /></label>
+                      <label><span>单件运费（¥）</span><input type="number" min="0" step="0.01" placeholder="按上游运费或自行估算" value={quoteFreightCny} onChange={(event) => setQuoteFreightCny(event.target.value)} /></label>
+                    </div>
+                    {detailQuoteDisplay
+                      ? (
+                        <div className="candidate-detail-quote-result">
+                          <span><b>{detailQuoteDisplay.landedUsd}</b><em>到手成本（{detailQuoteDisplay.landedCny}）</em></span>
+                          <span className={detailQuoteDisplay.isLoss ? "is-loss" : ""}><b>{detailQuoteDisplay.profitUsd}</b><em>单件毛利</em></span>
+                          <span className={detailQuoteDisplay.isLoss ? "is-loss" : ""}><b>{detailQuoteDisplay.marginRate}</b><em>毛利率</em></span>
+                          <span><b>{detailQuoteDisplay.breakEvenUsd}</b><em>盈亏平衡价</em></span>
+                        </div>
+                      )
+                      : <p className="candidate-detail-empty">填写采购价与汇率后自动试算</p>}
+                  </section>
+                </div>
+                <footer className="candidate-detail-footer">
+                  <a href={detailCandidate.source_url} target="_blank" rel="noreferrer">打开货源页 ↗</a>
+                  <div>
+                    {(detailCandidate.status === "candidate" || detailCandidate.status === "filtered") && (
+                      <>
+                        <button type="button" className="candidate-detail-toggle" onClick={() => toggleCandidate(detailCandidate.candidate_id)}>
+                          {selectedCandidates.includes(detailCandidate.candidate_id) ? "移出本次确认" : "加入本次确认"}
+                        </button>
+                        <button type="button" className="candidate-detail-reject" disabled={busy} onClick={() => void reject(detailCandidate)}>排除并反馈</button>
+                      </>
+                    )}
+                  </div>
+                </footer>
+              </>
+            )}
+          </aside>
+        </div>,
         document.body,
       )}
     </div>

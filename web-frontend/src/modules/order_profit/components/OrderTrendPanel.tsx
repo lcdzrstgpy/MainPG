@@ -4,6 +4,7 @@ import { orderProfitApi } from "../api/orderProfitApi";
 import { money, numberText } from "../format";
 import type { OrderTrendPoint, OrderTrendResponse } from "../types";
 import { ChartKindSwitch, MonthMultiSelect } from "./ChartControls";
+import { ShopDataGlyph } from "./ShopDataGlyph";
 import { TrendChart, type ChartKind, type TrendSeries } from "./TrendChart";
 
 const STATUS_SERIES: Array<{ key: string; label: string; color: string; field: keyof OrderTrendPoint }> = [
@@ -89,7 +90,10 @@ export function OrderTrendPanel({
   return (
     <div className="op-card op-chart-card">
       <div className="op-table-head">
-        <strong>经营趋势</strong>
+        <strong className="op-head-with-icon">
+          <ShopDataGlyph name="trend" />
+          经营趋势
+        </strong>
         <span>{labels.length ? labels.join(" · ") : "所选月份暂无数据"}</span>
         <MonthMultiSelect
           months={data?.available_months || []}
@@ -101,7 +105,10 @@ export function OrderTrendPanel({
       <div className="op-chart-stack">
         <div className="op-chart-block">
           <div className="op-chart-title">
-            <strong>订单状态数量</strong>
+            <strong className="op-head-with-icon">
+              <ShopDataGlyph name="orders" />
+              订单状态数量
+            </strong>
             <small>按月统计各状态订单数，悬停查看明细</small>
           </div>
           {loading ? (
@@ -119,7 +126,10 @@ export function OrderTrendPanel({
         </div>
         <div className="op-chart-block">
           <div className="op-chart-title">
-            <strong>金额变化</strong>
+            <strong className="op-head-with-icon">
+              <ShopDataGlyph name="money" />
+              金额变化
+            </strong>
             <small>GMV / 销售回款 / 总利润（人民币）</small>
           </div>
           {loading ? (

@@ -254,6 +254,7 @@ class OrderProfitService:
         *,
         session_id: str,
         incremental: bool = False,
+        shop_name: str = "",
     ) -> dict[str, Any]:
         """一键采集。incremental=True 时只补最新数据（订单/财务/结算只读第一页）。"""
         session = self._session_for_command(workspace_id, session_id)
@@ -266,12 +267,16 @@ class OrderProfitService:
                 "（更新到最新版本）后重新连接，再点一次"
             )
         self._reject_if_capture_running(workspace_id, session)
+        payload: dict[str, Any] = {"incremental": bool(incremental)}
+        expected_shop = _text(shop_name)
+        if expected_shop:
+            payload["shop_name"] = expected_shop
         command = self._queue.queue_command(
             actor_id=str(session.get("actor_id") or ""),
             workspace_id=workspace_id,
             session_id=int(session.get("session_id")),
             command_type=command_type,
-            payload={"incremental": bool(incremental)},
+            payload=payload,
             idempotency_key=(
                 f"order-profit:{workspace_id}:{'inc' if incremental else 'all'}"
                 f":{int(time.time() * 1000)}"
@@ -381,6 +386,34 @@ class OrderProfitService:
     def latest_capture(self, workspace_id: str) -> dict[str, Any]:
         batch = self._repository.latest_batch(workspace_id)
         return {"capture": batch or None}
+
+    def recent_captures(self, workspace_id: str, *, limit: int = 10) -> dict[str, Any]:
+        """采集中心：最近的全量/增量/单步补采指令及其步骤结果。"""
+        if self._queue is None:
+            return {"items": []}
+        items: list[dict[str, Any]] = []
+        for command in self._queue.list_capture_commands(
+            workspace_id=workspace_id, limit=limit
+        ):
+            result = dict(command.result or {})
+            payload = dict(command.payload or {})
+            rows = result.get("results")
+            items.append({
+                "command_id": command.command_id,
+                "command_type": command.command_type,
+                "status": command.status,
+                "ok": bool(result.get("ok")),
+                "status_text": _text(result.get("statusText")),
+                "error": _text(result.get("error")),
+                "help": _text(result.get("help")),
+                "shop_name": _text(payload.get("shop_name")),
+                "incremental": bool(payload.get("incremental")),
+                "resource": _text(payload.get("resource")),
+                "results": list(rows) if isinstance(rows, list) else [],
+                "created_at": command.created_at,
+                "updated_at": command.updated_at,
+            })
+        return {"items": items}
 
     def import_capture(self, workspace_id: str, result: Mapping[str, Any]) -> dict[str, Any]:
         """插件弹窗手动同步入口：不依赖插件会话，直接把最近一次采集写入本地。"""
@@ -580,20 +613,47 @@ class OrderProfitService:
         team_client: Any = None,
         remote_token: str = "",
     ) -> dict[str, Any]:
-        """把一周的店铺汇总提交到团队服务（周六自动跑，也可随时手动补交）。"""
+        """把本账号所有店铺的一周汇总提交到团队服务（周六自动跑，也可随时手动补交）。"""
         from ..team_store.sync import submit_week
 
         if team_client is None or not getattr(team_client, "configured", False):
             raise ValueError("团队服务未配置")
         if not remote_token:
             raise ValueError("请先登录后再提交团队数据")
-        return submit_week(
+        result = submit_week(
             self._repository,
             workspace_id,
             client=team_client,
             token=remote_token,
             week_start=week_start,
         )
+        result["account"] = self._team_account(team_client, remote_token)
+        return result
+
+    def team_rollup_preview(
+        self,
+        workspace_id: str,
+        *,
+        team_client: Any = None,
+        remote_token: str = "",
+    ) -> dict[str, Any]:
+        """提交前预览：账号名 + 本账号所有店铺 + 各自待提交的数据量。"""
+        from ..team_store.sync import build_preview
+
+        if team_client is None or not getattr(team_client, "configured", False):
+            raise ValueError("团队服务未配置")
+        if not remote_token:
+            raise ValueError("请先登录后再提交团队数据")
+        payload = build_preview(self._repository, workspace_id)
+        payload["account"] = self._team_account(team_client, remote_token)
+        return payload
+
+    def _team_account(self, team_client: Any, remote_token: str) -> dict[str, str]:
+        profile = self.team_profile(team_client=team_client, remote_token=remote_token).get("profile") or {}
+        return {
+            "username": _text(profile.get("username")),
+            "staff_no": _text(profile.get("staff_no")),
+        }
 
     def team_submissions(
         self,

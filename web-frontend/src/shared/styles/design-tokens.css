@@ -66,4 +66,24 @@
   --duration-fast: .16s;
   --duration-base: .22s;
   --duration-slow: .34s;
+
+  /* ---- 登录页：宣纸白 + 墨色 ----
+     登录页是入口，刻意与 9 套业务主题解耦（Apple 账户页也是中性页）。
+     改这里就能整体换肤，版式与动效不受影响。 */
+  --auth-bg: #fbf8f3;
+  --auth-ink: #1d1d1f;
+  --auth-ink-secondary: #6e6e73;
+  --auth-ink-tertiary: #86868b;
+  --auth-line: #d2d2d7;
+  /* 以下三项现在是兜底值：登录页会在 .auth-page 上按主题重算（见 auth-apple.css 的 A 方案） */
+  --auth-field-bg: #ffffff;
+  --auth-focus: #0071e3;
+  --auth-link: #0066cc;
+  --auth-danger: #d70015;
+  --auth-cta-bg: var(--auth-ink);
+  --auth-cta-bg-hover: #000000;
+  --auth-cta-fg: #ffffff;
+  --auth-col: 340px;
+  --ease-apple: cubic-bezier(.22, 1, .36, 1);
+  --duration-logo: .62s;
 }

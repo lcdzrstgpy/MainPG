@@ -27,6 +27,7 @@ import type {
   TaskOutputsResponse,
 } from '../types';
 import { registerRunningTask } from '../../../shared/runtime/taskActivity';
+import { SYSTEM_BACKGROUNDS, backgroundAssetUrl, backgroundById } from '../data/backgroundTemplates';
 import '../styles/ProductProcessingVerifyPage.css';
 
 const IMAGE_LAYER_OPTION_KEYS: Record<
@@ -148,6 +149,30 @@ function formatDuration(seconds?: number): string {
   return `${secs}秒`;
 }
 
+/** 用户上传的背景底板（后端按 workspace 隔离存放）。 */
+type UserBackgroundItem = {
+  id: string;
+  template_id: string;
+  name: string;
+  created_at: number;
+};
+
+const MAX_BACKGROUND_BYTES = 15 * 1024 * 1024;
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('读取图片失败，请重试'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function userBackgroundUrl(id: string, workspaceId: string, variant: 'thumb' | 'main' = 'thumb'): string {
+  // <img> 无法附带 X-Workspace-ID，这里用查询参数传工作区（与后端兼容逻辑对应）。
+  return `${API_BASE}/backgrounds/${id}/file?variant=${variant}&workspace=${encodeURIComponent(workspaceId)}`;
+}
+
 /** 进度平滑插值：轮询返回的是整数百分比，直接渲染会一格一格跳。
  *  这里用 requestAnimationFrame 做指数缓动，让圆环与数字始终连续推进。
  *  缓动状态收在独立组件内，逐帧重渲染只影响这个圆环，不拖累整页。 */
@@ -242,8 +267,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       autoRepull: false,
       // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
       dimensionCard: false,
-      // 场景风格：默认智能混合（按批次在极简/生活/花哨之间轮换），保证四格背景不趋同。
-      sceneStyle: 'smart',
+      // 场景风格：默认花哨（花艺/礼赠/丝绒/镜面），按需再切极简或生活。
+      sceneStyle: 'ornate',
     }
   );
   const imageSelection: PhotoSelection = {
@@ -363,6 +388,24 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 失败商品明细默认折叠：自动补跑已覆盖大部分缺陷项，避免把错误明细
   // 直接摊在结果页上（展开才可见并可手动重试）。
   const [showFailures, setShowFailures] = useState(false);
+  // 自定义背景：用户上传的实拍底板；选中后 backgroundTemplate 记为 user:<id>，
+  // 后端出主图时把商品抠图合成到这张底板上（不是只当提示词参考）。
+  const [userBackgrounds, setUserBackgrounds] = useState<UserBackgroundItem[]>([]);
+  const [bgUploading, setBgUploading] = useState(false);
+  // 底板列表默认收起：20 张缩略图常驻会把设置区撑得很长，只在需要挑底板时展开。
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
+  const bgFileInputRef = useRef<HTMLInputElement | null>(null);
+  // 当前选中的底板（系统或上传）：收起时只显示一张小缩略图 + 名称。
+  const selectedBackground = (() => {
+    const template = options.backgroundTemplate || '';
+    if (!template) return null;
+    if (template.startsWith('user:')) {
+      const item = userBackgrounds.find((entry) => entry.template_id === template);
+      return item ? { name: item.name, url: userBackgroundUrl(item.id, ctx.workspaceId) } : null;
+    }
+    const item = backgroundById(template);
+    return item ? { name: item.name, url: backgroundAssetUrl(item.id) } : null;
+  })();
 
   // 成功类提示统一走右上角 toast：3 秒后自动消失；新消息会清理旧定时器，卸载时也不留悬挂回调。
   useEffect(() => {
@@ -546,6 +589,44 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
   const notify = (ok: string) => { setMessage(ok); setError(''); };
   const fail = (err: unknown) => { setError(err instanceof Error ? err.message : String(err)); setMessage(''); };
+
+  // 进入页面即拉取本工作区的自定义背景；后端未就绪时静默失败，不阻塞设置流程。
+  useEffect(() => {
+    let alive = true;
+    ppRequest<{ items: UserBackgroundItem[] }>(ctx, `${API_BASE}/backgrounds`)
+      .then((data) => {
+        if (alive) setUserBackgrounds(Array.isArray(data.items) ? data.items : []);
+      })
+      .catch(() => undefined);
+    return () => { alive = false; };
+    // ctx 每次渲染都是新对象，只跟工作区/地址变化重新拉。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.baseUrl, ctx.workspaceId, ctx.token]);
+
+  const uploadBackground = async (file: File) => {
+    if (!file) return;
+    if (!/^image\/(jpeg|png)$/i.test(file.type)) { fail('只支持 JPG 或 PNG 格式的背景图'); return; }
+    if (file.size > MAX_BACKGROUND_BYTES) { fail('背景图不能超过 15MB'); return; }
+    setBgUploading(true);
+    try {
+      const data = await readFileAsDataUrl(file);
+      const created = await ppRequest<UserBackgroundItem>(ctx, `${API_BASE}/backgrounds`, {
+        body: { data, name: file.name.replace(/\.[^.]+$/, '') },
+      });
+      setUserBackgrounds((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
+      // 上传即选中：用户点「上传背景」的意图就是用这张图当主图底板。
+      setOptions((p) => ({ ...p, mainBackground: 'scene', backgroundTemplate: created.template_id }));
+      notify('背景已上传，主图会按这张底板合成');
+    } catch (err) { fail(err); } finally { setBgUploading(false); }
+  };
+
+  const removeBackground = async (item: UserBackgroundItem) => {
+    try {
+      await ppRequest(ctx, `${API_BASE}/backgrounds/${item.id}`, { method: 'DELETE' });
+      setUserBackgrounds((prev) => prev.filter((entry) => entry.id !== item.id));
+      setOptions((p) => (p.backgroundTemplate === item.template_id ? { ...p, backgroundTemplate: '' } : p));
+    } catch (err) { fail(err); }
+  };
 
   const loadTask = async (taskId: number) => {
     setTaskLoading(true);
@@ -796,7 +877,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         // 是否自动烧制第 4 格尺寸图（默认关闭，需用户在处理设置里显式勾选）
         dimension_card: options.dimensionCard === true,
         // 场景风格：smart / minimal / lifestyle / ornate（后端按档位给四格分配不同背景族）
-        scene_style: options.sceneStyle || 'smart',
+        scene_style: options.sceneStyle || 'ornate',
+        // 主图背景：scene=主图也带场景背景（默认）；white=主图保持纯白
+        main_background: options.mainBackground || 'scene',
+        // 手选的系统背景底板；空=按品类自动选片段
+        background_template: options.backgroundTemplate || '',
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -1009,7 +1094,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 生图组合</span>
+              <span className="verify-sub">基础参数 · 出图风格 · 生图组合</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -1026,18 +1111,151 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <option value="es">西班牙语 · Espanol</option>
                 </select>
               </label>
-              <label title="决定四格的背景风格：智能混合按批次在极简/生活/花哨之间轮换；花哨档适合节庆、潮玩、礼品类，会使用花艺、礼赠、丝绒、金属镜面等背景">
+              <label title="决定四格的背景风格：花哨档默认使用花艺、礼赠、丝绒、金属镜面等背景；极简/生活更克制；智能混合按批次在三档之间轮换">
                 场景风格
                 <select
-                  value={options.sceneStyle || 'smart'}
+                  value={options.sceneStyle || 'ornate'}
                   onChange={(e) => setOptions((p) => ({ ...p, sceneStyle: e.target.value as ProductProcessingOptions['sceneStyle'] }))}
                 >
-                  <option value="smart">智能混合（默认）</option>
-                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面（默认）</option>
                   <option value="lifestyle">生活 · 桌面/窗影/梳妆台</option>
-                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面</option>
+                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="smart">智能混合 · 按批次轮换</option>
                 </select>
               </label>
+              <label title="主图背景：场景背景会让主图也带真实台面与背景（默认，解决纯白单调）；纯白则保持死白底">
+                主图背景
+                <select
+                  value={options.mainBackground || 'scene'}
+                  onChange={(e) => setOptions((p) => ({ ...p, mainBackground: e.target.value as ProductProcessingOptions['mainBackground'] }))}
+                >
+                  <option value="scene">场景背景（默认）</option>
+                  <option value="white">纯白底</option>
+                </select>
+              </label>
+              {options.mainBackground !== 'white' ? (
+                <div className={`verify-bg-picker${bgPickerOpen ? ' is-open' : ''}`}>
+                  <div className="verify-bg-picker-head">
+                    <strong>背景模板</strong>
+                    <small>
+                      {options.backgroundTemplate?.startsWith('user:')
+                        ? '已选：上传背景（主图把商品合成到这张底板上）'
+                        : options.backgroundTemplate
+                        ? '已选模板：主图按这张底板的风格生成'
+                        : '自动：按品类匹配背景，不锁死风格'}
+                    </small>
+                    <div className="verify-bg-actions">
+                      <button
+                        type="button"
+                        className="verify-bg-toggle"
+                        aria-expanded={bgPickerOpen}
+                        onClick={() => setBgPickerOpen((open) => !open)}
+                      >
+                        {bgPickerOpen ? '收起底板' : '选择底板'}
+                      </button>
+                      <button
+                        type="button"
+                        className="verify-bg-upload"
+                        disabled={bgUploading}
+                        title="上传一张实拍背景（JPG/PNG，≥800×800，≤15MB）：主图会把商品合成到这张底板上"
+                        onClick={() => bgFileInputRef.current?.click()}
+                      >
+                        {bgUploading ? '上传中…' : '上传背景'}
+                      </button>
+                      <input
+                        ref={bgFileInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png"
+                        hidden
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (file) void uploadBackground(file);
+                        }}
+                      />
+                      {options.backgroundTemplate ? (
+                        <button
+                          type="button"
+                          className="verify-bg-reset"
+                          onClick={() => setOptions((p) => ({ ...p, backgroundTemplate: '' }))}
+                        >
+                          恢复自动
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {!bgPickerOpen && selectedBackground ? (
+                    <div className="verify-bg-current">
+                      <img src={selectedBackground.url} alt={selectedBackground.name} />
+                      <span>{selectedBackground.name}</span>
+                    </div>
+                  ) : null}
+                  {bgPickerOpen ? (
+                    <>
+                  {userBackgrounds.length ? (
+                    <div className="verify-bg-user">
+                      <span className="verify-bg-group-label">我的背景</span>
+                      <div className="verify-bg-grid">
+                        {userBackgrounds.map((item) => (
+                          <div
+                            key={item.id}
+                            className={`verify-bg-item verify-bg-item-user${
+                              options.backgroundTemplate === item.template_id ? ' is-active' : ''
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              className="verify-bg-thumb"
+                              title={`${item.name}（主图按这张图合成）`}
+                              onClick={() =>
+                                setOptions((p) => ({
+                                  ...p,
+                                  backgroundTemplate:
+                                    p.backgroundTemplate === item.template_id ? '' : item.template_id,
+                                }))
+                              }
+                            >
+                              <img src={userBackgroundUrl(item.id, ctx.workspaceId)} alt={item.name} loading="lazy" />
+                              <span>{item.name}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="verify-bg-remove"
+                              title="删除这张背景"
+                              onClick={() => void removeBackground(item)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  <span className="verify-bg-group-label">系统底板</span>
+                  <div className="verify-bg-grid">
+                    {SYSTEM_BACKGROUNDS.map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        className={`verify-bg-item${options.backgroundTemplate === item.id ? ' is-active' : ''}`}
+                        title={item.usableForMain ? item.name : `${item.name}（仅轮播/场景格可用）`}
+                        disabled={!item.usableForMain}
+                        onClick={() =>
+                          setOptions((p) => ({
+                            ...p,
+                            backgroundTemplate: p.backgroundTemplate === item.id ? '' : item.id,
+                          }))
+                        }
+                      >
+                        <img src={backgroundAssetUrl(item.id)} alt={item.name} loading="lazy" />
+                        <span>{item.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="verify-inline-checks">
                 <label className="verify-scope-check verify-inline-check" title="任务结束后自动重试失败/待确认的链接（每条最多自动重试 1 次，避免无限重试）。重试会再次调用 AI 生图、产生 AI 生图费用；默认关闭，需要时勾选，关闭后失败项可在结果页手动重新处理">
                   <input

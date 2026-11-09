@@ -75,8 +75,8 @@ test("product processing distinguishes remote service outages from API key failu
 test("模块改名后，持久化的旧页签标题要跟着换", () => {
   // 实测：侧栏把「草稿库」改成「成品库」后，页签和面包屑还写着旧名 ——
   // 因为快照把 label 一起存了，还原时无条件信任它。
-  assert.match(source, /const keepSnapshotLabel = tab\.moduleLabel === base\.label;/);
-  assert.match(source, /label: keepSnapshotLabel && tab\.label \? tab\.label : base\.label/);
-  // 写盘时记下当时的模块名，改名后才有参照
-  assert.match(source, /moduleLabel: moduleTab\(tab\.moduleId, workspacePageModules\)\.label/);
+  // 2026-11-09 合入队友分支后，判断口径从「比对 moduleLabel」换成「有没有运行时上下文」：
+  // 静态页签一律用注册表里的当前名字，只有带任务/批次上下文的页签才沿用持久化文案。
+  assert.match(source, /label: hasRuntimeContext\(tab\) && tab\.label \? tab\.label : base\.label/);
+  assert.match(source, /function hasRuntimeContext\(tab: WorkspaceTab\): boolean \{/);
 });

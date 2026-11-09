@@ -66,7 +66,9 @@ from .structure_analysis import (
 #      避免模型把主元素拆成一堆小图密铺。
 # v26：删除 60-30-10 面积化配色引擎——配色改为「主题强关联色 + 建议点缀色」两组，
 #      不绑比例；只保留元素 Tier 一套面积预算，主色归属交给生图模型。
-PATTERN_PROMPT_VERSION = "v26"
+# v27：素材图轮（第 4 张）重写为纯白素材图——不再继承锚点场景/道具/光线，
+#      构图模板只提供机位；白底与产品必须明确分离。
+PATTERN_PROMPT_VERSION = "v27"
 # 位置↔角色固定：左上=主图(lifestyle)、右上=细节A(detail_a)、左下=细节B(detail_b)、右下=素材(hero)。
 # 标识符沿用历史值（lifestyle=主图、hero=素材），避免历史批次错标；仅位置分配按本元组顺序正确落位。
 LISTING_IMAGE_ROLES = ("lifestyle", "detail_a", "detail_b", "hero")

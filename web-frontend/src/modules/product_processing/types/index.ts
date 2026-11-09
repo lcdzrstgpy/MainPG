@@ -194,8 +194,12 @@ export interface ProductProcessingOptions {
   autoRepull?: boolean;
   /** 是否自动烧制第 4 格尺寸图（尺寸卡）：默认关闭；需要尺寸图的品类可在处理设置里显式开启。 */
   dimensionCard?: boolean;
-  /** 场景风格：smart 智能混合（默认）/ minimal 极简 / lifestyle 生活 / ornate 花哨。 */
+  /** 场景风格：ornate 花哨（默认）/ lifestyle 生活 / minimal 极简 / smart 智能混合。 */
   sceneStyle?: 'smart' | 'minimal' | 'lifestyle' | 'ornate';
+  /** 主图背景：scene 主图也用场景背景（默认）/ white 主图保持纯白。 */
+  mainBackground?: 'scene' | 'white';
+  /** 手选的系统背景底板 id（bg_*）；空=按品类自动选背景片段。 */
+  backgroundTemplate?: string;
   /** 「一键随机模板」：默认关闭；开启后忽略选定的模板，本批次每条链接随机分配生图/描述模板（一个批次内混搭多套处理方式）。 */
   randomTemplate?: boolean;
 }

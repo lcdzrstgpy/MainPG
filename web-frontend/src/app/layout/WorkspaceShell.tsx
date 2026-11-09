@@ -67,6 +67,7 @@ import { DimensionNotificationRefreshFence } from "../../modules/product_process
 import { EmptyModulePage } from "../../shared/components/EmptyModulePage";
 import { WorkspaceErrorBoundary } from "../../shared/components/WorkspaceErrorBoundary";
 import { BrandEntryAnimation } from "../../shared/components/BrandEntryAnimation";
+import type { BrandLogoRect } from "../../shared/brand";
 import {
   GuideBoardPanel,
   firstPendingGuideSubTask,
@@ -113,6 +114,8 @@ type WorkspaceShellProps = {
   currentRole?: string;
   onSignOut: () => void;
   playEntryAnimation?: boolean;
+  /** 登录页 logo 的屏幕矩形：入场动画从这里起飞 */
+  entryOrigin?: BrandLogoRect | null;
   onEntryAnimationComplete?: () => void;
 };
 
@@ -171,6 +174,31 @@ function moduleTab(id: WorkspaceModuleId, flatModules: WorkspaceModule[]): Works
     return { key: id, moduleId: id, label: id, icon: "", iconClass: "" };
   }
   return { key: id, moduleId: id, label: module.label, icon: module.icon, iconClass: module.iconClass };
+}
+
+/**
+ * 带运行时上下文的页签（采集批次 / 处理任务 / 尺寸条目 / AI 视频）标题是动态文案
+ * （"处理·12项"、"尺寸·SKC123"），恢复时必须沿用持久化值，不能用模块名覆盖。
+ */
+const RUNTIME_TAB_FIELDS = [
+  "directionId",
+  "aiVideoPath",
+  "taskRunId",
+  "activeTaskId",
+  "taskId",
+  "dimensionBatchId",
+  "dimensionItemId",
+  "dimensionChangeSetId",
+  "initialSetId",
+] as const;
+
+function hasRuntimeContext(tab: WorkspaceTab): boolean {
+  if ((tab.draftIds?.length ?? 0) > 0) return true;
+  const record = tab as unknown as Record<string, unknown>;
+  return RUNTIME_TAB_FIELDS.some((field) => {
+    const value = record[field];
+    return value != null && value !== "";
+  });
 }
 
 /**
@@ -238,15 +266,13 @@ function restoreWorkspaceTabs(isAdmin: boolean): RestoredWorkspaceTabs {
   const tabs = snapshot.tabs
     .filter((tab) => !NON_RESTORABLE_MODULE_IDS.has(tab.moduleId))
     .map((tab) => {
-      // 页签标题是动态文案（"处理·12项"）时沿用持久化值。
-      // 但模块改名后旧标题会一直留着（侧栏叫「成品库」、页签还写「草稿库」），
-      // 所以只有「写盘时的模块名 == 当前模块名」才认快照里的 label。
-      // 老快照没有 moduleLabel 字段 → 视为改名，直接用当前注册表的名字。
       const base = moduleTab(tab.moduleId, modules);
-      const keepSnapshotLabel = tab.moduleLabel === base.label;
+      // 静态页签的标题永远跟随模块当前名字：模块改名后（如「全定制」→「全款直出」），
+      // 旧快照里存的是老名字，只靠 tab.label 会一直显示过期标题。
+      // 动态页签（带任务/批次上下文）仍沿用持久化文案。
       const restored: WorkspaceTab = {
         ...tab,
-        label: keepSnapshotLabel && tab.label ? tab.label : base.label,
+        label: hasRuntimeContext(tab) && tab.label ? tab.label : base.label,
         icon: tab.icon || base.icon,
         iconClass: tab.iconClass ?? base.iconClass,
       };
@@ -281,7 +307,7 @@ function ModuleFallback() {
   );
 }
 
-export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
+export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryAnimation = false, entryOrigin = null, onEntryAnimationComplete = () => undefined }: WorkspaceShellProps) {
   const { theme } = useTheme();
   const { uiMode } = useUiMode();
   // 特效偏好（个人中心 → 偏好设置）：点击特效 / 全屏特效，localStorage 持久化。
@@ -1179,7 +1205,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         );
         break;
       case "order_profit_overview":
-        content = <OrderProfitPage view="overview" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
+        content = (
+          <OrderProfitPage
+            view="overview"
+            isActive={isActive}
+            onOpenCapture={() => openModule("order_profit_capture")}
+            onOpenOrders={() => openModule("order_profit_orders")}
+          />
+        );
         break;
       case "order_profit_orders":
         content = <OrderProfitPage view="orders" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
@@ -1188,7 +1221,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <OrderProfitPage view="funds" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
         break;
       case "order_profit_accounts":
-        content = <OrderProfitPage view="accounts" isActive={isActive} />;
+        content = <OrderProfitPage view="accounts" isActive={isActive} onOpenCapture={() => openModule("order_profit_capture")} />;
         break;
       case "order_profit_capture":
         content = <OrderProfitPage view="capture" isActive={isActive} onOpenAccounts={() => openModule("order_profit_accounts")} />;
@@ -1308,7 +1341,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       >
         <span aria-hidden="true">↑</span>
       </button>
-      <HelpAgentWidget showBalance />
+      <HelpAgentWidget sizeFromPreference />
       {guideBoardPanelOpen && (
         <GuideBoardPanel
           onClose={() => setGuideBoardPanelOpen(false)}
@@ -1339,7 +1372,7 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
           setPodAgreementOpen(false);
         }}
       />
-      <BrandEntryAnimation active={playEntryAnimation} onComplete={onEntryAnimationComplete} />
+      <BrandEntryAnimation active={playEntryAnimation} origin={entryOrigin} onComplete={onEntryAnimationComplete} />
     </main>
   );
 }

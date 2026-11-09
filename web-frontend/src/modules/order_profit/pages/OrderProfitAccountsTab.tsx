@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { showToast } from "../../../shared/components/toastStore";
 import { orderProfitApi } from "../api/orderProfitApi";
+import { ShopDataArt } from "../components/ShopDataArt";
+import { ShopDataScene } from "../components/ShopDataScene";
+import { EmptyBlock } from "../components/ShopDataPrimitives";
 import type {
   OrderProfitCaptureStatus,
   StoreAccount,
@@ -95,18 +98,27 @@ function GoArrow() {
   );
 }
 
-export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
+export function OrderProfitAccountsTab({ isActive, onOpenCapture }: { isActive: boolean; onOpenCapture?: () => void }) {
   const [accounts, setAccounts] = useState<StoreAccount[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadedOnce, setLoadedOnce] = useState(false);
   const [form, setForm] = useState<Form>(emptyForm);
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState("");
+  const [waitingAccountId, setWaitingAccountId] = useState("");
   const [view, setView] = useState<"home" | "accounts" | "links">("home");
   const [jobs, setJobs] = useState<Record<string, OrderProfitCaptureStatus>>({});
   const [links, setLinks] = useState<TeamLinksPayload | null>(null);
   const [linkTarget, setLinkTarget] = useState("");
   const [linkBusy, setLinkBusy] = useState("");
+  const [staffNoDraft, setStaffNoDraft] = useState("");
+  const [staffNoBusy, setStaffNoBusy] = useState(false);
   const timer = useRef<number | null>(null);
+  // 首次使用（还没有任何账号）直接进入账号列表，不让用户先在两个入口卡里多点一次。
+  const autoEnteredAccountsRef = useRef(false);
+  // 等待插件连接期间用户可能切走页面，用 ref 及时停掉轮询，避免继续下发登录。
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -117,6 +129,7 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
       showToast(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
       setLoading(false);
+      setLoadedOnce(true);
     }
   }, []);
 
@@ -136,6 +149,14 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
     void load();
     void loadLinks();
   }, [isActive, load, loadLinks]);
+
+  useEffect(() => {
+    if (autoEnteredAccountsRef.current || !loadedOnce) return;
+    if (!accounts.length && view === "home") {
+      autoEnteredAccountsRef.current = true;
+      setView("accounts");
+    }
+  }, [accounts.length, loadedOnce, view]);
 
   // 登录中/采集中的账号：轮询指令状态，显示进度与卡点提示。
   useEffect(() => {
@@ -249,29 +270,101 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
     }
   };
 
-  /** 只登录并绑定店铺（不采集）。 */
+  /** 当前账号的独立浏览器里是否已经有在线插件会话。 */
+  const hasInstanceSession = async (instanceTag: string): Promise<boolean> => {
+    const tag = String(instanceTag || "").trim();
+    if (!tag) return false;
+    try {
+      const payload = await orderProfitApi.listSessions();
+      return (payload.sessions || []).some((session) => (
+        session.online
+        && String((session.capabilities || {}).instance_tag || "") === tag
+      ));
+    } catch {
+      return false;
+    }
+  };
+
+  /** 等待账号独立浏览器里的插件连上工作台（最多约 3 分钟）。 */
+  const waitForInstanceSession = async (instanceTag: string): Promise<boolean> => {
+    const tag = String(instanceTag || "").trim();
+    if (!tag) return false;
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      if (!isActiveRef.current) return false;
+      if (await hasInstanceSession(tag)) return true;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
+    }
+    return false;
+  };
+
+  const issueLogin = async (account: StoreAccount) => {
+    const command = await orderProfitApi.startAccountLogin(account.id, false, false);
+    showToast(
+      "已下发绑定任务：插件会自动填账号密码；验证码请在新打开的浏览器里输入，登录后自动绑定店铺",
+      "info",
+    );
+    setJobs((current) => ({ ...current, [account.id]: { command_id: command.command_id } as OrderProfitCaptureStatus }));
+    await load();
+  };
+
+  /**
+   * 一个按钮完成绑定：
+   * 先看独立浏览器里有没有在线插件；没有就真正拉起浏览器，再等插件连上并自动登录。
+   * 不再依赖 instance_pid（浏览器关掉后 pid 可能是旧的，会导致“只等待、不打开”）。
+   */
   const startLogin = async (account: StoreAccount) => {
+    if (busy === account.id || waitingAccountId) return;
     setBusy(account.id);
     try {
-      // 还没为该账号打开独立浏览器：先自动打开，再让用户在窗口里连一次插件。
-      if (!account.instance_pid) {
+      const connectedBefore = await hasInstanceSession(account.instance_tag);
+      if (!connectedBefore) {
         const opened = await orderProfitApi.openAccountBrowser(account.id);
         showToast(
-          `已打开独立浏览器（${opened.browser}）：请在该窗口登录工作台并点一次「连接插件」，再回来点「登录并绑定」`,
+          `已打开独立浏览器（${opened.browser}）：请在该窗口登录工作台并点一次「连接插件」，连接后会自动继续`,
           "info",
         );
         await load();
+        setWaitingAccountId(account.id);
+        const connected = await waitForInstanceSession(account.instance_tag);
+        setWaitingAccountId("");
+        if (!connected) {
+          if (isActiveRef.current) {
+            showToast(
+              "还没检测到插件连接：请在刚打开的浏览器里登录工作台并点「连接插件」，再点一次「开始绑定」",
+              "error",
+            );
+          }
+          return;
+        }
+      }
+      await issueLogin(account);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (/还没有连上工作台|plugin session|插件会话|未连接/i.test(message)) {
+        // 竞态兜底：再拉一次浏览器，确保界面上真的有一个可操作的窗口。
+        try {
+          await orderProfitApi.openAccountBrowser(account.id);
+        } catch {
+          // 打开失败就继续等待已有窗口连接。
+        }
+        setWaitingAccountId(account.id);
+        const connected = await waitForInstanceSession(account.instance_tag);
+        setWaitingAccountId("");
+        if (connected) {
+          try {
+            await issueLogin(account);
+            return;
+          } catch (retryError) {
+            showToast(retryError instanceof Error ? retryError.message : String(retryError), "error");
+            return;
+          }
+        }
+        if (isActiveRef.current) {
+          showToast("浏览器已打开但没有检测到插件连接，请登录工作台后点一次「连接插件」再重试", "error");
+        }
         return;
       }
-      const command = await orderProfitApi.startAccountLogin(account.id, false, false);
-      showToast(
-        "已下发绑定任务：插件会自动填账号密码，验证码需你在浏览器里输入；登录后自动读取并绑定店铺",
-        "info",
-      );
-      setJobs((current) => ({ ...current, [account.id]: { command_id: command.command_id } as OrderProfitCaptureStatus }));
-      await load();
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+      showToast(message, "error");
     } finally {
       setBusy("");
     }
@@ -308,6 +401,46 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
       showToast(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
       setBusy("");
+    }
+  };
+
+  /** 清理没有和任何店铺账号绑定的历史店铺（只移除列表项，不删已采数据）。 */
+  const cleanupShops = async () => {
+    if (!window.confirm("清理所有未与「店铺账号」绑定的店铺？\n只从店铺列表里移除，已采集的数据不会删除。")) {
+      return;
+    }
+    setBusy("cleanup");
+    try {
+      const result = await orderProfitApi.cleanupShops();
+      showToast(
+        result.deleted ? `已清理 ${result.deleted} 个未绑定店铺` : "没有需要清理的店铺",
+        result.deleted ? "success" : "info",
+      );
+      await load();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  /** 团队服务首次使用需要员工标识；这里补上，避免到采集时才被动报错。 */
+  const saveStaffNo = async () => {
+    const value = staffNoDraft.trim();
+    if (!value) {
+      showToast("请填写员工标识（用于团队汇总辨识）", "error");
+      return;
+    }
+    setStaffNoBusy(true);
+    try {
+      await orderProfitApi.saveTeamProfile(value);
+      showToast("员工标识已保存", "success");
+      setStaffNoDraft("");
+      await loadLinks();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setStaffNoBusy(false);
     }
   };
 
@@ -384,8 +517,13 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
         <div className="op-entry-grid">
           <button type="button" className="op-entry" onClick={() => setView("accounts")}>
             <EntryWaves />
-            <span className="op-entry-icon">
-              <StoreIcon />
+            <span className="op-entry-head">
+              <span className="op-entry-icon">
+                <StoreIcon />
+              </span>
+              <span className="op-entry-scene">
+                <ShopDataScene variant="shop" />
+              </span>
             </span>
             <span className="op-entry-body">
               <strong>店铺账号</strong>
@@ -402,8 +540,13 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
 
           <button type="button" className="op-entry is-links" onClick={() => setView("links")}>
             <EntryWaves />
-            <span className="op-entry-icon">
-              <LinkIcon />
+            <span className="op-entry-head">
+              <span className="op-entry-icon">
+                <LinkIcon />
+              </span>
+              <span className="op-entry-scene">
+                <ShopDataScene variant="link" />
+              </span>
             </span>
             <span className="op-entry-body">
               <strong>账号关联</strong>
@@ -444,6 +587,31 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
             >
               {showForm ? "取消新增" : "新增店铺账号"}
             </button>
+          </div>
+
+          <div className="op-card op-panel op-bind-guide">
+            <div className="op-panel-head">
+              <strong>绑定店铺只需 3 步</strong>
+              <span className="op-chip">{accounts.length} 个账号</span>
+            </div>
+            <div className="op-bind-body">
+              <ol className="op-bind-steps">
+                <li><b>1</b><span>新增店铺账号：手机号 + 登录密码（本机加密）。</span></li>
+                <li><b>2</b><span>点「开始绑定」：在打开的浏览器里登录工作台，并点一次插件「连接插件」。</span></li>
+                <li><b>3</b><span>插件自动登录 Temu 并读取店铺；成功后回到「数据采集」同步数据。</span></li>
+              </ol>
+              <ShopDataArt variant="accounts" className="op-guide-art" seal={false} />
+            </div>
+            <div className="op-filter-actions">
+              <button
+                type="button"
+                className="op-btn"
+                disabled={busy === "cleanup"}
+                onClick={() => void cleanupShops()}
+              >
+                清理未绑定店铺
+              </button>
+            </div>
           </div>
 
       {showForm ? (
@@ -518,10 +686,23 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
 
       {!loading && !accounts.length ? (
         <div className="op-card">
-          <div className="op-empty">
-            <strong>还没有店铺账号</strong>
-            <span>点右上角「新增店铺账号」录入手机号和密码。</span>
-          </div>
+          <EmptyBlock
+            art="accounts"
+            title="还没有店铺账号"
+            desc="先录入 Temu 店铺账号，之后点「开始绑定」会自动登录并读取店铺。"
+            action={
+              <button
+                type="button"
+                className="op-btn op-btn-primary"
+                onClick={() => {
+                  setForm(emptyForm());
+                  setShowForm(true);
+                }}
+              >
+                新增店铺账号
+              </button>
+            }
+          />
         </div>
       ) : null}
 
@@ -542,35 +723,65 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
                 <div className="op-account-actions">
                   <button
                     type="button"
+                    className="op-btn op-btn-primary"
+                    disabled={
+                      busy === account.id
+                      || !account.has_password
+                      || account.status === "logging_in"
+                      || account.status === "capturing"
+                      || Boolean(waitingAccountId)
+                    }
+                    title={account.has_password ? "" : "请先编辑账号补上密码"}
+                    onClick={() => void startLogin(account)}
+                  >
+                    {account.status === "logging_in"
+                      ? "绑定中…"
+                      : account.shop_name
+                        ? "重新登录"
+                        : "开始绑定"}
+                  </button>
+                  <button
+                    type="button"
                     className="op-btn"
-                    disabled={busy === account.id}
+                    disabled={busy === account.id || Boolean(waitingAccountId)}
                     onClick={() => void (account.instance_pid ? closeBrowser(account) : openBrowser(account))}
                   >
                     {account.instance_pid ? "关闭浏览器" : "打开浏览器"}
                   </button>
-                  <button
-                    type="button"
-                    className="op-btn"
-                    disabled={busy === account.id || !account.has_password}
-                    title={account.has_password ? "" : "请先编辑账号补上密码"}
-                    onClick={() => void startLogin(account)}
-                  >
-                    登录并绑定
-                  </button>
-                  <button type="button" className="op-btn" disabled={busy === account.id} onClick={() => startEdit(account)}>
-                    编辑
-                  </button>
-                  <button
-                    type="button"
-                    className="op-btn"
-                    disabled={busy === account.id || !account.shop_name}
-                    onClick={() => void clearData(account)}
-                  >
-                    清除数据
-                  </button>
-                  <button type="button" className="op-btn" disabled={busy === account.id} onClick={() => void remove(account)}>
-                    删除
-                  </button>
+                  {account.shop_name && onOpenCapture ? (
+                    <button type="button" className="op-btn" onClick={onOpenCapture}>
+                      去数据采集
+                    </button>
+                  ) : null}
+                  <details className="op-account-more">
+                    <summary>更多</summary>
+                    <div className="op-account-more-menu">
+                      <button
+                        type="button"
+                        className="op-btn"
+                        disabled={busy === account.id}
+                        onClick={() => startEdit(account)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="op-btn"
+                        disabled={busy === account.id || !account.shop_name}
+                        onClick={() => void clearData(account)}
+                      >
+                        清除数据
+                      </button>
+                      <button
+                        type="button"
+                        className="op-btn"
+                        disabled={busy === account.id}
+                        onClick={() => void remove(account)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </details>
                 </div>
               </div>
               <div className="op-account-meta">
@@ -586,6 +797,13 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
                 <span>最近登录：{account.last_login_at || "—"}</span>
                 {account.last_error ? <span className="is-negative">错误：{account.last_error}</span> : null}
               </div>
+              {waitingAccountId === account.id ? (
+                <div className="op-account-progress">
+                  <small className="op-account-manual">
+                    正在等待插件连接：请在刚打开的浏览器里登录工作台，并点一次「连接插件」，连接后会自动继续绑定。
+                  </small>
+                </div>
+              ) : null}
               {job ? (
                 <div className="op-account-progress">
                   <div className="op-progress-head">
@@ -657,6 +875,27 @@ export function OrderProfitAccountsTab({ isActive }: { isActive: boolean }) {
                       复制
                     </button>
                   </div>
+                  {!links.staff_no ? (
+                    <div className="op-links-staff">
+                      <input
+                        type="text"
+                        value={staffNoDraft}
+                        placeholder="员工标识（首次填写，用于团队汇总）"
+                        onChange={(event) => setStaffNoDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void saveStaffNo();
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="op-btn op-btn-sm"
+                        disabled={staffNoBusy}
+                        onClick={() => void saveStaffNo()}
+                      >
+                        {staffNoBusy ? "保存中…" : "保存"}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <div className="op-links-request">

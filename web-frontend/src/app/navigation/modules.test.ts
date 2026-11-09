@@ -88,18 +88,19 @@ test("image service nests the existing workflows one level deeper", () => {
   assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
 
   const podWorkflow = findGroup("pod_workflow");
-  assert.equal(podWorkflow?.defaultChildId, "pod_customization");
+  // 自由创意是 POD 首项，点开分组默认落到它。
+  assert.equal(podWorkflow?.defaultChildId, "pod_free_customization");
   assert.deepEqual(podWorkflow?.children.map((child) => child.id), [
+    "pod_free_customization",
     "pod_customization",
     "pod_semi_customization",
-    "pod_free_customization",
     "pod_replica",
     "pod_fission",
   ]);
   assert.deepEqual(podWorkflow?.children.map((child) => child.label), [
+    "自由创意",
     "全款直出",
     "印花创作",
-    "自由创意",
     "爆款复刻",
     "爆款裂变",
   ]);
@@ -157,9 +158,9 @@ test("data insights groups sourcing profit and store data management", () => {
       "order_profit_overview",
       "order_profit_orders",
       "order_profit_funds",
-      "order_profit_accounts",
       "order_profit_capture",
       "order_profit_records",
+      "order_profit_accounts",
     ],
   );
   // 合并前的单页入口仍保留在页面路由里，避免浏览器已保存的旧页签失效。

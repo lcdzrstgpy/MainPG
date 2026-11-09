@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -31,6 +34,40 @@ _CREDENTIAL_VALUE = re.compile(
     r"\b\s*[:=]\s*)[^\s,;]+"
 )
 _BEARER_VALUE = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+
+# ── 隐私政策文档（服务端托管，公开只读） ──────────────────────────────
+# 前端只和本地后端打交道：本地转发平台服务器的 /privacy.json，并做 5 分钟缓存，
+# 断网或远端故障时把上一次成功的内容原样返回（stale），前端据此回退内置常量。
+_PRIVACY_POLICY_URL = (
+    os.environ.get("WH_LOCAL_PRIVACY_POLICY_URL", "").strip()
+    or "https://workbench.haocoming.top/privacy.json"
+)
+_PRIVACY_POLICY_TTL_SECONDS = 300.0
+_PRIVACY_POLICY_TIMEOUT_SECONDS = 5.0
+_privacy_policy_cache: dict[str, Any] = {"at": 0.0, "document": None}
+_privacy_policy_lock = threading.Lock()
+
+
+def _fetch_privacy_policy_document() -> dict[str, Any] | None:
+    """拉一次远端隐私政策文档；任何失败都返回 None（由调用方决定是否用旧缓存）。"""
+    try:
+        import requests
+
+        response = requests.get(
+            _PRIVACY_POLICY_URL,
+            timeout=_PRIVACY_POLICY_TIMEOUT_SECONDS,
+            headers={"Accept": "application/json"},
+        )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - 网络/解析失败一律按「没有远端文档」处理
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("published") is False:
+        return None
+    return payload
 
 
 def _public_account(customer: Any) -> dict[str, Any]:
@@ -243,6 +280,31 @@ def create_customer_router(
             # 按登录失效处理，引导用户重新登录。
             raise CustomerAuthRejected(401, "remote customer session is missing, please sign in again")
         return session.remote_token
+
+    @router.get("/privacy-policy")
+    def get_privacy_policy() -> dict[str, Any]:
+        """转发平台服务器托管的隐私政策文档（公开只读，本地缓存 5 分钟）。
+
+        返回 ``{"ok": bool, "document": {...}|None, "cached": bool}``。
+        失败时 ``ok=false`` 且 ``document`` 可能是上一次成功的旧文档：
+        前端拿不到新版就用旧版/内置常量，绝不阻塞登录。
+        """
+        with _privacy_policy_lock:
+            cached = _privacy_policy_cache["document"]
+            fresh = cached is not None and (
+                time.monotonic() - _privacy_policy_cache["at"] < _PRIVACY_POLICY_TTL_SECONDS
+            )
+        if fresh:
+            return {"ok": True, "document": cached, "cached": True}
+        document = _fetch_privacy_policy_document()
+        if document is None:
+            with _privacy_policy_lock:
+                stale = _privacy_policy_cache["document"]
+            return {"ok": stale is not None, "document": stale, "cached": stale is not None}
+        with _privacy_policy_lock:
+            _privacy_policy_cache["at"] = time.monotonic()
+            _privacy_policy_cache["document"] = document
+        return {"ok": True, "document": document, "cached": False}
 
     @router.post("/pod-agreement")
     def submit_pod_agreement(

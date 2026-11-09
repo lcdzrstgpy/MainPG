@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
-import re
 import threading
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -14,6 +13,7 @@ from .contracts import ApiEvidence, DailySelectionCandidate, DailySelectionError
 from .criteria import DailySelectionCriteria
 from .normalizer import enrich_candidate_with_detail, normalize_search_response
 from .provider import ProviderCallResult
+from .scoring import sales_count
 
 
 LOCAL_EXPANSION_RULESET_VERSION = "local-v1"
@@ -23,7 +23,6 @@ _IMAGE_OPERATION_BUDGET_COST = 3  # download, upload, then image search
 # target_count（最高 200）需要按 page 递增补齐；这里给出安全上限，避免上游对深页
 # 返回重复数据时无界翻页。
 _MAX_SEARCH_PAGES = 10
-_NUMBER = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 CollectionProgressCallback = Callable[[str, int, int], None]
 
 
@@ -526,7 +525,7 @@ def _rank_candidates(candidates: Sequence[CollectedCandidate]) -> list[Collected
 
 def _pre_detail_rank_key(candidate: CollectedCandidate) -> tuple[Decimal, Decimal, bool, Decimal, bool, int]:
     score = candidate.selection_score if candidate.selection_score is not None else Decimal("0")
-    sales = _sales_count(candidate.sales_text)
+    sales = sales_count(candidate)
     price = candidate.price_cny
     moq = candidate.min_order_quantity
     return (
@@ -537,13 +536,6 @@ def _pre_detail_rank_key(candidate: CollectedCandidate) -> tuple[Decimal, Decima
         moq is None,
         moq if moq is not None else 2**63 - 1,
     )
-
-
-def _sales_count(value: str | None) -> Decimal:
-    if not isinstance(value, str):
-        return Decimal("0")
-    match = _NUMBER.search(value.replace(",", ""))
-    return Decimal(match.group()) if match else Decimal("0")
 
 
 def _titles(candidates: Sequence[CollectedCandidate]) -> tuple[str, ...]:

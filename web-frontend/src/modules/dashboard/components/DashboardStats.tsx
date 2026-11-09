@@ -213,6 +213,27 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
 
   return (
     <div className={`dash-board${isApple ? " dash-board--apple" : ""}`}>
+      <section className="dash-brief" aria-label="工作台概览">
+        <div className="dash-brief-copy">
+          <span className="dash-brief-eyebrow">WORKSPACE OVERVIEW</span>
+          <strong>今日工作概览</strong>
+          <small>
+            数据每 60 秒自动刷新 · 覆盖 {overview.site_distribution.length} 个站点 · 累计 {overview.kpis.task_total} 个处理批次
+          </small>
+        </div>
+        <svg className="dash-brief-art" viewBox="0 0 148 62" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="var(--theme-primary, #0877d3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="30" y="34" width="15" height="18" rx="5" opacity=".85" />
+            <rect x="52" y="27" width="15" height="25" rx="5" opacity=".85" />
+            <rect x="74" y="18" width="15" height="34" rx="5" opacity=".85" />
+            <path d="M30 27c16-9 44-14 70-16" opacity=".7" />
+            <path d="M92 12l8-1-1 8" stroke="var(--theme-accent, #0aa6cc)" opacity=".9" />
+            <path d="M22 54h86" strokeDasharray="3 6" opacity=".4" />
+            <path d="M118 32l1.8 4.2 4.2 1.8-4.2 1.8L118 44l-1.8-4.2-4.2-1.8 4.2-1.8z" stroke="var(--theme-accent, #0aa6cc)" strokeWidth="1.2" opacity=".8" />
+          </g>
+        </svg>
+      </section>
+
       <section className="dash-kpi-grid" aria-label="核心指标">
         {kpis.map((card) => (
           <button
@@ -279,23 +300,27 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
           </footer>
         </section>
 
-        <section className="dash-panel dash-panel--dist">
-          <header className="dash-panel-head">
-            <div className="dash-panel-title">
-              <h3>任务状态分布</h3>
-              <p>累计 {overview.kpis.task_total} 个处理批次</p>
-            </div>
-          </header>
-          <DistributionList items={statusItems} emptyText="暂无处理批次" />
+        <div className="dash-side">
+          <section className="dash-panel dash-panel--dist">
+            <header className="dash-panel-head">
+              <div className="dash-panel-title">
+                <h3>任务状态分布</h3>
+                <p>累计 {overview.kpis.task_total} 个处理批次</p>
+              </div>
+            </header>
+            <DistributionList items={statusItems} emptyText="暂无处理批次" />
+          </section>
 
-          <header className="dash-panel-head is-sub">
-            <div className="dash-panel-title">
-              <h3>站点分布</h3>
-              <p>产品库产品按站点统计</p>
-            </div>
-          </header>
-          <DistributionList items={siteItems} emptyText="产品库暂无数据" />
-        </section>
+          <section className="dash-panel dash-panel--sites">
+            <header className="dash-panel-head">
+              <div className="dash-panel-title">
+                <h3>站点分布</h3>
+                <p>产品库产品按站点统计</p>
+              </div>
+            </header>
+            <DistributionList items={siteItems} emptyText="产品库暂无数据" />
+          </section>
+        </div>
       </div>
 
       <section className="dash-panel dash-panel--tasks">
@@ -315,7 +340,7 @@ export function DashboardStats({ onOpenModule, variant = "classic" }: DashboardS
             ))}
           </ul>
         ) : (
-          <p className="dash-empty">还没有处理记录，去「AI 产品处理」创建第一个批次吧。</p>
+          <DashEmpty text="还没有处理记录，去「AI 产品处理」创建第一个批次吧。" />
         )}
       </section>
     </div>
@@ -342,10 +367,29 @@ function TaskRow({ task, onOpen }: { task: DashboardRecentTask; onOpen: () => vo
   );
 }
 
+function DashEmpty({ text }: { text: string }) {
+  return (
+    <div className="dash-empty">
+      <svg className="dash-empty-art" viewBox="0 0 128 76" aria-hidden="true" focusable="false">
+        <g fill="none" stroke="var(--theme-primary, #0877d3)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="34" y="20" width="48" height="30" rx="9" opacity=".85" />
+          <path d="M44 32h28M44 39h18" stroke="var(--theme-accent, #0aa6cc)" opacity=".55" />
+          <circle cx="88" cy="24" r="11" opacity=".7" />
+          <path d="M88 17v7l4 2.6" opacity=".8" />
+          <path d="M36 56h56" strokeDasharray="3 5" opacity=".4" />
+          <path d="M108 46l1.6 3.6 3.6 1.6-3.6 1.6L108 56l-1.6-3.6-3.6-1.6 3.6-1.6z" stroke="var(--theme-accent, #0aa6cc)" strokeWidth="1.2" opacity=".75" />
+          <path d="M22 14l1.3 3 3 1.3-3 1.3L22 23l-1.3-3.4-3-1.3 3-1.3z" strokeWidth="1.1" opacity=".45" />
+        </g>
+      </svg>
+      <p>{text}</p>
+    </div>
+  );
+}
+
 function DistributionList({ items, emptyText }: { items: DistItem[]; emptyText: string }) {
   const total = items.reduce((sum, item) => sum + item.count, 0);
   if (!items.length || total === 0) {
-    return <p className="dash-empty">{emptyText}</p>;
+    return <DashEmpty text={emptyText} />;
   }
   return (
     <ul className="dash-dist-list">

@@ -4,6 +4,7 @@ import type {
   AfterSaleRow,
   AppealRow,
   CaptureBatches,
+  CaptureRunList,
   FinanceResponse,
   LinkChangeRow,
   MarkupResponse,
@@ -22,6 +23,8 @@ import type {
   ProfitShop,
   SalesSummaryResponse,
   TeamLinksPayload,
+  TeamRollupPreview,
+  TeamRollupSubmitResult,
   SettlementResponse,
   ShopsResponse,
   StoreAccount,
@@ -68,10 +71,14 @@ export const orderProfitApi = {
       method: "POST",
       body: { session_id: sessionId, mode },
     }),
-  startCaptureAll: (sessionId: string, incremental = false) =>
+  startCaptureAll: (sessionId: string, incremental = false, shopName = "") =>
     ppRequest<OrderProfitCommand>(context(), `${BASE}/captures-all`, {
       method: "POST",
-      body: { session_id: sessionId, incremental },
+      body: {
+        session_id: sessionId,
+        incremental,
+        ...(shopName.trim() ? { shop_name: shopName.trim() } : {}),
+      },
     }),
   startResourceCapture: (sessionId: string, resource: string) =>
     ppRequest<OrderProfitCommand>(context(), `${BASE}/captures/resource`, {
@@ -88,6 +95,8 @@ export const orderProfitApi = {
     ppRequest<OrderProfitCaptureStatus>(context(), `${BASE}/captures/${commandId}`),
   latestCapture: () =>
     ppRequest<{ capture: Record<string, unknown> | null }>(context(), `${BASE}/captures/latest`),
+  recentCaptures: (limit = 10) =>
+    ppRequest<CaptureRunList>(context(), `${BASE}/captures/recent${query({ limit })}`),
   orders: (params: {
     month?: string;
     store?: string;
@@ -296,17 +305,10 @@ export const orderProfitApi = {
       method: "POST",
       body: { staff_no: staffNo },
     }),
-  submitTeamRollup: (weekStart = "") =>    ppRequest<{
-      ok: boolean;
-      week_start?: string;
-      created?: number;
-      updated?: number;
-      stale?: number;
-      skipped?: { store_code: string; reason: string }[];
-      status_text?: string;
-      reason?: string;
-      pending_local_shops?: { name: string; store_code: string; reason: string }[];
-    }>(context(), `${BASE}/team/submit`, {
+  teamRollupPreview: () =>
+    ppRequest<TeamRollupPreview>(context(), `${BASE}/team/rollup-preview`),
+  submitTeamRollup: (weekStart = "") =>
+    ppRequest<TeamRollupSubmitResult>(context(), `${BASE}/team/submit`, {
       method: "POST",
       body: { week_start: weekStart },
     }),

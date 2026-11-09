@@ -17,6 +17,7 @@ from wh_local.modules.pod_customization.contracts import (
     FREE_IMAGE_MODEL_FLASH,
     FREE_IMAGE_MODEL_PRO,
     FREE_PANEL_ROLES,
+    MAX_FREE_REFERENCE_IMAGES,
     FreeBatchCreate,
     FreeListingFieldsUpdate,
     FreePanelReorder,
@@ -28,6 +29,7 @@ from wh_local.modules.pod_customization.remote_billing import (
     build_v2_freeze_payload,
     build_v2_settlement_payload,
 )
+from wh_local.modules.pod_customization.repository import PodRepositoryError
 from wh_local.modules.pod_customization.service import PodCustomizationService
 from wh_local.modules.pod_customization.worker import PodBatchWorker
 from wh_local.modules.product_processing.infrastructure.media import GeneratedMedia
@@ -186,6 +188,25 @@ def test_free_batch_generates_one_image_with_verbatim_prompt(tmp_path: Path) -> 
     assert runtime.publications[0][0] == "hero"
 
 
+def test_free_batch_accepts_at_most_two_reference_images() -> None:
+    """参考图只服务主图：产品口径是两张，第三张在契约层就该被拒。"""
+
+    payload = {
+        "client_request_id": "req-1",
+        "image_model": FREE_IMAGE_MODEL_FLASH,
+        "target_image_count": 4,
+        "prompt": "a red fox",
+        "title_enabled": True,
+        "reference_asset_ids": ["asset-a", "asset-b"],
+    }
+    assert MAX_FREE_REFERENCE_IMAGES == 2
+    FreeBatchCreate.model_validate(payload)
+    with pytest.raises(ValueError):
+        FreeBatchCreate.model_validate(
+            {**payload, "reference_asset_ids": ["asset-a", "asset-b", "asset-c"]}
+        )
+
+
 def test_free_next_slot_uses_first_image_and_supports_out_of_order(tmp_path: Path) -> None:
     runtime = FreeImageRuntime()
     billing = FreeBilling()
@@ -340,6 +361,63 @@ def test_free_reorder_moves_panels_and_follows_spec_card_slot(tmp_path: Path) ->
     }
     assert reprinted[2]["composite_preview_url"] != reprinted[2]["pattern_preview_url"]
     assert reprinted[3]["composite_preview_url"] == reprinted[3]["pattern_preview_url"]
+
+
+def test_free_reorder_rejects_main_slot_and_out_of_range(tmp_path: Path) -> None:
+    """主图固定在第一位：拖走它会让后续图换参考、甚至把批次拖成没有主图。"""
+
+    runtime = FreeImageRuntime()
+    billing = FreeBilling()
+    service = _service(tmp_path / "reorder", runtime, billing)
+    batch = _create(service, target=4)
+    service.worker.process_batch(batch["id"])
+    service.generate_free_panel(_actor(), batch["id"], 2, "second", enqueue=False)
+    service.worker.process_batch(batch["id"])
+
+    with pytest.raises(PodRepositoryError, match="主图固定在第一位"):
+        service.reorder_free_panels(
+            _actor(), batch["id"], FreePanelReorder(from_variant=1, to_variant=2)
+        )
+    with pytest.raises(PodRepositoryError, match="主图固定在第一位"):
+        service.reorder_free_panels(
+            _actor(), batch["id"], FreePanelReorder(from_variant=2, to_variant=1)
+        )
+    # 越界槽位同样拒绝：结果行不能写到当前点数之外。
+    with pytest.raises(PodRepositoryError, match="槽位号超出当前款式张数"):
+        service.reorder_free_panels(
+            _actor(), batch["id"], FreePanelReorder(from_variant=2, to_variant=6)
+        )
+
+    stored = service.get_free_batch(_actor(), batch["id"])
+    # 被拒绝的请求不能改动任何一个槽位。
+    assert [(item["variant_index"], item["prompt"]) for item in stored["items"]] == [
+        (1, "  a red fox in the snow  "),
+        (2, "second"),
+    ]
+
+
+def test_free_title_accepts_five_and_six_panel_batches(tmp_path: Path) -> None:
+    """标题要求的是「当前点数全部发布」，不是写死的四张。"""
+
+    for target in (5, 6):
+        runtime = FreeImageRuntime()
+        billing = FreeBilling()
+        titles = FreeTitleRuntime()
+        service = _service(tmp_path / str(target), runtime, billing, title_runtime=titles)
+        batch = _create(service, target=target, title_enabled=True)
+        service.worker.process_batch(batch["id"])
+        for variant in range(2, target + 1):
+            service.generate_free_panel(
+                _actor(), batch["id"], variant, f"p{variant}", enqueue=False
+            )
+            service.worker.process_batch(batch["id"])
+
+        saved = service.set_manual_title(_actor(), batch["id"], 1, f"manual {target}")
+        assert saved["title"] == f"manual {target}"
+
+        service.regenerate_title(_actor(), batch["id"], 1, enqueue=False)
+        regenerated = service.get_free_batch(_actor(), batch["id"])["style_titles"][0]
+        assert regenerated["status"] == "generating"
 
 
 def test_free_main_regeneration_clears_downstream_panels(tmp_path: Path) -> None:

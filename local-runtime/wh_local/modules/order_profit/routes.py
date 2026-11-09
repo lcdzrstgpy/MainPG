@@ -48,6 +48,8 @@ class SessionRequest(BaseModel):
 
     session_id: str | int
     incremental: bool = False
+    # 采集前由插件核对浏览器当前登录店铺，避免把数据写到别的店。
+    shop_name: str = ""
 
 
 class ResourceRequest(BaseModel):
@@ -178,6 +180,7 @@ def create_order_profit_router(
                 workspace_id(workspace),
                 session_id=str(request.session_id),
                 incremental=bool(request.incremental),
+                shop_name=request.shop_name,
             )
         except BaseException as error:
             raise _error(error) from error
@@ -241,6 +244,17 @@ def create_order_profit_router(
     ) -> dict[str, Any]:
         try:
             return service.latest_capture(workspace_id(workspace))
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/captures/recent")
+    def recent_captures(
+        limit: int = Query(default=10, ge=1, le=30),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """采集中心：最近的全量/增量/单步补采记录。"""
+        try:
+            return service.recent_captures(workspace_id(workspace), limit=limit)
         except BaseException as error:
             raise _error(error) from error
 
@@ -636,6 +650,20 @@ def create_order_profit_router(
             return service.save_team_profile(
                 staff_no=request.staff_no,
                 username=request.username,
+                team_client=team_client,
+                remote_token=remote_token(authorization),
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/team/rollup-preview")
+    def team_rollup_preview(
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            return service.team_rollup_preview(
+                workspace_id(workspace),
                 team_client=team_client,
                 remote_token=remote_token(authorization),
             )

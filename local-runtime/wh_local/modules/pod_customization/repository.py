@@ -4622,17 +4622,24 @@ class PodCustomizationRepository:
             ).fetchone()
             if batch is None:
                 raise PodRepositoryError("POD batch not found", 404)
+            required_images = self._title_image_requirement_for(connection, batch_id)
             ready_images = int(connection.execute(
                 """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
                    INNER JOIN pod_customization_style_grid_publications AS publications
                      ON publications.result_id = results.result_id
                    WHERE results.batch_id = ? AND results.style_index = ?
                      AND results.status = 'completed' AND publications.public_url <> ''
-                     AND results.variant_index BETWEEN 1 AND 4""",
-                (batch_id, style_index),
+                     AND results.variant_index BETWEEN 1 AND ?""",
+                (batch_id, style_index, required_images),
             ).fetchone()[0])
-            if ready_images != 4:
-                raise PodRepositoryError("all four public POD images are required before regenerating a title", 409)
+            if ready_images != required_images:
+                if required_images == 4:
+                    raise PodRepositoryError(
+                        "all four public POD images are required before regenerating a title", 409
+                    )
+                raise PodRepositoryError(
+                    f"请先把当前款式的 {required_images} 张图全部生成并发布，再重新生成标题", 409
+                )
             batch_claim = connection.execute(
                 """UPDATE pod_customization_batches
                    SET status = 'generating_titles', error_message = '', updated_at = ?, finished_at = '',
@@ -4752,6 +4759,32 @@ class PodCustomizationRepository:
                 style_index=style_index, status="completed",
             )
 
+    @staticmethod
+    def title_image_requirement(mode: str, generation_meta: Mapping[str, Any] | None) -> int:
+        """保存/重生标题时要求的「已发布成图」张数。
+
+        全定制与半定制固定 4 格；自由定制按建批时冻结的点数（4–6）走，
+        否则 5、6 张的批次永远过不了「必须四张」的老口径。
+        """
+        if str(mode or "") != "free":
+            return 4
+        return max(1, min(int((generation_meta or {}).get("free_target_count") or 1), 6))
+
+    def _title_image_requirement_for(self, connection: Any, batch_id: str) -> int:
+        """从批次行取 mode/点数，换算标题要求的图数。"""
+        row = connection.execute(
+            """SELECT mode, generation_meta_json FROM pod_customization_batches
+               WHERE batch_id = ?""",
+            (batch_id,),
+        ).fetchone()
+        if row is None:
+            raise PodRepositoryError("POD batch not found", 404)
+        try:
+            meta = json.loads(str(row["generation_meta_json"] or "") or "{}")
+        except (TypeError, ValueError):
+            meta = {}
+        return self.title_image_requirement(str(row["mode"] or ""), meta)
+
     def complete_manual_title(
         self,
         batch_id: str,
@@ -4774,6 +4807,7 @@ class PodCustomizationRepository:
         now = _now()
         with self._connect() as connection:
             self._require_owned_style(connection, batch_id, workspace_id, owner_user_id, style_index)
+            required_images = self._title_image_requirement_for(connection, batch_id)
             ready_images = int(connection.execute(
                 """SELECT COUNT(*) FROM pod_customization_style_grid_results AS results
                    INNER JOIN pod_customization_style_grid_publications AS publications
@@ -4782,9 +4816,13 @@ class PodCustomizationRepository:
                      AND results.status = 'completed' AND publications.public_url <> ''""",
                 (batch_id, style_index),
             ).fetchone()[0])
-            if ready_images != 4:
+            if ready_images != required_images:
+                if required_images == 4:
+                    raise PodRepositoryError(
+                        "all four public POD images are required before saving a manual title", 409
+                    )
                 raise PodRepositoryError(
-                    "all four public POD images are required before saving a manual title", 409
+                    f"请先把当前款式的 {required_images} 张图全部生成并发布，再保存标题", 409
                 )
             result = connection.execute(
                 """UPDATE pod_customization_style_titles

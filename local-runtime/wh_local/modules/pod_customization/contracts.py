@@ -37,7 +37,7 @@ POD_BATCH_MODES = ("full", "semi", "free", "replica", "fission")
 MIN_FREE_IMAGE_COUNT = 4
 MAX_FREE_IMAGE_COUNT = 6
 MAX_FREE_PROMPT_LENGTH = 4000
-MAX_FREE_REFERENCE_IMAGES = 4
+MAX_FREE_REFERENCE_IMAGES = 2
 # 自由定制只开放豆包 Seedream 两个模型；全局 POD 模型下拉不暴露 Pro。
 FREE_IMAGE_MODEL_FLASH = "doubao-seedream-5-0-flash-260915"
 FREE_IMAGE_MODEL_PRO = "doubao-seedream-5-0-pro-260628"

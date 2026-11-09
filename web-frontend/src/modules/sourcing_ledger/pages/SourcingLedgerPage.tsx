@@ -268,6 +268,12 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     reload();
   }, [reload]);
 
+  // 抽屉里改价后详情会整体刷新：手动申报价输入框跟随最新一条手动记录回填。
+  useEffect(() => {
+    const manual = (detail?.declared_prices || []).find((row) => row.manual);
+    setManualPriceDraft(manual ? manual.adjusted_price_cny : "");
+  }, [detail]);
+
   const run = async (key: string, action: () => Promise<void>, success: string) => {
     setBusy(key);
     setNotice("");

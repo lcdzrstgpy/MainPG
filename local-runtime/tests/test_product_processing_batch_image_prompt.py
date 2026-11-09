@@ -480,8 +480,50 @@ def test_batch_image_prompt_not_injected_when_empty(monkeypatch) -> None:
     assert all(MARKER not in call["prompt"] for call in processor.calls)
 
 
-def test_batch_image_prompt_wrapper_grants_scene_on_non_main_panels_only(monkeypatch) -> None:
-    """非主图格允许改背景/场景/道具，但必须带上道具安全契约与主图豁免声明。"""
+def test_pet_product_prompt_carries_ghost_garment_rule(monkeypatch) -> None:
+    """宠物用品必须带「空壳衣服/半截宠物」禁令，否则会出缺腿缺头的诡异图。"""
+    svc, processor = _grid_service(monkeypatch)
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "冬季加厚宠物背心",
+        "宠物用品 / 狗狗服饰",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=1,
+    )
+
+    assert processor.calls
+    for call in processor.calls:
+        assert "PET PRODUCT REALISM" in call["prompt"]
+        assert "ghost mannequin" in call["prompt"]
+        assert "WHOLE pet" in call["prompt"]
+
+
+def test_non_pet_prompt_has_no_pet_rule(monkeypatch) -> None:
+    svc, processor = _grid_service(monkeypatch)
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=1,
+    )
+
+    assert processor.calls
+    assert all("PET PRODUCT REALISM" not in call["prompt"] for call in processor.calls)
+
+
+def test_batch_image_prompt_wrapper_defaults_to_scene_main_background(monkeypatch) -> None:
+    """默认主图也走场景背景：必须带主图覆盖声明，不再声明纯白豁免。"""
     svc, processor = _grid_service(monkeypatch)
 
     svc._generate_grid_images(
@@ -500,7 +542,35 @@ def test_batch_image_prompt_wrapper_grants_scene_on_non_main_panels_only(monkeyp
     assert processor.calls
     for call in processor.calls:
         assert "PROP AND SCENE SAFETY" in call["prompt"]
+        assert "MAIN IMAGE BACKGROUND OVERRIDE" in call["prompt"]
+        assert "EVERY panel" in call["prompt"]
+        assert "Panel 1 backdrop direction:" in call["prompt"]
+        assert "EXEMPT" not in call["prompt"]
+
+
+def test_batch_image_prompt_wrapper_keeps_white_main_when_requested(monkeypatch) -> None:
+    """显式选 white 时回到旧契约：主图纯白豁免，且不追加主图覆盖块。"""
+    svc, processor = _grid_service(monkeypatch)
+
+    svc._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=1,
+        batch_image_prompt=GUIDELINE,
+        main_background="white",
+    )
+
+    assert processor.calls
+    for call in processor.calls:
         assert "EXEMPT" in call["prompt"]
+        assert "MAIN IMAGE BACKGROUND OVERRIDE" not in call["prompt"]
+        assert "Panel 1 backdrop direction:" not in call["prompt"]
 
 
 def test_grid_chain_applies_preset_plan_after_runtime_contract(monkeypatch) -> None:
