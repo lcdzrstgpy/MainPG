@@ -27,6 +27,7 @@ export type WorkspaceModuleId =
   | "order_profit_overview"
   | "order_profit_orders"
   | "order_profit_funds"
+  | "order_profit_binding"
   | "order_profit_costs"
   | "order_profit_accounts"
   | "order_profit_capture"
@@ -265,14 +266,22 @@ const sourcingLedger: WorkspaceModule = {
  * 店铺数据侧栏：数据量偏少的页面合并展示。
  * 经营概览 = 首页指标 + 流量 + 销量；账户资金 = 对账流水 + 结算回款。
  * 2026-11-09：成本桥接改造期间，旧的六个子板块先从侧栏隐藏（路由保留），
- * 只保留「链接成本」一个入口，验收后再清理旧代码。
+ * 「店铺绑定」与「链接成本」作为两个独立入口；验收后再清理旧代码。
  */
+const orderProfitBindingModule: WorkspaceModule = {
+  id: "order_profit_binding",
+  label: "店铺绑定",
+  icon: "",
+  iconClass: "iconfont icon-user",
+  description: "输入 Temu 账号密码，校验服务器上的店铺记录并建立绑定",
+};
+
 const orderProfitCostModule: WorkspaceModule = {
   id: "order_profit_costs",
   label: "链接成本",
   icon: "",
   iconClass: "iconfont icon-calculator",
-  description: "绑定服务器店铺、拉取链接数据并回填成本",
+  description: "手动同步已绑定店铺的链接数据并回填单件成本",
 };
 
 const orderProfitModules: WorkspaceModule[] = [
@@ -488,9 +497,9 @@ const orderProfitWorkflow: WorkspaceNavigationGroup = {
   label: "店铺数据管理",
   icon: "",
   iconClass: "iconfont icon-accountbook-fill",
-  description: "绑定服务器店铺、拉取链接数据与回填成本",
-  defaultChildId: "order_profit_costs",
-  children: [orderProfitCostModule, ...orderProfitModules],
+  description: "校验账号绑定店铺、手动同步链接数据与回填成本",
+  defaultChildId: "order_profit_binding",
+  children: [orderProfitBindingModule, orderProfitCostModule, ...orderProfitModules],
 };
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
@@ -575,6 +584,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   profitActivity,
   productLibrary,
   ...orderProfitModules,
+  orderProfitBindingModule,
   orderProfitCostModule,
   ...orderProfitLegacyModules,
   personalCenter,

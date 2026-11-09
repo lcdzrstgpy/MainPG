@@ -35,17 +35,18 @@ class BridgeApiClient:
     def client_id(self) -> str:
         return self._client_id
 
-    def accounts(self) -> dict[str, Any]:
-        return self._request("GET", "/accounts", params={"client_id": self._client_id})
-
     def bindings(self) -> dict[str, Any]:
         return self._request("GET", "/bindings", params={"client_id": self._client_id})
 
-    def bind(self, account_ids: list[str]) -> dict[str, Any]:
+    def bind(self, phone: str, password: str) -> dict[str, Any]:
         return self._request(
             "POST",
             "/bindings",
-            payload={"client_id": self._client_id, "account_ids": account_ids},
+            payload={
+                "client_id": self._client_id,
+                "phone": phone,
+                "password": password,
+            },
         )
 
     def unbind(self, account_id: str) -> dict[str, Any]:

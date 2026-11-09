@@ -16,7 +16,8 @@ from .client import BridgeApiClient, BridgeApiError
 class BindRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    account_ids: list[str] = Field(default_factory=list)
+    phone: str = Field(min_length=1)
+    password: str = Field(min_length=1)
 
 
 class CostItem(BaseModel):
@@ -53,13 +54,6 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
     def bridge_status() -> dict[str, Any]:
         return {"configured": client.configured, "client_id": client.client_id}
 
-    @router.get("/accounts")
-    def accounts() -> dict[str, Any]:
-        try:
-            return client.accounts()
-        except BaseException as error:
-            raise _error(error) from error
-
     @router.get("/bindings")
     def bindings() -> dict[str, Any]:
         try:
@@ -70,7 +64,7 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
     @router.post("/bindings")
     def bind(request: BindRequest) -> dict[str, Any]:
         try:
-            return client.bind(request.account_ids)
+            return client.bind(request.phone, request.password)
         except BaseException as error:
             raise _error(error) from error
 

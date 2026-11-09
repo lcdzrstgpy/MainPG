@@ -40,6 +40,7 @@ const ProfitActivityTestPage = lazy(() => import("../../modules/profit_activity/
 const PriceVerificationPage = lazy(() => import("../../modules/price_verification/pages/PriceVerificationPage").then((m) => ({ default: m.PriceVerificationPage })));
 const SourcingLedgerPage = lazy(() => import("../../modules/sourcing_ledger/pages/SourcingLedgerPage").then((m) => ({ default: m.SourcingLedgerPage })));
 const OrderProfitPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitPage").then((m) => ({ default: m.OrderProfitPage })));
+const OrderProfitBindingPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitBindingPage").then((m) => ({ default: m.OrderProfitBindingPage })));
 const OrderProfitCostPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitCostPage").then((m) => ({ default: m.OrderProfitCostPage })));
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
@@ -1184,6 +1185,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
             onActiveHrefChange={setAiVideoHref}
           />
         );
+        break;
+      case "order_profit_binding":
+        content = <OrderProfitBindingPage isActive={isActive} />;
         break;
       case "order_profit_costs":
         content = <OrderProfitCostPage isActive={isActive} />;

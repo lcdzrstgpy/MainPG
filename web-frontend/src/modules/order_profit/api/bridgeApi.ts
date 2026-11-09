@@ -3,16 +3,6 @@ import { ppRequest } from "../../product_processing/api/client";
 
 const BASE = "/api/bridge";
 
-export type BridgeAccount = {
-  account_id: string;
-  shop_name: string;
-  phone_tail: string;
-  site: string;
-  order_count: number;
-  last_captured_at: string;
-  bound: boolean;
-};
-
 export type BridgeBinding = {
   account_id: string;
   shop_name: string;
@@ -85,22 +75,22 @@ export const bridgeApi = {
       productProcessingApiContext(),
       `${BASE}/status`,
     ),
-  accounts: () =>
-    ppRequest<{ accounts: BridgeAccount[] }>(
-      productProcessingApiContext(),
-      `${BASE}/accounts`,
-    ),
   bindings: () =>
     ppRequest<{ client_id: string; accounts: BridgeBinding[] }>(
       productProcessingApiContext(),
       `${BASE}/bindings`,
     ),
-  bind: (accountIds: string[]) =>
-    ppRequest<{ applied: number; account_ids: string[]; skipped: { account_id: string; reason: string }[] }>(
-      productProcessingApiContext(),
-      `${BASE}/bindings`,
-      { method: "POST", body: { account_ids: accountIds } },
-    ),
+  bind: (phone: string, password: string) =>
+    ppRequest<{
+      account_id: string;
+      shop_name: string;
+      phone_tail: string;
+      site: string;
+      already_bound: boolean;
+    }>(productProcessingApiContext(), `${BASE}/bindings`, {
+      method: "POST",
+      body: { phone, password },
+    }),
   unbind: (accountId: string) =>
     ppRequest<{ removed: number }>(
       productProcessingApiContext(),

@@ -377,31 +377,51 @@ class CollectorStore:
             for row in rows
         ]
 
-    def save_bindings(self, client_id: str, account_ids: list[str]) -> dict[str, Any]:
+    def bind_with_credentials(
+        self, client_id: str, phone: str, password: str
+    ) -> dict[str, Any]:
+        """用 Temu 账号密码与服务器已有账号建立绑定。
+
+        只认服务器上已录入且密码一致的账号，客户端不能凭 account_id 直接绑定。
+        """
+        phone_text = str(phone or "").strip()
+        if not phone_text or not str(password or "").strip():
+            return {"ok": False, "reason": "missing"}
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM accounts WHERE phone = ?", (phone_text,)
+            ).fetchone()
+        if row is None:
+            return {"ok": False, "reason": "account_not_found"}
+        account = self._account(row)
+        credentials = self.get_credentials(account["id"]) or {}
+        if str(credentials.get("password") or "") != str(password):
+            return {"ok": False, "reason": "bad_password"}
         now = now_iso()
-        applied: list[str] = []
-        skipped: list[dict[str, str]] = []
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO bridge_clients (client_id, label, created_at, updated_at) "
-                "VALUES (?, '', ?, ?) ON CONFLICT(client_id) DO UPDATE SET "
-                "updated_at = excluded.updated_at",
-                (client_id, now, now),
+                "VALUES (?, ?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET "
+                "label = excluded.label, updated_at = excluded.updated_at",
+                (client_id, account["shop_name"] or account["alias"], now, now),
             )
-            for account_id in account_ids:
-                exists = conn.execute(
-                    "SELECT 1 FROM accounts WHERE id = ?", (account_id,)
-                ).fetchone()
-                if exists is None:
-                    skipped.append({"account_id": account_id, "reason": "账号不存在"})
-                    continue
-                conn.execute(
-                    "INSERT INTO bridge_bindings (client_id, account_id, created_at) "
-                    "VALUES (?, ?, ?) ON CONFLICT(client_id, account_id) DO NOTHING",
-                    (client_id, account_id, now),
-                )
-                applied.append(account_id)
-        return {"applied": len(applied), "account_ids": applied, "skipped": skipped}
+            existing = conn.execute(
+                "SELECT 1 FROM bridge_bindings WHERE client_id = ? AND account_id = ?",
+                (client_id, account["id"]),
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO bridge_bindings (client_id, account_id, created_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(client_id, account_id) DO NOTHING",
+                (client_id, account["id"], now),
+            )
+        return {
+            "ok": True,
+            "account_id": account["id"],
+            "shop_name": account["shop_name"] or account["alias"] or account["phone_tail"],
+            "phone_tail": account["phone_tail"],
+            "site": account["site"],
+            "already_bound": existing is not None,
+        }
 
     def delete_binding(self, client_id: str, account_id: str = "") -> int:
         with self._connect() as conn:

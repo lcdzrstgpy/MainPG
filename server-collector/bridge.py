@@ -211,25 +211,6 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
         wanted = [value.strip() for value in account_ids.split(",") if value.strip()]
         return [value for value in (wanted or list(bound)) if value in bound]
 
-    @router.get("/accounts")
-    def accounts(client_id: str = Query(default="")) -> dict[str, Any]:
-        bound = set(_bound(client_id)) if client_id else set()
-        rows: list[dict[str, Any]] = []
-        for account in store.list_accounts():
-            snapshot = store.latest_snapshot(account["id"], "orders")
-            rows.append(
-                {
-                    "account_id": account["id"],
-                    "shop_name": _shop_name(account),
-                    "phone_tail": account["phone_tail"],
-                    "site": account["site"],
-                    "order_count": account["order_count"],
-                    "last_captured_at": (snapshot or {}).get("captured_at", ""),
-                    "bound": account["id"] in bound,
-                }
-            )
-        return {"accounts": rows}
-
     @router.get("/bindings")
     def list_bindings(client_id: str = Query(...)) -> dict[str, Any]:
         accounts = {account["id"]: account for account in store.list_accounts()}
@@ -250,13 +231,19 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
     @router.post("/bindings")
     def save_bindings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         client_id = str(payload.get("client_id") or "").strip()
+        phone = str(payload.get("phone") or "").strip()
+        password = str(payload.get("password") or "")
         if not client_id:
             raise HTTPException(400, "缺少 client_id")
-        raw = payload.get("account_ids") or []
-        if not isinstance(raw, list):
-            raise HTTPException(400, "account_ids 必须是数组")
-        account_ids = [str(value).strip() for value in raw if str(value).strip()]
-        return store.save_bindings(client_id, account_ids)
+        result = store.bind_with_credentials(client_id, phone, password)
+        if not result.get("ok"):
+            reason = result.get("reason")
+            if reason == "missing":
+                raise HTTPException(400, "请输入 Temu 账号和密码")
+            if reason == "account_not_found":
+                raise HTTPException(404, "服务器上没有该 Temu 账号，请先在服务器端登录采集")
+            raise HTTPException(401, "Temu 账号或密码不正确")
+        return result
 
     @router.delete("/bindings")
     def delete_binding(

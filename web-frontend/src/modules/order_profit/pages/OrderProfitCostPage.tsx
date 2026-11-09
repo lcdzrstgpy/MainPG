@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { showToast } from "../../../shared/components/toastStore";
 import {
   bridgeApi,
-  type BridgeAccount,
   type BridgeBinding,
   type BridgeItem,
 } from "../api/bridgeApi";
@@ -37,10 +36,9 @@ function costValue(text: string): number | null {
 
 export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean }) {
   const [configured, setConfigured] = useState(true);
-  const [accounts, setAccounts] = useState<BridgeAccount[]>([]);
   const [bindings, setBindings] = useState<BridgeBinding[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [bindingBusy, setBindingBusy] = useState(false);
+  const [synced, setSynced] = useState(false);
+  const [syncedAt, setSyncedAt] = useState("");
 
   const [items, setItems] = useState<BridgeItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -64,33 +62,27 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
 
   const shopFilterKey = shopFilter.join(",");
 
-  const loadAccounts = async () => {
+  const loadBridge = async () => {
     try {
-      const [statusPayload, accountPayload, bindingPayload] = await Promise.all([
+      const [statusPayload, bindingPayload] = await Promise.all([
         bridgeApi.status(),
-        bridgeApi.accounts(),
         bridgeApi.bindings(),
       ]);
       setConfigured(statusPayload.configured);
-      setAccounts(accountPayload.accounts || []);
       setBindings(bindingPayload.accounts || []);
-      setSelected((previous) =>
-        previous.filter(
-          (id) => !(bindingPayload.accounts || []).some((row) => row.account_id === id),
-        ),
-      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
   useEffect(() => {
-    void loadAccounts();
+    void loadBridge();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!isActive) return;
+    if (!synced) return;
     if (!bindings.length) {
       setItems([]);
       setTotal(0);
@@ -134,6 +126,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
     };
   }, [
     isActive,
+    synced,
     bindings.length,
     shopFilterKey,
     statusFilter,
@@ -179,38 +172,10 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
     );
   };
 
-  const bindSelected = async () => {
-    if (!selected.length) {
-      showToast("先勾选要绑定的服务器店铺", "error");
-      return;
-    }
-    setBindingBusy(true);
-    try {
-      const result = await bridgeApi.bind(selected);
-      showToast(`已绑定 ${result.applied} 个店铺`, "success");
-      setSelected([]);
-      await loadAccounts();
-      setReloadTick((tick) => tick + 1);
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause), "error");
-    } finally {
-      setBindingBusy(false);
-    }
-  };
-
-  const unbind = async (accountId: string) => {
-    setBindingBusy(true);
-    try {
-      await bridgeApi.unbind(accountId);
-      setShopFilter((previous) => previous.filter((id) => id !== accountId));
-      showToast("已解绑该店铺", "success");
-      await loadAccounts();
-      setReloadTick((tick) => tick + 1);
-    } catch (cause) {
-      showToast(cause instanceof Error ? cause.message : String(cause), "error");
-    } finally {
-      setBindingBusy(false);
-    }
+  const sync = () => {
+    setSynced(true);
+    setSyncedAt(new Date().toISOString());
+    setReloadTick((tick) => tick + 1);
   };
 
   const applyBatch = () => {
@@ -273,7 +238,7 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
       <PageHero
         eyebrow="店铺数据 · 成本回填"
         title="链接成本"
-        desc="绑定采集服务器上已有的 Temu 店铺，按链接查看已签收订单量，逐行填写单件成本并提交。"
+        desc="先在「店铺绑定」校验 Temu 账号并绑定店铺，回来后手动点击「同步」拉取链接数据，逐行填写单件成本并提交。"
         art="funds"
         aside={
           <>
@@ -302,114 +267,53 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
       </MetricBand>
 
       <SectionCard
-        title="服务器店铺绑定"
-        desc="只列出采集服务器上已有记录的 Temu 账号；绑定后本客户端才能拉取该店铺数据。"
-        icon="cloud"
-        meta={<span className="op-chip">{accounts.length} 个可选</span>}
-        action={
-          <button
-            className="op-btn op-btn-primary op-btn-sm"
-            type="button"
-            disabled={bindingBusy || !selected.length}
-            onClick={() => void bindSelected()}
-          >
-            绑定选中（{selected.length}）
-          </button>
-        }
-      >
-        {accounts.length ? (
-          <div className="op-table-wrap">
-            <table className="op-table">
-              <thead>
-                <tr>
-                  <th style={{ width: 44 }}>选择</th>
-                  <th>店铺</th>
-                  <th>站点</th>
-                  <th>尾号</th>
-                  <th className="op-num">最近采集</th>
-                  <th className="op-num">状态</th>
-                  <th className="op-num">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.map((account) => {
-                  const bound = bindings.some((row) => row.account_id === account.account_id);
-                  return (
-                    <tr key={account.account_id}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selected.includes(account.account_id)}
-                          disabled={bound || bindingBusy}
-                          onChange={() =>
-                            setSelected((previous) =>
-                              previous.includes(account.account_id)
-                                ? previous.filter((id) => id !== account.account_id)
-                                : [...previous, account.account_id],
-                            )
-                          }
-                        />
-                      </td>
-                      <td>
-                        <strong>{account.shop_name || account.account_id}</strong>
-                      </td>
-                      <td>{account.site || "-"}</td>
-                      <td>{account.phone_tail || "-"}</td>
-                      <td className="op-num">{beijingTime(account.last_captured_at) || "-"}</td>
-                      <td className="op-num">
-                        {bound ? (
-                          <span className="op-chip is-ok">已绑定</span>
-                        ) : (
-                          <span className="op-chip">未绑定</span>
-                        )}
-                      </td>
-                      <td className="op-num">
-                        {bound ? (
-                          <button
-                            className="op-btn op-btn-sm"
-                            type="button"
-                            disabled={bindingBusy}
-                            onClick={() => void unbind(account.account_id)}
-                          >
-                            解绑
-                          </button>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <EmptyBlock
-            title="服务器上还没有店铺账号"
-            desc="先在采集服务器录入并登录 Temu 账号，再回来刷新绑定。"
-            art="empty"
-            compact
-          />
-        )}
-      </SectionCard>
-
-      <SectionCard
         title="链接成本"
         desc="按「店铺 → 链接」聚合，成本按链接（SKC）的单件成本提交，只提交改动行。"
         icon="link"
-        meta={<span className="op-chip">{numberText(total)} 个链接</span>}
+        meta={
+          <>
+            <span className="op-chip">{numberText(total)} 个链接</span>
+            {syncedAt ? (
+              <span className="op-chip">上次同步 {beijingTime(syncedAt)}</span>
+            ) : (
+              <span className="op-chip">未同步</span>
+            )}
+          </>
+        }
         action={
-          <button
-            className="op-btn op-btn-primary op-btn-sm"
-            type="button"
-            disabled={submitting || !dirtyRows.length}
-            onClick={() => void submit()}
-          >
-            {submitting ? "提交中…" : `提交改动（${dirtyRows.length}）`}
-          </button>
+          <div className="op-filter-actions">
+            <button
+              className="op-btn op-btn-sm"
+              type="button"
+              disabled={loading || !bindings.length}
+              onClick={sync}
+            >
+              {loading ? "同步中…" : "同步"}
+            </button>
+            <button
+              className="op-btn op-btn-primary op-btn-sm"
+              type="button"
+              disabled={submitting || !dirtyRows.length}
+              onClick={() => void submit()}
+            >
+              {submitting ? "提交中…" : `提交改动（${dirtyRows.length}）`}
+            </button>
+          </div>
         }
       >
-        {bindings.length ? (
+        {!bindings.length ? (
+          <EmptyBlock
+            title="还没有绑定店铺"
+            desc="先到左侧「店铺绑定」输入 Temu 账号密码完成绑定，再回来同步数据。"
+            art="empty"
+          />
+        ) : !synced ? (
+          <EmptyBlock
+            title="尚未同步店铺数据"
+            desc="绑定完成后，点击上方「同步」从采集服务器拉取链接数据。"
+            art="empty"
+          />
+        ) : (
           <>
             <div className="op-filter-card">
               <div className="op-toolbar">
@@ -679,12 +583,6 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
               </div>
             </div>
           </>
-        ) : (
-          <EmptyBlock
-            title="先绑定一个服务器店铺"
-            desc="在上方勾选店铺并绑定后，这里会按店铺和链接展示订单数据。"
-            art="empty"
-          />
         )}
       </SectionCard>
     </div>
