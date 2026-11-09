@@ -132,7 +132,12 @@ export async function buildDraftForPublish(
   productTemplate: ProductTemplate,
   variantTemplate: VariantTemplate | null,
 ): Promise<TemuGoodsDraft> {
-  const categoryIds = productTemplate.categoryPath.map((item) => item.catId);
+  // 模板是存在 localStorage 里的：老版本存下的模板可能缺字段（sizeTemplates / attrs），
+  // 直接用会在 `Object.keys(undefined)` / `.replace` 上抛 TypeError，
+  // 整批每一条都变成「Cannot read properties of undefined」，看不出真实原因。
+  const templatePath = productTemplate.categoryPath ?? [];
+  const templateAttrs = productTemplate.attrs ?? {};
+  const categoryIds = templatePath.map((item) => item.catId);
   if (!categoryIds.length) throw new Error("产品模板里没有类目");
   const leaf = categoryIds[categoryIds.length - 1];
 
@@ -184,8 +189,25 @@ export async function buildDraftForPublish(
     });
   }
 
-  const colors = splitList(variantTemplate?.colorsText ?? prefill.specValue1 ?? "Default");
-  const sizes = splitList(variantTemplate?.sizesText ?? prefill.specValue2 ?? "均码");
+  /**
+   * 规格值口径：变种模板 > 草稿里的**全部**规格值 > 单个值。
+   *
+   * 草稿的 specValue1/2 只是「第一个值」（例如第一个颜色），整列表在
+   * specValues1/2 里。以前只读第一个值，多颜色的草稿批量发出去就只剩一个颜色 ——
+   * 商品建出来了但少了几个变种，很难发现。发布页铺变种表用的就是整列表。
+   */
+  const colors = splitList(
+    variantTemplate?.colorsText ||
+      (prefill.specValues1?.length
+        ? prefill.specValues1.join("\n")
+        : prefill.specValue1 || ""),
+  );
+  const sizes = splitList(
+    variantTemplate?.sizesText ||
+      (prefill.specValues2?.length
+        ? prefill.specValues2.join("\n")
+        : prefill.specValue2 || ""),
+  );
   const batch = variantTemplate?.batch;
 
   // 界面价格是「元」，提交前换成分
@@ -260,7 +282,7 @@ export async function buildDraftForPublish(
   };
 
   // 属性表拿不到就别硬发：属性是全类目必填项，没有它连 pid/refPid 都还原不了
-  if (Object.keys(productTemplate.attrs).length && !attrs) {
+  if (Object.keys(templateAttrs).length && !attrs) {
     throw new Error("类目属性表没取到，无法组装属性（批量发布要靠它确认 pid/refPid），请重试");
   }
   /**
@@ -272,7 +294,7 @@ export async function buildDraftForPublish(
    * 顺便把 refPid / templatePid / 数值录入一起补齐 —— 少一个都会被判「属性不合法」
    * 或「属性数值录入不能为空」。
    */
-  const properties = Object.entries(productTemplate.attrs).map(([key, pick]) => {
+  const properties = Object.entries(templateAttrs).map(([key, pick]) => {
     const sessionPid = Number(key);
     const prop = attrs?.properties.find((item) => item.pid === sessionPid);
     // 有预设可选值 = 「下拉 + 数值」属性（成分 60%），要额外带 numberInputValue；
@@ -293,7 +315,7 @@ export async function buildDraftForPublish(
   const finishDraft = (): TemuGoodsDraft => ({
     category_ids: categoryIds,
     // 类目路径名：发布历史里显示「女装 > 连衣裙」而不是一串 cat id（纯展示字段）
-    category_names: productTemplate.categoryPath.map((item) => item.catName).filter(Boolean),
+    category_names: templatePath.map((item) => item.catName).filter(Boolean),
     title: prefill.title,
     title_en: "",
     carousel_image_urls: carousel,
@@ -307,14 +329,16 @@ export async function buildDraftForPublish(
     // 不再把 1 天 / 7 天当坏值改写成 9 —— 那会让用户选的档位静默失效。
     // 空值才兜底到 Temu 预设 9 天（777600 秒）。
     shipment_limit_seconds: Math.max(1, Number(productTemplate.shipmentDays) || 9) * 86400,
-    outer_goods_url: prefill.sourceUrl ?? "",
+    // 站外链接：Temu 只收 https，http 会被判不合法。单件发布是直接报错拦下，
+    // 批量里为这一个次要字段把整条打失败不值得 —— 直接不带（这个字段本来就是可选的）。
+    outer_goods_url: /^https:\/\//i.test(prefill.sourceUrl ?? "") ? (prefill.sourceUrl ?? "") : "",
     properties,
     skcs,
     // 来源草稿 id：后端发布成功后靠它把这条从草稿库移出，发布历史里也能显示来源。
     // 批量发布以前没带，结果「发成功了但刷新草稿还在」，同一件商品很容易再发一次。
     draft_id: prefill.draftId ?? "",
     site_ids: [SITE_ID],
-    size_template_ids: splitList(productTemplate.sizeTemplates.replace(/[\s,，]+/g, ",")).map(Number).filter((n) => n > 0),
+    size_template_ids: splitList((productTemplate.sizeTemplates ?? "").replace(/[\s,，]+/g, ",")).map(Number).filter((n) => n > 0),
     personalization: productTemplate.isCustom,
     validate_catalog: true,
   });
@@ -342,9 +366,18 @@ export async function buildDraftForPublish(
     specs,
   });
 
+  /**
+   * 规格轴：类目只给颜色（手机壳、毛巾这类）或只给尺码时，另一列不能硬造。
+   *
+   * 以前不分轴，一律 colors × sizes，缺的那一列还会 createSpec 出一个「均码」，
+   * 结果 Temu 判「不合法的规格属性」—— 单列类目在批量发布里必然全失败。
+   * 发布页支持 0/1/2 列，后端 payload 也支持，这里对齐。
+   */
+  const colorAxis = colors.length > 0 && !!colorParent && saleIndex.has(colorParent);
+  const sizeAxis = sizes.length > 0 && !!sizeParent && saleIndex.has(sizeParent);
+
   // 类目没有销售属性（桌布/亚麻布这类）：Temu 不给颜色/尺码变种，只能建单 SKU 商品。
-  // 之前这里一律 createSpec 自建规格，这类类目批量发布必然全失败。
-  if (saleIndex.size === 0) {
+  if (!colorAxis && !sizeAxis && saleIndex.size === 0) {
     const singleCode =
       [safeCode(prefill.sku) || "SKU", safeCode(colors[0]), safeCode(sizes[0])]
         .filter(Boolean)
@@ -360,18 +393,33 @@ export async function buildDraftForPublish(
     return finishDraft();
   }
 
-  for (const color of colors) {
-    const colorSpec = await ensure(colorParent, productTemplate.colorParentName || "颜色", color);
+  // 类目有销售属性、却一个轴都没对上：说明草稿规格值和类目预设值对不上，或模板缺父规格。
+  // 这时**不能**静默降级成单 SKU —— 商品会建出来但一个变种都没有，比报错更难发现。
+  if (!colorAxis && !sizeAxis) {
+    throw new Error(
+      "草稿的规格值和类目预设值对不上（或产品模板缺少颜色/尺码父规格）：选一个变种模板再发",
+    );
+  }
+
+  const colorList = colorAxis ? colors : [""];
+  const sizeList = sizeAxis ? sizes : [""];
+
+  for (const color of colorList) {
+    const colorSpec = colorAxis
+      ? await ensure(colorParent, productTemplate.colorParentName || "颜色", color)
+      : null;
     const skus: TemuSkuDraft[] = [];
-    for (const size of sizes) {
-      const sizeSpec = await ensure(sizeParent, productTemplate.sizeParentName || "尺码", size);
+    for (const size of sizeList) {
+      const sizeSpec = sizeAxis
+        ? await ensure(sizeParent, productTemplate.sizeParentName || "尺码", size)
+        : null;
       skus.push(
         skuFields(
           [safeCode(prefill.sku) || "SKU", safeCode(color), safeCode(size)]
             .filter(Boolean)
             .join("-")
             .slice(0, 120) || `SKU-${skus.length + 1}`,
-          [colorSpec, sizeSpec],
+          [colorSpec, sizeSpec].filter(Boolean) as TemuSkuDraft["specs"],
         ),
       );
     }
@@ -381,7 +429,7 @@ export async function buildDraftForPublish(
         `SKC-${skcs.length + 1}`,
       preview_image_urls: [carousel[0]],
       color_image_url: carousel[0],
-      main_specs: [colorSpec],
+      main_specs: colorSpec ? [colorSpec] : [],
       skus,
     });
   }

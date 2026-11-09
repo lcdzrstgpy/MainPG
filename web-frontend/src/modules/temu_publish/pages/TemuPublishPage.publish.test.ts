@@ -153,7 +153,7 @@ test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () 
   // 必须把来源草稿 id 带上去：后端发布成功后靠它把草稿移出草稿库，
   // 以前没带 → 「发成功了但刷新草稿还在」，同一件商品很容易再发一遍
   assert.match(batch, /draft_id: prefill\.draftId \?\? "",/);
-  assert.match(batch, /category_names: productTemplate\.categoryPath\.map\(\(item\) => item\.catName\)\.filter\(Boolean\),/);
+  assert.match(batch, /category_names: templatePath\.map\(\(item\) => item\.catName\)\.filter\(Boolean\),/);
 });
 
 test("草稿带入的图也按类目裁比例（不是只有手动上传才裁）", () => {
@@ -177,7 +177,7 @@ test("批量发布：属性 pid 还原原始 pid，并补齐 refPid / 数值录�
   assert.match(batch, /template_pid: prop\?\.templatePid \?\? undefined,/);
   assert.match(batch, /number_input_value: hasOptions \? pick\.text : "",/);
   // 属性表拿不到就别硬发：pid/refPid 还原不出来
-  assert.match(batch, /if \(Object\.keys\(productTemplate\.attrs\)\.length && !attrs\) \{/);
+  assert.match(batch, /if \(Object\.keys\(templateAttrs\)\.length && !attrs\) \{/);
 });
 
 test("变种行的单独预览图也要转存图床（dataURL / 本地路径不能直发）", () => {
@@ -379,8 +379,8 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
 
   // 组装：一个颜色一个 SKC，价格/尺寸取模板批量值优先
   assert.match(batch, /export async function buildDraftForPublish\(/);
-  assert.match(batch, /for \(const color of colors\) \{/);
-  assert.match(batch, /for \(const size of sizes\) \{/);
+  assert.match(batch, /for \(const color of colorList\) \{/);
+  assert.match(batch, /for \(const size of sizeList\) \{/);
   assert.match(batch, /currency_type: "CNY"/);
   assert.match(batch, /personalization: productTemplate\.isCustom/);
 });
@@ -923,12 +923,19 @@ test("单 SKU 与多规格：按类目能力走，不能只看 isSale", () => {
 test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () => {
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
 
-  assert.match(batch, /if \(saleIndex\.size === 0\) \{/);
+  // 规格轴：类目给哪一列就用哪一列；两列都没有（或无一对上）→ 单 SKU。
+  // 以前不分轴，缺的那一列还会 createSpec 出一个「均码」，Temu 判不合法。
+  assert.match(batch, /const colorAxis = colors\.length > 0 && !!colorParent && saleIndex\.has\(colorParent\);/);
+  assert.match(batch, /const sizeAxis = sizes\.length > 0 && !!sizeParent && saleIndex\.has\(sizeParent\);/);
+  assert.match(batch, /if \(!colorAxis && !sizeAxis\) \{/);
   assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\]\)\],/);
   assert.ok(
-    batch.indexOf("if (saleIndex.size === 0) {") < batch.indexOf("const colorSpec = await ensure("),
+    batch.indexOf("if (!colorAxis && !sizeAxis) {") < batch.indexOf("const colorSpec = colorAxis"),
     "单 SKU 分支必须排在规格解析之前",
   );
+  // 只有颜色或只有尺码时，另一轴不能进 specs
+  assert.match(batch, /\[colorSpec, sizeSpec\]\.filter\(Boolean\) as TemuSkuDraft\["specs"\]/);
+  assert.match(batch, /main_specs: colorSpec \? \[colorSpec\] : \[\],/);
 });
 
 test("属性输入支持「下拉 + 数值」并存（成分比例这类）", () => {
@@ -1471,7 +1478,10 @@ test("批量发布：没有产品模板也能现场配类目+全量属性，直�
   assert.match(manual, /saveAttrPicksHistory\(storageScope\(\), catIdRef\.current, next\);/);
   assert.match(manual, /onChange=\{handlePicksChange\}/);
   // 配不齐就回传 null，别让父组件以为能发
-  assert.match(manual, /if \(!path\.length \|\| !freightId \|\| !warehouseId\) \{\s*\n\s*onChange\(null\);/);
+  // 配置齐了才回传模板：类目 + 运费 + 仓库 + **必填属性填完**。
+  // 少最后一条，父组件的「开始发布」会在必填没填时也亮，整批注定被拒。
+  assert.match(manual, /const configReady =\n?\s*path\.length > 0 && !!freightId && !!warehouseId && !!attributes && missing\.length === 0;/);
+  assert.match(manual, /if \(!configReady\) \{\s*\n\s*onChange\(null\);/);
 });
 
 test("入草稿库时按标题自动匹配 Temu 类目（标 auto、不覆盖人工选的）", () => {

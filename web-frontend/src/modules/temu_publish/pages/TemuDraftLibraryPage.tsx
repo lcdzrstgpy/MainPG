@@ -334,6 +334,27 @@ function leafCatIdOf(path?: TemuCategory[]): number {
 }
 
 /**
+ * 从 goods.add 的返回里挑商品 id。
+ *
+ * 不同网关字段名不一样（goodsId / goods_id / productId / gid / id），还有把结果
+ * 再包一层（result / data）的。后台 submissions.goods_id_from_result 是同一套
+ * 顺序，这里只用于「批量完成」那行提示，取不到就不显示，别影响发布结果。
+ */
+function pickGoodsId(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const record = result as Record<string, unknown>;
+  for (const key of ["goodsId", "goods_id", "productId", "product_id", "gid", "id"]) {
+    const value = record[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value);
+  }
+  for (const key of ["result", "data"]) {
+    const nested = pickGoodsId(record[key]);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+/**
  * 属性预填里「填了几个」：估出来的 picks 里真正有值的项数。
  * 只用于界面显示，不参与任何判定。
  */
@@ -863,11 +884,7 @@ export function TemuDraftLibraryPage({
       try {
         const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
         const result = await temuPublishApi.publish(draft);
-        const goodsId = String(
-          (result.result as Record<string, unknown> | undefined)?.goodsId ??
-            (result.result as Record<string, unknown> | undefined)?.productId ??
-            "",
-        );
+        const goodsId = pickGoodsId(result.result);
         if (goodsId) publishedIds.push(goodsId);
         if (result.warnings?.length) {
           warned += 1;
@@ -1667,7 +1684,9 @@ export function TemuDraftLibraryPage({
                   <button
                     type="button"
                     className="temu-btn temu-btn-primary"
-                    disabled={!productTpl || batchState.running || !batchTargets.length}
+                    // 现场配置（manualTemplate）也是一份合法模板：只看 productTpl 的话，
+                    // 一个模板都没存过的用户按提示填完现场配置，按钮还是灰的 —— 死路。
+                    disabled={(!productTpl && !manualTemplate) || batchState.running || !batchTargets.length}
                     onClick={() => void runBatchPublish()}
                   >
                     {batchState.running ? "提交中…" : `开始发布（${batchTargets.length} 条）`}
