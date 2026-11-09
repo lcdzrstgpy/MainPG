@@ -4535,30 +4535,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         </aside>
       </div>
 
-      {imagePreview ? (
-        <div
-          className="temu-image-preview"
-          role="dialog"
-          aria-modal="true"
-          aria-label="图片预览"
-          onClick={() => setImagePreview(null)}
-        >
-          <img
-            src={imagePreview.src}
-            alt={imagePreview.alt || ""}
-            referrerPolicy="no-referrer"
-            onClick={(event) => event.stopPropagation()}
-          />
-          <button
-            type="button"
-            className="temu-image-preview-close"
-            onClick={() => setImagePreview(null)}
-            aria-label="关闭预览"
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
+      {imagePreview
+        ? createPortal(
+            <div
+              className="temu-image-preview"
+              role="dialog"
+              aria-modal="true"
+              aria-label="图片预览"
+              onClick={() => setImagePreview(null)}
+            >
+              <img
+                src={imagePreview.src}
+                alt={imagePreview.alt || ""}
+                referrerPolicy="no-referrer"
+                onClick={(event) => event.stopPropagation()}
+              />
+              <button
+                type="button"
+                className="temu-image-preview-close"
+                onClick={() => setImagePreview(null)}
+                aria-label="关闭预览"
+              >
+                ×
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {tokenHelpOpen &&
         createPortal(

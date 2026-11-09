@@ -176,3 +176,15 @@ test("海外上架：店铺授权的「?」能打开图文说明，两张图都�
   assert.match(css, /^\.temu-help-dot \{/m);
   assert.match(css, /\.temu-help-shot\.is-narrow \{[\s\S]{0,60}max-width: 300px/);
 });
+
+test("发布页：图片预览必须 portal 到 body（否则被说明弹窗盖住）", () => {
+  // 2026-11-09 实测：点「?」弹窗里的截图，预览层没显示在最上面。
+  // 根因是 .workspace-main { z-index: 1 } 形成层叠上下文，预览层 z-index:9999
+  // 也被困在里面；说明弹窗是 body 下的 9998，反而盖住了预览。
+  const page = read("../modules/temu_publish/pages/TemuPublishPage.tsx");
+  const start = page.indexOf("{imagePreview");
+  const block = page.slice(start, page.indexOf("{tokenHelpOpen"));
+  assert.ok(start > 0 && block.length > 0, "找不到图片预览块");
+  assert.match(block, /createPortal\(/, "预览层要 portal 出去");
+  assert.match(block, /document\.body/);
+});
