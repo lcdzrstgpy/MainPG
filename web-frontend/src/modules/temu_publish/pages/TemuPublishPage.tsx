@@ -4582,7 +4582,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
               <p className="temu-help-lead">
                 发布商品用的是 <strong>Temu 卖家后台</strong>签发的 access_token，不是你登录工作台的账号。
-                跟着下面两步在自己的店铺后台拿一次，之后一直用这个 token 发布，直到它过期。
+                跟着下面三步在自己的店铺后台走一次，之后一直用这个 token 发布，直到它过期。
               </p>
 
               <section className="temu-help-step">
@@ -4629,11 +4629,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 />
               </section>
 
+              <section className="temu-help-step">
+                <div className="temu-help-step-head">
+                  <i>3</i>
+                  <strong>「我的授权」里能看到这条授权</strong>
+                </div>
+                <p>
+                  授权成功后，页面下方「我的授权」会多一条「自研应用管理系统」，右边操作列是「取消授权」，
+                  有效期约 90 天；到期前点「取消授权」再重新获取一次就行。
+                </p>
+                <img
+                  className="temu-help-shot"
+                  src="/help/temu-auth-page.png"
+                  alt="授权管理（商品）页的「我的授权」：自研应用管理系统"
+                  title="点击看大图"
+                  onClick={() =>
+                    setImagePreview({
+                      src: "/help/temu-auth-page.png",
+                      alt: "授权管理（商品）页的「我的授权」：自研应用管理系统",
+                    })
+                  }
+                />
+              </section>
+
               <p className="temu-help-note">
-                授权成功后，「我的授权」里会多一条「自研应用管理系统」，有效期约 90 天，到期前在操作列
-                「取消授权」再重新获取。拿到 access_token 后整串粘到下面「新增店铺」，点
-                「校验并保存为店铺」——注意别把「服务商凭据」和它混了，那是服务器下发的，不用填。
-                找不到 token 就直接问对接运营。截图可以点开看大图。
+                拿到 access_token 后整串粘到下面「新增店铺」，点「校验并保存为店铺」——注意别把
+                「服务商凭据」和它混了，那是服务器下发的，不用填。找不到 token 就直接问对接运营。
+                截图可以点开看大图。
               </p>
             </div>
           </div>,
