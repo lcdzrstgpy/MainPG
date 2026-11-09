@@ -142,7 +142,11 @@ export async function buildDraftForPublish(
   const leaf = categoryIds[categoryIds.length - 1];
 
   const carouselSource = splitList(prefill.images.join("\n"));
-  if (!carouselSource.length) throw new Error("草稿没有轮播图");
+  // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」）。提前拦，
+  // 不然图全传完才被拒，批量里还看不出是哪一步的问题
+  if (carouselSource.length < 3) {
+    throw new Error(`草稿轮播图不足 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
+  }
   /**
    * 主图比例按类目走：服饰（= 必须有尺码表）3:4，其它 1:1。
    *

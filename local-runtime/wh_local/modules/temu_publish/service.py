@@ -1397,6 +1397,13 @@ def _assemble_payload(
     if any(value <= 0 for value in category_ids):
         raise ValueError("category_ids 必须是正整数")
     _validate_https_urls("carouselImageUrls", draft.carousel_image_urls)
+    # 轮播图至少 3 张：网关实测会回「轮播图最少 3 张」，补到 3 张后错误才往前推进
+    # （docs/temu-接口实测清单-20261028.md）。放在 https 校验之后 ——
+    # 格式错先报格式，别让「只有 1 张」把真正的原因盖住。
+    if len(draft.carousel_image_urls) < 3:
+        raise ValueError(
+            f"轮播图至少 3 张（当前 {len(draft.carousel_image_urls)} 张），Temu 会直接拒"
+        )
     _validate_https_urls("outerPackageImageReqs", draft.outer_package_image_urls, required=False)
     _validate_https_urls("goodsLayerDecorationReqs", draft.detail_image_urls, required=False)
     # 带尺寸的详情图是另一条分支（goodsLayerDecorationReqs），之前漏在校验之外

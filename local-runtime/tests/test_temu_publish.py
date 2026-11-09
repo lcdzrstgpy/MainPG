@@ -154,7 +154,7 @@ def _draft(properties: list[GoodsPropertyInput] | None = None) -> GoodsDraftInpu
     return GoodsDraftInput(
         category_ids=[18768, 19503, 19668, 19669],
         title="Cartoon cosmetic bag",
-        carousel_image_urls=["https://img.example.com/main.jpg"],
+        carousel_image_urls=["https://img.example.com/main.jpg", "https://img.example.com/main2.jpg", "https://img.example.com/main3.jpg"],
         freight_template_id="HFT-19421251915858203874",
         properties=properties
         if properties is not None
@@ -229,7 +229,11 @@ def test_build_payload_rejects_invalid_property_value(tmp_path: Path) -> None:
 def test_build_payload_rejects_non_https_image(tmp_path: Path) -> None:
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
     draft = _draft()
-    draft.carousel_image_urls = ["http://img.example.com/main.jpg"]
+    draft.carousel_image_urls = [
+        "http://img.example.com/main.jpg",
+        "http://img.example.com/main2.jpg",
+        "http://img.example.com/main3.jpg",
+    ]
 
     with pytest.raises(ValueError, match="https"):
         service.build_goods_payload(draft)
@@ -404,7 +408,7 @@ def test_router_settings_and_payload_without_network(tmp_path: Path) -> None:
     draft = {
         "category_ids": [18768, 19503, 19668, 19669],
         "title": "Cartoon cosmetic bag",
-        "carousel_image_urls": ["https://img.example.com/main.jpg"],
+        "carousel_image_urls": ["https://img.example.com/main.jpg", "https://img.example.com/main2.jpg", "https://img.example.com/main3.jpg"],
         "freight_template_id": "HFT-1",
         "validate_catalog": False,
         "skcs": [
@@ -2949,7 +2953,7 @@ def _draft_with_specs(specs: list[SkuSpecInput]) -> GoodsDraftInput:
     return GoodsDraftInput(
         category_ids=[18768, 19503, 19668, 19669],
         title="Any category product",
-        carousel_image_urls=["https://img.example.com/main.jpg"],
+        carousel_image_urls=["https://img.example.com/main.jpg", "https://img.example.com/main2.jpg", "https://img.example.com/main3.jpg"],
         freight_template_id="HFT-19421251915858203874",
         properties=[GoodsPropertyInput(pid=1, vid=10)],
         skcs=[
@@ -4166,3 +4170,19 @@ def test_list_task_summaries_skips_items(tmp_path: Path) -> None:
     assert summary["success_count"] == 2
     # 明确不该带的字段（带 items 就要把整任务 result_json 读出来）
     assert "items" not in summary
+
+
+def test_carousel_requires_at_least_three_images(tmp_path: Path) -> None:
+    """轮播图少于 3 张在本地就拒：网关实测回「轮播图最少 3 张」，别等图全传完才失败。"""
+    service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
+    draft = _draft()
+    draft.carousel_image_urls = [
+        "https://img.example.com/a.jpg",
+        "https://img.example.com/b.jpg",
+    ]
+    with pytest.raises(ValueError, match="至少 3 张"):
+        service.build_goods_payload(draft)
+
+    draft.carousel_image_urls.append("https://img.example.com/c.jpg")
+    payload = service.build_goods_payload(draft)["payload"]
+    assert len(payload["carouselImageUrls"]) == 3

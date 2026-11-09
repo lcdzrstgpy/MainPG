@@ -2253,7 +2253,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (!leaf?.isLeaf) throw new Error("请选择到叶子类目");
     if (!form.title.trim()) throw new Error("请填写产品标题");
     const carouselSource = splitLines(form.carousel);
-    if (!carouselSource.length) throw new Error("至少需要一张产品轮播图");
+    // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」），界面上也是这么写的。
+    // 以前只拦空，1~2 张能一路传到网关才被拒 —— 白等一轮图片上传。
+    if (carouselSource.length < 3) {
+      throw new Error(`轮播图至少 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
+    }
     if (carouselSource.length > 10) throw new Error("轮播图最多 10 张");
     // 草稿带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
     const outerSource = splitLines(form.outerImages);

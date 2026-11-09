@@ -63,7 +63,7 @@ def _draft() -> GoodsDraftInput:
     return GoodsDraftInput(
         category_ids=[9711, 12015, 12256, 12262],
         title="Redacted sample product title",
-        carousel_image_urls=["https://img.example.com/main.jpg"],
+        carousel_image_urls=["https://img.example.com/main.jpg", "https://img.example.com/main2.jpg", "https://img.example.com/main3.jpg"],
         material_image_url="https://img.example.com/main.jpg",
         freight_template_id="HFT-REDACTED",
         properties=[GoodsPropertyInput(pid=100001, vid=300001)],

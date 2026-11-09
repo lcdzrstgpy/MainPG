@@ -107,3 +107,16 @@ test("发布页：产品素材图的占位文案要区分「必填/可选」", (
   assert.match(page, /"必填 · 粘贴 Temu 图片地址，或点右边「上传方图」"/);
   assert.match(page, /"可选 · 留空自动用轮播第一张"/);
 });
+
+test("发布/批量发布：轮播图少于 3 张在本地就拦（Temu 硬性要求）", () => {
+  // 网关实测会回「轮播图最少 3 张」（docs/temu-接口实测清单-20261028.md）。
+  // 以前只拦空，1~2 张能一路传到网关才被拒，白等一轮图片上传。
+  const page = read("../modules/temu_publish/pages/TemuPublishPage.tsx");
+  const batch = read("../modules/temu_publish/data/batchPublish.ts");
+  assert.match(page, /if \(carouselSource\.length < 3\) \{/);
+  assert.match(page, /轮播图至少 3 张/);
+  assert.match(batch, /if \(carouselSource\.length < 3\) \{/);
+  assert.match(batch, /草稿轮播图不足 3 张/);
+  // 界面上的说明必须是同一个数，不能一处写 3 一处写 1
+  assert.match(page, /至少 3 张 · 1:1 方图/);
+});
