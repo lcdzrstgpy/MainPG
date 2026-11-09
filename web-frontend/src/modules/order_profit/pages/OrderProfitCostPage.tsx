@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { showToast } from "../../../shared/components/toastStore";
 import {
@@ -62,6 +62,11 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
   const [submitting, setSubmitting] = useState(false);
 
   const shopFilterKey = shopFilter.join(",");
+  const activeStatusIndex = Math.max(
+    0,
+    STATUS_TABS.findIndex((tab) => tab.key === statusFilter),
+  );
+  const segmentStyle = { "--op-segment-count": STATUS_TABS.length } as CSSProperties;
 
   const loadBridge = async () => {
     try {
@@ -322,31 +327,44 @@ export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean })
             <div className="op-filter-card">
               <div className="op-toolbar">
                 <strong>筛选</strong>
-                {STATUS_TABS.map((tab) => (
-                  <button
-                    key={tab.key || "all"}
-                    type="button"
-                    className={`op-chip${statusFilter === tab.key ? " is-ok" : ""}`}
-                    onClick={() => {
-                      setStatusFilter(tab.key);
+                <div className="op-segment" style={segmentStyle} role="group" aria-label="订单状态筛选">
+                  <span
+                    className="op-segment-thumb"
+                    aria-hidden="true"
+                    style={{ transform: `translateX(${activeStatusIndex * 100}%)` }}
+                  />
+                  {STATUS_TABS.map((tab) => {
+                    const active = statusFilter === tab.key;
+                    return (
+                      <button
+                        key={tab.key || "all"}
+                        type="button"
+                        className={active ? "is-active" : ""}
+                        aria-pressed={active}
+                        onClick={() => {
+                          setStatusFilter(tab.key);
+                          setPage(1);
+                        }}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <label className="op-switch">
+                  <input
+                    type="checkbox"
+                    checked={missingOnly}
+                    onChange={(event) => {
+                      setMissingOnly(event.target.checked);
                       setPage(1);
                     }}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-                <span className="op-chip-warn-divider" aria-hidden="true" />
-                <button
-                  type="button"
-                  className={`op-chip${missingOnly ? " is-warn" : ""}`}
-                  aria-pressed={missingOnly}
-                  onClick={() => {
-                    setMissingOnly((previous) => !previous);
-                    setPage(1);
-                  }}
-                >
-                  只看成本缺失
-                </button>
+                  />
+                  <span className="op-switch-track" aria-hidden="true">
+                    <span className="op-switch-knob" />
+                  </span>
+                  <span className="op-switch-label">只看成本缺失</span>
+                </label>
               </div>
               <div className="op-filter-row">
                 <label className="op-field op-field-slim">
