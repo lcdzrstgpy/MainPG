@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
@@ -1822,6 +1823,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [pickerSlot, setPickerSlot] = useState<ImageSlot | null>(null);
   /** 图片放大预览（变种图 / 轮播图点开看大图） */
   const [imagePreview, setImagePreview] = useState<{ src: string; alt?: string } | null>(null);
+  /** 「怎么拿 access_token」说明弹窗：查店铺授权状态时随手能点开，不用去翻文档。 */
+  const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   /** 挑图超出上限时的一句话提示（几秒后自己消失） */
   const [pickerNotice, setPickerNotice] = useState("");
 
@@ -3115,7 +3118,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <strong>{gatewayReady ? "已由服务器下发（不用管）" : "还没拿到"}</strong>
             </div>
             <div>
-              <span>店铺授权</span>
+              <span>
+                店铺授权
+                {/* 问号放在授权状态旁边：用户是看到「已配置/未绑定」才想问怎么弄，
+                    去个人中心翻文档太远。 */}
+                <button
+                  type="button"
+                  className="temu-help-dot"
+                  title="怎么拿 access_token？点这里看步骤和图"
+                  aria-label="怎么拿 access_token"
+                  onClick={() => setTokenHelpOpen(true)}
+                >
+                  ?
+                </button>
+              </span>
               <strong>{status?.configured.access_token ? "已配置" : "未绑定"}</strong>
             </div>
           </div>
@@ -4543,6 +4559,84 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </button>
         </div>
       ) : null}
+
+      {tokenHelpOpen &&
+        createPortal(
+          <div className="temu-edit-backdrop" onClick={() => setTokenHelpOpen(false)}>
+            <div
+              className="temu-edit-dialog temu-help-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label="怎么拿店铺 access_token"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="temu-edit-head">
+                <div>
+                  <strong>怎么拿店铺 access_token</strong>
+                  <span>一个店铺一个 token，不能混用</span>
+                </div>
+                <button type="button" onClick={() => setTokenHelpOpen(false)} aria-label="关闭">
+                  ×
+                </button>
+              </header>
+
+              <p className="temu-help-lead">
+                发布商品用的是 <strong>Temu 卖家后台</strong>签发的 access_token，不是你登录工作台的账号。
+                跟着下面两步在自己的店铺后台拿一次，之后一直用这个 token 发布，直到它过期。
+              </p>
+
+              <section className="temu-help-step">
+                <div className="temu-help-step-head">
+                  <i>1</i>
+                  <strong>卖家中心 → 服务市场 → 授权管理</strong>
+                </div>
+                <p>登录 Temu 卖家中心，左侧菜单最下面的「服务市场」展开后点「授权管理」。</p>
+                <img
+                  className="temu-help-shot is-narrow"
+                  src="/help/temu-auth-menu.png"
+                  alt="Temu 卖家中心左侧菜单：服务市场 → 授权管理"
+                  title="点击看大图"
+                  onClick={() =>
+                    setImagePreview({
+                      src: "/help/temu-auth-menu.png",
+                      alt: "Temu 卖家中心左侧菜单：服务市场 → 授权管理",
+                    })
+                  }
+                />
+              </section>
+
+              <section className="temu-help-step">
+                <div className="temu-help-step-head">
+                  <i>2</i>
+                  <strong>在「我的授权」里找到「自研应用管理系统」</strong>
+                </div>
+                <p>
+                  授权管理页往下拉到「我的授权」，找到「自研应用管理系统」那一行，点开后复制里面的
+                  access_token（整串，别只复制一半）。
+                </p>
+                <img
+                  className="temu-help-shot"
+                  src="/help/temu-auth-page.png"
+                  alt="授权管理（商品）页：我的授权 → 自研应用管理系统"
+                  title="点击看大图"
+                  onClick={() =>
+                    setImagePreview({
+                      src: "/help/temu-auth-page.png",
+                      alt: "授权管理（商品）页：我的授权 → 自研应用管理系统",
+                    })
+                  }
+                />
+              </section>
+
+              <p className="temu-help-note">
+                那一行右侧显示「取消授权」说明这个店已经授权过；要换新的 token 就先取消、再重新授权。
+                token 有有效期（页面上会显示到期日），过期前用同样的步骤换一次就行。
+                拿到后粘到下面「新增店铺」的输入框，点「校验并保存为店铺」。截图可以点开看大图。
+              </p>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {pickerSlot ? (
         <DraftImagePicker

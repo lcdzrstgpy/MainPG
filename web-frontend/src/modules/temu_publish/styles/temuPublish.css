@@ -7177,3 +7177,110 @@ textarea.temu-input {
   background: var(--theme-module-surface-soft, #f7fafc);
   font-size: 12px;
 }
+
+/* ---------- 店铺授权说明：标题旁的小问号 + 两步图文弹窗 ---------- */
+
+/* 问号做成 17px 的小圆点：比正文小一号，不抢「已配置/未绑定」的注意力，
+   但可点区域按 17px 给足，鼠标移上去会变主题色。 */
+.temu-help-dot {
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  margin-left: 6px;
+  padding: 0;
+  border: 1px solid var(--theme-module-border-strong, #bfd6e6);
+  border-radius: 50%;
+  color: var(--theme-text-muted, #6d8aa2);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: -2px;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+
+.temu-help-dot:hover,
+.temu-help-dot:focus-visible {
+  color: var(--theme-primary, #0a8fca);
+  border-color: var(--theme-primary, #0a8fca);
+  background: var(--theme-module-surface-tint, #eef8ff);
+}
+
+/* 两张截图并排会看不清，竖着排；弹窗自身 overflow:auto，长图能滚。 */
+.temu-help-dialog {
+  width: min(780px, 94vw);
+}
+
+.temu-help-lead {
+  margin: 0;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.temu-help-step {
+  display: grid;
+  gap: 8px;
+}
+
+.temu-help-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.temu-help-step-head i {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--theme-primary, #0a8fca);
+  font-size: 11.5px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.temu-help-step-head strong {
+  color: var(--theme-text-primary, #1d3a50);
+  font-size: 13px;
+}
+
+.temu-help-step p {
+  margin: 0;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.temu-help-shot {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border: 1px solid var(--theme-module-border, #dbe7f0);
+  border-radius: 10px;
+  background: #fff;
+  cursor: zoom-in;
+}
+
+/* 第一张是菜单的小截图（257px），不要放大到满宽 —— 放大只会更糊。 */
+.temu-help-shot.is-narrow {
+  max-width: 300px;
+}
+
+.temu-help-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--theme-primary, #0a8fca);
+  border-radius: 0 8px 8px 0;
+  color: var(--theme-text-secondary, #4a6478);
+  background: var(--theme-module-surface-soft, #f6fafd);
+  font-size: 12px;
+  line-height: 1.7;
+}

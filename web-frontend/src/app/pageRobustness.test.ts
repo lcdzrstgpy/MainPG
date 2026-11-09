@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 /**
@@ -158,4 +158,21 @@ test("发布页：报错条带「去改」按钮，区块来自后端 detail.sec
   // 前端不再自己猜一份「怎么改」：后端已经把结论+建议拼进 message，两套会打架
   const store = read("../modules/temu_publish/data/localStore.ts");
   assert.doesNotMatch(store, /轮播图需 1:1、≥800×800；详情图一个模块只能一张/);
+});
+
+test("海外上架：店铺授权的「?」能打开图文说明，两张图都在 public/help", () => {
+  // 用户 2026-11-09 要求：在店铺授权状态旁边加问号，点开是
+  // 「服务市场 → 授权管理」两张截图 + 拿 token 的步骤说明。
+  const page = read("../modules/temu_publish/pages/TemuPublishPage.tsx");
+  assert.match(page, /className="temu-help-dot"/, "店铺授权旁要有问号按钮");
+  assert.match(page, /onClick=\{\(\) => setTokenHelpOpen\(true\)\}/);
+  assert.match(page, /temu-help-dialog/, "点开要有说明弹窗");
+  for (const img of ["temu-auth-menu.png", "temu-auth-page.png"]) {
+    assert.match(page, new RegExp(img), `弹窗里要引用 ${img}`);
+    assert.ok(existsSync(new URL(`../../public/help/${img}`, import.meta.url)), `缺少 public/help/${img}`);
+  }
+
+  const css = read("../modules/temu_publish/styles/temuPublish.css");
+  assert.match(css, /^\.temu-help-dot \{/m);
+  assert.match(css, /\.temu-help-shot\.is-narrow \{[\s\S]{0,60}max-width: 300px/);
 });
