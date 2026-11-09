@@ -115,8 +115,25 @@
   font-size: 13px;
 }
 
-.ledger-keyword input {
-  min-width: 220px;
+.ledger-keyword {
+  flex: 1 1 260px;
+}
+
+.ledger-keyword textarea {
+  width: 100%;
+  min-width: 240px;
+  max-width: 420px;
+  min-height: 34px;
+  max-height: 120px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-primary, #18334d);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: vertical;
 }
 
 .ledger-batch-filter select {

@@ -58,6 +58,16 @@ def _text(value: Any) -> str:
     return str(value if value is not None else "").strip()
 
 
+# 一次搜多个货号：换行、空格、逗号、分号、竖线都当分隔符。
+_KEYWORD_SEPARATORS = re.compile(r"[\s,，、;；|]+")
+
+
+def _keyword_terms(keyword: Any) -> list[str]:
+    """把关键词拆成去重后的检索词；任意一个命中即保留该商品。"""
+    parts = (part.casefold() for part in _KEYWORD_SEPARATORS.split(_text(keyword)) if part)
+    return list(dict.fromkeys(parts))
+
+
 def _clean_source_title(value: Any) -> str:
     """采集插件偶发把整块价格审核弹窗文字塞进标题；剔除明显脏值并限长。"""
     text = _text(value)
@@ -728,7 +738,7 @@ class SourcingLedgerService:
             {_text(item.get("store_name")) for item in items if _text(item.get("store_name"))}
         )
         wanted_status = [_text(value) for value in _text(status).split(",") if _text(value)]
-        keyword_key = _text(keyword).casefold()
+        keyword_terms = _keyword_terms(keyword)
         if wanted_site:
             items = [item for item in items if item["site_code"] == wanted_site]
         if wanted_batch == UNASSIGNED_BATCH_ID:
@@ -737,14 +747,20 @@ class SourcingLedgerService:
             items = [item for item in items if item["batch_id"] == wanted_batch]
         if wanted_store:
             items = [item for item in items if item["store_name"] == wanted_store]
-        if keyword_key:
+        if keyword_terms:
             items = [
                 item
                 for item in items
-                if keyword_key in item["skc"].casefold()
-                or keyword_key in item["title"].casefold()
-                or keyword_key in item["market_skc_code"].casefold()
-                or keyword_key in item["market_skc_id"].casefold()
+                if any(
+                    term in value.casefold()
+                    for term in keyword_terms
+                    for value in (
+                        item["skc"],
+                        item["title"],
+                        item["market_skc_code"],
+                        item["market_skc_id"],
+                    )
+                )
             ]
         counts = {key: 0 for key in _STATUS_ORDER}
         for item in items:
