@@ -386,6 +386,21 @@
   gap: 10px;
 }
 
+/* 刷新草稿时的局部状态：不压暗列表，只提示正在刷新 */
+.verify-draft-refreshing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 5px 10px;
+  border: 1px solid var(--theme-module-border, #d5e2ee);
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+  color: var(--theme-text-secondary, #527089);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 /* ── 首次拉取草稿时的骨架占位 ── */
 .verify-draft-list.is-skeleton {
   pointer-events: none;

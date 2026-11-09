@@ -1240,6 +1240,50 @@
   display: block;
 }
 
+/* 商品图：悬停放大，单击仍走大图预览（与草稿库一致） */
+.profit-product-image-cell {
+  position: relative;
+  z-index: 1;
+  cursor: zoom-in;
+}
+
+.profit-product-image {
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+  transform-origin: center;
+}
+
+.profit-product-image-cell:hover {
+  z-index: 90;
+}
+
+/* 悬停放大改用 fixed 浮层，避免被表格滚动容器裁切 */
+.profit-product-image-hover-anchor {
+  display: inline-grid;
+  place-items: center;
+}
+
+.profit-product-image-hover {
+  position: fixed;
+  z-index: 3000;
+  width: auto;
+  max-width: 260px;
+  max-height: 340px;
+  overflow: hidden;
+  border-radius: 12px;
+  pointer-events: none;
+  box-shadow: 0 22px 48px rgba(8, 24, 40, 0.35);
+  background: transparent;
+}
+
+.profit-product-image-hover img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 260px;
+  max-height: 340px;
+  object-fit: contain;
+}
+
 .profit-editable-cell {
   display: inline-flex;
   align-items: center;
@@ -1529,30 +1573,39 @@
   line-height: 1.1;
 }
 
-/* 大图预览弹窗 */
+/* 大图预览弹窗：图片按自身比例显示，不要白底边框/留白 */
 .profit-image-preview-mask {
   position: fixed;
   inset: 0;
   z-index: 1500;
-  background: rgba(10, 22, 36, 0.18);
-  backdrop-filter: blur(2px);
+  background: rgba(6, 14, 24, 0.62);
+  backdrop-filter: blur(4px);
 }
 
 .profit-image-preview-modal {
   position: fixed;
-  display: flex;
-  border: 1px solid rgba(188, 216, 235, .9);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 20px 48px rgba(5, 16, 28, 0.26);
-  overflow: hidden;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 92vw;
+  max-height: 88vh;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
 }
 
 .profit-image-preview-img {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
+  max-width: 92vw;
+  max-height: 88vh;
   object-fit: contain;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  background: transparent;
 }
 
 .profit-image-preview-close {

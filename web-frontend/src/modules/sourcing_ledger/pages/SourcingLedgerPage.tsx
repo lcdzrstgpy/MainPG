@@ -144,6 +144,8 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [detailBusy, setDetailBusy] = useState(false);
   const [form, setForm] = useState<SourceForm | null>(null);
   const [busy, setBusy] = useState("");
+  // 手动填申报价（采集不到时按 Temu 可上架价直接填），随申报价区块一起补回
+  const [manualPriceDraft, setManualPriceDraft] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [weightDraft, setWeightDraft] = useState("");
   const [batchStoreDraft, setBatchStoreDraft] = useState("");
@@ -278,6 +280,59 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     } finally {
       setBusy("");
     }
+  };
+
+  /**
+   * 申报价三件事：指定用哪个 SKU 的价格 / 手动填价 / 删掉某个 SKU 的申报价。
+   *
+   * 2026-11-09 合并 `fix/dxm-export-and-activity-filter` 时发现：这三个入口
+   * 在我们这版的整页重写里被静默删掉过（API 还在，UI 没了），页面上只能看价、
+   * 不能选价也不能删。同一个问题队友在 `feature/pp-main-bg-scene` 上已经补过一次，
+   * 所以这里连注释一起补回来 —— 下次再整页重写时请保留。
+   */
+  const choosePriceSku = async (skuRef: string) => {
+    if (!detail) return;
+    await run(
+      "price-selection",
+      async () => {
+        const payload = await sourcingLedgerApi.setPriceSelection(detail.skc, skuRef);
+        setDetail(payload);
+        reload();
+      },
+      skuRef ? "已改用该 SKU 的申报价" : "已恢复默认最低申报价",
+    );
+  };
+
+  const removeDeclaredPrice = async (rowId: string) => {
+    if (!detail || !rowId) return;
+    if (!window.confirm("删除这个 SKU 的申报价？删除后不再参与最低价与利润计算。")) return;
+    await run(
+      "declared-delete",
+      async () => {
+        const payload = await sourcingLedgerApi.deleteDeclaredPrice(detail.skc, rowId);
+        setDetail(payload);
+        reload();
+      },
+      "SKU 已删除",
+    );
+  };
+
+  const saveManualPrice = async () => {
+    if (!detail) return;
+    const price = manualPriceDraft.trim();
+    if (!price) {
+      setError("请填写申报价");
+      return;
+    }
+    await run(
+      "manual-price",
+      async () => {
+        const payload = await sourcingLedgerApi.setManualPrice(detail.skc, price);
+        setDetail(payload);
+        reload();
+      },
+      "申报价已保存，利润已按新价格重算",
+    );
   };
 
   const saveSource = async () => {
@@ -1272,24 +1327,88 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
             )}
 
             <section className="ledger-section">
-              <h3>申报价明细（{detail.declared_prices.length}）</h3>
+              <div className="ledger-price-head">
+                <h3>申报价明细（{detail.declared_prices.length}）</h3>
+                <div className="ledger-price-head-actions">
+                  {detail.price_selection ? (
+                    <button
+                      type="button"
+                      className="ledger-link"
+                      onClick={() => void choosePriceSku("")}
+                      disabled={Boolean(busy)}
+                    >
+                      恢复默认最低价
+                    </button>
+                  ) : null}
+                  <small>多个 SKU 价格不同时可指定一个；未指定默认取最低价</small>
+                </div>
+              </div>
+              <div className="ledger-manual-price">
+                <span>手动填写申报价（元）</span>
+                <input
+                  value={manualPriceDraft}
+                  inputMode="decimal"
+                  placeholder="如 150"
+                  onChange={(event) => setManualPriceDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void saveManualPrice();
+                  }}
+                />
+                <button
+                  type="button"
+                  className="ledger-btn is-primary"
+                  onClick={() => void saveManualPrice()}
+                  disabled={Boolean(busy) || !manualPriceDraft.trim()}
+                >
+                  {busy === "manual-price" ? "保存中…" : "保存"}
+                </button>
+                <small>采集不到申报价时直接填，保存后利润按新价重算</small>
+              </div>
               <div className="ledger-price-table">
                 <table>
                   <thead>
                     <tr>
-                      <th>SKU 货号</th>
                       <th>SKU 属性</th>
                       <th>原申报价</th>
                       <th>调整后</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     {detail.declared_prices.map((row, index) => (
-                      <tr key={`${row.sku_id}-${index}`}>
-                        <td>{row.sku_merchant_code || row.sku_id || "—"}</td>
-                        <td title={row.sku_attribute_text}>{row.sku_attribute_text || "—"}</td>
+                      <tr
+                        key={row.id || `${row.sku_id}-${index}`}
+                        className={row.selected ? "is-selected" : ""}
+                      >
+                        <td className="ledger-price-attr" title={row.sku_attribute_text}>
+                          {row.sku_attribute_text || "—"}
+                        </td>
                         <td>{money(row.original_price_cny)}</td>
                         <td>{money(row.adjusted_price_cny)}</td>
+                        <td className="ledger-price-actions">
+                          {row.selected ? (
+                            <span className="ledger-price-chosen">
+                              {detail.price_selection ? "使用中" : "默认最低"}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="ledger-link"
+                              onClick={() => void choosePriceSku(row.sku_ref || "")}
+                              disabled={!row.sku_ref || Boolean(busy)}
+                            >
+                              使用
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="ledger-link is-danger"
+                            onClick={() => void removeDeclaredPrice(row.id || "")}
+                            disabled={!row.id || Boolean(busy)}
+                          >
+                            删除
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {!detail.declared_prices.length && (

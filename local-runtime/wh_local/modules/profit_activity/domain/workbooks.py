@@ -4,6 +4,7 @@ import html
 import re
 import zipfile
 from collections import Counter
+from copy import copy
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
@@ -378,6 +379,9 @@ def filter_activity_workbook(
     try:
         worksheet = _activity_price_sheet(workbook)
         headers = _headers(worksheet)
+        # max_column 在 openpyxl 里会遍历整张表的所有单元格；缓存一次，避免
+        # 每条剔除行读取原值时重复全表扫描。
+        column_count = worksheet.max_column
         product_id_indices = _product_id_indices(headers)
         if not product_id_indices:
             raise ValueError("activity workbook is missing a product ID column")
@@ -397,7 +401,7 @@ def filter_activity_workbook(
             row_site = _normalize_site_value(str(_cell(cells, site_index) or "")) if site_index is not None else ""
             if row_site and row_site != site:
                 site_mismatch_rows.add(row_number)
-                removed_rows.append(_removed_row(worksheet, row_number, "site_mismatch", None))
+                removed_rows.append(_removed_row(worksheet, row_number, "site_mismatch", None, column_count))
                 continue
             activity_name = str(_cell(cells, activity_index) or "").strip() if activity_index is not None else ""
             price = _decimal(_cell(cells, price_index)) if price_index is not None else None
@@ -444,7 +448,7 @@ def filter_activity_workbook(
                     removed_row_numbers.add(row_number)
                     removed_skcs.add(matched_id)
                     removed_activity_keys.add((matched_id, activity_name))
-                    removed_rows.append(_removed_row(worksheet, row_number, reason, decision))
+                    removed_rows.append(_removed_row(worksheet, row_number, reason, decision, column_count))
 
         _delete_rows(worksheet, removed_row_numbers)
         # Activity templates commonly contain a second inventory sheet.  Once
@@ -686,12 +690,54 @@ def _number(value: Decimal | None) -> float | None:
 
 
 def _delete_rows(worksheet, row_numbers: set[int]) -> None:
-    for row_number in sorted((number for number in row_numbers if number > 1), reverse=True):
-        worksheet.delete_rows(row_number, 1)
+    """一次性重建保留行，避免逐行 ``delete_rows`` 造成 O(n²)。
+
+    openpyxl 的 ``delete_rows`` 每删一行都会移动该行以下的全部单元格；活动模板
+    动辄近万行，逐行删除实测约 0.1 秒/行，一次过滤要十几分钟。这里只保留表头
+    与未命中的行，清空后整表写回，复杂度 O(n)，并保留表头样式与列宽。
+    """
+    targets = {number for number in row_numbers if number > 1}
+    if not targets:
+        return
+    max_row = worksheet.max_row
+    max_column = worksheet.max_column
+    freeze_panes = worksheet.freeze_panes
+    widths = {
+        key: dimension.width
+        for key, dimension in worksheet.column_dimensions.items()
+        if dimension.width is not None
+    }
+    # 保留每行的值、单元格样式和行高：活动模板的表头/数据行样式、行高
+    # （如 36/20）与原文件保持一致，避免重建后视觉变形。
+    kept_rows: list[tuple[list[Any], list[Any], float | None]] = []
+    for row in range(1, max_row + 1):
+        if row > 1 and row in targets:
+            continue
+        values: list[Any] = []
+        styles: list[Any] = []
+        for column in range(1, max_column + 1):
+            cell = worksheet.cell(row, column)
+            values.append(cell.value)
+            styles.append(copy(cell._style))
+        dimension = worksheet.row_dimensions.get(row)
+        kept_rows.append((values, styles, dimension.height if dimension is not None else None))
+    worksheet.delete_rows(1, max_row)
+    for new_row, (values, styles, height) in enumerate(kept_rows, start=1):
+        worksheet.append(values)
+        for column, style in enumerate(styles, start=1):
+            worksheet.cell(new_row, column)._style = style
+        if height is not None:
+            worksheet.row_dimensions[new_row].height = height
+    for key, width in widths.items():
+        worksheet.column_dimensions[key].width = width
+    if freeze_panes:
+        worksheet.freeze_panes = freeze_panes
 
 
-def _removed_row(worksheet, row_number: int, reason_code: str, decision: dict[str, Any] | None) -> dict[str, Any]:
-    values = [cell.value for cell in worksheet[row_number]]
+def _removed_row(worksheet, row_number: int, reason_code: str, decision: dict[str, Any] | None, column_count: int | None = None) -> dict[str, Any]:
+    if column_count is None:
+        column_count = worksheet.max_column
+    values = [worksheet.cell(row_number, column).value for column in range(1, column_count + 1)]
     return {
         "worksheet": worksheet.title, "row_number": row_number,
         "values": values, "reason_code": reason_code,
