@@ -442,7 +442,8 @@ class CollectorStore:
             ).fetchone()
             conn.execute(
                 "INSERT INTO bridge_bindings (client_id, account_id, claimed_by, created_at) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT(client_id, account_id) DO NOTHING",
+                "VALUES (?, ?, ?, ?) ON CONFLICT(client_id, account_id) DO UPDATE SET "
+                "claimed_by = excluded.claimed_by WHERE bridge_bindings.claimed_by = ''",
                 (client_id, account["id"], display, now),
             )
         return {
