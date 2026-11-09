@@ -20,11 +20,18 @@ class BridgeApiError(RuntimeError):
 
 class BridgeApiClient:
     def __init__(
-        self, base_url: str, key: str, client_id: str, *, timeout: float = 30.0
+        self,
+        base_url: str,
+        key: str,
+        client_id: str,
+        *,
+        label: str = "",
+        timeout: float = 30.0,
     ) -> None:
         self._base_url = str(base_url or "").rstrip("/")
         self._key = str(key or "").strip()
         self._client_id = str(client_id or "").strip() or "local"
+        self._label = str(label or "").strip()
         self._timeout = timeout
 
     @property
@@ -44,6 +51,7 @@ class BridgeApiClient:
             "/bindings",
             payload={
                 "client_id": self._client_id,
+                "label": self._label,
                 "phone": phone,
                 "password": password,
             },
@@ -62,6 +70,9 @@ class BridgeApiClient:
         }
         params["client_id"] = self._client_id
         return self._request("GET", "/items", params=params)
+
+    def claims(self) -> dict[str, Any]:
+        return self._request("GET", "/claims")
 
     def costs(self) -> dict[str, Any]:
         return self._request("GET", "/costs", params={"client_id": self._client_id})

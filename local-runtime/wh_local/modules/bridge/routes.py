@@ -75,6 +75,13 @@ def create_bridge_router(client: BridgeApiClient) -> APIRouter:
         except BaseException as error:
             raise _error(error) from error
 
+    @router.get("/claims")
+    def claims() -> dict[str, Any]:
+        try:
+            return client.claims()
+        except BaseException as error:
+            raise _error(error) from error
+
     @router.get("/items")
     def items(
         account_ids: str = Query(default=""),

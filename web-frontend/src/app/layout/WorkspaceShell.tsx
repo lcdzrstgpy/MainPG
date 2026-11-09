@@ -42,6 +42,7 @@ const SourcingLedgerPage = lazy(() => import("../../modules/sourcing_ledger/page
 const OrderProfitPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitPage").then((m) => ({ default: m.OrderProfitPage })));
 const OrderProfitBindingPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitBindingPage").then((m) => ({ default: m.OrderProfitBindingPage })));
 const OrderProfitCostPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitCostPage").then((m) => ({ default: m.OrderProfitCostPage })));
+const OrderProfitClaimsPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitClaimsPage").then((m) => ({ default: m.OrderProfitClaimsPage })));
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
 const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
@@ -1191,6 +1192,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         break;
       case "order_profit_costs":
         content = <OrderProfitCostPage isActive={isActive} />;
+        break;
+      case "order_profit_claims":
+        content = <OrderProfitClaimsPage isActive={isActive} />;
         break;
       case "order_profit_overview":
         content = (

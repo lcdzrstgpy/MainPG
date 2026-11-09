@@ -67,6 +67,7 @@ class LocalRuntimeConfig:
     bridge_base_url: str = ""
     bridge_key: str = ""
     bridge_client_id: str = ""
+    bridge_client_label: str = ""
 
 
 def billing_contract_version() -> str:
@@ -87,6 +88,18 @@ def _default_dev_admin_token() -> str:
     if getattr(sys, "frozen", False):
         return secrets.token_urlsafe(24)
     return "dev-admin-token"
+
+
+def _default_bridge_label() -> str:
+    """本机认领显示名：Windows 用户名@计算机名，便于在服务端认领记录里识别设备。"""
+    user = (
+        os.environ.get("USERNAME")
+        or os.environ.get("USER")
+        or os.environ.get("LOGNAME")
+        or "本机"
+    )
+    host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "PC"
+    return f"{user}@{host}"
 
 
 def default_data_dir(runtime_root: Path) -> Path:
@@ -255,6 +268,9 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
         bridge_key=os.environ.get("WH_LOCAL_BRIDGE_KEY", BRIDGE_TEST_KEY).strip(),
         bridge_client_id=os.environ.get(
             "WH_LOCAL_BRIDGE_CLIENT_ID", f"wh-{uuid.getnode():012x}"
+        ).strip(),
+        bridge_client_label=os.environ.get(
+            "WH_LOCAL_BRIDGE_CLIENT_LABEL", _default_bridge_label()
         ).strip(),
     )
 

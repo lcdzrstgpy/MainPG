@@ -377,8 +377,27 @@ class CollectorStore:
             for row in rows
         ]
 
+    def list_claims(self) -> list[dict[str, Any]]:
+        """所有客户端的认领记录（跨店铺），供服务端与客户端审计。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT b.account_id, b.client_id, b.created_at, c.label "
+                "FROM bridge_bindings b "
+                "LEFT JOIN bridge_clients c ON c.client_id = b.client_id "
+                "ORDER BY b.account_id ASC, b.created_at ASC"
+            ).fetchall()
+        return [
+            {
+                "account_id": str(row["account_id"]),
+                "client_id": str(row["client_id"]),
+                "label": str(row["label"] or ""),
+                "bound_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     def bind_with_credentials(
-        self, client_id: str, phone: str, password: str
+        self, client_id: str, phone: str, password: str, label: str = ""
     ) -> dict[str, Any]:
         """用 Temu 账号密码与服务器已有账号建立绑定。
 
@@ -398,12 +417,13 @@ class CollectorStore:
         if str(credentials.get("password") or "") != str(password):
             return {"ok": False, "reason": "bad_password"}
         now = now_iso()
+        display = str(label or "").strip() or client_id
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO bridge_clients (client_id, label, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?) ON CONFLICT(client_id) DO UPDATE SET "
                 "label = excluded.label, updated_at = excluded.updated_at",
-                (client_id, account["shop_name"] or account["alias"], now, now),
+                (client_id, display, now, now),
             )
             existing = conn.execute(
                 "SELECT 1 FROM bridge_bindings WHERE client_id = ? AND account_id = ?",

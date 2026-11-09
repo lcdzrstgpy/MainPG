@@ -1052,6 +1052,7 @@ def create_app(database_path: Path | None = None) -> FastAPI:
                 config.bridge_base_url,
                 config.bridge_key,
                 config.bridge_client_id,
+                label=config.bridge_client_label,
             )
         ),
         prefix="/api",

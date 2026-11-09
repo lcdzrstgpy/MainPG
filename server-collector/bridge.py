@@ -228,6 +228,32 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
             )
         return {"client_id": client_id, "accounts": rows}
 
+    @router.get("/claims")
+    def list_claims() -> dict[str, Any]:
+        """按店铺汇总认领记录：每个店铺有哪些客户端在认领、何时认领。"""
+        accounts = {account["id"]: account for account in store.list_accounts()}
+        groups: dict[str, dict[str, Any]] = {}
+        for claim in store.list_claims():
+            account = accounts.get(claim["account_id"]) or {}
+            group = groups.get(claim["account_id"])
+            if group is None:
+                group = {
+                    "account_id": claim["account_id"],
+                    "shop_name": _shop_name(account),
+                    "phone_tail": account.get("phone_tail", ""),
+                    "site": account.get("site", ""),
+                    "claims": [],
+                }
+                groups[claim["account_id"]] = group
+            group["claims"].append(
+                {
+                    "client_id": claim["client_id"],
+                    "label": claim["label"] or claim["client_id"],
+                    "bound_at": claim["bound_at"],
+                }
+            )
+        return {"accounts": list(groups.values())}
+
     @router.post("/bindings")
     def save_bindings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         client_id = str(payload.get("client_id") or "").strip()
@@ -235,7 +261,9 @@ def create_bridge_router(store: CollectorStore) -> APIRouter:
         password = str(payload.get("password") or "")
         if not client_id:
             raise HTTPException(400, "缺少 client_id")
-        result = store.bind_with_credentials(client_id, phone, password)
+        result = store.bind_with_credentials(
+            client_id, phone, password, label=str(payload.get("label") or "")
+        )
         if not result.get("ok"):
             reason = result.get("reason")
             if reason == "missing":

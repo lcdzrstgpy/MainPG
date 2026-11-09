@@ -311,6 +311,18 @@ def orders(account_id: str) -> dict[str, Any]:
     snapshot = store.latest_snapshot(account_id, "orders")
     if snapshot is None:
         raise HTTPException(404, "还没有采集结果")
+    # 把客户端回填的单件成本合并进行数据，服务端页面才能看到成本字段。
+    costs = {
+        str(row["skc_id"]): row for row in store.list_costs([account_id])
+    }
+    items = ((snapshot.get("payload") or {}).get("items") or [])
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        cost = costs.get(str(item.get("skc_id") or ""))
+        item["unit_cost"] = cost["unit_cost"] if cost else None
+        item["cost_currency"] = cost["currency"] if cost else ""
+        item["cost_updated_at"] = cost["updated_at"] if cost else ""
     return snapshot
 
 

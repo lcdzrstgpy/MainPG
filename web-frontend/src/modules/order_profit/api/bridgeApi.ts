@@ -49,6 +49,20 @@ export type BridgeCost = {
   updated_at: string;
 };
 
+export type BridgeClaim = {
+  client_id: string;
+  label: string;
+  bound_at: string;
+};
+
+export type BridgeClaimShop = {
+  account_id: string;
+  shop_name: string;
+  phone_tail: string;
+  site: string;
+  claims: BridgeClaim[];
+};
+
 type ItemsParams = {
   account_ids?: string;
   status?: string;
@@ -97,6 +111,11 @@ export const bridgeApi = {
       productProcessingApiContext(),
       `${BASE}/bindings/${encodeURIComponent(accountId)}`,
       { method: "DELETE" },
+    ),
+  claims: () =>
+    ppRequest<{ accounts: BridgeClaimShop[] }>(
+      productProcessingApiContext(),
+      `${BASE}/claims`,
     ),
   items: (params: ItemsParams) =>
     ppRequest<BridgeItemsResponse>(
