@@ -916,7 +916,6 @@ export function TemuDraftLibraryPage({
           priceLabel: price ? `CNY ${price}` : "",
           at: new Date().toLocaleString("zh-CN"),
           reason: parsed.reason,
-          hint: parsed.hint,
           traceId: parsed.traceId,
           // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
           prefill: {

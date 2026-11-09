@@ -616,7 +616,13 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
       ? "本地服务无响应，请检查 MainPG 后台组件是否被杀毒软件拦截"
       : detailFromPayload(payload, response.status);
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
-    throw new Error(toUserMessage(detail));
+    const error = new Error(toUserMessage(detail)) as Error & { section?: string };
+    // 后端在 detail 里带了「该去哪个区块改」（发布页据此给一个「去改」按钮）。
+    // detailFromPayload 只取 message，这里单独取一次 section —— 不给公共返回类型加字段，
+    // 免得所有调用方都被迫处理一个只有发布页用得上的东西。
+    const section = (payload as { detail?: { section?: unknown } } | null)?.detail?.section;
+    if (typeof section === "string" && section) error.section = section;
+    throw error;
   }
 
   return payload as T;

@@ -185,7 +185,9 @@
 
 .temu-alert {
   display: flex;
-  align-items: center;
+  /* 错误文案可能三四行（结论 + 原话 + 建议），按钮跟着第一行对齐，
+     居中会在长文案里飘到中间去 */
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
@@ -194,6 +196,26 @@
   color: #8d2a2a;
   background: #fff5f5;
   font-size: 13px;
+}
+
+.temu-alert > span {
+  min-width: 0;
+  line-height: 1.65;
+}
+
+.temu-alert-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 「去改产品信息」：错误条上唯一的主动作，给个描边胶囊，别和「关闭」长一样 */
+.temu-alert button.is-primary {
+  padding: 3px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: #fff;
 }
 
 .temu-alert button {

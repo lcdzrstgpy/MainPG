@@ -1370,20 +1370,26 @@ def test_gateway_auth_errors_carry_actionable_hint() -> None:
     """CLIENT_TOKEN_INVALID 要说清是「服务商网关凭据」而不是店铺 token，并给排查方向。"""
     from wh_local.modules.temu_publish.router import _gateway_message
 
-    text = _gateway_message("CLIENT_TOKEN_INVALID", "client_id or token is invalid")
-    assert text.startswith("Temu 拒绝了这次提交：client_id or token is invalid")
+    text, section = _gateway_message("CLIENT_TOKEN_INVALID", "client_id or token is invalid")
+    # 结构：先给一句人话结论，原话放括号里 —— 直译的原话单独摆出来用户看不懂
+    assert text.startswith("Temu 拒绝了这次提交：服务商网关不认这组凭据")
+    assert "原话：client_id or token is invalid" in text
     assert "CLIENT_TOKEN_INVALID" in text
     # 文案里不能出现供应商名字（用户要求界面上不显示）
     assert "服务商网关" in text and "access_token" in text
     assert "盈銮" not in text
+    # 凭据类问题没有页面区块可跳，不给「去改」按钮
+    assert section == ""
 
-    net = _gateway_message("NETWORK_ERROR", "网关网络请求失败：SSLEOFError")
+    net, _ = _gateway_message("NETWORK_ERROR", "网关网络请求失败：SSLEOFError")
     assert "系统代理" in net and "WH_TEMU_PROXY" in net
     assert "盈銮" not in net
 
-    # 没登记的错误码不加多余的话，保持上游原话
-    plain = _gateway_message("SOME_NEW_CODE", "boom")
-    assert plain == "Temu 拒绝了这次提交：boom（错误码 SOME_NEW_CODE）"
+    # 没登记的错误码：原话照给 + 提醒转给对接人，别假装我们知道怎么修
+    plain, plain_section = _gateway_message("SOME_NEW_CODE", "boom")
+    assert "boom" in plain and "错误码 SOME_NEW_CODE" in plain
+    assert "发给对接人" in plain
+    assert plain_section == ""
 
 
 def test_gateway_error_6000002_points_at_the_real_cause() -> None:
@@ -1397,12 +1403,15 @@ def test_gateway_error_6000002_points_at_the_real_cause() -> None:
     from wh_local.modules.temu_publish.router import _CATEGORY_ATTRS_CHANGED, _gateway_message
 
     assert _CATEGORY_ATTRS_CHANGED == "6000002"
-    text = _gateway_message("6000002", "货品类目属性更新，请刷新页面后重新创建商品")
-    assert "Temu 拒绝了这次提交：货品类目属性更新" in text
+    text, section = _gateway_message("6000002", "货品类目属性更新，请刷新页面后重新创建商品")
+    assert text.startswith("Temu 拒绝了这次提交：类目属性/规格跟 Temu 对不上")
+    assert "原话：货品类目属性更新，请刷新页面后重新创建商品" in text
     assert "6000002" in text
     assert "属性表已过时" not in text, "这个结论已经被证伪，别再误导排查"
     assert "重新选" in text
     assert "真实规格" in text
+    # 属性问题一律指向「产品信息」区块，前端据此画「去改」按钮
+    assert section == "sec-info"
 
 
 def test_unbinding_keeps_gateway_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4186,3 +4195,30 @@ def test_carousel_requires_at_least_three_images(tmp_path: Path) -> None:
     draft.carousel_image_urls.append("https://img.example.com/c.jpg")
     payload = service.build_goods_payload(draft)["payload"]
     assert len(payload["carouselImageUrls"]) == 3
+
+
+def test_gateway_unknown_code_falls_back_to_message_patterns() -> None:
+    """错误码表不可能全，用 Temu 原话兜底 —— 这两条是真实失败记录里捞出来的。
+
+    2026-11-09 之前，2000096 和「发货时效」都不在错误码表里，用户只看到一句
+    直译原话（「体积内容必须遵循…」），既不知道指什么、也不知道去哪改。
+    """
+    from wh_local.modules.temu_publish.router import _gateway_message
+
+    # 2000096：体积三边问题 → 指到「包装信息」
+    text, section = _gateway_message("2000096", "体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则")
+    assert text.startswith("Temu 拒绝了这次提交：长宽高不合规")
+    assert "长宽高" in text and "厘米" in text
+    assert "2000096" in text
+    assert section == "sec-pack"
+
+    # 发货时效（这条网关没给码）：同样要给出「换成哪几档」的建议
+    text2, section2 = _gateway_message("", "当前承诺发货时效暂不支持")
+    assert text2.startswith("Temu 拒绝了这次提交：这个发货时效档位 Temu 不收")
+    assert "1 / 2 / 7" in text2
+    assert section2 == "sec-pack"
+
+    # 认不出来的措辞不能瞎指区块，否则「去改」按钮会把人带错地方
+    text3, section3 = _gateway_message("", "some brand new gate message")
+    assert section3 == ""
+    assert "发给对接人" in text3

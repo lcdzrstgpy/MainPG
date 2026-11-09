@@ -141,3 +141,21 @@ test("发布页：完成态对勾用 SVG，不用字符 ✓", () => {
     /^\.temu-tick \{/m,
   );
 });
+
+test("发布页：报错条带「去改」按钮，区块来自后端 detail.section", () => {
+  // 光说「哪里错了」不够：长表单里用户还得自己滚到那一块找。
+  const page = read("../modules/temu_publish/pages/TemuPublishPage.tsx");
+  assert.match(page, /const \[errorSection, setErrorSection\] = useState\(""\);/);
+  assert.match(page, /const section = \(cause as \{ section\?: unknown \} \| null\)\?\.section;/);
+  assert.match(page, /去改\{SECTION_LABELS\[errorSection\]\}/);
+  assert.match(page, /onClick=\{\(\) => jumpTo\(errorSection\)\}/);
+  // 区块 id 必须是页面真实存在的 section，写错了按钮会滚到空白
+  for (const id of ["sec-base", "sec-info", "sec-variant", "sec-pack"]) {
+    assert.match(page, new RegExp(`"${id}": "`), `SECTION_LABELS 缺 ${id}`);
+    assert.match(page, new RegExp(`id="${id}"`), `页面里没有 ${id} 这个区块`);
+  }
+
+  // 前端不再自己猜一份「怎么改」：后端已经把结论+建议拼进 message，两套会打架
+  const store = read("../modules/temu_publish/data/localStore.ts");
+  assert.doesNotMatch(store, /轮播图需 1:1、≥800×800；详情图一个模块只能一张/);
+});

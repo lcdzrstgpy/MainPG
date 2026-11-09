@@ -576,6 +576,17 @@ function SectionHead({
   );
 }
 
+/**
+ * 后端在 detail.section 里给「该去哪个区块改」，这里只负责把 id 翻成人话。
+ * 后端用的是页面区块 id（sec-*），加新区块时两边一起加。
+ */
+const SECTION_LABELS: Record<string, string> = {
+  "sec-base": "基本信息",
+  "sec-info": "产品信息",
+  "sec-variant": "变种信息",
+  "sec-pack": "包装信息",
+};
+
 export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: () => void } = {}) {
   const [status, setStatus] = useState<TemuSettingsStatus | null>(null);
   // 进页面时 status 还是 null：这时候不知道绑没绑，不能先按「未绑定」渲染，
@@ -586,6 +597,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     loadJsonLocal<TemuTokenInfo | null>(`${SHOP_INFO_KEY}:${storageScope()}`, null),
   );
   const [error, setError] = useState("");
+  /**
+   * 报错对应的区块 id（后端在 detail.section 里给）。
+   * 有值时错误条上多一个「去改产品信息」按钮 —— 光说「哪里错了」不够，
+   * 长表单里用户还得自己滚到那一块找。
+   */
+  const [errorSection, setErrorSection] = useState("");
   const [busy, setBusy] = useState("");
   // 提交发布进行中：别的任务跑完不能把它「解除」，否则连点就是重复上架
   const [publishing, setPublishing] = useState(false);
@@ -1246,10 +1263,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const run = async (label: string, task: () => Promise<void>) => {
     setBusy(label);
     setError("");
+    setErrorSection("");
     try {
       await task();
     } catch (cause) {
       setError(errorMessage(cause));
+      const section = (cause as { section?: unknown } | null)?.section;
+      setErrorSection(typeof section === "string" ? section : "");
     } finally {
       // 只清自己那次：发布这种长任务进行中，别的短任务结束不能把按钮重新解禁
       setBusy((current) => (current === label ? "" : current));
@@ -2686,7 +2706,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           priceLabel: `CNY ${draft.skcs[0]?.skus[0]?.supplier_price ?? ""}`,
           at: new Date().toLocaleString("zh-CN"),
           reason: parsed.reason,
-          hint: parsed.hint,
           traceId: parsed.traceId,
           // 带上重试所需的字段：草稿库「发布失败」里点重试可以直接回填
           prefill: {
@@ -3193,7 +3212,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       {error && (
         <div className="temu-alert" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setError("")}>关闭</button>
+          <div className="temu-alert-actions">
+            {SECTION_LABELS[errorSection] ? (
+              <button type="button" className="is-primary" onClick={() => jumpTo(errorSection)}>
+                去改{SECTION_LABELS[errorSection]}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                setError("");
+                setErrorSection("");
+              }}
+            >
+              关闭
+            </button>
+          </div>
         </div>
       )}
 
