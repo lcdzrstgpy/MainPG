@@ -11,6 +11,7 @@ import {
 } from "../components/PublishSkuPanel";
 import type { VariantRow } from "../components/PublishSkuPanel";
 import { DraftImagePicker } from "../components/DraftImagePicker";
+import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
 import {
@@ -563,7 +564,9 @@ function SectionHead({
 }) {
   return (
     <div className={`temu-sec-head${active ? " is-active" : ""}`}>
-      <span className={`temu-sec-num${step.done ? " is-done" : ""}`}>{step.done ? "✓" : index + 1}</span>
+      <span className={`temu-sec-num${step.done ? " is-done" : ""}`}>
+        {step.done ? <CheckGlyph /> : index + 1}
+      </span>
       <div className="temu-sec-title">
         <h2>{step.label}</h2>
         <p>{step.hint}</p>
@@ -3214,7 +3217,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 aria-current={activeSectionId === step.id ? "step" : undefined}
                 title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
               >
-                <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
+                <span className="temu-stepbar-num">{step.done ? <CheckGlyph /> : index + 1}</span>
                 <span className="temu-stepbar-label">{step.label}</span>
               </button>
               {/* 连接段从本节点圆点中心画到下一个节点圆点中心（等宽单元格 → 宽度 100%） */}
@@ -4375,7 +4378,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               {flowSteps.map((step, index) => (
                 <li key={step.id} className={step.done ? "is-done" : ""}>
                   <button type="button" onClick={() => jumpTo(step.id)}>
-                    <span className="temu-rail-dot">{step.done ? "✓" : index + 1}</span>
+                    <span className="temu-rail-dot">{step.done ? <CheckGlyph /> : index + 1}</span>
                     <span className="temu-rail-label">
                       {step.label}
                       {/* 没填完就直说差什么；填完了才显示这块包含哪些内容 */}

@@ -4563,6 +4563,46 @@ textarea.temu-input {
     0 1px 3px color-mix(in srgb, var(--theme-success, #1f7a4c) 42%, transparent);
 }
 
+/* 完成态的对勾是 SVG 画的（见 components/CheckGlyph.tsx）：
+   字符「✓」的粗细和垂直居中全看字体，换个主题字体就歪，22px 圆里最明显。 */
+.temu-check {
+  display: block;
+  width: 12px;
+  height: 12px;
+  /* 圆头折线视觉重心偏下，往上挑一点才像正中间 */
+  transform: translateY(-0.3px);
+}
+
+.is-console .temu-sec-num .temu-check {
+  width: 13px;
+  height: 13px;
+}
+
+.is-console .temu-rail-dot .temu-check {
+  width: 10px;
+  height: 10px;
+}
+
+/* 打勾的瞬间轻轻弹一下；关掉动效的用户直接看到勾，不做动画 */
+@media (prefers-reduced-motion: no-preference) {
+  .temu-stepbar-item.is-done .temu-check,
+  .is-console .temu-sec-num.is-done .temu-check,
+  .is-console .temu-rail-list li.is-done .temu-check {
+    animation: temu-check-pop 0.22s cubic-bezier(0.22, 1.2, 0.36, 1) both;
+  }
+}
+
+@keyframes temu-check-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-0.3px) scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-0.3px) scale(1);
+  }
+}
+
 /* 当前所在区块：描边 + 主色圆点 + 轻投影，像一枚「被按下」的胶囊 */
 .temu-stepbar-item.is-active {
   border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 42%, transparent);

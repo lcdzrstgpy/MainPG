@@ -120,3 +120,15 @@ test("发布/批量发布：轮播图少于 3 张在本地就拦（Temu 硬性�
   // 界面上的说明必须是同一个数，不能一处写 3 一处写 1
   assert.match(page, /至少 3 张 · 1:1 方图/);
 });
+
+test("发布页：完成态对勾用 SVG，不用字符 ✓", () => {
+  // 字符 ✓ 的粗细和垂直居中全看字体，换台机器/换主题字体就歪。
+  const page = read("../modules/temu_publish/pages/TemuPublishPage.tsx");
+  assert.match(page, /import \{ CheckGlyph \} from "\.\.\/components\/CheckGlyph";/);
+  assert.equal(
+    (page.match(/<CheckGlyph \/>/g) ?? []).length,
+    3,
+    "步骤条 / 区块徽标 / 右侧清单点三处都要换成 SVG",
+  );
+  assert.doesNotMatch(page, /\{step\.done \? "✓"/);
+});
