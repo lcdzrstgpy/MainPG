@@ -736,15 +736,19 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         </label>
         <label className="ledger-keyword">
           <span>关键词</span>
-          <input
+          <textarea
             value={keyword}
-            placeholder="货号 / SKC / 标题"
+            rows={1}
+            placeholder="货号 / SKC / 标题，可换行批量粘贴"
             onChange={(event) => {
               setKeyword(event.target.value);
               setPage(1);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter") reload();
+              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                reload();
+              }
             }}
           />
         </label>
