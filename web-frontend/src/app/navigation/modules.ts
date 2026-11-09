@@ -27,6 +27,7 @@ export type WorkspaceModuleId =
   | "order_profit_overview"
   | "order_profit_orders"
   | "order_profit_funds"
+  | "order_profit_costs"
   | "order_profit_accounts"
   | "order_profit_capture"
   | "order_profit_home"
@@ -263,7 +264,17 @@ const sourcingLedger: WorkspaceModule = {
 /**
  * 店铺数据侧栏：数据量偏少的页面合并展示。
  * 经营概览 = 首页指标 + 流量 + 销量；账户资金 = 对账流水 + 结算回款。
+ * 2026-11-09：成本桥接改造期间，旧的六个子板块先从侧栏隐藏（路由保留），
+ * 只保留「链接成本」一个入口，验收后再清理旧代码。
  */
+const orderProfitCostModule: WorkspaceModule = {
+  id: "order_profit_costs",
+  label: "链接成本",
+  icon: "",
+  iconClass: "iconfont icon-calculator",
+  description: "绑定服务器店铺、拉取链接数据并回填成本",
+};
+
 const orderProfitModules: WorkspaceModule[] = [
   {
     id: "order_profit_overview",
@@ -271,6 +282,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-dashboard",
     description: "店铺首页指标、流量分析与销量库存",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_orders",
@@ -278,6 +290,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-orderedlist",
     description: "全部/待发货/已发货/已签收/已取消订单",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_funds",
@@ -285,6 +298,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-accountbook-fill",
     description: "对账中心流水与结算回款",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_capture",
@@ -292,6 +306,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-cloud-download",
     description: "插件会话、一键采集与实时进度",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_records",
@@ -299,6 +314,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-time-circle",
     description: "订单列表/详情采集写入的批次与入库结果",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_accounts",
@@ -306,6 +322,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-user",
     description: "多账号独立浏览器、自动登录与验证码在线等待",
+    hiddenFromSidebar: true,
   },
 ];
 
@@ -471,9 +488,9 @@ const orderProfitWorkflow: WorkspaceNavigationGroup = {
   label: "店铺数据管理",
   icon: "",
   iconClass: "iconfont icon-accountbook-fill",
-  description: "Temu 店铺指标、订单与账户资金",
-  defaultChildId: "order_profit_overview",
-  children: orderProfitModules,
+  description: "绑定服务器店铺、拉取链接数据与回填成本",
+  defaultChildId: "order_profit_costs",
+  children: [orderProfitCostModule, ...orderProfitModules],
 };
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
@@ -558,6 +575,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   profitActivity,
   productLibrary,
   ...orderProfitModules,
+  orderProfitCostModule,
   ...orderProfitLegacyModules,
   personalCenter,
 ];

@@ -1,0 +1,124 @@
+"""成本桥接 HTTP 路由（/api/bridge）。
+
+前端只访问本地 runtime；服务器地址、共享密钥与客户端标识都在本地补齐。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
+
+from .client import BridgeApiClient, BridgeApiError
+
+
+class BindRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_ids: list[str] = Field(default_factory=list)
+
+
+class CostItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skc_id: str
+    unit_cost: float = Field(ge=0)
+    currency: str = "CNY"
+
+
+class CostsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+    items: list[CostItem] = Field(default_factory=list)
+
+
+def create_bridge_router(client: BridgeApiClient) -> APIRouter:
+    router = APIRouter(prefix="/bridge", tags=["bridge"])
+
+    def _error(error: BaseException) -> HTTPException:
+        if isinstance(error, HTTPException):
+            return error
+        if isinstance(error, BridgeApiError):
+            code = (
+                error.status
+                if 400 <= error.status < 600
+                else status.HTTP_502_BAD_GATEWAY
+            )
+            return HTTPException(code, str(error))
+        return HTTPException(status.HTTP_502_BAD_GATEWAY, str(error))
+
+    @router.get("/status")
+    def bridge_status() -> dict[str, Any]:
+        return {"configured": client.configured, "client_id": client.client_id}
+
+    @router.get("/accounts")
+    def accounts() -> dict[str, Any]:
+        try:
+            return client.accounts()
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/bindings")
+    def bindings() -> dict[str, Any]:
+        try:
+            return client.bindings()
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.post("/bindings")
+    def bind(request: BindRequest) -> dict[str, Any]:
+        try:
+            return client.bind(request.account_ids)
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.delete("/bindings/{account_id}")
+    def unbind(account_id: str) -> dict[str, Any]:
+        try:
+            return client.unbind(account_id)
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/items")
+    def items(
+        account_ids: str = Query(default=""),
+        status_filter: str = Query(default="", alias="status"),
+        date_from: str = Query(default=""),
+        date_to: str = Query(default=""),
+        keyword: str = Query(default=""),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        try:
+            return client.items(
+                account_ids=account_ids,
+                status=status_filter,
+                date_from=date_from,
+                date_to=date_to,
+                keyword=keyword,
+                page=page,
+                page_size=page_size,
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/costs")
+    def costs() -> dict[str, Any]:
+        try:
+            return client.costs()
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.post("/costs")
+    def save_costs(request: CostsRequest) -> dict[str, Any]:
+        try:
+            return client.save_costs(
+                request.account_id,
+                [item.model_dump() for item in request.items],
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
+    return router

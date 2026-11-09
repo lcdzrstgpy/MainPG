@@ -128,17 +128,10 @@ test("data insights groups sourcing profit and store data management", () => {
   ]);
 
   const storeData = findGroup("order_profit");
-  assert.equal(storeData?.defaultChildId, "order_profit_overview");
+  assert.equal(storeData?.defaultChildId, "order_profit_costs");
   assert.deepEqual(
     storeData?.children.filter((child) => !isWorkspaceNavigationGroup(child) && !child.hiddenFromSidebar).map((child) => child.id),
-    [
-      "order_profit_overview",
-      "order_profit_orders",
-      "order_profit_funds",
-      "order_profit_capture",
-      "order_profit_records",
-      "order_profit_accounts",
-    ],
+    ["order_profit_costs"],
   );
   // 合并前的单页入口仍保留在页面路由里，避免浏览器已保存的旧页签失效。
   for (const legacyId of [
