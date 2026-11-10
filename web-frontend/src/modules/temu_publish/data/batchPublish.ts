@@ -3,6 +3,8 @@ import { httpBlob } from "../../../transport/http/client";
 import type { TemuGoodsDraft, TemuPublishPrefill, TemuSkuDraft } from "../types";
 import { matchPresetValue } from "../utils/specMatch";
 import { yuanToCents } from "../utils/price";
+import { mapWithConcurrency } from "./concurrency";
+import { positive, splitList } from "./batchPrecheck";
 import {
   APPAREL_CAROUSEL_SHAPE,
   SQUARE_SHAPE,
@@ -15,6 +17,11 @@ import type { ProductTemplate, VariantTemplate } from "./localStore";
 const SITE_ID = 100;
 /** 详情图统一缩放到的宽度（Temu 商详要求所有楼层等宽）。 */
 const DETAIL_WIDTH = 800;
+/**
+ * 单件发布时实测：并发 3 张能把 10 张轮播的等待压到 1/3 左右，又不至于
+ * 把图床打限流。批量里这条更关键 —— 30 条 × 十几张图，串行就是几百次往返。
+ */
+const IMAGE_UPLOAD_CONCURRENCY = 3;
 
 /**
  * 货号清洗：和发布页变种表同一套规则。
@@ -26,13 +33,6 @@ function safeCode(value: string | undefined | null): string {
   return String(value || "")
     .replace(/[+()（）[\]{}<>《》「」,，.。;；:：/\\|*?"'`~!@#$%^&=\s]+/g, "")
     .trim();
-}
-
-function splitList(text: string): string[] {
-  return text
-    .split(/[\n,，、;；]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -115,11 +115,6 @@ function pickUrl(result: { imageUrl?: string; image_url?: string; url?: string }
   return url;
 }
 
-function positive(value: string, label: string): number {
-  const number = Number(String(value ?? "").trim());
-  if (!Number.isFinite(number) || number <= 0) throw new Error(`${label}必须大于 0`);
-  return number;
-}
 
 /**
  * 批量发布用的草稿组装：和发布页同一套规则，但不依赖页面状态。
@@ -155,13 +150,20 @@ export async function buildDraftForPublish(
    */
   const apparel = await isApparelCategory(leaf);
   const carouselShape = apparel ? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;
-  const carousel: string[] = [];
-  // 第一张的原始像素留着：素材图要从它另裁一张方图（轮播传上去之后已经是裁好的图床图了）
-  let firstRaw: string | null = null;
-  for (const [index, path] of carouselSource.slice(0, 10).entries()) {
-    if (index === 0) firstRaw = await localDataUrl(path);
-    carousel.push(await toTemuImage(path, leaf, carouselShape));
+  const carouselSources = carouselSource.slice(0, 10);
+  // 第一张的原始像素留着：素材图要从它另裁一张方图（轮播传上去之后已经是裁好的图床图了）。
+  // 先取先判 —— 服饰类目取不到原图就没法另裁方图，别等 10 张轮播全传完才整条失败。
+  const firstRaw = apparel ? await localDataUrl(carouselSources[0] ?? "") : null;
+  if (apparel && !firstRaw) {
+    throw new Error(
+      "服饰类目的素材图必须单独是 1:1 方图，而这张轮播图不是本地成品图（外链 / 已是图床地址），没法另裁。" +
+        "请在草稿库换成本地成品图，或用「发布商品」页单件发。",
+    );
   }
+  // 限并发：批量里每条都有十几张图，串行的话 30 条就是几百次排队往返
+  const carousel = await mapWithConcurrency(carouselSources, IMAGE_UPLOAD_CONCURRENCY, (path) =>
+    toTemuImage(path, leaf, carouselShape),
+  );
   /**
    * 素材图：Temu 对所有类目都单独校验「1:1、宽 ≥800」。
    *
@@ -169,29 +171,26 @@ export async function buildDraftForPublish(
    * 拿它当素材图会被拒（实测第 4 关），必须用同一张原图另裁一张方图。
    */
   let material = carousel[0];
-  if (apparel) {
-    if (!firstRaw) {
-      throw new Error(
-        "服饰类目的素材图必须单独是 1:1 方图，而这张轮播图不是本地成品图（外链 / 已是图床地址），没法另裁。" +
-          "请在草稿库换成本地成品图，或用「发布商品」页单件发。",
-      );
-    }
+  if (apparel && firstRaw) {
     material = pickUrl(await temuPublishApi.uploadImage(await toSquareDataUrl(firstRaw), leaf));
   }
   // 详情图必须走 uploadDetailImage：后端会统一缩放到 DETAIL_WIDTH 并回传真实尺寸。
   // 直接传原图链接（之前那样）会因为各图宽度不同被判
   // 「Detail graphic article N floor image width is incorrect」（2000306）。
-  const detailImages: Array<{ url: string; width: number; height: number }> = [];
-  for (const path of splitList((prefill.detailImages ?? []).join("\n"))) {
-    // 已经是图床地址也照样过一遍：要的是「统一宽度 + 真实尺寸」，而不是省一次调用
-    const image = isPublicHttp(path) ? path : await blobToDataUrl(await httpBlob(path));
-    const uploaded = await temuPublishApi.uploadDetailImage(image, DETAIL_WIDTH, leaf);
-    detailImages.push({
-      url: pickUrl(uploaded),
-      width: Number(uploaded.width) || DETAIL_WIDTH,
-      height: Number(uploaded.height) || 0,
-    });
-  }
+  const detailImages = await mapWithConcurrency(
+    splitList((prefill.detailImages ?? []).join("\n")),
+    IMAGE_UPLOAD_CONCURRENCY,
+    async (path) => {
+      // 已经是图床地址也照样过一遍：要的是「统一宽度 + 真实尺寸」，而不是省一次调用
+      const image = isPublicHttp(path) ? path : await blobToDataUrl(await httpBlob(path));
+      const uploaded = await temuPublishApi.uploadDetailImage(image, DETAIL_WIDTH, leaf);
+      return {
+        url: pickUrl(uploaded),
+        width: Number(uploaded.width) || DETAIL_WIDTH,
+        height: Number(uploaded.height) || 0,
+      };
+    },
+  );
 
   /**
    * 规格值口径：变种模板 > 草稿里的**全部**规格值 > 单个值。

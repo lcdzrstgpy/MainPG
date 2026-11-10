@@ -151,7 +151,8 @@ test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () 
   assert.match(batch, /from "\.\/imageShape";/);
   assert.match(batch, /const apparel = await isApparelCategory\(leaf\);/);
   assert.match(batch, /const carouselShape = apparel \? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;/);
-  assert.match(batch, /carousel\.push\(await toTemuImage\(path, leaf, carouselShape\)\);/);
+  // 限并发上传（每条十几张图，串行太慢）
+  assert.match(batch, /await mapWithConcurrency\(carouselSources, IMAGE_UPLOAD_CONCURRENCY, \(path\) =>\s*\n\s*toTemuImage\(path, leaf, carouselShape\),/);
   // 本地成品图才裁得了：取 blob → canvas 裁 → 再传
   assert.match(batch, /const shaped = await toRatioDataUrl\(raw, shape\.width, shape\.height\);/);
   // 服饰素材图不能拿 3:4 的轮播首图，用第一张原图另裁 800×800
@@ -626,7 +627,7 @@ test("批量发布：勾完直接发，模板在弹窗里选（不用先去菜�
   assert.match(library, /aria-label="批量发布"/);
   assert.match(library, /<span>\s*产品模板<em className="temu-required">\*<\/em>/);
   assert.match(library, /不套用变种模板/);
-  assert.match(library, /开始发布（\$\{batchTargets\.length\} 条）/);
+  assert.match(library, /开始发布（\$\{runnableTargets\.length\} 条）/);
   // 勾选的条数按「当前可见 + 已勾选」算，和表格看到的行一致
   assert.match(library, /const batchTargets = useMemo\(/);
   // 弹窗确认后不再二次 window.confirm
@@ -2814,4 +2815,58 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
   assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_FOCUS_KEY\)/);
   assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills\)\);/);
+});
+
+test("批量发布：先预检再提交，发不出去的默认跳过", () => {
+  // 以前点「开始发布」直接逐条传图，10 条里 6 条缺图，等它跑完才知道。
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const precheck = readFileSync(new URL("../data/batchPrecheck.ts", import.meta.url), "utf8");
+
+  // 纯本地预检（不传图、不打网关）
+  assert.match(precheck, /export function precheckBatchItem\(/);
+  assert.match(precheck, /轮播图只有 \$\{carousel\.length\} 张（Temu 要求至少 3 张）/);
+  assert.match(precheck, /产品模板里没有默认发货仓库/);
+  assert.match(precheck, /库存 0（会以售罄状态创建）/);
+  // 口径和实际组装一致：变种模板的值优先于草稿自带值
+  assert.match(precheck, /variantTemplate\?\.colorsText \|\|/);
+  assert.match(precheck, /variantTemplate\?\.batch/);
+
+  // 弹窗里实时算 + 默认跳过阻塞项
+  assert.match(library, /const batchPrecheck = useMemo\(/);
+  assert.match(library, /const blockedPrecheck = batchPrecheck\.filter/);
+  assert.match(library, /const \s*\[skipBroken, setSkipBroken\] = useState\(true\)/);
+  assert.match(library, /const runnableTargets = skipBroken/);
+  assert.match(library, /className="temu-batch-precheck"/);
+  assert.match(library, /跳过发不出去的 \{blockedPrecheck\.length\} 条/);
+  assert.match(library, /可发 \{batchTargets\.length - blockedPrecheck\.length\} 条 · 预计失败/);
+  // 提交的也是 runnableTargets，不是全部勾选
+  assert.match(library, /const targets = runnableTargets;/);
+});
+
+test("批量发布：跑批途中能停，停下后说清还剩多少条", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // ref 而不是 state：循环里要读到最新值
+  assert.match(library, /const batchAbortRef = useRef\(false\);/);
+  assert.match(library, /batchAbortRef\.current = false;/);
+  assert.match(library, /if \(batchAbortRef\.current\) \{\s*\n\s*aborted = true;\s*\n\s*break;/);
+  assert.match(library, /batchAbortRef\.current = true;/);
+  assert.match(library, /正在停止（当前这条发完就停）/);
+  assert.match(library, /已停止，还剩 \$\{restCount\} 条未发/);
+  assert.match(library, /className="temu-batch-stop"/);
+  assert.match(css, /\.temu-batch-stop \{/);
+});
+
+test("批量发布：每条十几张图走限并发，不再串行排队", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  assert.match(batch, /const IMAGE_UPLOAD_CONCURRENCY = 3;/);
+  assert.match(batch, /await mapWithConcurrency\(carouselSources, IMAGE_UPLOAD_CONCURRENCY/);
+  assert.match(batch, /await mapWithConcurrency\(\s*\n\s*splitList\(\(prefill\.detailImages/);
+  // 服饰类目取不到原图要「先判再传」，别白传 10 张
+  assert.match(batch, /const firstRaw = apparel \? await localDataUrl\(carouselSources\[0\] \?\? ""\) : null;/);
+  assert.match(batch, /if \(apparel && !firstRaw\) \{/);
+  // 串行写法必须清干净
+  assert.doesNotMatch(batch, /for \(const \[index, path\] of carouselSource/);
 });

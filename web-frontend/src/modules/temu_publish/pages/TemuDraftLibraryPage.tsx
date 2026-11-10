@@ -10,6 +10,7 @@ import { BatchManualConfig } from "../components/BatchManualConfig";
 import { categorySearchTexts } from "../utils/categoryMatch";
 import { categoryPathFromDto } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
+import { precheckBatchItem } from "../data/batchPrecheck";
 import { autoFillSourceTexts } from "../data/attrAutofill";
 import { estimateAttributePicks } from "../data/attrEstimate";
 import {
@@ -506,6 +507,14 @@ export function TemuDraftLibraryPage({
   const [manualTemplate, setManualTemplate] = useState<ProductTemplate | null>(null);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
   const [batchSkipped, setBatchSkipped] = useState<string[]>([]);
+  /**
+   * 中止标志：批量发布是逐条提交（接口非幂等），发到一半发现模板/类目选错时
+   * 必须能停 —— 否则 30 条错货全发出去，得去 Temu 后台一条条删。
+   * 用 ref 而不是 state：循环里要读到最新值，state 会是闭包里的旧快照。
+   */
+  const batchAbortRef = useRef(false);
+  /** 预检里有问题的条目：默认跳过（发出去也是白跑一趟），用户可改成照发 */
+  const [skipBroken, setSkipBroken] = useState(true);
 
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
@@ -877,6 +886,48 @@ export function TemuDraftLibraryPage({
     [entries, selected],
   );
 
+  /**
+   * 发布前预检：把「这条注定发不出去」的原因先算出来，别等一条条跑完才失败。
+   * 纯本地计算（不传图、不打网关），所以可以跟着模板切换实时刷新。
+   */
+  const batchPrecheck = useMemo(() => {
+    const template = productTemplates.find((item) => item.name === productTpl) ?? manualTemplate;
+    const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
+    if (!template) {
+      return batchTargets.map((entry) => ({
+        id: entry.id,
+        title: entry.title || entry.sku || "（无标题）",
+        blocked: ["还没选产品模板（或在下面现场配置完）"],
+        warnings: [] as string[],
+      }));
+    }
+    return batchTargets.map((entry) => {
+      const precheck = precheckBatchItem(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
+      return {
+        id: entry.id,
+        title: entry.title || entry.sku || "（无标题）",
+        blocked: precheck.blocked,
+        warnings: precheck.warnings,
+      };
+    });
+  }, [
+    batchTargets,
+    productTemplates,
+    productTpl,
+    manualTemplate,
+    variantTemplates,
+    variantTpl,
+    categoryMemo,
+    attrPrefills,
+  ]);
+
+  const blockedPrecheck = batchPrecheck.filter((item) => item.blocked.length > 0);
+  const warnPrecheck = batchPrecheck.filter((item) => !item.blocked.length && item.warnings.length > 0);
+  /** 真正会被提交的条目：勾了「跳过发不出去的」就把阻塞项剔掉 */
+  const runnableTargets = skipBroken
+    ? batchTargets.filter((entry) => !blockedPrecheck.some((item) => item.id === entry.id))
+    : batchTargets;
+
   /** 打开「批量发布」弹窗：勾选的草稿按所选模板逐条提交。 */
   const openBatchDialog = () => {
     if (batchState.running) return;
@@ -901,14 +952,21 @@ export function TemuDraftLibraryPage({
       setError("先选一个产品模板，或在下面「现场配置」里把类目/属性/运费模板/仓库填完");
       return;
     }
-    const targets = entries.filter((entry) => selected.has(entry.id));
+    // 预检挡下的条目默认不跑：发出去也是白等一次失败（图都传完了才被拒）
+    const targets = runnableTargets;
+    const blockedCount = skipBroken ? batchTargets.length - targets.length : 0;
     if (!targets.length) {
-      setError("先勾选要发布的产品");
+      setError(
+        batchTargets.length
+          ? `勾选的 ${batchTargets.length} 条都有阻塞问题（见上面的预检），先按原因改掉或关掉「跳过发不出去的」`
+          : "先勾选要发布的产品",
+      );
       return;
     }
     setBatchOpen(false);
 
     const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
+    batchAbortRef.current = false;
     setBatchState({ running: true, text: `0/${targets.length}` });
     setBatchSkipped([]);
     let ok = 0;
@@ -919,7 +977,13 @@ export function TemuDraftLibraryPage({
     let warned = 0;
     const warnSamples: string[] = [];
     const publishedIds: string[] = [];
+    let aborted = false;
     for (const [index, entry] of targets.entries()) {
+      // 用户点了「停止」：当前这条发完就收工，把已完成的数字如实报出去
+      if (batchAbortRef.current) {
+        aborted = true;
+        break;
+      }
       setBatchState({
         running: true,
         text: `${index + 1}/${targets.length} · ${entry.title.slice(0, 16)}`,
@@ -975,9 +1039,14 @@ export function TemuDraftLibraryPage({
     const idText = publishedIds.length
       ? `，商品 id ${publishedIds.slice(0, 3).join("、")}${publishedIds.length > 3 ? "…" : ""}`
       : "";
+    // 中止 / 预检跳过都要说清「还有多少条没发」：不然用户只看到"完成"，
+    // 以为整批都处理过了
+    const restCount = targets.length - ok - fail - skipped;
+    const abortText = aborted ? `；已停止，还剩 ${restCount} 条未发` : "";
+    const blockedText = blockedCount ? `，预检跳过 ${blockedCount} 条` : "";
     setBatchState({
       running: false,
-      text: `完成：成功 ${ok} 条${idText}${skippedText}，失败 ${fail} 条${warnText}（失败原因见发布页列表）`,
+      text: `${aborted ? "已停止" : "完成"}：成功 ${ok} 条${idText}${skippedText}，失败 ${fail} 条${blockedText}${warnText}${abortText}（失败原因见发布页列表）`,
     });
     // 成功的已经从草稿库发出去了：清空勾选，避免下一次误点又提交一遍
     if (ok > 0) setSelected(new Set());
@@ -1245,6 +1314,22 @@ export function TemuDraftLibraryPage({
             <p className="temu-batch-progress">
               {batchState.running ? "批量发布中：" : ""}
               {batchState.text}
+              {batchState.running ? (
+                <button
+                  type="button"
+                  className="temu-batch-stop"
+                  onClick={() => {
+                    // 只置标志：当前这已经在提交的路上，硬中断会留下一半状态
+                    batchAbortRef.current = true;
+                    setBatchState((current) => ({
+                      running: current.running,
+                      text: `${current.text} · 正在停止（当前这条发完就停）`,
+                    }));
+                  }}
+                >
+                  停止
+                </button>
+              ) : null}
             </p>
           )}
 
@@ -1702,6 +1787,63 @@ export function TemuDraftLibraryPage({
                   initialPicks={batchCommonPicks}
                 />
 
+                {/*
+                  发布前预检：能本地算出来的失败原因先摆出来。
+                  以前是点了就开始逐条传图，10 条里 6 条缺图，等它跑完才知道。
+                */}
+                <div className="temu-batch-precheck">
+                  <div className="temu-batch-precheck-head">
+                    <strong>发布前预检</strong>
+                    {blockedPrecheck.length ? (
+                      <span className="temu-batch-precheck-bad">
+                        可发 {batchTargets.length - blockedPrecheck.length} 条 · 预计失败{" "}
+                        {blockedPrecheck.length} 条
+                      </span>
+                    ) : (
+                      <span className="temu-batch-precheck-ok">
+                        可发 {batchTargets.length} 条 · 本地检查全过
+                      </span>
+                    )}
+                    {blockedPrecheck.length ? (
+                      <label className="temu-batch-precheck-skip">
+                        <input
+                          type="checkbox"
+                          checked={skipBroken}
+                          onChange={(event) => setSkipBroken(event.target.checked)}
+                        />
+                        跳过发不出去的 {blockedPrecheck.length} 条
+                      </label>
+                    ) : null}
+                  </div>
+                  {blockedPrecheck.length ? (
+                    <ul className="temu-batch-precheck-list">
+                      {blockedPrecheck.slice(0, 5).map((item) => (
+                        <li key={item.id}>
+                          <span>{item.title}</span>
+                          <em>{item.blocked.join("；")}</em>
+                        </li>
+                      ))}
+                      {blockedPrecheck.length > 5 ? (
+                        <li className="is-more">… 还有 {blockedPrecheck.length - 5} 条同样发不出去</li>
+                      ) : null}
+                    </ul>
+                  ) : null}
+                  {warnPrecheck.length ? (
+                    <p className="temu-batch-precheck-warn">
+                      {warnPrecheck.length} 条有提醒（
+                      {Array.from(new Set(warnPrecheck.flatMap((item) => item.warnings)))
+                        .slice(0, 2)
+                        .join("；")}
+                      ）：能发，但结果可能不是你要的
+                    </p>
+                  ) : null}
+                  {blockedPrecheck.length && !skipBroken ? (
+                    <p className="temu-batch-precheck-warn">
+                      已关掉跳过：这 {blockedPrecheck.length} 条会照样提交，大概率逐个失败并进失败列表。
+                    </p>
+                  ) : null}
+                </div>
+
                 <ul className="temu-batch-list">
                   {batchTargets.slice(0, 6).map((entry) => (
                     <li key={entry.id}>
@@ -1746,10 +1888,14 @@ export function TemuDraftLibraryPage({
                     className="temu-btn temu-btn-primary"
                     // 现场配置（manualTemplate）也是一份合法模板：只看 productTpl 的话，
                     // 一个模板都没存过的用户按提示填完现场配置，按钮还是灰的 —— 死路。
-                    disabled={(!productTpl && !manualTemplate) || batchState.running || !batchTargets.length}
+                    disabled={(!productTpl && !manualTemplate) || batchState.running || !runnableTargets.length}
                     onClick={() => void runBatchPublish()}
                   >
-                    {batchState.running ? "提交中…" : `开始发布（${batchTargets.length} 条）`}
+                    {batchState.running
+                      ? "提交中…"
+                      : runnableTargets.length
+                        ? `开始发布（${runnableTargets.length} 条）`
+                        : "没有可发的条目"}
                   </button>
                 </div>
               </footer>
