@@ -2496,7 +2496,7 @@ test("变种表尺寸：长/宽/高 各占一列、各有表头", () => {
   assert.doesNotMatch(panel, /尺寸\(cm\)/);
   assert.doesNotMatch(panel, /temu-variant-dims/);
   // 两维模式：三列各 60px；单 SKU 模式省下颜色/尺码后摊宽到 96px
-  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 60px 60px 60px 58px 70px minmax\(48px, 1fr\) 24px;/);
+  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 60px 60px 60px 58px 70px minmax\(48px, 1fr\) 50px;/);
   assert.match(css, /\.temu-variant-row\.is-single \{[\s\S]{0,140}96px 96px 96px/);
   // 库存列吃剩余宽度；min-width 按真实列总和（732 + 11×6 + 48 = 846）
   assert.match(css, /\.temu-variant-table \{[\s\S]{0,200}min-width: 846px;/);
@@ -2729,4 +2729,44 @@ test("提交前的传图走限并发，按钮上能看到上传进度", () => {
   assert.ok(
     readFileSync(new URL("../data/concurrency.test.ts", import.meta.url), "utf8").includes("峰值并发应等于 3"),
   );
+});
+
+test("变种行级「套用到同色/同码」：⋯ 菜单只影响对应分组", () => {
+  // 4 色 × 3 码时尺寸一码一套、价格同色一套，逐行手改 12 行太慢。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(panel, /const \[rowMenuKey, setRowMenuKey\] = useState<string \| null>\(null\);/);
+  assert.match(panel, /const applyRowFields = \(key: string, scope: "color" \| "size"\) => \{/);
+  assert.ok(panel.includes('const COLOR_FIELDS = ["supplierPrice", "suggestedPrice", "stock"] as const;'));
+  assert.ok(panel.includes('const SIZE_FIELDS = ["lengthCm", "widthCm", "heightCm", "weightG"] as const;'));
+  assert.match(panel, /className="temu-variant-more"/);
+  assert.match(panel, /className="temu-row-menu"/);
+  // 单维类目没有「同尺码」分组，不显示那一项
+  assert.match(panel, /\{sizeParentId > 0 && \(\s*\n\s*<button[\s\S]{0,200}applyRowFields\(row\.key, "size"\)/);
+  assert.match(css, /\.temu-row-menu \{/);
+});
+
+test("发布历史：失败原因归堆，点一下就只看同类失败", () => {
+  // 「发 30 条失败 20 条」时，一条条翻才能看出其实都栽在同一个错上。
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(history, /const \[reasonFilter, setReasonFilter\] = useState\(""\);/);
+  assert.match(history, /const reasonGroups = \(\(\) => \{/);
+  assert.match(history, /const listItems = reasonFilter/);
+  assert.match(history, /\{listItems\.map\(\(item\) => \{/);
+  assert.match(history, /setTab\("failed"\);\s*\n\s*setExpanded\(\{\}\);\s*\n\s*setReasonFilter\(""\);/);
+  assert.match(history, /className=\{`temu-history-reason-chip/);
+  assert.match(css, /\.temu-history-reason-chip \{/);
+});
+
+test("高山草原：成品库 / 发布历史 / 弹窗统一晨雾质感", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(css, /\[data-theme="alpine"\] \.temu-edit-dialog \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-library-stat \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-draft-table tbody tr:hover \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-history-row \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-history-tab\.is-active \{/);
 });

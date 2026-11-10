@@ -149,6 +149,8 @@ export function TemuPublishHistoryPage({
   const [appliedKeyword, setAppliedKeyword] = useState("");
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [copied, setCopied] = useState("");
+  /** 失败页签的「常见原因」筛选：点某个原因只看这一类（清空＝看全部） */
+  const [reasonFilter, setReasonFilter] = useState("");
   // 剪贴板被浏览器/WebView 拒绝时不能静默：用户点「复制 id」没反应会以为功能坏了
   const [copyError, setCopyError] = useState("");
   // 列表可能是几分钟前拉的：相对时间要有东西可参照，避免「刚刚」永远不刷新
@@ -223,6 +225,32 @@ export function TemuPublishHistoryPage({
   const succeeded = counts.success;
   const failed = counts.failed;
 
+  /** 一条失败记录的「原因文本」（去错误码、去首尾空白）。 */
+  const reasonTextOf = (item: TemuPublishHistoryItem) =>
+    (item.error ? stripErrorCode(item.error, errorCodeOf(item)) : "（Temu 没有返回原因）").trim();
+
+  /**
+   * 失败页签：把已加载的记录按原因归堆。
+   *
+   * 「发 30 条失败 20 条」时，一条条翻才能看出「其实都栽在同一个属性校验上」。
+   * 归堆取前 4 类，点一下就只看这一类。
+   */
+  const reasonGroups = (() => {
+    if (tab !== "failed") return [];
+    const map = new Map<string, number>();
+    for (const item of items) {
+      const key = reasonTextOf(item).slice(0, 60);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return [...map.entries()]
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 4);
+  })();
+  const listItems = reasonFilter
+    ? items.filter((item) => reasonTextOf(item).slice(0, 60) === reasonFilter)
+    : items;
+
   // 每个日期块有多少条：「今天 · 3 条」比一个孤零零的「今天」有用
   const dayCounts = new Map<string, number>();
   for (const item of items) {
@@ -269,6 +297,7 @@ export function TemuPublishHistoryPage({
             onClick={() => {
               setTab("success");
               setExpanded({});
+              setReasonFilter("");
             }}
           >
             成功 <em>{succeeded}</em>
@@ -281,6 +310,7 @@ export function TemuPublishHistoryPage({
             onClick={() => {
               setTab("failed");
               setExpanded({});
+              setReasonFilter("");
             }}
           >
             失败 <em>{failed}</em>
@@ -303,6 +333,29 @@ export function TemuPublishHistoryPage({
         </label>
       </div>
 
+      {tab === "failed" && reasonGroups.length > 1 ? (
+        <div className="temu-history-reasons" aria-label="常见失败原因">
+          <span className="temu-history-reasons-label">常见原因</span>
+          {reasonGroups.map((group) => (
+            <button
+              key={group.reason}
+              type="button"
+              className={`temu-history-reason-chip${reasonFilter === group.reason ? " is-active" : ""}`}
+              title={group.reason}
+              onClick={() => setReasonFilter(reasonFilter === group.reason ? "" : group.reason)}
+            >
+              {group.reason.length > 24 ? `${group.reason.slice(0, 24)}…` : group.reason}
+              <em>×{group.count}</em>
+            </button>
+          ))}
+          {reasonFilter ? (
+            <button type="button" className="temu-history-reason-clear" onClick={() => setReasonFilter("")}>
+              看全部
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {error ? (
         <p className="temu-history-error" role="alert">
           {error}
@@ -318,12 +371,12 @@ export function TemuPublishHistoryPage({
       {!loading && !items.length ? <p className="temu-history-empty">{emptyText}</p> : null}
 
       <ul className="temu-history-list">
-        {items.map((item) => {
+        {listItems.map((item) => {
           const isSuccess = item.status === "success";
           const code = errorCodeOf(item);
           const price = formatPriceRange(item.price_min, item.price_max);
           const source = sourceLabelOf(item.draft_id);
-          const reason = item.error ? stripErrorCode(item.error, code) : "（Temu 没有返回原因）";
+          const reason = reasonTextOf(item);
           const isLong = reason.length > 72;
           const isOpen = Boolean(expanded[item.id]);
           const day = dayLabelOf(item.created_ts, now);

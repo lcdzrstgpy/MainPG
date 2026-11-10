@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { TemuParentSpec } from "../types";
 import { TemuThumb } from "./TemuImageStrip";
@@ -222,6 +223,9 @@ export function PublishSkuPanel({
   const [batchTouched, setBatchTouched] = useState(false);
   /** 变种图编辑菜单：哪一行打开着、当前展开哪一级 */
   const [thumbMenuKey, setThumbMenuKey] = useState<string | null>(null);
+  /** 行级「套用到同色/同码」菜单：哪一行打开着、fixed 坐标由 JS 算（表格是 overflow 容器） */
+  const [rowMenuKey, setRowMenuKey] = useState<string | null>(null);
+  const [rowMenuPos, setRowMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [thumbMenuView, setThumbMenuView] = useState<"root" | "carousel" | "url" | "scope">("root");
   /** 已经选好、还没决定应用范围的图 */
   const [pendingThumb, setPendingThumb] = useState("");
@@ -243,6 +247,51 @@ export function PublishSkuPanel({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [thumbMenuKey]);
+
+  /** 点空白处 / 页面滚动时收起行级菜单（fixed 定位不跟随滚动，留着会飘在半空） */
+  useEffect(() => {
+    if (!rowMenuKey) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".temu-row-menu") || target?.closest(".temu-variant-more")) return;
+      setRowMenuKey(null);
+    };
+    const onScroll = () => setRowMenuKey(null);
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [rowMenuKey]);
+
+  /**
+   * 行级「套用到同色 / 同码」。
+   *
+   * 批量编辑块只能整表套，长宽高又按尺码不同（4 色 × 3 码时一码一套），
+   * 逐行手改 12 行太慢。这里以某一行为样板：
+   * - 价格/库存 → 同颜色的其它行（同色各码通常同价）
+   * - 尺寸/重量 → 同尺码的其它行（同码各色尺寸重量一样）
+   */
+  const COLOR_FIELDS = ["supplierPrice", "suggestedPrice", "stock"] as const;
+  const SIZE_FIELDS = ["lengthCm", "widthCm", "heightCm", "weightG"] as const;
+  const applyRowFields = (key: string, scope: "color" | "size") => {
+    const source = rows.find((row) => row.key === key);
+    if (!source) return;
+    const fields: ReadonlyArray<(typeof COLOR_FIELDS)[number] | (typeof SIZE_FIELDS)[number]> =
+      scope === "color" ? COLOR_FIELDS : SIZE_FIELDS;
+    const sameGroup = (row: VariantRow) =>
+      scope === "color" ? row.colorName === source.colorName : row.sizeName === source.sizeName;
+    onRowsChange(
+      rows.map((row) => {
+        if (row.key === key || !sameGroup(row)) return row;
+        const next = { ...row };
+        for (const field of fields) next[field] = source[field];
+        return next;
+      }),
+    );
+    setRowMenuKey(null);
+  };
 
   const sizeNames = splitSizes(sizesText);
   const colorNames = splitSizes(colorsText);
@@ -1326,20 +1375,73 @@ export function PublishSkuPanel({
                     : "库存 0：能建品，但商品是「售罄 / 不可售」状态，买家看不到"
                 }
               />
-              <button
-                type="button"
-                className="temu-variant-del"
-                onClick={() => onRemoveRow(row.key)}
-                disabled={rows.length <= 1}
-                aria-label="删除这一行变种"
-                title={
-                  rows.length <= 1
-                    ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
-                    : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
-                }
-              >
-                ×
-              </button>
+              <div className="temu-variant-row-actions">
+                <button
+                  type="button"
+                  className="temu-variant-more"
+                  aria-label="这一行的批量操作"
+                  title="把这一行的价格/库存套到同颜色、尺寸/重量套到同尺码"
+                  onClick={(event) => {
+                    if (rowMenuKey === row.key) {
+                      setRowMenuKey(null);
+                      return;
+                    }
+                    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+                    setRowMenuPos({
+                      top: Math.min(rect.bottom + 6, window.innerHeight - 170),
+                      left: Math.min(rect.left - 180, window.innerWidth - 230),
+                    });
+                    setRowMenuKey(row.key);
+                  }}
+                >
+                  ⋯
+                </button>
+                <button
+                  type="button"
+                  className="temu-variant-del"
+                  onClick={() => onRemoveRow(row.key)}
+                  disabled={rows.length <= 1}
+                  aria-label="删除这一行变种"
+                  title={
+                    rows.length <= 1
+                      ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
+                      : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
+                  }
+                >
+                  ×
+                </button>
+              </div>
+              {rowMenuKey === row.key && rowMenuPos
+                ? createPortal(
+                    // portal 到 body：alpine 下区块卡有 backdrop-filter，会建层叠上下文，
+                    // 菜单留在卡里会被右侧 sticky 检查栏盖住
+                    <div
+                      className="temu-row-menu"
+                      role="menu"
+                      style={{ top: rowMenuPos.top, left: rowMenuPos.left }}
+                    >
+                  <button
+                    type="button"
+                    disabled={!rows.some((item) => item !== row && item.colorName === row.colorName)}
+                    onClick={() => applyRowFields(row.key, "color")}
+                  >
+                    价格/库存 → 同颜色（
+                    {rows.filter((item) => item !== row && item.colorName === row.colorName).length} 行）
+                  </button>
+                  {sizeParentId > 0 && (
+                    <button
+                      type="button"
+                      disabled={!rows.some((item) => item !== row && item.sizeName === row.sizeName)}
+                      onClick={() => applyRowFields(row.key, "size")}
+                    >
+                      尺寸/重量 → {sizeSpecName}「{row.sizeName || "未填"}」（
+                      {rows.filter((item) => item !== row && item.sizeName === row.sizeName).length} 行）
+                    </button>
+                  )}
+                    </div>,
+                    document.body,
+                  )
+                : null}
             </div>
           ))}
         </div>
