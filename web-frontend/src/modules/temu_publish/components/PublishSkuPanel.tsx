@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { TemuParentSpec } from "../types";
 import { TemuThumb } from "./TemuImageStrip";
@@ -48,6 +49,14 @@ export const EMPTY_BATCH: VariantBatch = {
   widthCm: "",
   heightCm: "",
 };
+
+/**
+ * 「应用到全部」只碰这些字段。
+ *
+ * 长宽高/重量不能一刀切 —— 不同尺码的尺寸重量本来就不一样，
+ * 套到全部行等于逼人回头一格格改。它们按尺码分组直接绑在行上（见下方尺寸与重量）。
+ */
+const BATCH_APPLY_KEYS: Array<keyof VariantBatch> = ["supplierPrice", "suggestedPrice", "stock"];
 
 let rowSeed = 0;
 
@@ -161,6 +170,7 @@ export function PublishSkuPanel({
   onPreviewImage,
   singleSku = false,
   presetsReady = true,
+  showErrors = false,
 }: {
   rows: VariantRow[];
   onRowsChange: (rows: VariantRow[]) => void;
@@ -202,11 +212,20 @@ export function PublishSkuPanel({
    * 那句提示会让用户以为可以自由填，提交时才被 Temu 打回。
    */
   presetsReady?: boolean;
+  /**
+   * 「提交发布」被拦过一次之后才为 true：把缺的格子直接标红。
+   * 区块级描红（is-error）只说明是哪一块，这里红到具体字段 ——
+   * 第几行的尺码/价格/尺寸空了，一眼就能看到并点进去改。
+   */
+  showErrors?: boolean;
 }) {
   const [batch, setBatch] = useState<VariantBatch>(EMPTY_BATCH);
   const [batchTouched, setBatchTouched] = useState(false);
   /** 变种图编辑菜单：哪一行打开着、当前展开哪一级 */
   const [thumbMenuKey, setThumbMenuKey] = useState<string | null>(null);
+  /** 行级「套用到同色/同码」菜单：哪一行打开着、fixed 坐标由 JS 算（表格是 overflow 容器） */
+  const [rowMenuKey, setRowMenuKey] = useState<string | null>(null);
+  const [rowMenuPos, setRowMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [thumbMenuView, setThumbMenuView] = useState<"root" | "carousel" | "url" | "scope">("root");
   /** 已经选好、还没决定应用范围的图 */
   const [pendingThumb, setPendingThumb] = useState("");
@@ -228,6 +247,51 @@ export function PublishSkuPanel({
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [thumbMenuKey]);
+
+  /** 点空白处 / 页面滚动时收起行级菜单（fixed 定位不跟随滚动，留着会飘在半空） */
+  useEffect(() => {
+    if (!rowMenuKey) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".temu-row-menu") || target?.closest(".temu-variant-more")) return;
+      setRowMenuKey(null);
+    };
+    const onScroll = () => setRowMenuKey(null);
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [rowMenuKey]);
+
+  /**
+   * 行级「套用到同色 / 同码」。
+   *
+   * 批量编辑块只能整表套，长宽高又按尺码不同（4 色 × 3 码时一码一套），
+   * 逐行手改 12 行太慢。这里以某一行为样板：
+   * - 价格/库存 → 同颜色的其它行（同色各码通常同价）
+   * - 尺寸/重量 → 同尺码的其它行（同码各色尺寸重量一样）
+   */
+  const COLOR_FIELDS = ["supplierPrice", "suggestedPrice", "stock"] as const;
+  const SIZE_FIELDS = ["lengthCm", "widthCm", "heightCm", "weightG"] as const;
+  const applyRowFields = (key: string, scope: "color" | "size") => {
+    const source = rows.find((row) => row.key === key);
+    if (!source) return;
+    const fields: ReadonlyArray<(typeof COLOR_FIELDS)[number] | (typeof SIZE_FIELDS)[number]> =
+      scope === "color" ? COLOR_FIELDS : SIZE_FIELDS;
+    const sameGroup = (row: VariantRow) =>
+      scope === "color" ? row.colorName === source.colorName : row.sizeName === source.sizeName;
+    onRowsChange(
+      rows.map((row) => {
+        if (row.key === key || !sameGroup(row)) return row;
+        const next = { ...row };
+        for (const field of fields) next[field] = source[field];
+        return next;
+      }),
+    );
+    setRowMenuKey(null);
+  };
 
   const sizeNames = splitSizes(sizesText);
   const colorNames = splitSizes(colorsText);
@@ -258,6 +322,12 @@ export function PublishSkuPanel({
     const text = String(row.stock ?? "").trim();
     return text === "" || Number(text) <= 0;
   }).length;
+
+  /**
+   * 被「提交发布」拦下后，缺的格子直接标红（正常状态零颜色）。
+   * 区块级描红只说「这块有问题」，这里红到具体字段：第几行的尺码/价格/尺寸空了。
+   */
+  const cellBad = (missing: boolean) => (showErrors && missing ? " is-bad" : "");
 
   /**
    * 输入里不在类目预设里的值 —— Temu 会直接判「不是合法的规格值」。
@@ -312,6 +382,13 @@ export function PublishSkuPanel({
   const [specGroupKey, setSpecGroupKey] = useState<string>("all");
   /** 「复制全部预设」后的短暂反馈 */
   const [copiedSpec, setCopiedSpec] = useState(false);
+  /** 变种属性值「+」输入框里还没加进去的半截值（color/size 各一份） */
+  const [specDraft, setSpecDraft] = useState<{ color: string; size: string }>({ color: "", size: "" });
+  /** chips 的输入框：点「+」/点空白/加完值都要能把焦点还给它，方便连续加 */
+  const chipInputRefs = useRef<{ color: HTMLInputElement | null; size: HTMLInputElement | null }>({
+    color: null,
+    size: null,
+  });
 
   /** 「生成变种」被拦下时的原因（第二维没填，不能凭空造「均码」） */
   const [genHint, setGenHint] = useState("");
@@ -571,12 +648,130 @@ export function PublishSkuPanel({
   };
 
   /**
+   * 尺码取值改了顺手同步到表格。
+   *
+   * 「变种属性二」的取值框和表格尺码列是两份数据，不点「生成变种」不同步 ——
+   * 草稿只带颜色时各行尺码都是空的，用户在上面填了「可定制尺寸」，
+   * 表格里还是「输入尺码」，检查清单报「N 行没填全」却看不出差在哪。
+   * 只有一种取值且各行尺码全空时直接写进去（只改这一格，不动别的数据）；
+   * 多个取值没法猜行对应关系，仍靠「生成变种」按颜色 × 尺码认领。
+   */
+  const handleSizesTextChange = (value: string) => {
+    onSizesTextChange(value);
+    const single = splitSizes(value);
+    if (single.length === 1 && rows.length && rows.every((row) => !row.sizeName.trim())) {
+      onRowsChange(rows.map((row) => ({ ...row, sizeName: single[0] })));
+    }
+  };
+
+  /**
+   * 变种属性值改成「一个个加」：chips + 输入框 + 「+」按钮。
+   *
+   * 以前是逗号拼一串文本（"咖色,粉色,白色,黑色"）——加个值得找逗号，
+   * 多打一个逗号整串解析就歪，删也删不干净。现在 chips 单个加/删，
+   * 底层仍存逗号串（生成变种/模板/预填链路不用动）。
+   */
+  const addSpecValues = (kind: "color" | "size", raw: string) => {
+    // 兼容粘贴一串（"s,m,l"）：拆开逐个加
+    const incoming = splitSizes(raw);
+    const current = splitSizes(kind === "color" ? colorsText : sizesText);
+    const seen = new Set(current.map((value) => value.toLowerCase()));
+    const added: string[] = [];
+    for (const value of incoming) {
+      const lower = value.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        added.push(value);
+      }
+    }
+    if (added.length) {
+      const next = [...current, ...added].join(",");
+      if (kind === "color") onColorsTextChange(next);
+      else handleSizesTextChange(next);
+    }
+    setSpecDraft((draft) => ({ ...draft, [kind]: "" }));
+  };
+
+  const removeSpecValue = (kind: "color" | "size", value: string) => {
+    const current = splitSizes(kind === "color" ? colorsText : sizesText);
+    const next = current.filter((item) => item.toLowerCase() !== value.toLowerCase()).join(",");
+    if (kind === "color") onColorsTextChange(next);
+    else handleSizesTextChange(next);
+  };
+
+  /** chips + 输入框 + 「+」的值编辑器（颜色/尺码共用一套）。 */
+  const renderSpecEditor = (kind: "color" | "size", label: string) => {
+    const values = splitSizes(kind === "color" ? colorsText : sizesText);
+    const bad = kind === "color" ? unknownColors : unknownSizes;
+    const badLower = new Set(bad.map((value) => value.toLowerCase()));
+    const draft = specDraft[kind];
+    const commit = () => {
+      if (draft.trim()) addSpecValues(kind, draft);
+      // 空着点 + 也必须有反应：焦点给输入框，直接开打。
+      // 之前 + 是 disabled（!draft.trim()），一进页面就是灰的，用户「+都点不了」。
+      chipInputRefs.current[kind]?.focus();
+    };
+    return (
+      <div
+        className={`temu-spec-chips${bad.length ? " is-bad" : ""}`}
+        // 点 chips 空白处 = 点输入框（标签输入框的常见手感）
+        onClick={(event) => {
+          if (event.target === event.currentTarget) chipInputRefs.current[kind]?.focus();
+        }}
+      >
+        {values.length ? (
+          // 值多时列表自己滚（最多约 3 行），输入框和 + 钉在下面 —— 别让输入框被滚出视野
+          <span className="temu-spec-chip-list">
+            {values.map((value) => (
+              <span
+                key={value}
+                className={`temu-spec-chip-item${badLower.has(value.toLowerCase()) ? " is-bad" : ""}`}
+              >
+                {value}
+                <button
+                  type="button"
+                  className="temu-spec-chip-remove"
+                  aria-label={`移除 ${value}`}
+                  onClick={() => removeSpecValue(kind, value)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </span>
+        ) : null}
+        <input
+          ref={(el) => {
+            chipInputRefs.current[kind] = el;
+          }}
+          className="temu-spec-chip-input"
+          list={kind === "color" ? "temu-color-options" : "temu-size-options"}
+          value={draft}
+          onChange={(event) => setSpecDraft((current) => ({ ...current, [kind]: event.target.value }))}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            // 有字 → 加值；空着回车 → 生成变种（老习惯：输入框里回车 = 铺行）
+            if (draft.trim()) commit();
+            else if (kind === "size") generate();
+          }}
+          placeholder={`${label}，回车或 + 添加`}
+        />
+        <button type="button" className="temu-spec-add" onClick={commit} title="添加">
+          +
+        </button>
+      </div>
+    );
+  };
+
+  /**
    * 批量编辑里填了值、但还没点「应用到全部」的字段。
    * 这些值不会进提交（表格里那格还是空的），界面上必须点出来，否则用户以为已经填好了。
+   * 只看价格/库存 —— 长宽高/重量走按尺码绑定，没有「未应用」一说。
    */
   const pendingBatchFields = !batchTouched
     ? []
-    : (Object.keys(batch) as Array<keyof VariantBatch>).filter((key) => {
+    : BATCH_APPLY_KEYS.filter((key) => {
         // 只统计「用户真的在批量框里改过」的字段；没动过时 batch 是镜像第一行，
         // 拿它跟别的行比会把正常差异报成「未应用」。
         const typed = batch[key].trim();
@@ -616,19 +811,50 @@ export function PublishSkuPanel({
     reader.readAsDataURL(file);
   };
 
-  /** 批量编辑 → 覆盖所有行（只覆盖填了值的字段）。 */
+  /** 批量编辑 → 覆盖所有行（只覆盖填了值的价格/库存字段；尺寸重量走按尺码绑定）。 */
   const applyAll = () => {
     if (!rows.length) return;
     onRowsChange(
       rows.map((row) => {
         const next = { ...row };
-        for (const key of Object.keys(batch) as Array<keyof VariantBatch>) {
+        for (const key of BATCH_APPLY_KEYS) {
           const value = batch[key].trim();
           if (value) next[key] = value;
         }
         if (defaultWarehouseId) next.warehouseId = defaultWarehouseId;
         return next;
       }),
+    );
+  };
+
+  /**
+   * 尺寸与重量按尺码绑定：同一尺码的行共用一套长宽高/重量。
+   *
+   * 不同尺码的尺寸本来就不一样，「应用到全部」一把梭等于逼人回头逐行改 ——
+   * 所以这里按尺码分组，改哪组就落到哪组的行上（即改即生效，不需要应用按钮）。
+   * 组里显示的是该组第一行的值；行里单独调过的，再在表格里改回去即可。
+   */
+  const sizeDimGroups = (() => {
+    const groups: Array<{ sizeName: string; row: VariantRow }> = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const key = sizeParentId > 0 ? row.sizeName.trim() : "";
+      if (seen.has(key)) continue;
+      seen.add(key);
+      groups.push({ sizeName: key, row });
+    }
+    return groups;
+  })();
+
+  const patchSizeDim = (
+    sizeName: string,
+    field: "lengthCm" | "widthCm" | "heightCm" | "weightG",
+    value: string,
+  ) => {
+    onRowsChange(
+      rows.map((row) =>
+        (sizeParentId > 0 ? row.sizeName.trim() : "") === sizeName ? { ...row, [field]: value } : row,
+      ),
     );
   };
 
@@ -664,13 +890,7 @@ export function PublishSkuPanel({
                 </option>
               ))}
             </select>
-            <input
-              className={`temu-input${unknownColors.length ? " is-bad" : ""}`}
-              list="temu-color-options"
-              value={colorsText}
-              onChange={(event) => onColorsTextChange(event.target.value)}
-              placeholder={`${colorSpecName}值，多个用逗号分隔`}
-            />
+            {renderSpecEditor("color", colorSpecName)}
           </div>
           {renderSpecChoices(colorOptions, colorsText, onColorsTextChange, colorSpecName, "color")}
           {unknownColors.length > 0 && (
@@ -725,23 +945,14 @@ export function PublishSkuPanel({
                 <option value={0}>不使用（单维）</option>
               </select>
               {sizeParentId > 0 ? (
-                <input
-                  className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
-                  list="temu-size-options"
-                  value={sizesText}
-                  onChange={(event) => onSizesTextChange(event.target.value)}
-                  placeholder={`${sizeSpecName}值，多个用逗号分隔`}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") generate();
-                  }}
-                />
+                renderSpecEditor("size", sizeSpecName)
               ) : (
                 <span className="temu-spec-nodim">
                   每个{colorSpecName}一个 SKU，提交时不再带第二维规格
                 </span>
               )}
             </div>
-            {sizeParentId > 0 ? renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size") : null}
+            {sizeParentId > 0 ? renderSpecChoices(sizeOptions, sizesText, handleSizesTextChange, sizeSpecName, "size") : null}
             {sizeParentId > 0 && unknownSizes.length > 0 && (
               <div className="temu-spec-bad">
                 <p>
@@ -795,7 +1006,7 @@ export function PublishSkuPanel({
       <div className="temu-batch">
         <div className="temu-batch-head">
           <strong>批量编辑</strong>
-          <span className="temu-muted">只覆盖你填了值的项；空着的格子保持各行原样</span>
+          <span className="temu-muted">价格/库存套全部行：只覆盖你填了值的项；尺寸重量在下面按尺码填</span>
           {pendingBatchFields.length > 0 && (
             <em className="temu-batch-pending">有 {pendingBatchFields.length} 项还没应用</em>
           )}
@@ -835,25 +1046,55 @@ export function PublishSkuPanel({
         </div>
 
         <div className="temu-batch-group">
-          <span className="temu-batch-group-label">尺寸与重量</span>
-          <div className="temu-batch-grid">
-          <label>
-            长 cm
-            <input className="temu-input" inputMode="decimal" value={batch.lengthCm} onChange={(e) => patchBatch({ lengthCm: e.target.value })} />
-          </label>
-          <label>
-            宽 cm
-            <input className="temu-input" inputMode="decimal" value={batch.widthCm} onChange={(e) => patchBatch({ widthCm: e.target.value })} />
-          </label>
-          <label>
-            高 cm
-            <input className="temu-input" inputMode="decimal" value={batch.heightCm} onChange={(e) => patchBatch({ heightCm: e.target.value })} />
-          </label>
-          <label>
-            重量 g
-            <input className="temu-input" inputMode="decimal" value={batch.weightG} onChange={(e) => patchBatch({ weightG: e.target.value })} />
-          </label>
-          </div>
+          <span className="temu-batch-group-label">尺寸与重量（按尺码，改了即生效）</span>
+          {sizeDimGroups.map((group) => (
+            <div className="temu-size-dims" key={group.sizeName || "__no-size"}>
+              <span className="temu-size-dims-label" title="同尺码的行共用这一套；要单独调就在表格里改">
+                {group.sizeName || (sizeParentId > 0 ? "未填尺码" : "全部行")}
+              </span>
+              <div className="temu-batch-grid">
+                <label>
+                  长 cm
+                  <input
+                    className="temu-input"
+                    inputMode="decimal"
+                    value={group.row.lengthCm}
+                    onChange={(e) => patchSizeDim(group.sizeName, "lengthCm", e.target.value)}
+                  />
+                </label>
+                <label>
+                  宽 cm
+                  <input
+                    className="temu-input"
+                    inputMode="decimal"
+                    value={group.row.widthCm}
+                    onChange={(e) => patchSizeDim(group.sizeName, "widthCm", e.target.value)}
+                  />
+                </label>
+                <label>
+                  高 cm
+                  <input
+                    className="temu-input"
+                    inputMode="decimal"
+                    value={group.row.heightCm}
+                    onChange={(e) => patchSizeDim(group.sizeName, "heightCm", e.target.value)}
+                  />
+                </label>
+                <label>
+                  重量 g
+                  <input
+                    className="temu-input"
+                    inputMode="decimal"
+                    value={group.row.weightG}
+                    onChange={(e) => patchSizeDim(group.sizeName, "weightG", e.target.value)}
+                  />
+                </label>
+              </div>
+            </div>
+          ))}
+          {!sizeDimGroups.length ? (
+            <p className="temu-muted">生成变种后，这里按尺码分组填尺寸/重量，同尺码的行一起变。</p>
+          ) : null}
         </div>
       </div>
 
@@ -1036,7 +1277,7 @@ export function PublishSkuPanel({
               {!singleSku && (
                 <>
                   <input
-                    className="temu-input"
+                    className={`temu-input${cellBad(!row.colorName.trim())}`}
                     list="temu-color-options"
                     value={row.colorName}
                     onChange={(event) => onUpdateRow(row.key, { colorName: event.target.value })}
@@ -1049,7 +1290,7 @@ export function PublishSkuPanel({
                   />
                   {sizeParentId > 0 ? (
                     <input
-                      className="temu-input"
+                      className={`temu-input${cellBad(!row.sizeName.trim())}`}
                       list="temu-size-options"
                       value={row.sizeName}
                       onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
@@ -1059,12 +1300,12 @@ export function PublishSkuPanel({
                 </>
               )}
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.extCode.trim())}`}
                 value={row.extCode}
                 onChange={(event) => onUpdateRow(row.key, { extCode: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.supplierPrice.trim())}`}
                 inputMode="decimal"
                 value={row.supplierPrice}
                 onChange={(event) => onUpdateRow(row.key, { supplierPrice: event.target.value })}
@@ -1074,7 +1315,7 @@ export function PublishSkuPanel({
                   但一列里塞三个框只能分到 39~72px，看着挤成一堆小方块；
                   三列分开每格都有自己的标题，填错列时反而更容易发现。 */}
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.lengthCm.trim())}`}
                 inputMode="decimal"
                 aria-label="长（厘米）"
                 title="长（厘米）"
@@ -1083,7 +1324,7 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.widthCm.trim())}`}
                 inputMode="decimal"
                 aria-label="宽（厘米）"
                 title="宽（厘米）"
@@ -1092,7 +1333,7 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.heightCm.trim())}`}
                 inputMode="decimal"
                 aria-label="高（厘米）"
                 title="高（厘米）"
@@ -1101,7 +1342,7 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.weightG.trim())}`}
                 inputMode="decimal"
                 aria-label="重量（克）"
                 placeholder="重量"
@@ -1134,20 +1375,73 @@ export function PublishSkuPanel({
                     : "库存 0：能建品，但商品是「售罄 / 不可售」状态，买家看不到"
                 }
               />
-              <button
-                type="button"
-                className="temu-variant-del"
-                onClick={() => onRemoveRow(row.key)}
-                disabled={rows.length <= 1}
-                aria-label="删除这一行变种"
-                title={
-                  rows.length <= 1
-                    ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
-                    : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
-                }
-              >
-                ×
-              </button>
+              <div className="temu-variant-row-actions">
+                <button
+                  type="button"
+                  className="temu-variant-more"
+                  aria-label="这一行的批量操作"
+                  title="把这一行的价格/库存套到同颜色、尺寸/重量套到同尺码"
+                  onClick={(event) => {
+                    if (rowMenuKey === row.key) {
+                      setRowMenuKey(null);
+                      return;
+                    }
+                    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+                    setRowMenuPos({
+                      top: Math.min(rect.bottom + 6, window.innerHeight - 170),
+                      left: Math.min(rect.left - 180, window.innerWidth - 230),
+                    });
+                    setRowMenuKey(row.key);
+                  }}
+                >
+                  ⋯
+                </button>
+                <button
+                  type="button"
+                  className="temu-variant-del"
+                  onClick={() => onRemoveRow(row.key)}
+                  disabled={rows.length <= 1}
+                  aria-label="删除这一行变种"
+                  title={
+                    rows.length <= 1
+                      ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
+                      : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
+                  }
+                >
+                  ×
+                </button>
+              </div>
+              {rowMenuKey === row.key && rowMenuPos
+                ? createPortal(
+                    // portal 到 body：alpine 下区块卡有 backdrop-filter，会建层叠上下文，
+                    // 菜单留在卡里会被右侧 sticky 检查栏盖住
+                    <div
+                      className="temu-row-menu"
+                      role="menu"
+                      style={{ top: rowMenuPos.top, left: rowMenuPos.left }}
+                    >
+                  <button
+                    type="button"
+                    disabled={!rows.some((item) => item !== row && item.colorName === row.colorName)}
+                    onClick={() => applyRowFields(row.key, "color")}
+                  >
+                    价格/库存 → 同颜色（
+                    {rows.filter((item) => item !== row && item.colorName === row.colorName).length} 行）
+                  </button>
+                  {sizeParentId > 0 && (
+                    <button
+                      type="button"
+                      disabled={!rows.some((item) => item !== row && item.sizeName === row.sizeName)}
+                      onClick={() => applyRowFields(row.key, "size")}
+                    >
+                      尺寸/重量 → {sizeSpecName}「{row.sizeName || "未填"}」（
+                      {rows.filter((item) => item !== row && item.sizeName === row.sizeName).length} 行）
+                    </button>
+                  )}
+                    </div>,
+                    document.body,
+                  )
+                : null}
             </div>
           ))}
         </div>

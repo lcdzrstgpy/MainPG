@@ -11,18 +11,29 @@ const attrModel = readFileSync(new URL("../data/attributeModel.ts", import.meta.
 const imageShape = readFileSync(new URL("../data/imageShape.ts", import.meta.url), "utf8");
 
 test("发布商品：提交前必须人工确认（外部副作用，不允许自动触发）", () => {
-  // 真提交会在这个店铺里创建商品，必须先 confirm 再发请求
+  // 真提交会在这个店铺里创建商品，必须先确认再发请求。
+  // 2026-11-10：原生 window.confirm → 应用内弹窗（WebView 可能禁用原生框，
+  // 点了提交直接返回 false，看着像「没反应」）。
   assert.match(page, /const publishGoods = \(\) =>/, "缺少 publishGoods 处理函数");
-  assert.match(page, /window\.confirm\(/, "提交前必须有确认弹窗");
+  assert.match(page, /const \[publishConfirm, setPublishConfirm\] = useState</);
+  // 点提交：先校验、弹确认框，不能直接打接口
   assert.ok(
-    page.indexOf("window.confirm(") < page.indexOf("temuPublishApi.publish(draft)"),
+    page.indexOf('setPublishConfirm({ kind: "submit", draft, skuCount })') <
+      page.indexOf('temuPublishApi.publish(draft, job.kind'),
     "确认必须发生在调用提交接口之前",
   );
-  // 用户取消时直接返回，不发请求
-  assert.match(page, /if \(!confirmed\) return;/);
-  // confirm 文案要说明后果：真实创建 + 不重试
+  // 真正提交只在 confirmPublish（弹窗里点「确认提交」）里发生
+  assert.match(page, /const confirmPublish = async \(\) => \{/);
+  assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 弹窗要说明后果：真实创建 + 不重试
   assert.match(page, /真的在店铺里创建商品/);
   assert.match(page, /不支持重试/);
+  // 发布流程内不再用原生 confirm（店铺删除等其它位置不受影响）
+  const publishFlow = page.slice(
+    page.indexOf("const publishGoods = () =>"),
+    page.indexOf("const copyPayload = async () => {"),
+  );
+  assert.doesNotMatch(publishFlow, /window\.confirm\(/);
 });
 
 test("发布商品：build 与 publish 复用同一份草稿，避免两条路径走偏", () => {
@@ -33,7 +44,7 @@ test("发布商品：build 与 publish 复用同一份草稿，避免两条路�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const built = await temuPublishApi\.buildPayload\(draft\);/);
-  assert.match(page, /const published = await temuPublishApi\.publish\(draft\);/);
+  assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
 });
 
 test("发布商品：接口指向 /publish，按钮提交中要禁用", () => {
@@ -46,7 +57,7 @@ test("发布商品：接口指向 /publish，按钮提交中要禁用", () => {
     "缺少提交禁用条件",
   );
   // 发布进行中别的任务跑完不能把它解禁：要么看 publishing，要么有 ref 兜底
-  assert.match(page, /if \(publishingRef\.current\) return;/, "发布要能挡住重复点击");
+  assert.match(page, /if \(publishingRef\.current \|\| publishConfirm\) return;/, "发布要能挡住重复点击（弹窗开着也算）");
   assert.match(page, /setBusy\(\(current\) => \(current === label \? "" : current\)\);/);
   assert.ok(page.includes("disabled={submitDisabled}"), "提交中必须禁用按钮");
   assert.match(page, /提交发布/);
@@ -163,8 +174,8 @@ test("草稿带入的图也按类目裁比例（不是只有手动上传才裁�
   // 缓存 key 必须带比例：同一张图先按 1:1 传过、改类目后按 3:4 传，不能直接还回 1:1 的地址
   assert.match(page, /const cacheKey = shape \? `\$\{text\}\|\$\{shape\.width\}x\$\{shape\.height\}` : text;/);
   assert.match(page, /const carouselShape = apparel \? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;/);
-  assert.match(page, /const carousel = await resolveImages\(carouselSource, leaf\.catId, carouselShape\);/);
-  assert.match(page, /const outerImages = await resolveImages\(splitLines\(form\.outerImages\), leaf\.catId, SQUARE_SHAPE\);/);
+  assert.match(page, /carousel = await resolveImages\(carouselSource, leaf\.catId, carouselShape, markUploaded\);/);
+  assert.match(page, /outerImages = await resolveImages\(outerSource, leaf\.catId, SQUARE_SHAPE, markUploaded\);/);
   assert.match(page, /await resolveImage\(materialSource, leaf\.catId, SQUARE_SHAPE\)/);
 });
 
@@ -536,6 +547,22 @@ test("标题自动匹配类目：防抖匹配、没手动选过才自动套用",
   assert.match(page, /className="temu-title-match"/);
 });
 
+test("属性自动加载的恢复链：settings 拉挂要静默重试，属性补拉失败要允许再试", () => {
+  // 自动匹配被 status.configured.ready 门控：settings 在进页面那一刻失败
+  // （后端刚重启/网络抖动）时 status 停在 null，没有重试的话草稿库点「编辑」
+  // 带入的没记忆过类目的草稿永远不触发属性加载，界面像「点了没反应」。
+  assert.match(page, /missed\.push\("店铺凭证"\);\n {10,}\/\/ 店铺凭证没取到/);
+  assert.match(page, /for \(const delay of \[2000, 5000, 10000\]\)/);
+  assert.match(page, /const fresh = await temuPublishApi\.settings\(\);/);
+  // 恢复类目后的属性补拉是一次性的：拉失败必须清掉标记，否则属性区
+  // 在这次挂载内永远空白（换类目/重套类目也不会再试）。
+  assert.match(
+    page,
+    /restoredAttrsLoadedRef\.current = false;/,
+    "属性补拉失败后要清一次性标记，允许后续重试",
+  );
+});
+
 test("换草稿：上一条商品的类目和推荐列表不能留在新商品上", () => {
   // 从草稿带入但没有存过类目时，清空并重新按标题匹配
   assert.match(page, /} else \{\n {4,}\/\/ 上一条商品的类目\/属性也必须清掉/);
@@ -575,7 +602,7 @@ test("发布：同一条草稿 24 小时内重复提交要先二次确认", () =
   assert.match(api, /\$\{BASE\}\/publish\$\{force \? "\?force=true" : ""\}/);
   // 后端 409 会带「重复提交：…」前缀，前端识别后弹确认，确认才带 force 再发
   assert.match(page, /if \(\/重复提交\/\.test\(text\)\)/);
-  assert.match(page, /await temuPublishApi\.publish\(draft, true\)/);
+  assert.match(page, /setPublishConfirm\(\{ kind: "duplicate", draft, skuCount: job\.skuCount, note: text \}\);/);
   assert.ok(page.includes("店铺里会多出一件相同商品"));
 });
 
@@ -701,8 +728,10 @@ test("健壮性：类目匹配重试、传图并发、初始化各自降级、�
   assert.match(page, /const response = await matchCategoryWithRetry\(categoryQuery\.trim\(\)\);/);
   assert.match(page, /类目匹配服务暂时不可用（已重试 3 次）/);
 
-  // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）
-  assert.match(page, /async function mapWithConcurrency<T, R>\(/);
+  // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）；工具已抽到 data/concurrency.ts 并有行为测试
+  const concurrency = readFileSync(new URL("../data/concurrency.ts", import.meta.url), "utf8");
+  assert.match(concurrency, /export async function mapWithConcurrency<T, R>\(/);
+  assert.match(page, /import \{ mapWithConcurrency \} from "\.\.\/data\/concurrency";/);
   assert.match(page, /await mapWithConcurrency\(files, 3, async \(file\) => \{/);
 
   // 3) 初始化：五个接口各自降级，只有 settings 决定店铺状态
@@ -1113,14 +1142,20 @@ test("发布检查：每一项都说清「还差什么」，被拦时自动定�
   // 检查清单不再是静态说明：没填完就列缺项
   assert.match(page, /const flowBase: Array<\{ id: string; label: string; hint: string; missing: string\[\] \}> = \[/);
   assert.match(page, /missingAttrs > 0 \? \[`\$\{missingAttrs\} 个必填属性`\] : \[\]/);
-  assert.match(page, /incompleteRows \? \[`\$\{incompleteRows\} 行没填全`\] : \[\]/);
+  assert.match(page, /行没填全（缺：\$\{missingRowLabels\.join\("、"\)\}）/);
   assert.match(page, /还差：\$\{step\.missing\.join\("、"\)\}/);
   assert.match(page, /remainingContentSteps\.length \? `还差 \$\{remainingContentSteps\.length\} 项` : "可提交"/);
 
-  // 点发布被拦：标红必填项 + 滚到第一个没填完的区块
+  // 变种行缺哪列直接列出来；尺码只在有第二销售属性时才算缺
+  //（和提交校验一致 —— 单维类目行尺码本来就该是空的，不能永远「没填全」）
+  assert.match(page, /const rowMissingLabels = \(row: VariantRow\): string\[\] => \{/);
+  assert.match(page, /if \(sizeParentId > 0 && !row\.sizeName\.trim\(\)\) missing\.push\("尺码"\);/);
+  assert.match(page, /const missingRowLabels = Array\.from\(new Set\(rows\.flatMap\(rowMissingLabels\)\)\);/);
+
+  // 点发布被拦：标红必填项 + 滚到「出错的那一块」（定位不到才退回第一个缺口）
   assert.match(page, /const draft = await composeDraft\(\)\.catch\(\(cause: unknown\) => \{/);
   assert.match(page, /setShowFieldErrors\(true\);/);
-  assert.match(page, /const firstGap = flowSteps\.find\(\(step\) => step\.id !== "sec-publish" && !step\.done\);/);
+  assert.ok(page.includes("section || flowSteps.find((step) => step.id !== \"sec-publish\" && !step.done)?.id"));
 
   // 必填项只在「被拦过之后」标红，且属性/标题都覆盖
   assert.match(page, /const \[showFieldErrors, setShowFieldErrors\] = useState\(false\);/);
@@ -1180,7 +1215,7 @@ test("发下一条：只清本商品特有的内容，类目/属性/运费/仓�
 test("Ctrl/⌘ + Enter 直接提交，且不会重复上架", () => {
   assert.match(page, /if \(event\.key !== "Enter" \|\| !\(event\.ctrlKey \|\| event\.metaKey\)\) return;/);
   // 提交中/别的任务在跑/未就绪时直接忽略，避免连按重复提交
-  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready\) return;/);
+  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready \|\| publishConfirm\) return;/);
   assert.match(page, /event\.preventDefault\(\);/);
   // 用 ref 取最新函数，不是每次 render 重绑监听
   assert.match(page, /const publishRef = useRef\(publishGoods\);/);
@@ -1404,7 +1439,7 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
     page.indexOf("const attrByPid = new Map("),
   );
   const attrCheckAt = compose.indexOf("缺少必填属性");
-  const uploadAt = compose.indexOf("const carousel = await resolveImages(");
+  const uploadAt = compose.indexOf("carousel = await resolveImages(");
   assert.ok(attrCheckAt > -1, "expected required-attribute check inside composeDraft");
   assert.ok(uploadAt > -1, "expected image upload inside composeDraft");
   assert.ok(attrCheckAt < uploadAt, "必填属性校验必须在图片上传之前，否则白传一遍图才报错");
@@ -1667,10 +1702,10 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
   // 只提示「请重新选一遍」是句废话：他打开属性区一看跟原来一样，只能盲选再被拒一次。
   // 必须把「新增了哪个必填项 / 哪个选择失效了」点名出来。
   const publish = page.slice(
-    page.indexOf("const publishGoods = () =>"),
-    page.indexOf("}).finally(() => {\n      publishingRef.current = false;"),
+    page.indexOf("const confirmPublish = async () => {"),
+    page.indexOf("const copyPayload = async () => {"),
   );
-  assert.ok(publish.length > 0, "expected publishGoods block");
+  assert.ok(publish.length > 0, "expected confirmPublish block");
   assert.match(publish, /if \(\/6000002\|类目属性更新\/\.test\(text\)\) \{/);
   assert.match(publish, /const diff = await reloadCategoryAttributes\(attributes\)\.catch\(/);
   assert.match(publish, /const detail = diff \? attributeDiffText\(diff\) : "";/);
@@ -1707,8 +1742,9 @@ test("变种规格值要把 Temu 的预设值摆出来，而不是让用户猜",
   assert.match(panel, /不是合法的\{sizeSpecName\}值（Temu 只认类目预设）/);
   assert.match(panel, /const suggestSpecValues = /);
   assert.match(panel, /replaceSpecValue\(colorsText, value, name\)/);
-  assert.match(panel, /unknownColors\.length \? " is-bad" : ""/);
-  assert.match(panel, /unknownSizes\.length \? " is-bad" : ""/);
+  // 手填非法值在 chips 编辑器上标红（容器 + 单个 chip）
+  assert.match(panel, /temu-spec-chips\$\{bad\.length \? " is-bad" : ""\}/);
+  assert.match(panel, /temu-spec-chip-item\$\{badLower\.has\(value\.toLowerCase\(\)\) \? " is-bad" : ""\}/);
   // 两个输入框都要能下拉搜
   assert.match(panel, /list="temu-color-options"/);
   assert.match(panel, /list="temu-size-options"/);
@@ -1892,8 +1928,10 @@ test("发布历史列表要「看得懂」：缩略图、类目名、价格、�
   assert.match(history, /formatPriceRange\(item\.price_min, item\.price_max\)/);
   assert.match(history, /item\.shop_name/);
   assert.match(history, /sourceLabelOf\(item\.draft_id\)/);
-  // 统计与搜索（搜标题/商品 id/类目名），搜索要防抖并带进请求
-  assert.match(history, /成功率/);
+  // 搜索（搜标题/商品 id/类目名），要防抖并带进请求
+  // 2026-11-10 用户要求删掉页头的「成功/失败/成功率」统计卡（页签上已有计数，重复）
+  assert.doesNotMatch(history, /成功率/);
+  assert.doesNotMatch(history, /temu-history-stats/);
   assert.match(history, /搜标题、商品 id、类目名/);
   assert.match(history, /q: query/);
   assert.match(apiTs, /q: params\.q \?\? ""/);
@@ -2035,6 +2073,72 @@ test("生成变种按钮：组合齐了就置灰，别让人对着一个点了�
   // 组合判断抽成纯函数（有单测）
   assert.match(merge, /export function variantCoverage\(/);
   assert.match(merge, /inSync: wanted\.size > 0 && missing === 0 && extra === 0/);
+});
+
+test("尺码取值只有一个值且各行尺码全空 → 直接写进表格（不用点生成）", () => {
+  // 用户在「变种属性二」填「可定制尺寸」，表格里还是「输入尺码」占位符，
+  // 检查清单报「N 行没填全」却看不出差在哪 —— 取值框和表格是两份数据，
+  // 同步原来只能靠「生成变种」按钮，太隐蔽。单值全空时自动写入。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  assert.match(panel, /const handleSizesTextChange = \(value: string\) => \{/);
+  assert.match(panel, /onSizesTextChange\(value\);/);
+  assert.match(panel, /const single = splitSizes\(value\);/);
+  assert.match(panel, /if \(single\.length === 1 && rows\.length && rows\.every\(\(row\) => !row\.sizeName\.trim\(\)\)\)/);
+  assert.match(panel, /onRowsChange\(rows\.map\(\(row\) => \(\{ \.\.\.row, sizeName: single\[0\] \}\)\)\);/);
+  // chips 加值和预设 chips 都走它（逗号输入框已废）
+  assert.match(panel, /if \(kind === "color"\) onColorsTextChange\(next\);\n\s*else handleSizesTextChange\(next\);/);
+  assert.match(panel, /renderSpecChoices\(sizeOptions, sizesText, handleSizesTextChange, sizeSpecName, "size"\)/);
+});
+
+test("变种属性值用 chips +「+」一个个加，不用逗号拼字符串", () => {
+  // 以前是逗号拼一串文本（"咖色,粉色,白色,黑色"）：加值找逗号、拼错整串歪掉、
+  // 删也删不干净。现在 chips 单个加/删（回车或 + 提交），底层仍存逗号串。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(panel, /const addSpecValues = \(kind: "color" \| "size", raw: string\) => \{/);
+  assert.match(panel, /const removeSpecValue = \(kind: "color" \| "size", value: string\) => \{/);
+  assert.match(panel, /const renderSpecEditor = \(kind: "color" \| "size", label: string\) => \{/);
+  // 颜色/尺码两个入口都换成 chips 编辑器
+  assert.match(panel, /\{renderSpecEditor\("color", colorSpecName\)\}/);
+  assert.match(panel, /renderSpecEditor\("size", sizeSpecName\)/);
+  // 回车或 + 添加；粘贴一串（"s,m,l"）拆开逐个加
+  assert.match(panel, /if \(draft\.trim\(\)\) commit\(\);/);
+  assert.match(panel, /className="temu-spec-add"/);
+  assert.match(panel, /const incoming = splitSizes\(raw\);/);
+  // + 绝不能是 disabled（用户反馈「+都点不了」：输入框空着时按钮灰着，
+  // 一进页面就点不动）。空着点 + 要把焦点丢回输入框；
+  assert.doesNotMatch(panel, /disabled=\{!draft\.trim\(\)\}/);
+  assert.match(panel, /if \(draft\.trim\(\)\) addSpecValues\(kind, draft\);/);
+  assert.match(panel, /chipInputRefs\.current\[kind\]\?\.focus\(\);/);
+  // chips 的样式
+  assert.match(css, /\.temu-spec-chips \{/);
+  assert.match(css, /\.temu-spec-chip-item \{/);
+  assert.match(css, /\.temu-spec-add \{/);
+  // 值多时限高自己滚（11 个长颜色名会把整块撑到 400px 高、把旁边尺码栏压到底部），
+  // 输入框和 + 在列表外面，不会被滚走
+  assert.match(panel, /className="temu-spec-chip-list"/);
+  assert.match(css, /\.temu-spec-chip-list \{[\s\S]{0,220}max-height: 78px;[\s\S]{0,80}overflow-y: auto;/);
+  // 变种属性区三列顶部对齐（以前 align-items:end，chips 一高旁边的栏就被压到底）
+  assert.match(css, /\.is-console \.temu-variant-spec \{[\s\S]{0,600}align-items: start;/);
+});
+
+test("尺寸与重量按尺码绑定，不跟着「应用到全部」一把梭", () => {
+  // 不同尺码的长宽高/重量本来就不一样，批量套全部行等于逼人回头逐行改。
+  // 现在按尺码分组、改了即生效；「应用到全部」只管价格/库存。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(panel, /const BATCH_APPLY_KEYS: Array<keyof VariantBatch> = \["supplierPrice", "suggestedPrice", "stock"\];/);
+  assert.match(panel, /for \(const key of BATCH_APPLY_KEYS\) \{/);
+  assert.match(panel, /BATCH_APPLY_KEYS\.filter\(\(key\) => \{/);
+  assert.match(panel, /const sizeDimGroups = \(\(\) => \{/);
+  assert.match(panel, /const patchSizeDim = \(/);
+  // 即改即生效：直接落到同尺码的行上
+  assert.match(panel, /onChange=\{\(e\) => patchSizeDim\(group\.sizeName, "lengthCm", e\.target\.value\)\}/);
+  assert.match(panel, /onChange=\{\(e\) => patchSizeDim\(group\.sizeName, "weightG", e\.target\.value\)\}/);
+  assert.match(css, /\.temu-size-dims \{/);
 });
 
 test("从成品库挑图：三个图片槽位都能直接挑，不用先存本地再上传", () => {
@@ -2392,7 +2496,7 @@ test("变种表尺寸：长/宽/高 各占一列、各有表头", () => {
   assert.doesNotMatch(panel, /尺寸\(cm\)/);
   assert.doesNotMatch(panel, /temu-variant-dims/);
   // 两维模式：三列各 60px；单 SKU 模式省下颜色/尺码后摊宽到 96px
-  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 60px 60px 60px 58px 70px minmax\(48px, 1fr\) 24px;/);
+  assert.match(css, /grid-template-columns: 72px 96px 62px 104px 66px 60px 60px 60px 58px 70px minmax\(48px, 1fr\) 50px;/);
   assert.match(css, /\.temu-variant-row\.is-single \{[\s\S]{0,140}96px 96px 96px/);
   // 库存列吃剩余宽度；min-width 按真实列总和（732 + 11×6 + 48 = 846）
   assert.match(css, /\.temu-variant-table \{[\s\S]{0,200}min-width: 846px;/);
@@ -2537,4 +2641,132 @@ test("成品库：批次里超过 20 个时能「加载更多」，不再只显�
   // 后端契约
   assert.match(types, /has_more\?: boolean;/);
   assert.match(types, /item_offset\?: number;/);
+});
+
+test("提交失败要「红到哪里」：出错区块描红 + 清单同步 + 换商品即清", () => {
+  // 用户要求：提交失败了，失败的地方有颜色提醒；正常情况没有颜色。
+  // 实现：错误按 section 归类（后端自带 section 优先，本地校验按文案归类），
+  // 命中时给区块和右栏清单加 is-error 描红并滚过去；下次提交/换商品自动清。
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 1) 本地校验文案 → 区块
+  assert.match(page, /function sectionOfValidation\(message: string\): string \{/);
+  assert.ok(page.includes('return "sec-pack";'));
+  assert.ok(page.includes('return "sec-variant";'));
+  // 后端 section 优先，其次才按文案归类
+  assert.ok(page.includes("setErrorSection(typeof section === \"string\" ? section : sectionOfValidation(text));"));
+
+  // 2) 拦下来时：标红必填 + 跳到出错区块（传 cause 进去）
+  assert.match(page, /const noteValidationBlocked = \(cause\?: unknown\) => \{/);
+  assert.match(page, /noteValidationBlocked\(cause\);/);
+  assert.ok(page.includes('if (section) setErrorSection(section);'));
+
+  // 3) 四个区块都能命中 is-error（正常状态没有这个类）
+  for (const sec of ["sec-base", "sec-info", "sec-variant", "sec-pack"]) {
+    assert.ok(
+      page.includes('${errorSection === "' + sec + '" ? " is-error" : ""}'),
+      sec + " 要绑定 is-error",
+    );
+  }
+
+  // 4) 右栏清单同步标红；换商品清掉红标
+  assert.ok(page.includes('${errorSection === step.id ? " is-error" : ""}'));
+  assert.ok(page.includes('setErrorSection("");'));
+
+  // 5) 样式：只在 .is-error 上才有红色
+  assert.match(css, /\.is-console \.temu-sec\.is-error \{[\s\S]{0,200}border-color: #e2384a;/);
+  assert.match(css, /\.is-console \.temu-sec\.is-error \.temu-sec-num \{/);
+  assert.match(css, /\.is-console \.temu-rail-list li\.is-error \.temu-rail-dot \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.is-console \.temu-sec\.is-error \{/);
+});
+
+test("发布确认用应用内弹窗：列清标题/类目/变种，重复提交也能二次确认", () => {
+  // 原生 window.confirm 在 WebView 里可能被禁（点了直接 false），样式也不搭。
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(page, /className="temu-edit-dialog temu-confirm-dialog"/);
+  assert.match(page, /<dt>标题<\/dt>/);
+  assert.match(page, /<dt>类目<\/dt>/);
+  assert.match(page, /<dt>变种<\/dt>/);
+  assert.match(page, /确认提交/);
+  assert.match(page, /仍然提交/);
+  // 重复提交：换成二次确认，不再走原生 confirm
+  assert.match(page, /setPublishConfirm\(\{ kind: "duplicate", draft, skuCount: job\.skuCount, note: text \}\);/);
+  // 快捷键在弹窗开着时不能再触发一次
+  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready \|\| publishConfirm\) return;/);
+  assert.match(css, /\.temu-confirm-dialog \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-confirm-dialog \{/);
+});
+
+test("失败红到字段：showErrors 传给变种面板，缺的格子直接红框", () => {
+  // 区块级描红只说「这块有问题」，这块再说清楚「第几行的哪一格空着」。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /showErrors=\{showFieldErrors\}/);
+  assert.match(panel, /showErrors = false/);
+  assert.match(panel, /const cellBad = \(missing: boolean\) => \(showErrors && missing \? " is-bad" : ""\);/);
+  for (const field of ["colorName", "sizeName", "extCode", "supplierPrice", "lengthCm", "widthCm", "heightCm", "weightG"]) {
+    assert.ok(
+      panel.includes("cellBad(!row." + field + ".trim())"),
+      field + " 缺值要标红",
+    );
+  }
+});
+
+test("提交前的传图走限并发，按钮上能看到上传进度", () => {
+  // 原来 10 张轮播 + 6 张外包装一张张串行传，网络一慢提交前干等且没有进度；
+  // 限并发 3 折中，轮播/外包装/详情全算进进度，传完或失败立刻清空。
+  assert.match(page, /const IMAGE_UPLOAD_CONCURRENCY = 3;/);
+  assert.match(page, /mapWithConcurrency\(urls, IMAGE_UPLOAD_CONCURRENCY, async \(url\) =>/);
+  assert.match(page, /mapWithConcurrency\(sources, IMAGE_UPLOAD_CONCURRENCY, async \(text\) =>/);
+  assert.match(page, /const uploadTotal = carouselSource\.length \+ outerSource\.length \+ detailSource\.length;/);
+  assert.match(page, /setUploadProgress\(\{ done: 0, total: uploadTotal \}\);/);
+  assert.ok(page.includes("图片上传 ${uploadProgress.done}/${uploadProgress.total}…"));
+  // 失败也要清掉，不许一直挂着「上传中」
+  assert.match(page, /} finally \{\n      setUploadProgress\(null\);\n    \}/);
+  // 并发工具本身有行为测试（data/concurrency.test.ts）
+  assert.ok(
+    readFileSync(new URL("../data/concurrency.test.ts", import.meta.url), "utf8").includes("峰值并发应等于 3"),
+  );
+});
+
+test("变种行级「套用到同色/同码」：⋯ 菜单只影响对应分组", () => {
+  // 4 色 × 3 码时尺寸一码一套、价格同色一套，逐行手改 12 行太慢。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(panel, /const \[rowMenuKey, setRowMenuKey\] = useState<string \| null>\(null\);/);
+  assert.match(panel, /const applyRowFields = \(key: string, scope: "color" \| "size"\) => \{/);
+  assert.ok(panel.includes('const COLOR_FIELDS = ["supplierPrice", "suggestedPrice", "stock"] as const;'));
+  assert.ok(panel.includes('const SIZE_FIELDS = ["lengthCm", "widthCm", "heightCm", "weightG"] as const;'));
+  assert.match(panel, /className="temu-variant-more"/);
+  assert.match(panel, /className="temu-row-menu"/);
+  // 单维类目没有「同尺码」分组，不显示那一项
+  assert.match(panel, /\{sizeParentId > 0 && \(\s*\n\s*<button[\s\S]{0,200}applyRowFields\(row\.key, "size"\)/);
+  assert.match(css, /\.temu-row-menu \{/);
+});
+
+test("发布历史：失败原因归堆，点一下就只看同类失败", () => {
+  // 「发 30 条失败 20 条」时，一条条翻才能看出其实都栽在同一个错上。
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(history, /const \[reasonFilter, setReasonFilter\] = useState\(""\);/);
+  assert.match(history, /const reasonGroups = \(\(\) => \{/);
+  assert.match(history, /const listItems = reasonFilter/);
+  assert.match(history, /\{listItems\.map\(\(item\) => \{/);
+  assert.match(history, /setTab\("failed"\);\s*\n\s*setExpanded\(\{\}\);\s*\n\s*setReasonFilter\(""\);/);
+  assert.match(history, /className=\{`temu-history-reason-chip/);
+  assert.match(css, /\.temu-history-reason-chip \{/);
+});
+
+test("高山草原：成品库 / 发布历史 / 弹窗统一晨雾质感", () => {
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(css, /\[data-theme="alpine"\] \.temu-edit-dialog \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-library-stat \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-draft-table tbody tr:hover \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-history-row \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-history-tab\.is-active \{/);
 });
