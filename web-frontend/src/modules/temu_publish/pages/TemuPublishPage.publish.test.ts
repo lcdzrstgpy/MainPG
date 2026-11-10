@@ -174,8 +174,8 @@ test("草稿带入的图也按类目裁比例（不是只有手动上传才裁�
   // 缓存 key 必须带比例：同一张图先按 1:1 传过、改类目后按 3:4 传，不能直接还回 1:1 的地址
   assert.match(page, /const cacheKey = shape \? `\$\{text\}\|\$\{shape\.width\}x\$\{shape\.height\}` : text;/);
   assert.match(page, /const carouselShape = apparel \? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;/);
-  assert.match(page, /const carousel = await resolveImages\(carouselSource, leaf\.catId, carouselShape\);/);
-  assert.match(page, /const outerImages = await resolveImages\(splitLines\(form\.outerImages\), leaf\.catId, SQUARE_SHAPE\);/);
+  assert.match(page, /carousel = await resolveImages\(carouselSource, leaf\.catId, carouselShape, markUploaded\);/);
+  assert.match(page, /outerImages = await resolveImages\(outerSource, leaf\.catId, SQUARE_SHAPE, markUploaded\);/);
   assert.match(page, /await resolveImage\(materialSource, leaf\.catId, SQUARE_SHAPE\)/);
 });
 
@@ -728,8 +728,10 @@ test("健壮性：类目匹配重试、传图并发、初始化各自降级、�
   assert.match(page, /const response = await matchCategoryWithRetry\(categoryQuery\.trim\(\)\);/);
   assert.match(page, /类目匹配服务暂时不可用（已重试 3 次）/);
 
-  // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）
-  assert.match(page, /async function mapWithConcurrency<T, R>\(/);
+  // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）；工具已抽到 data/concurrency.ts 并有行为测试
+  const concurrency = readFileSync(new URL("../data/concurrency.ts", import.meta.url), "utf8");
+  assert.match(concurrency, /export async function mapWithConcurrency<T, R>\(/);
+  assert.match(page, /import \{ mapWithConcurrency \} from "\.\.\/data\/concurrency";/);
   assert.match(page, /await mapWithConcurrency\(files, 3, async \(file\) => \{/);
 
   // 3) 初始化：五个接口各自降级，只有 settings 决定店铺状态
@@ -1437,7 +1439,7 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
     page.indexOf("const attrByPid = new Map("),
   );
   const attrCheckAt = compose.indexOf("缺少必填属性");
-  const uploadAt = compose.indexOf("const carousel = await resolveImages(");
+  const uploadAt = compose.indexOf("carousel = await resolveImages(");
   assert.ok(attrCheckAt > -1, "expected required-attribute check inside composeDraft");
   assert.ok(uploadAt > -1, "expected image upload inside composeDraft");
   assert.ok(attrCheckAt < uploadAt, "必填属性校验必须在图片上传之前，否则白传一遍图才报错");
@@ -2710,4 +2712,21 @@ test("失败红到字段：showErrors 传给变种面板，缺的格子直接红
       field + " 缺值要标红",
     );
   }
+});
+
+test("提交前的传图走限并发，按钮上能看到上传进度", () => {
+  // 原来 10 张轮播 + 6 张外包装一张张串行传，网络一慢提交前干等且没有进度；
+  // 限并发 3 折中，轮播/外包装/详情全算进进度，传完或失败立刻清空。
+  assert.match(page, /const IMAGE_UPLOAD_CONCURRENCY = 3;/);
+  assert.match(page, /mapWithConcurrency\(urls, IMAGE_UPLOAD_CONCURRENCY, async \(url\) =>/);
+  assert.match(page, /mapWithConcurrency\(sources, IMAGE_UPLOAD_CONCURRENCY, async \(text\) =>/);
+  assert.match(page, /const uploadTotal = carouselSource\.length \+ outerSource\.length \+ detailSource\.length;/);
+  assert.match(page, /setUploadProgress\(\{ done: 0, total: uploadTotal \}\);/);
+  assert.ok(page.includes("图片上传 ${uploadProgress.done}/${uploadProgress.total}…"));
+  // 失败也要清掉，不许一直挂着「上传中」
+  assert.match(page, /} finally \{\n      setUploadProgress\(null\);\n    \}/);
+  // 并发工具本身有行为测试（data/concurrency.test.ts）
+  assert.ok(
+    readFileSync(new URL("../data/concurrency.test.ts", import.meta.url), "utf8").includes("峰值并发应等于 3"),
+  );
 });
