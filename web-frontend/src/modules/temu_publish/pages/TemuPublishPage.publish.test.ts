@@ -1139,10 +1139,10 @@ test("发布检查：每一项都说清「还差什么」，被拦时自动定�
   assert.match(page, /if \(sizeParentId > 0 && !row\.sizeName\.trim\(\)\) missing\.push\("尺码"\);/);
   assert.match(page, /const missingRowLabels = Array\.from\(new Set\(rows\.flatMap\(rowMissingLabels\)\)\);/);
 
-  // 点发布被拦：标红必填项 + 滚到第一个没填完的区块
+  // 点发布被拦：标红必填项 + 滚到「出错的那一块」（定位不到才退回第一个缺口）
   assert.match(page, /const draft = await composeDraft\(\)\.catch\(\(cause: unknown\) => \{/);
   assert.match(page, /setShowFieldErrors\(true\);/);
-  assert.match(page, /const firstGap = flowSteps\.find\(\(step\) => step\.id !== "sec-publish" && !step\.done\);/);
+  assert.ok(page.includes("section || flowSteps.find((step) => step.id !== \"sec-publish\" && !step.done)?.id"));
 
   // 必填项只在「被拦过之后」标红，且属性/标题都覆盖
   assert.match(page, /const \[showFieldErrors, setShowFieldErrors\] = useState\(false\);/);
@@ -2628,4 +2628,42 @@ test("成品库：批次里超过 20 个时能「加载更多」，不再只显�
   // 后端契约
   assert.match(types, /has_more\?: boolean;/);
   assert.match(types, /item_offset\?: number;/);
+});
+
+test("提交失败要「红到哪里」：出错区块描红 + 清单同步 + 换商品即清", () => {
+  // 用户要求：提交失败了，失败的地方有颜色提醒；正常情况没有颜色。
+  // 实现：错误按 section 归类（后端自带 section 优先，本地校验按文案归类），
+  // 命中时给区块和右栏清单加 is-error 描红并滚过去；下次提交/换商品自动清。
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 1) 本地校验文案 → 区块
+  assert.match(page, /function sectionOfValidation\(message: string\): string \{/);
+  assert.ok(page.includes('return "sec-pack";'));
+  assert.ok(page.includes('return "sec-variant";'));
+  // 后端 section 优先，其次才按文案归类
+  assert.ok(page.includes("setErrorSection(typeof section === \"string\" ? section : sectionOfValidation(text));"));
+
+  // 2) 拦下来时：标红必填 + 跳到出错区块（传 cause 进去）
+  assert.match(page, /const noteValidationBlocked = \(cause\?: unknown\) => \{/);
+  assert.match(page, /noteValidationBlocked\(cause\);/);
+  assert.ok(page.includes('if (section) setErrorSection(section);'));
+
+  // 3) 四个区块都能命中 is-error（正常状态没有这个类）
+  for (const sec of ["sec-base", "sec-info", "sec-variant", "sec-pack"]) {
+    assert.ok(
+      page.includes('${errorSection === "' + sec + '" ? " is-error" : ""}'),
+      sec + " 要绑定 is-error",
+    );
+  }
+
+  // 4) 右栏清单同步标红；换商品清掉红标
+  assert.ok(page.includes('${errorSection === step.id ? " is-error" : ""}'));
+  assert.ok(page.includes('setErrorSection("");'));
+
+  // 5) 样式：只在 .is-error 上才有红色
+  assert.match(css, /\.is-console \.temu-sec\.is-error \{[\s\S]{0,200}border-color: #e2384a;/);
+  assert.match(css, /\.is-console \.temu-sec\.is-error \.temu-sec-num \{/);
+  assert.match(css, /\.is-console \.temu-rail-list li\.is-error \.temu-rail-dot \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.is-console \.temu-sec\.is-error \{/);
 });

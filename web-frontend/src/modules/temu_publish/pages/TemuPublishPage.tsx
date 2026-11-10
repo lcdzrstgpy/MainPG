@@ -588,6 +588,22 @@ const SECTION_LABELS: Record<string, string> = {
   "sec-pack": "包装信息",
 };
 
+/**
+ * 本地校验失败落在哪一块。
+ *
+ * 后端错误自带 section；前端自己抛的校验错误只有一句中文，这里按关键词归类 ——
+ * 归类对了就把那个区块描红并滚过去，用户在长表单里不用自己找「到底哪里错了」。
+ * 顺序有讲究：「产品货号」要在「货号」之前判（分属产品信息，不是变种）。
+ */
+function sectionOfValidation(message: string): string {
+  if (/店铺凭证|绑定店铺|类目|必填属性/.test(message)) return "sec-base";
+  if (/运费模板|发货仓库|发货时效|外包装图片/.test(message)) return "sec-pack";
+  if (/产品货号/.test(message)) return "sec-info";
+  if (/第 \d+ 行|变种|尺码|颜色|申报价|建议售价|库存|尺寸|重量/.test(message)) return "sec-variant";
+  if (/标题|轮播图|素材图|详情图|站外|链接/.test(message)) return "sec-info";
+  return "";
+}
+
 export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: () => void } = {}) {
   const [status, setStatus] = useState<TemuSettingsStatus | null>(null);
   // 进页面时 status 还是 null：这时候不知道绑没绑，不能先按「未绑定」渲染，
@@ -1287,9 +1303,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     try {
       await task();
     } catch (cause) {
-      setError(errorMessage(cause));
+      const text = errorMessage(cause);
+      setError(text);
       const section = (cause as { section?: unknown } | null)?.section;
-      setErrorSection(typeof section === "string" ? section : "");
+      // 后端给了 section 就用它；本地校验只有一句话，按关键词归到哪个区块
+      setErrorSection(typeof section === "string" ? section : sectionOfValidation(text));
     } finally {
       // 只清自己那次：发布这种长任务进行中，别的短任务结束不能把按钮重新解禁
       setBusy((current) => (current === label ? "" : current));
@@ -2621,7 +2639,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const checkMandatory = () =>
     run("mandatory", async () => {
       const draft = await composeDraft().catch((cause: unknown) => {
-        noteValidationBlocked();
+        noteValidationBlocked(cause);
         throw cause;
       });
       setMandatory(null);
@@ -2644,7 +2662,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       // 校验没过：把必填项标红，并滚到第一个还没填完的区块 ——
       // 否则长表单里只看到顶部一句「缺少必填属性」，还得自己往下找在哪
       const draft = await composeDraft().catch((cause: unknown) => {
-        noteValidationBlocked();
+        noteValidationBlocked(cause);
         throw cause;
       });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
@@ -2839,6 +2857,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }));
     setRows([]);
     setError("");
+    setErrorSection("");
     setResult(null);
     setPublishResult(null);
     setMandatory(null);
@@ -2972,11 +2991,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
-  /** 校验没通过时的统一反馈：标红必填项 + 滚到第一个缺口。 */
-  const noteValidationBlocked = () => {
+  /**
+   * 校验没通过时的统一反馈：标红必填项 + 把出错的那块描红并滚过去。
+   *
+   * 能定位到具体区块就跳它 —— 比「第一个没填完的」更准：轮播图不够时变种块
+   * 可能早就填完了，跳第一个缺口只会让人盯着一块全绿的区块发愣。
+   */
+  const noteValidationBlocked = (cause?: unknown) => {
     setShowFieldErrors(true);
-    const firstGap = flowSteps.find((step) => step.id !== "sec-publish" && !step.done);
-    if (firstGap) jumpTo(firstGap.id);
+    const provided = (cause as { section?: unknown } | null)?.section;
+    const section =
+      typeof provided === "string" && provided
+        ? provided
+        : sectionOfValidation(cause ? errorMessage(cause) : "");
+    if (section) setErrorSection(section);
+    const target =
+      section || flowSteps.find((step) => step.id !== "sec-publish" && !step.done)?.id || "";
+    if (target) jumpTo(target);
   };
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
   const ready = !!status?.configured.ready;
@@ -3410,7 +3441,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 1 基本信息 */}
           <section
-            className={`temu-sec${stepOf("sec-base").done ? " is-done" : ""}${activeSectionId === "sec-base" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-base").done ? " is-done" : ""}${activeSectionId === "sec-base" ? " is-active" : ""}${errorSection === "sec-base" ? " is-error" : ""}`}
             id="sec-base"
           >
             <SectionHead
@@ -3755,7 +3786,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 2 产品信息 */}
           <section
-            className={`temu-sec${stepOf("sec-info").done ? " is-done" : ""}${activeSectionId === "sec-info" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-info").done ? " is-done" : ""}${activeSectionId === "sec-info" ? " is-active" : ""}${errorSection === "sec-info" ? " is-error" : ""}`}
             id="sec-info"
           >
             <SectionHead
@@ -4034,7 +4065,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 3 变种信息 */}
           <section
-            className={`temu-sec${stepOf("sec-variant").done ? " is-done" : ""}${activeSectionId === "sec-variant" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-variant").done ? " is-done" : ""}${activeSectionId === "sec-variant" ? " is-active" : ""}${errorSection === "sec-variant" ? " is-error" : ""}`}
             id="sec-variant"
           >
             <SectionHead
@@ -4215,7 +4246,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 4 包装信息 */}
           <section
-            className={`temu-sec${stepOf("sec-pack").done ? " is-done" : ""}${activeSectionId === "sec-pack" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-pack").done ? " is-done" : ""}${activeSectionId === "sec-pack" ? " is-active" : ""}${errorSection === "sec-pack" ? " is-error" : ""}`}
             id="sec-pack"
           >
             <SectionHead
@@ -4452,7 +4483,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
             <ol className="temu-rail-list">
               {flowSteps.map((step, index) => (
-                <li key={step.id} className={step.done ? "is-done" : ""}>
+                <li key={step.id} className={`${step.done ? "is-done" : ""}${errorSection === step.id ? " is-error" : ""}`}>
                   <button type="button" onClick={() => jumpTo(step.id)}>
                     <span className="temu-rail-dot">{step.done ? <CheckGlyph /> : index + 1}</span>
                     <span className="temu-rail-label">

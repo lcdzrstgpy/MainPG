@@ -7530,3 +7530,57 @@ textarea.temu-input {
 [data-theme="alpine"] .is-console .temu-stat-body dd {
   font-variant-numeric: tabular-nums;
 }
+
+/* =====================================================================
+   提交失败：出错区块描红 + 右栏清单同步标红
+   ---------------------------------------------------------------------
+   只在失败后出现（errorSection 命中时加 is-error），下次提交/换商品即消失，
+   正常状态零颜色。错误色保持全局语义色 #e2384a，不随主题变化。
+   ===================================================================== */
+.is-console .temu-sec.is-error {
+  border-color: #e2384a;
+  background: color-mix(in srgb, #e2384a 4%, var(--theme-module-surface, #ffffff));
+  /* 1px 边框在大白卡上太弱，再压一道内描边凑出 ~2px 的红框 */
+  box-shadow:
+    inset 0 0 0 1px rgba(226, 56, 74, 0.45),
+    0 16px 36px -30px rgba(226, 56, 74, 0.55);
+}
+
+.is-console .temu-sec.is-error::before {
+  background: #e2384a;
+  opacity: 1;
+}
+
+.is-console .temu-sec.is-error .temu-sec-num {
+  color: #ffffff;
+  background: #e2384a;
+  box-shadow: none;
+}
+
+.is-console .temu-sec.is-error .temu-sec-title h2 {
+  color: #a5342f;
+}
+
+/* 右栏清单：报错那一步的红点，和左边区块对得上 */
+.is-console .temu-rail-list li.is-error .temu-rail-dot {
+  color: #ffffff;
+  background: #e2384a;
+}
+
+.is-console .temu-rail-list li.is-error .temu-rail-label,
+.is-console .temu-rail-list li.is-error .temu-rail-label em {
+  color: #a5342f;
+}
+
+/* 高山草原：卡片是半透明的，错误底用同色系半透明，避免混成灰 */
+[data-theme="alpine"] .is-console .temu-sec.is-error {
+  border-color: rgba(226, 56, 74, 0.6);
+  background: rgba(255, 244, 244, 0.82);
+}
+
+/* 高山草原的「当前步骤」绿渐变徽章优先级更高（5 个类），要单独压回红色 */
+[data-theme="alpine"] .is-console .temu-sec.is-error .temu-sec-num {
+  color: #ffffff;
+  background: #e2384a;
+  box-shadow: none;
+}
