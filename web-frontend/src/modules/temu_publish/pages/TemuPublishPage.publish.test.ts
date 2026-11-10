@@ -2770,3 +2770,48 @@ test("高山草原：成品库 / 发布历史 / 弹窗统一晨雾质感", () =>
   assert.match(css, /\[data-theme="alpine"\] \.temu-history-row \{/);
   assert.match(css, /\[data-theme="alpine"\] \.temu-history-tab\.is-active \{/);
 });
+
+test("必填属性实时说「还缺哪几个」，空项带红点", () => {
+  const form = readFileSync(new URL("../components/TemuPropertyForm.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(form, /const missingRequired = groups\.required\.filter\(\(item\) => \{/);
+  assert.match(form, /className="temu-attr-missing"/);
+  assert.match(form, /还缺 \{missingRequired\.length\} 个：/);
+  assert.match(form, /className="temu-attr-req-dot"/);
+  assert.match(css, /\.temu-attr-missing \{/);
+  assert.match(css, /\.temu-attr-req-dot \{/);
+});
+
+test("发布确认弹窗带上价格/图片/运费/仓库，最后一眼能核对", () => {
+  assert.match(page, /priceLabel\?: string;/);
+  assert.match(page, /<dt>价格<\/dt>/);
+  assert.match(page, /<dt>图片<\/dt>/);
+  assert.match(page, /<dt>运费<\/dt>/);
+  assert.match(page, /<dt>仓库<\/dt>/);
+  assert.ok(page.includes("轮播 ${splitLines(form.carousel).length}"));
+});
+
+test("成品库：失败过的草稿打标 + 只看失败过；历史点「去修这条」自动打开", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 成品库没有「已发布」状态（发成功的会移除），所以做的是「失败过」
+  assert.match(library, /const failedTitles = new Set\(/);
+  assert.match(library, /const \[onlyFailed, setOnlyFailed\] = useState\(false\);/);
+  assert.match(library, /const failedCount = entries\.filter\(\(entry\) => failedTitles\.has\(entry\.title\.trim\(\)\)\)\.length;/);
+  assert.match(library, /\{visibleEntries\.map\(\(entry\) => \(/);
+  assert.match(library, /className="temu-draft-failed"/);
+  assert.match(library, /className={`temu-library-failed-toggle\$\{onlyFailed \? " is-active" : ""\}`}/);
+  assert.match(css, /\.temu-library-failed-toggle \{/);
+  assert.match(css, /\.temu-draft-failed \{/);
+
+  // 历史 → 草稿库：记下目标草稿 id，草稿库读到后自动打开
+  assert.match(types, /export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";/);
+  assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_FOCUS_KEY, item\.draft_id\);/);
+  assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
+  assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_FOCUS_KEY\)/);
+  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills\)\);/);
+});

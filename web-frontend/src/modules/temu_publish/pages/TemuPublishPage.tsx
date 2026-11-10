@@ -2667,7 +2667,17 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * kind=duplicate 是后端说「24 小时内提交过同一条」时的二次确认。
    */
   const [publishConfirm, setPublishConfirm] = useState<
-    null | { kind: "submit" | "duplicate"; draft: TemuGoodsDraft; skuCount: number; note?: string }
+    null | {
+      kind: "submit" | "duplicate";
+      draft: TemuGoodsDraft;
+      skuCount: number;
+      note?: string;
+      /** 提交前最后核对用：价格区间 / 图片数 / 运费模板 / 发货仓库 */
+      priceLabel?: string;
+      imageLabel?: string;
+      freightLabel?: string;
+      warehouseLabel?: string;
+    }
   >(null);
 
   /** 点「提交发布」：先过校验，再弹应用内确认框（真正提交在 confirmPublish 里）。 */
@@ -2684,7 +2694,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         throw cause;
       });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
-      setPublishConfirm({ kind: "submit", draft, skuCount });
+      // 确认弹窗把「钱和物流」也列出来：标题/类目之外，用户最后要核的是价、图、运费、仓库
+      const prices = rows
+        .map((row) => Number(row.supplierPrice))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      const priceMin = prices.length ? Math.min(...prices) : 0;
+      const priceMax = prices.length ? Math.max(...prices) : 0;
+      const priceLabel = prices.length
+        ? priceMin === priceMax
+          ? `¥${priceMin}`
+          : `¥${priceMin} – ¥${priceMax}`
+        : "—";
+      const imageLabel = `轮播 ${splitLines(form.carousel).length} · 外包装 ${splitLines(form.outerImages).length} · 详情 ${splitLines(form.detailImages).length}`;
+      const freightLabel =
+        freightTemplates.find((item) => item.freightTemplateId === form.freightId)?.templateName || "—";
+      const warehouseLabel =
+        warehouseGroups
+          .flatMap((group) => group.validWarehouseList ?? [])
+          .find((item) => item.warehouseId === form.warehouseId)?.warehouseName || "—";
+      setPublishConfirm({
+        kind: "submit",
+        draft,
+        skuCount,
+        priceLabel,
+        imageLabel,
+        freightLabel,
+        warehouseLabel,
+      });
     }).finally(() => {
       publishingRef.current = false;
       setPublishing(false);
@@ -4667,11 +4703,35 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     </div>
                     <div>
                       <dt>类目</dt>
-                      <dd>{publishConfirm.draft.category_ids[publishConfirm.draft.category_ids.length - 1]}</dd>
+                      <dd
+                        title={categoryPath
+                          .map((step) => step.catName)
+                          .filter(Boolean)
+                          .join(" > ")}
+                      >
+                        {categoryPath.map((step) => step.catName).filter(Boolean).join(" > ") ||
+                          publishConfirm.draft.category_ids[publishConfirm.draft.category_ids.length - 1]}
+                      </dd>
                     </div>
                     <div>
                       <dt>变种</dt>
                       <dd>{publishConfirm.skuCount} 个</dd>
+                    </div>
+                    <div>
+                      <dt>价格</dt>
+                      <dd>{publishConfirm.priceLabel || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>图片</dt>
+                      <dd>{publishConfirm.imageLabel || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>运费</dt>
+                      <dd title={publishConfirm.freightLabel}>{publishConfirm.freightLabel || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>仓库</dt>
+                      <dd>{publishConfirm.warehouseLabel || "—"}</dd>
                     </div>
                   </dl>
                 ) : (

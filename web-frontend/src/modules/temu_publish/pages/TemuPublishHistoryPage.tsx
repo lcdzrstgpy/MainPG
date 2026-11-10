@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
 import type { TemuPublishHistoryItem } from "../types";
+import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
 import {
   copyText,
   dayLabelOf,
@@ -474,8 +475,27 @@ export function TemuPublishHistoryPage({
                           {copied === `err-${item.id}` ? "已复制" : "复制原因"}
                         </button>
                         {onOpenDraftLibrary ? (
-                          <button type="button" className="temu-history-retry" onClick={onOpenDraftLibrary}>
-                            去成品库重发
+                          <button
+                            type="button"
+                            className="temu-history-retry"
+                            title={
+                              item.draft_id
+                                ? "回成品库自动打开这条草稿，改完再发"
+                                : "手填的商品没有来源草稿，回成品库重新挑一条"
+                            }
+                            onClick={() => {
+                              // 记了来源草稿 id → 草稿库自动打开那条；没记就只切过去
+                              if (item.draft_id) {
+                                try {
+                                  window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, item.draft_id);
+                                } catch {
+                                  // 隐私模式写不进 storage：退回普通跳转
+                                }
+                              }
+                              onOpenDraftLibrary();
+                            }}
+                          >
+                            {item.draft_id ? "去修这条" : "去成品库重发"}
                           </button>
                         ) : null}
                       </div>

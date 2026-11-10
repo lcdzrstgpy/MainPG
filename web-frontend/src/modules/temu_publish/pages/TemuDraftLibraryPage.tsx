@@ -29,6 +29,7 @@ import type {
   TemuDraftLibrary,
   TemuPublishPrefill,
 } from "../types";
+import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
 import "../styles/temuPublish.css";
 
 type Filter = "all" | "ai" | "pod";
@@ -443,6 +444,8 @@ export function TemuDraftLibraryPage({
 }) {
   const [data, setData] = useState<TemuDraftLibrary | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  /** 只看「发布失败过」的草稿（按本机失败台账的标题匹配） */
+  const [onlyFailed, setOnlyFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -605,6 +608,46 @@ export function TemuDraftLibraryPage({
       .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry)),
     [data, deepEntries, edits, hidden],
   );
+
+  /**
+   * 发布失败过的标题（本机台账）。
+   *
+   * 发成功的草稿会自动移出成品库，所以这里没有「已发布」筛选的意义；
+   * 反过来「失败过」是真实存在的状态 —— 这类草稿要么改完重发、要么删掉，
+   * 不该和人堆在一起靠翻找。标题匹配够用（失败记录存的就是标题）。
+   */
+  // 不用 memo 缓存：发布页新增失败记录后切回来要立刻看到标记（读 LS 很便宜）
+  const failedTitles = new Set(
+    localStore.failures().map((item) => item.draftTitle.trim()).filter(Boolean),
+  );
+  const failedCount = entries.filter((entry) => failedTitles.has(entry.title.trim())).length;
+  const visibleEntries = onlyFailed
+    ? entries.filter((entry) => failedTitles.has(entry.title.trim()))
+    : entries;
+
+  /**
+   * 发布历史点「去修这条」过来：找到那条草稿自动打开（=整表预填进发布页）。
+   * 只尝试一次：条目可能不在当前页，找不到就清标记，避免以后每次进库都触发。
+   */
+  const focusHandledRef = useRef(false);
+  useEffect(() => {
+    if (focusHandledRef.current || !entries.length) return;
+    let focusId = "";
+    try {
+      focusId = window.sessionStorage.getItem(TEMU_LIBRARY_FOCUS_KEY) || "";
+    } catch {
+      focusId = "";
+    }
+    if (!focusId) return;
+    focusHandledRef.current = true;
+    try {
+      window.sessionStorage.removeItem(TEMU_LIBRARY_FOCUS_KEY);
+    } catch {
+      // 清不掉也无所谓：标记只消费一次
+    }
+    const target = entries.find((entry) => entry.id === focusId);
+    if (target) onUseDraft(entryPrefill(target, categoryMemo, attrPrefills));
+  }, [entries, categoryMemo, attrPrefills, onUseDraft]);
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
    *
@@ -1110,6 +1153,19 @@ export function TemuDraftLibraryPage({
           ))}
         </div>
 
+        <button
+          type="button"
+          className={`temu-library-failed-toggle${onlyFailed ? " is-active" : ""}`}
+          aria-pressed={onlyFailed}
+          title="按本机失败记录筛选：只显示发布失败过的草稿"
+          onClick={() => {
+            setOnlyFailed((current) => !current);
+            setSelected(new Set());
+          }}
+        >
+          失败过 {failedCount}
+        </button>
+
         <div className="temu-library-head-actions">
           {onOpenHistory ? (
             <button type="button" className="temu-btn" onClick={onOpenHistory}>
@@ -1316,7 +1372,7 @@ export function TemuDraftLibraryPage({
                 </tr>
               </thead>
               <tbody>
-                {entries.map((entry) => (
+                {visibleEntries.map((entry) => (
                   <tr key={entry.id} className={selected.has(entry.id) ? "is-selected" : ""}>
                     <td className="col-check">
                       <input
@@ -1352,6 +1408,11 @@ export function TemuDraftLibraryPage({
                       <span className={`temu-draft-source ${entry.source}`}>
                         {entry.source === "ai" ? "AI 处理" : "POD"}
                       </span>
+                      {failedTitles.has(entry.title.trim()) ? (
+                        <span className="temu-draft-failed" title="这条草稿发布失败过：点「编辑」进去改完再发">
+                          失败过
+                        </span>
+                      ) : null}
                       {entry.variant_count && entry.variant_count > 1 ? (
                         <span className="temu-draft-variants">· {entry.variant_count} 个变体</span>
                       ) : null}

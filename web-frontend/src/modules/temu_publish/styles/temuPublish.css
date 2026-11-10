@@ -7824,3 +7824,55 @@ textarea.temu-input {
   border-color: rgba(226, 56, 74, 0.28);
   background: rgba(226, 56, 74, 0.07);
 }
+
+/* ---- 必填属性：实时「还缺哪几个」+ 空项红点 ---- */
+.temu-attr-missing {
+  flex: 1 1 100%;
+  margin-top: 2px;
+  color: #b3313d;
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.temu-attr-req-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: #e2384a;
+  vertical-align: middle;
+}
+
+/* ---- 成品库：发布失败过的草稿标记 + 一键筛选 ---- */
+.temu-library-failed-toggle {
+  align-self: flex-end;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(214, 69, 69, 0.28);
+  border-radius: 10px;
+  background: rgba(214, 69, 69, 0.06);
+  color: #a5342f;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.temu-library-failed-toggle:hover,
+.temu-library-failed-toggle.is-active {
+  border-color: #c0392b;
+  background: rgba(214, 69, 69, 0.16);
+}
+
+.temu-draft-failed {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(226, 56, 74, 0.1);
+  color: #b3313d;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
