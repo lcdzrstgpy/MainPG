@@ -30,7 +30,11 @@
 }
 
 .user-popover .ui-mode-option:hover { background: #f3f7fa; }
-.user-popover .ui-mode-option.is-active { color: #0877d3; background: #eaf7ff; }
+.user-popover .ui-mode-option.is-active {
+  /* 硬编码浅蓝在深色主题下会变成「浅底浅字」，走主题变量 */
+  color: var(--theme-primary, #0877d3);
+  background: var(--theme-module-surface-soft, #eaf7ff);
+}
 .ui-mode-copy { display: grid; min-width: 0; }
 .ui-mode-copy strong { font-size: .82rem; }
 .ui-mode-copy small { color: #8a9caf; font-size: .67rem; font-weight: 600; }

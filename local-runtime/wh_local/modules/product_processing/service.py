@@ -5974,6 +5974,107 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "excluded_draft_ids": sorted(excluded_ids),
         }
 
+    def task_search_preview(
+        self,
+        task_id: int,
+        needle: str,
+        *,
+        workspace_id: str = "local",
+        limit: int = 2000,
+        match_all: bool = False,
+        matched_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """按关键字在**整个任务**里搜商品项（成品库全量搜索用）。
+
+        和 ``task_preview`` 的区别只有两点：筛选在库里做（JSON1 + LIKE），
+        以及**不投影图片**（``media_limit=0`` 同款口径）。命中之后由调用方
+        按当前页补图片，所以几百个商品的任务也只付「几毫秒 SQL + 命中条数」的钱。
+
+        ``matched_ids``：调用方已经用 ``search_task_items_bulk`` 一次查完了
+        所有批次，这里就不再重复查一遍库。
+        """
+        task = self._require_task_meta(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
+        completed_only = task["status"] == "cancelled"
+        if matched_ids is None:
+            matched_ids = self.repository.search_task_items(
+                task_id,
+                needle,
+                limit=max(1, int(limit)),
+                completed_only=completed_only,
+                match_all=match_all,
+            )
+        else:
+            matched_ids = [int(value) for value in matched_ids][: max(1, int(limit))]
+        items = self.repository.get_task_items_by_ids(
+            task_id, matched_ids, completed_only=completed_only
+        )
+        draft_ids = [
+            int(item["product_draft_id"])
+            for item in items
+            if item.get("product_draft_id")
+        ]
+        draft_meta = (
+            self.repository.drafts_preview_meta(draft_ids, workspace_id=workspace_id)
+            if draft_ids
+            else {}
+        )
+        from .domain.preview_images import PreviewImageManifest  # noqa: PLC0415
+
+        empty_manifest = PreviewImageManifest().as_dict()
+        previews: list[dict[str, Any]] = []
+        for item in items:
+            result = item.get("result") or {}
+            draft_id = item.get("product_draft_id")
+            meta = draft_meta.get(int(draft_id)) if draft_id else {}
+            saved = (meta or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict):
+                saved = {}
+            previews.append(
+                {
+                    **self._preview_item(
+                        item,
+                        result,
+                        saved,
+                        preview_revision=int((meta or {}).get("preview_revision") or 0),
+                    ),
+                    "media_contract_version": int(
+                        (meta or {}).get("media_contract_version") or 1
+                    ),
+                    "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
+                    "media_loaded": False,
+                    "sku_availability": None,
+                    "dimension_image": None,
+                    # 和 task_preview 里 media_limit=0 的分支同一口径：图片留空，
+                    # 但「能不能导出」的结论要给（成品库靠它筛可发布条目）。
+                    "assets": [],
+                    "image_manifest": empty_manifest,
+                    "main_image": "",
+                    "carousel_images": [],
+                    "detail_images": [],
+                    **self.preview_images.lazy_export_readiness(
+                        result,
+                        title=str(
+                            (saved.get("title") if isinstance(saved, Mapping) else "")
+                            or result.get("optimized_title")
+                            or ""
+                        ).strip(),
+                    ),
+                }
+            )
+        return {
+            "task_id": int(task_id),
+            "item_count": len(previews),
+            "truncated": len(previews) >= max(1, int(limit)),
+            "items": previews,
+        }
+
     def task_preview_media(
         self,
         task_id: int,
@@ -6991,6 +7092,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
+    def media_asset_file(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        width: int | None = None,
+    ) -> tuple[Path, str]:
+        """按登录会话取图（不校验临时签名）。见 MediaAssetService.media_asset_file。"""
+        try:
+            return self.media_assets.media_asset_file(
+                asset_id,
+                workspace_id=workspace_id,
+                width=width,
+            )
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
     def retry_media_asset(self, asset_id: str, *, workspace_id: str = "local") -> dict[str, Any]:
         try:
             asset = self.media_assets.retry_asset(asset_id, workspace_id=workspace_id)
@@ -7759,17 +7877,41 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "overrides": saved,
         }
 
+    def _output_root_resolved(self) -> Path:
+        """输出根目录的 resolve 结果只算一次。
+
+        Windows 上 `Path.resolve()` 要走文件系统（解析短路径/符号链接），
+        每张图都算一遍在首屏就是几十毫秒的纯浪费。
+        """
+        cached = getattr(self, "_output_root_resolved_cache", None)
+        if cached is None:
+            cached = self.assets.output_root.resolve()
+            self._output_root_resolved_cache = cached
+        return cached
+
     def _display_url(self, value: Any) -> str:
-        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；http(s) 外链原样返回。"""
+        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；已经是 URL 的原样返回。"""
         text = str(value or "").strip()
         if not text:
             return ""
-        if text.lower().startswith(("http://", "https://")):
+        # 已经是可用的 URL 就直接返回，别拿它当文件路径去碰文件系统。
+        # 实测成品库首屏 175 次调用**全是** `/api/product-processing/preview/assets/...`，
+        # 以前每条都走一次 Path.resolve()（Windows 会逐级 realpath + readlink），
+        # 光这一项就 0.26 秒。
+        if text.startswith(("http://", "https://", "/api/", "/pp-media/")):
             return text
+        root = self._output_root_resolved()
+        # 用 os.path.abspath 而不是 Path.resolve()：
+        # resolve 会解析符号链接（每级一次 _getfinalpathname），abspath 只做字符串规范化。
+        # 真的因为符号链接导致相对化失败时，再退回 resolve 重试。
+        candidate = Path(os.path.abspath(text))
         try:
-            relative = Path(text).resolve().relative_to(self.assets.output_root.resolve())
+            relative = candidate.relative_to(root)
         except (ValueError, OSError):
-            return text
+            try:
+                relative = Path(text).resolve().relative_to(root)
+            except (ValueError, OSError):
+                return text
         return f"/pp-media/{relative.as_posix()}"
 
     def process_workbook(

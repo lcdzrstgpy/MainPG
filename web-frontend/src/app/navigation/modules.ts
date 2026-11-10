@@ -10,6 +10,7 @@ export type WorkspaceModuleId =
   | "product_processing_tasks"
   | "temu_publish"
   | "temu_draft_library"
+  | "temu_publish_history"
   | "combo_generate"
   | "combo_prompt_preset"
   | "combo_history"
@@ -196,18 +197,28 @@ const productProcessingHistory: WorkspaceModule = {
 
 const temuPublish: WorkspaceModule = {
   id: "temu_publish",
-  label: "发布商品（实验）",
+  label: "发布商品",
   icon: "",
   iconClass: "iconfont icon-upload",
   description: "选择类目与属性，组装 Temu 商品发布请求体",
 };
 
+const temuPublishHistory: WorkspaceModule = {
+  id: "temu_publish_history",
+  label: "发布历史",
+  icon: "",
+  iconClass: "iconfont icon-reloadtime",
+  description: "成功与失败的发布记录分开看",
+};
+
 const temuDraftLibrary: WorkspaceModule = {
   id: "temu_draft_library",
-  label: "草稿库",
+  label: "成品库",
   icon: "",
   iconClass: "iconfont icon-database",
-  description: "汇总 AI 处理与 POD 成品，一键带入发布商品",
+  // 里面放的是 AI 处理完 / POD 定制完的东西 —— 已经做完了，只差没上架；
+  // 叫「草稿」会让人以为还没做完，也和 Temu 后台的草稿箱撞名。
+  description: "AI 处理与 POD 定制成品，一键带入发布商品",
 };
 
 const productProcessingSourcing: WorkspaceModule = {
@@ -472,7 +483,8 @@ const podWorkflow: WorkspaceNavigationGroup = {
 const aiVideoWorkflow: WorkspaceNavigationGroup = {
   // AI 视频仍是单个页签模块，侧栏按分组展开 iframe 内的 7 个入口。
   id: "ai_video",
-  label: "AI视频（实验）",
+  // 和页面模块的 label 保持一致（都带空格）：分组与扁平表不一致会被守护测试拦下
+  label: "AI 视频（实验）",
   icon: "",
   iconClass: "iconfont icon-video",
   description: "通过 ClipForge 生成电商短视频",
@@ -515,14 +527,15 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [productWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
   },
   {
-    // 海外上架即原「发布商品」：发布页与草稿库是同级子项。
+    // 海外上架：成品库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
+    // 而不是一张空表单。
     id: "overseas_listing",
     label: "海外上架",
     icon: "",
     iconClass: "iconfont icon-upload",
-    description: "Temu 商品发布与草稿库",
-    defaultChildId: "temu_publish",
-    children: [temuPublish, temuDraftLibrary],
+    description: "Temu 商品发布：成品库 → 发布商品 → 发布历史",
+    defaultChildId: "temu_draft_library",
+    children: [temuDraftLibrary, temuPublish, temuPublishHistory],
   },
   {
     id: "data_insights",
@@ -569,6 +582,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessingSourcing,
   temuPublish,
   temuDraftLibrary,
+  temuPublishHistory,
   comboGenerate,
   comboPromptPreset,
   comboHistory,

@@ -531,7 +531,9 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
 
   async function loadSites() {
     const data = await request<{ sites: Array<Record<string, unknown>> }>("/api/profit-activity/sites");
-    const profiles = data.sites.map(toSiteSettingProfile);
+    // 接口换版/网关异常时可能回空对象：直接 .map 会让整个页面在 Promise 里抛
+    // 「Cannot read properties of undefined」而白屏（unhandled rejection）。
+    const profiles = (Array.isArray(data?.sites) ? data.sites : []).map(toSiteSettingProfile);
     setSiteProfiles(profiles);
     return profiles;
   }

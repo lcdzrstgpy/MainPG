@@ -2,11 +2,19 @@ from pathlib import Path
 
 
 def test_workbench_spec_packages_pod_customization_migrations() -> None:
-    spec = Path(__file__).parents[1] / "workbench.spec"
+    """迁移目录打进包。
 
-    assert '"wh_local/modules/pod_customization/migrations"' in spec.read_text(
-        encoding="utf-8"
-    )
+    2026-11-05 起改成「自动扫描 wh_local 下所有 migrations」，不再手写白名单 ——
+    新增模块（如 order_profit）忘了登记就不会缺表。所以这里验两件事：
+    自动扫描的代码在，且 pod_customization 的目录真实存在（扫得到）。
+    """
+    spec = Path(__file__).parents[1] / "workbench.spec"
+    text = spec.read_text(encoding="utf-8")
+
+    assert 'rglob("migrations")' in text, "spec 必须自动扫描 migrations 目录"
+    migrations = Path(__file__).parents[1] / "wh_local" / "modules" / "pod_customization" / "migrations"
+    assert migrations.is_dir(), "pod_customization 的 migrations 目录必须存在"
+    assert any(migrations.iterdir()), "migrations 目录不能是空的"
 
 
 def test_installer_packages_the_verified_clipforge_app_root() -> None:

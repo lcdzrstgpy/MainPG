@@ -248,6 +248,8 @@ Write-Host "[build] wrote $versionJson"
 $forbiddenNames = @(
     "cos.local.json",
     "onebound.local.json",
+    "temu_gateway.local.json",
+    "temu_gateway.enc",
     ".env",
     "workbench.sqlite3"
 )
@@ -257,6 +259,17 @@ $forbiddenFiles = Get-ChildItem -LiteralPath $dist -Recurse -File | Where-Object
 }
 if ($forbiddenFiles) {
     throw "Refusing to package local credentials or databases"
+}
+
+# The temu template that lands in the package must stay empty. Credentials are
+# never bundled at all (see the block further down); filling this file would put
+# the shared provider pair into every installer in clear text.
+$gatewayTemplate = Join-Path $dist "wh_local\data\temu_gateway.json"
+if (Test-Path -LiteralPath $gatewayTemplate) {
+    $templateText = [IO.File]::ReadAllText($gatewayTemplate, [Text.Encoding]::UTF8)
+    if ($templateText -match '"yl_(client|token)"\s*:\s*"[^"]+"') {
+        throw "temu_gateway.json must stay an empty template - Temu credentials are never bundled"
+    }
 }
 
 # Media publishing: precheck finalization exports final images as public COS
@@ -327,6 +340,30 @@ foreach ($credName in @("cos.enc", "onebound.enc")) {
     }
 }
 Write-Host "[build] verified bundled credentials (cos.enc, onebound.enc)"
+
+# Temu semi-managed listing credentials: NEVER bundle them.
+#
+# The YL client/token pair is shared by every user. Anything shipped in the
+# installer can be extracted (the AES key lives in wh_local/secrets.py and the
+# app ships its own decrypt command), so bundling it means one leaked installer
+# leaks the credentials for all users - and it cannot be revoked remotely.
+#
+# The app instead pulls the pair from the customer center after login:
+#   GET /api/customer/temu-gateway   (env on the server: WH_TEMU_YL_CLIENT/TOKEN)
+# Rotation: the server-side pair is fingerprinted; when it changes, every
+# installed client overwrites its local copy within 5 minutes. So rotating on
+# the server is the revoke switch - no rebuild, no reinstall.
+$temuPlain = Join-Path $PSScriptRoot "wh_local\data\temu_gateway.local.json"
+$temuEnc = Join-Path $dist "temu_gateway.enc"
+if (Test-Path -LiteralPath $temuEnc -PathType Leaf) {
+    Remove-Item -LiteralPath $temuEnc -Force
+}
+if (Test-Path -LiteralPath $temuPlain -PathType Leaf) {
+    throw ("Refusing to build: " + $temuPlain + " exists.`n" +
+        "Temu provider credentials must NOT be bundled - a leaked installer would leak them for every user.`n" +
+        "Delete or rename that file and rebuild. Installed clients fetch the pair from the customer center after login.")
+}
+Write-Host "[build] no Temu provider credentials bundled (fetched from the customer center after login)"
 
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."

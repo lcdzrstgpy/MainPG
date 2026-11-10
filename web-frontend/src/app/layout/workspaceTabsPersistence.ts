@@ -51,6 +51,10 @@ function sanitizeTab(raw: unknown, allowedModuleIds: ReadonlySet<string>): Works
     label: typeof source.label === "string" ? source.label : "",
     icon: typeof source.icon === "string" ? source.icon : "",
   };
+  // 写盘时的模块名：有才留，没有就不写（老快照缺这个字段，还原时按「模块改过名」处理）
+  if (typeof source.moduleLabel === "string" && source.moduleLabel) {
+    tab.moduleLabel = source.moduleLabel;
+  }
   for (const field of STRING_FIELDS) {
     if (typeof source[field] === "string") tab[field] = source[field];
   }

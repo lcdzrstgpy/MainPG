@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { WorkspaceShell } from "./layout/WorkspaceShell";
+import { WorkspaceErrorBoundary } from "../shared/components/WorkspaceErrorBoundary";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
@@ -163,13 +164,17 @@ export function App() {
       <AuthPage exiting={authExiting} onEnter={enterWorkspaceAfterLogin} />
     )}
     {enteredWorkspace && (
-      <WorkspaceShell
-        currentRole={accountRole}
-        onSignOut={signOut}
-        playEntryAnimation={playEntryAnimation}
-        entryOrigin={entryOrigin}
-        onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
-      />
+      // 外层兜底：WorkspaceShell 自身（页签恢复、导航）出错时至少给一句提示，
+      // 而不是让整个窗口变成一片空白。
+      <WorkspaceErrorBoundary resetKey="workspace" scope="工作台">
+        <WorkspaceShell
+          currentRole={accountRole}
+          onSignOut={signOut}
+          playEntryAnimation={playEntryAnimation}
+          entryOrigin={entryOrigin}
+          onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
+        />
+      </WorkspaceErrorBoundary>
     )}
     <RuntimeUpdateNotifier />
     <GlobalToast />

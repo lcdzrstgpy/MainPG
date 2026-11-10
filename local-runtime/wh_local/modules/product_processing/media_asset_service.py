@@ -241,6 +241,38 @@ class MediaAssetService:
         expected = self._asset_access_signature(asset, int(expires))
         if not hmac.compare_digest(expected, str(signature or "")):
             raise LookupError("media asset not found")
+        return self._serve_asset(asset, workspace_id=workspace_id, width=width)
+
+    def media_asset_file(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        width: int | None = None,
+    ) -> tuple[Path, str]:
+        """按登录会话直接取图，**不校验临时签名**。
+
+        为什么需要这条：`_preview_url()` 签出来的地址只活 ~2 小时
+        （`((now // 3600) + 2) * 3600`）。草稿库/发布页表单把当时的地址存下来，
+        过几小时再拿它读图必然 404 —— 记录是 ready、文件也好端端躺在磁盘上，
+        纯粹是签名过期。用户看到的是「请求的内容不存在或已被删除」，
+        再怎么重传图都没用（换的新图地址同样会在两小时后过期）。
+
+        `<img src>` 那种不能带 Authorization 的场景仍走签名分支；
+        前端走 httpBlob（自带 Bearer）的一律用这条。
+        """
+        asset = self.repository.get_asset(asset_id, workspace_id)
+        if asset is None or asset.get("status") != "ready" or not asset.get("managed_path"):
+            raise LookupError("media asset not found")
+        return self._serve_asset(asset, workspace_id=workspace_id, width=width)
+
+    def _serve_asset(
+        self,
+        asset: Mapping[str, Any],
+        *,
+        workspace_id: str,
+        width: int | None,
+    ) -> tuple[Path, str]:
         path = self.assets.require_workspace_media_asset(
             str(asset["managed_path"]),
             workspace_id=workspace_id,
@@ -261,12 +293,21 @@ class MediaAssetService:
             "carousel": [],
             "dimension": [],
         }
-        for binding in self.repository.list_bindings(
+        bindings = list(
+            self.repository.list_bindings(
+                workspace_id,
+                product_draft_id=product_draft_id,
+                active_only=True,
+            )
+        )
+        # 资产一次批量取：以前在循环里逐条 get_asset，一屏 20 张图就是 20 次查询 ——
+        # 成品库首屏要跑 8 个任务，累计 250 次往返，光这里 0.4 秒。
+        assets = self.repository.get_assets(
+            [str(binding.get("asset_id") or "") for binding in bindings],
             workspace_id,
-            product_draft_id=product_draft_id,
-            active_only=True,
-        ):
-            asset = self.repository.get_asset(binding["asset_id"], workspace_id)
+        )
+        for binding in bindings:
+            asset = assets.get(str(binding.get("asset_id") or ""))
             if asset is None:
                 continue
             role = str(binding.get("role") or "gallery")

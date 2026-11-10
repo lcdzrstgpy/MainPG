@@ -7,7 +7,8 @@
 
   --theme-text-primary: #f8fafc;
   --theme-text-secondary: #cbd5e1;
-  --theme-text-muted: #94a3b8;
+  /* 深色底上用 #94a3b8 太灰，正文级说明文字看不清 → 提亮到接近白 */
+  --theme-text-muted: #c3cfdd;
 
   --theme-primary: #e5e7eb;
   --theme-primary-light: #272a31;

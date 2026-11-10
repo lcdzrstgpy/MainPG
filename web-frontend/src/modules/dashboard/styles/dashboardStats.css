@@ -325,7 +325,10 @@
 }
 
 .dash-range button.is-active {
-  background: transparent;
+  /* 选中态原来只靠 .dash-range-thumb（默认 opacity:0，要 JS 量完宽度才显形）。
+     thumb 没 ready 的那一帧里，文字是 on-primary（浅色主题=白）压在 surface-soft 上，
+     浅色主题都看不清，深色主题直接 1.2:1。这里给按钮自己一个同色底兜住。 */
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
   color: var(--theme-on-primary, #ffffff);
   box-shadow: none;
 }

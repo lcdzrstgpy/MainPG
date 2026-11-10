@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TemuPropertyForm } from "./TemuPropertyForm";
+import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "./ShipmentDaysPicker";
 import { temuPublishApi } from "../api/temuPublishApi";
 import {
   missingRequiredNames,
@@ -84,7 +85,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   const catIdRef = useRef(0);
   const [freightId, setFreightId] = useState("");
   const [warehouseId, setWarehouseId] = useState("");
-  const [shipmentDays, setShipmentDays] = useState("7");
+  const [shipmentDays, setShipmentDays] = useState(DEFAULT_SHIPMENT_DAYS);
 
   useEffect(() => {
     let alive = true;
@@ -176,9 +177,18 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   const warehouses = useMemo(() => flatWarehouses(warehouseGroups), [warehouseGroups]);
   const missing = attributes ? missingRequiredNames(visibleProperties(attributes, picks), picks) : [];
 
+  /**
+   * 这份现场配置能不能直接拿去发：类目 + 运费 + 仓库 + **必填属性填完**。
+   *
+   * 少了最后一条，父组件的「开始发布」会在必填属性没填时也亮起来，
+   * 一整批注定被 Temu 拒的商品就这么提交出去了（每条都要等网关回错误）。
+   */
+  const configReady =
+    path.length > 0 && !!freightId && !!warehouseId && !!attributes && missing.length === 0;
+
   // 配置齐了就回传模板；不齐回传 null（父组件据此判断能不能发）
   useEffect(() => {
-    if (!path.length || !freightId || !warehouseId) {
+    if (!configReady) {
       onChange(null);
       return;
     }
@@ -206,7 +216,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       sizeParentName: sizeSpec?.parentSpecName,
       savedAt: new Date().toLocaleString("zh-CN"),
     });
-  }, [path, picks, freightId, warehouseId, shipmentDays, specs, onChange]);
+  }, [configReady, path, picks, freightId, warehouseId, shipmentDays, specs, onChange]);
 
   return (
     <div className="temu-batch-manual">
@@ -303,14 +313,12 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
             ))}
           </select>
         </label>
-        <label className="temu-field">
-          <span>发货时效（天）</span>
-          <input
-            className="temu-input"
-            value={shipmentDays}
-            onChange={(event) => setShipmentDays(event.target.value)}
-          />
-        </label>
+        {/* 发货时效和发布页用同一个选择器（1/2/7/9 + 自定义），
+            原来是裸输入框，两边的默认值和可填范围都对不上 */}
+        <div className="temu-field temu-batch-shipment">
+          <span>承诺发货时效</span>
+          <ShipmentDaysPicker value={shipmentDays} onChange={setShipmentDays} />
+        </div>
       </div>
 
       {error ? <p className="temu-confirm-warn">{error}</p> : null}

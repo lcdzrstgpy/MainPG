@@ -8,6 +8,7 @@ import type {
   SkuRepullState,
 } from "../types";
 import { apiRequest } from "../../../shared/api/apiClient";
+import { asArray } from "../../../transport/http/client";
 
 export function collectByCriteria(criteria: DailySelectionCriteria): Promise<DailySelectionRun> {
   return apiRequest("/desktop/daily-selection/preview", {
@@ -48,7 +49,11 @@ export function cancelCollectionTask(taskId: string): Promise<DailySelectionTask
 }
 
 export function listSelectionRuns(): Promise<DailySelectionRunSummary[]> {
-  return apiRequest("/desktop/daily-selection/runs");
+  // 后端正常返回数组；但 apiRequest 对空体/非 JSON 的 2xx 会兜成 `{}`，
+  // 直接 setRuns({}) 之后 runs.map 就在渲染期抛异常把「采集」页打崩。
+  return apiRequest<DailySelectionRunSummary[]>("/desktop/daily-selection/runs").then((value) =>
+    asArray<DailySelectionRunSummary>(value),
+  );
 }
 
 export function getSelectionRun(runId: string): Promise<DailySelectionRun> {

@@ -177,8 +177,14 @@ def test_port_conflict_kills_only_when_user_confirms(monkeypatch: pytest.MonkeyP
     assert killed == [4242], "用户确认后才杀，且只杀那一个"
 
 
-def test_port_conflict_clears_our_own_leftover(monkeypatch: pytest.MonkeyPatch) -> None:
-    """本程序自己的残留进程 → 直接清掉，继续用 8010。"""
+def test_port_conflict_never_kills_without_confirming(monkeypatch: pytest.MonkeyPatch) -> None:
+    """即使占用者看起来是自己人，也不静默杀。
+
+    旧规则是「进程名像 mainpg 就当成上次的残留，直接 kill」，2026-10-22 已推翻：
+    进程真退出时端口会自动释放，端口还被占着说明它还活着（低配机器跑 AI 出图 /
+    POD 渲染时探测窗口里答不上 /health 是常态），杀掉它 = 正在跑的任务一起没。
+    所以没有卡片可问（协议拉起，card=None）时一律顺延端口，返回 False。
+    """
     import run_workbench
 
     killed: list[int] = []
@@ -187,5 +193,5 @@ def test_port_conflict_clears_our_own_leftover(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(run_workbench, "_kill_pid", lambda pid: killed.append(pid))
     monkeypatch.setattr(run_workbench, "_port_in_use", lambda host, port: False)
 
-    assert run_workbench._resolve_port_conflict("127.0.0.1", 8010, None) is True
-    assert killed == [991]
+    assert run_workbench._resolve_port_conflict("127.0.0.1", 8010, None) is False
+    assert killed == [], "没有用户确认就不能杀进程"

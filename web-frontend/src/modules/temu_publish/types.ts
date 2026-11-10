@@ -18,10 +18,30 @@ export type TemuSettingsStatus = {
 /** 类目是否需要尺码表（服装/鞋类需要；宠物用品等返回 false）。 */
 export type TemuSizeChartInfo = {
   cat_id: number;
+  /**
+   * 这个类目**要不要**尺码表（由 `sizecharts.meta.get` 判定）。
+   * 注意和 has_size_chart 的区别：required=true + has_size_chart=false 是「必须有但店里还没建」。
+   */
+  required?: boolean;
   has_size_chart: boolean;
   count: number;
-  /** 非空时的原始返回（结构未确认，仅备查） */
+  /**
+   * 店里已有的尺码表（可以直接填进 sizeTemplateIds 的那种）。
+   * 后端收敛成 `{id, name}`：网关字段名没确认，认不出 id 的行会被丢掉，所以
+   * `count` 可能大于 `tables.length`。
+   */
+  tables?: Array<{ id: number; name: string }>;
   raw?: unknown;
+  /** 该尺码组的测量项（肩宽/胸围全围/裙长…） */
+  elements?: Array<{ id: number; name: string; necessary: boolean }>;
+  /** 其中必填的测量项名称 */
+  required_elements?: string[];
+  /** 可选尺码名（S/M/L/one-size…），建表或选码时要参考 */
+  sizes?: string[];
+  allow_range?: boolean;
+  /** 建表接口（sizecharts.create）参数结构还没打通，固定 false */
+  can_create?: boolean;
+  error?: string;
 };
 
 /** 一个已保存的店铺。token 只回掩码，原文不出后端。 */
@@ -75,6 +95,15 @@ export type TemuPropertyValue = {
 
 export type TemuProperty = {
   pid: number;
+  /**
+   * Temu 下发的原始 pid。
+   *
+   * 只在「同一个 pid 挂了多条属性」时出现（实测服装类目：面料纹理1/2 都是 pid 2054，
+   * 面料克重1/2、里料克重都是 pid 2052）。这种条目的 `pid` 会被
+   * `normalizeDuplicatePids()` 换成唯一的 refPid，原始 pid 存在这里，
+   * 提交 payload 时用它还原 —— 网关只认原始 pid。
+   */
+  realPid?: number;
   name?: string;
   propertyName?: string;
   required: boolean;
@@ -97,6 +126,17 @@ export type TemuProperty = {
   templatePropertyValueParentList?: Array<{
     parentVidList: number[];
     vidList: number[];
+  }> | null;
+  /**
+   * 显示条件（第二套联动规则，和上面那条不是一回事）：
+   * `parentRefPid` 指的是**父属性的 refPid**，父属性取到 parentVids 里任一值才显示本属性。
+   *
+   * 实测 2026-11-03：桌布类目「厚度（mm）」只带这条 —— 材料选了 2512 才该出现。
+   * 以前完全不认，界面照显示、payload 照发，Temu 就回「货品类目属性更新」。
+   */
+  showCondition?: Array<{
+    parentRefPid: number;
+    parentVids: number[];
   }> | null;
 };
 
@@ -174,7 +214,11 @@ export type TemuSkcDraft = {
 };
 
 export type TemuGoodsDraft = {
+  /** 来源草稿条目 id：发布成功后后端据此把它从草稿库移除 */
+  draft_id?: string;
   category_ids: number[];
+  /** 类目路径名（和 category_ids 对应），只用于发布历史展示 */
+  category_names?: string[];
   title: string;
   /** 英文标题（选填）；填了会覆盖自动生成的 en 标题 */
   title_en?: string;
@@ -239,6 +283,22 @@ export type TemuBuildPayloadResult = {
   };
 };
 
+/** 草稿里的一条 SKU（AI 处理采集到的原始变体记录，一个颜色一条）。 */
+export type TemuDraftVariant = {
+  /** 上游 SKU id（能当货号用） */
+  sku?: string;
+  /** 第一规格值（颜色 / 型号 / 规格型号…） */
+  color?: string;
+  /** 第二规格值（尺码 / 规格…），没有第二规格时为空 */
+  size?: string;
+  /** 申报价（元，已按导出规则按成本算过）；null = 这条没有成本，用主价 */
+  price?: number | null;
+  /** 库存（上游 quantity）；null = 没给 */
+  stock?: number | null;
+  /** 这个变体自己的主图 */
+  image?: string;
+};
+
 export type TemuDraftEntry = {
   source: "ai" | "pod";
   id: string;
@@ -265,6 +325,11 @@ export type TemuDraftEntry = {
   spec_value_1?: string;
   spec_name_2?: string;
   spec_value_2?: string;
+  /** 第一/第二规格的全部取值（去重）—— 发布页据此把变种一次铺满 */
+  spec_values_1?: string[];
+  spec_values_2?: string[];
+  /** 每个 SKU 一行：颜色/尺码/申报价(元)/库存/自己的主图 */
+  variants?: TemuDraftVariant[];
   /** 申报价（单位：元）。没有显式填过时按导出规则测算，见 declared_price_estimated */
   declared_price: number | string | null;
   /** true = 该价格是按成本算出来的（成本 × 4，下限 ¥150），不是人工填的 */
@@ -287,6 +352,13 @@ export type TemuDraftLibrary = {
   page: number;
   page_size: number;
   pages: number;
+  /**
+   * 还有没取出来的商品：某个处理批次里的商品数超过「每批一页（20）」时为 true。
+   * 为 true 时界面显示「加载更多」，点一次把 item_offset 推进 20 再取一遍。
+   */
+  has_more?: boolean;
+  /** 当前每个批次已经取到第几个（0 起）。界面用它显示「已加载到第 N 个 / 批」。 */
+  item_offset?: number;
   source: "all" | "ai" | "pod";
   query: string;
 };
@@ -330,6 +402,11 @@ export type TemuPublishPrefill = {
   specValue1?: string;
   specName2?: string;
   specValue2?: string;
+  /** 全部规格值：发布页直接铺成「颜色列表 / 尺码列表」 */
+  specValues1?: string[];
+  specValues2?: string[];
+  /** 每个 SKU 一行的数据：颜色、尺码、价格、库存、主图 */
+  variants?: TemuDraftVariant[];
   description?: string;
   sourceUrl?: string;
   /** 来源草稿 id：发布页选完类目回写给它，草稿库下次直接显示类目路径 */
@@ -404,3 +481,39 @@ export type TemuLowStockResult = {
   can_update_stock: boolean;
 };
 
+
+
+/** 一条发布记录（成功或失败）。后端 temu_publish_submissions 的一行。 */
+export type TemuPublishHistoryItem = {
+  id: number;
+  title: string;
+  sku_count: number;
+  /** success / failed */
+  status: string;
+  goods_id: string;
+  error: string;
+  /** Temu 返回的错误码（6000002 等）。老记录没有，前端会从 error 文本里再试一次 */
+  error_code?: string;
+  /** 来源草稿条目 id（ai:任务:项 / pod:批次:款式），手填的为空 */
+  draft_id: string;
+  leaf_cat_id: number;
+  /** 类目路径名，例如「美妆个护 > 化妆包 > 手拿包」。老记录为空，退回显示 cat id */
+  cat_name?: string;
+  /** 价格区间（人民币「分」）。0 表示没记 */
+  price_min?: number;
+  price_max?: number;
+  /** 发布时启用店铺的名字 */
+  shop_name?: string;
+  image: string;
+  created_at: string;
+  /** 秒级时间戳，用来算「x 分钟前」和按天分组 */
+  created_ts?: number;
+};
+
+export type TemuPublishHistory = {
+  items: TemuPublishHistoryItem[];
+  total: number;
+  counts: { success: number; failed: number };
+  page: number;
+  page_size: number;
+};

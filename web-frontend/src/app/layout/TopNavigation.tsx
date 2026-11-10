@@ -19,6 +19,12 @@ export type WorkspaceTab = {
   key: string;
   moduleId: WorkspaceModuleId;
   label: string;
+  /**
+   * 写入快照时该模块在注册表里的名字。
+   * 模块改名后，`label`（可能被动态文案覆盖，如「处理·12项」）会留在旧值上；
+   * 还原时拿它和当前注册表比对，就能判断「是模块改名了」还是「这本来就是动态标题」。
+   */
+  moduleLabel?: string;
   icon: string;
   iconClass?: string;
   directionId?: string;

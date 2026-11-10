@@ -12,9 +12,9 @@ import base64
 import hashlib
 import ipaddress
 import json
-import logging
 import os
 import socket
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +25,7 @@ import requests
 
 from ...db import transaction
 from ..basic_settings.service import decrypt_secret, encrypt_secret
+from ...secrets import decrypt_credential_file
 from .client import (
     TemuCredentials,
     TemuCredentialMissing,
@@ -33,8 +34,6 @@ from .client import (
 )
 from .schemas import DetailImageInput, GoodsDraftInput
 from . import submissions as submission_ledger
-
-logger = logging.getLogger("wh_local.temu_publish")
 
 SECRET_SCOPE = "temu_publish"
 # 每个账号一份凭证：scope 形如 temu_publish:cust_xxx。
@@ -45,6 +44,12 @@ LEGACY_SCOPE = SECRET_SCOPE
 # 这种凭证允许被第一个登录的账号认领一次（认领后改成该账号），之后别人不会自动继承。
 BOOTSTRAP_ACTORS = {"", "system-bootstrap", "local-demo-admin", "system"}
 SECRET_NAMES = ("yl_client", "yl_token", "access_token")
+
+# 服务商凭据的「版本指纹」：服务器下发的那对凭据算出来的摘要。
+# 存在同一个 scope 下，用来判断「服务器上的凭据变了没有」——
+# 变了就自动覆盖本地那份，这样服务商重置 token 后能一键把新值推到所有装机用户，
+# 不用一个个手填，也不用重新发版。不在 SECRET_NAMES 里：它不是凭据，不对外暴露。
+PROVIDER_VERSION_NAME = "yl_version"
 # 多店铺：每个店铺存成一条 name = "shop:<id>" 的加密 JSON（含店铺名与 token），
 # 当前启用的店铺 id 存在 "active_shop"；`access_token` 始终是「当前店铺」的镜像，
 # 这样 client()/发布等所有既有链路都不用改。
@@ -63,6 +68,20 @@ BUNDLED_GATEWAY_PATH = Path(__file__).resolve().parents[2] / "data" / "temu_gate
 BUNDLED_GATEWAY_LOCAL_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "temu_gateway.local.json"
 )
+# 安装包**只**分发加密后的凭据（与 cos.enc / onebound.enc 同一套做法）：
+# 明文 json 一旦进包，解包就能拿到整个系统共用的那对服务商凭据。
+BUNDLED_GATEWAY_ENC_NAME = "temu_gateway.enc"
+
+
+def _encrypted_gateway_paths() -> list[Path]:
+    """``temu_gateway.enc`` 的候选位置：开发态在 data/ 下，安装态在可执行文件同目录。"""
+    candidates = [Path(__file__).resolve().parents[2] / "data" / BUNDLED_GATEWAY_ENC_NAME]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / BUNDLED_GATEWAY_ENC_NAME)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / BUNDLED_GATEWAY_ENC_NAME)
+    return candidates
 
 
 class TemuCredentialStore:
@@ -103,13 +122,21 @@ class TemuCredentialStore:
         return values
 
     def _load_bundled_gateway(self) -> dict[str, str]:
-        """读随安装包分发的服务商凭据（``wh_local/data/temu_gateway.json``）。
+        """读「随程序放」的服务商凭据（正常安装包里是没有的）。
 
-        只覆盖服务商级别的两个字段，**不含**店铺 access_token —— 那是个人的。
-        文件缺失/字段为空/JSON 坏掉都按「没配」处理，绝不让设置页或发布链路崩。
+        只覆盖服务商级别的两个字段，**不含**店铺 access_token —— 那是个人的
+        （见 ``_load_bundled_gateway`` 里硬编码的字段名）。
+
+        优先级：
+        1. 明文 ``wh_local/data/temu_gateway.local.json``（开发机用，不进 git）
+        2. 加密 ``temu_gateway.enc``（历史安装包兼容；**新版本不再打包它**）
+
+        注意：正式发布的安装包**不携带任何服务商凭据**（打包脚本会拦）。
+        凭据由服务器下发（``gateway_sync``），泄露时只需在服务器换一对即可作废。
+        这里保留读取只是为了开发机与老包能跑，不是发布路径。
         """
         merged: dict[str, str] = {}
-        # local 覆盖优先（打包机上的真值），再退到随包的模板
+        # 明文优先：打包机上放真值，先被读到；安装包里没有明文，走下面的 .enc
         for path in (BUNDLED_GATEWAY_LOCAL_PATH, BUNDLED_GATEWAY_PATH):
             try:
                 if not path.is_file():
@@ -125,6 +152,24 @@ class TemuCredentialStore:
                 value = str(payload.get(name) or "").strip()
                 if value:
                     merged[name] = value
+
+        # 加密兜底：安装包形态（可执行文件同目录 / _MEIPASS）
+        if "yl_client" not in merged or "yl_token" not in merged:
+            for path in _encrypted_gateway_paths():
+                try:
+                    if not path.is_file():
+                        continue
+                    payload = decrypt_credential_file(path)
+                except (OSError, ValueError):
+                    continue
+                for name in ("yl_client", "yl_token"):
+                    if name in merged:
+                        continue
+                    value = str(payload.get(name) or "").strip()
+                    if value:
+                        merged[name] = value
+                if "yl_client" in merged and "yl_token" in merged:
+                    break
         return merged
 
     def _load_stored(self) -> dict[str, str]:
@@ -211,18 +256,53 @@ class TemuCredentialStore:
                     (LEGACY_SCOPE, "access_token", self.owner_id),
                 )
 
-    def save_provider_credentials(self, *, client: str, token: str, actor_id: str) -> None:
+    def provider_version(self) -> str:
+        """读取上次写入的服务商凭据指纹；没有（老数据 / 手动填的）返回空串。"""
+        with transaction(self.database_path) as conn:
+            row = conn.execute(
+                "SELECT ciphertext FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), PROVIDER_VERSION_NAME),
+            ).fetchone()
+        if row is None:
+            return ""
+        try:
+            return str(decrypt_secret(str(row["ciphertext"])) or "")
+        except RuntimeError:
+            # 密文坏了（换机器/换系统用户名后解不开）当作「需要重新拉一次」
+            return ""
+
+    def clear_provider_version(self) -> None:
+        """忘掉指纹（不是删凭据）。
+
+        网关回报 client/token 失效时调它：下次同步会因为「指纹对不上」重新拉一遍，
+        从而拿到服务商换过的新值。只清指纹、不动凭据，避免把用户已经能用的东西弄丢。
+        """
+        with transaction(self.database_path) as conn:
+            conn.execute(
+                "DELETE FROM secret_values WHERE scope = ? AND name = ?",
+                (self.scope(), PROVIDER_VERSION_NAME),
+            )
+
+    def save_provider_credentials(
+        self, *, client: str, token: str, actor_id: str, version: str = ""
+    ) -> None:
         """只写服务商级两字段（服务器下发用），不动店铺 access_token。
 
         与 ``save()`` 分开是为了避免「同步凭据」把用户已经绑好的店铺清掉。
+
+        ``version`` 是这对凭据的指纹，一起落库：下次同步拿服务器上的指纹跟它比，
+        不一致就覆盖 —— 这是「服务商换 token 后能推到老用户」的唯一依据。
         """
         client_value = str(client or "").strip()
         token_value = str(token or "").strip()
         if not client_value or not token_value:
             raise ValueError("服务商凭据不能为空")
         now = datetime.now().astimezone().isoformat(timespec="seconds")
+        rows = [("yl_client", client_value), ("yl_token", token_value)]
+        if str(version or "").strip():
+            rows.append((PROVIDER_VERSION_NAME, str(version).strip()))
         with transaction(self.database_path) as conn:
-            for name, value in (("yl_client", client_value), ("yl_token", token_value)):
+            for name, value in rows:
                 conn.execute(
                     """INSERT INTO secret_values(scope, name, ciphertext, updated_by, updated_at)
                        VALUES (?, ?, ?, ?, ?)
@@ -514,6 +594,19 @@ class TemuPublishService:
 
     # ---------- 设置与验证 ----------
 
+    def _active_shop_name(self) -> str:
+        """当前启用店铺的名字。只为发布历史显示「这件发到哪个店」。
+
+        只读本地已保存的店铺配置、不调网关：台账写入不能因为网络问题失败。
+        """
+        try:
+            for shop in self.store.list_shops():
+                if shop.get("active"):
+                    return str(shop.get("mall_name") or "")[:120]
+        except Exception:  # noqa: BLE001 - 纯展示字段，取不到就空着
+            pass
+        return ""
+
     def settings_status(self) -> dict[str, Any]:
         return self.store.status()
 
@@ -652,18 +745,7 @@ class TemuPublishService:
         return self.client().match_category(search_text, site_id)
 
     def attributes(self, cat_id: int) -> dict[str, Any]:
-        """类目属性表。
-
-        Temu 偶尔会在同一个类目里返回 **两个 pid 相同、但 templatePid / 名称不同** 的
-        属性（真实案例：pid=1「材质」required + pid=1「主体材质」optional）。
-        前端选择、payload 组装、必填校验都以 pid 为键，留着两个会互相覆盖：
-        选一个另一个跟着变，payload 里 `propName/templatePid` 还会被后者顶掉。
-        所以在唯一入口按 pid 去重，保留更「该填」的那个（required 优先，其次 isSale）。
-        """
-        return self._read_cached(
-            f"attrs:{cat_id}",
-            lambda: _dedupe_catalog_properties(self.client().attributes(cat_id)),
-        )
+        return self._read_cached(f"attrs:{cat_id}", lambda: self.client().attributes(cat_id))
 
     def parent_specs(self) -> dict[str, Any]:
         return self._read_cached("parent_specs", lambda: self.client().parent_specs())
@@ -763,7 +845,7 @@ class TemuPublishService:
         # 之前只在 validate_catalog=True 时取，导致「跳过校验直接发」必然踩这个坑。
         catalog: dict[str, Any] | None = None
         try:
-            catalog = self.attributes(int(draft.category_ids[-1]))
+            catalog = self.client().attributes(int(draft.category_ids[-1]))
         except Exception as exc:  # noqa: BLE001 - 取不到不阻断组装，但要告警
             warnings.append(f"类目属性获取失败（规格声明只能退回父规格 id）：{exc}")
         if draft.validate_catalog and catalog is not None:
@@ -774,7 +856,34 @@ class TemuPublishService:
                 "Temu 可能判「请重置规格模版」。建议在 Temu 后台确认该叶子类目可正常建品。"
             )
         # 属性名称/refPid/templatePid 以类目属性表为准补齐，避免前端漏填导致发布被拒。
-        payload = _assemble_payload(draft, warnings, catalog)
+        # 一个规格值都没给时，先拿一条**真实**规格兜底（不能再用 id 全 0 的假规格，
+        # 那会让 goods.add 一直回 6000002，详见 client.ensure_default_spec 的注释）。
+        fallback_spec: dict[str, Any] | None = None
+        # 只有**确实没有销售属性**的类目才需要兜底规格。
+        # 类目本来就有销售属性、只是草稿没填规格时，_assemble_payload 会直接抛
+        # 「至少要给每个 SKU 填一个规格值」——那种情况下再去建规格，等于向 Temu
+        # 发一次注定用不上的写请求（还会往店铺规格库塞垃圾值）。
+        has_sale_attr = any(
+            isinstance(item, dict) and item.get("isSale")
+            for item in ((catalog or {}).get("properties") or [])
+        )
+        if not has_sale_attr and not any(skc.main_specs for skc in draft.skcs) and not any(
+            sku.specs for skc in draft.skcs for sku in skc.skus
+        ):
+            # 类目把「颜色」当商品属性时，规格值必须是它的合法预设值，
+            # 所以把用户选的商品颜色带下去（没有就让网关侧自己挑第一个）。
+            preferred_color = ""
+            for item in draft.properties:
+                if str(getattr(item, "prop_name", "") or "") == "颜色" and str(
+                    getattr(item, "prop_value", "") or ""
+                ).strip():
+                    preferred_color = str(item.prop_value).strip()
+                    break
+            try:
+                fallback_spec = self.client().ensure_default_spec(preferred_color, catalog)
+            except Exception as exc:  # noqa: BLE001 - 兜底失败仍要能组装（会带告警）
+                warnings.append(f"自动创建兜底规格失败：{exc}")
+        payload = _assemble_payload(draft, warnings, catalog, fallback_spec)
 
         sku_prices = [
             sku.supplier_price for skc in draft.skcs for sku in skc.skus
@@ -828,10 +937,10 @@ class TemuPublishService:
                 "warnings": built["warnings"],
             }
         except TemuGatewayError as exc:
-            catalog = self.attributes(leaf)
+            catalog = self.client().attributes(leaf)
             missing = _missing_required_properties(draft, catalog)
             return {
-                "source": "attrs.get（catsmandatory 不可用，已回退）",
+                "source": "attrs.get（网关不支持 catsmandatory，已回退）",
                 "result": {
                     "unsupported": "bg.glo.goods.catsmandatory.get",
                     "reason": str(exc),
@@ -854,6 +963,69 @@ class TemuPublishService:
         result = self._read_cached(cache_key, lambda: self.client().goods_list(**filters))
         items = [_compact_goods_item(item) for item in result.get("data") or [] if isinstance(item, dict)]
         return {"total": int(result.get("totalCount") or 0), "items": items}
+
+    def backfill_history_display(self, *, max_pages: int = 12) -> dict[str, Any]:
+        """老台账没记主图/类目名：按商品 id 去店铺列表认一遍，补上并写回。
+
+        背景：`image`/`cat_name` 是 2026-11-04 才加进台账的列，之前发布的记录
+        全是空 —— 历史页就只剩一行「无图 + 标题」。商品详情接口
+        （bg.glo.goods.detail）不返回图片，只有列表接口
+        （bg.glo.goods.list.get）带 mainImageUrl，所以这里翻列表按 productId 认。
+
+        只在历史页出现「有商品 id 但没图」的记录时才调；补完写回数据库，
+        之后不会再打网关。列表接口每页最多 20 条、按创建时间倒序，因此从
+        最早那条缺图记录往前一小时开始翻，翻到更早的就停。
+        """
+        submission_ledger.ensure_table(self.database_path)
+        rows = submission_ledger.history_rows_missing_image(self.database_path, self.owner_id)
+        if not rows:
+            return {"checked": 0, "updated": 0, "pages": 0}
+        oldest_ts = min(float(row["created_ts"] or 0) for row in rows)
+        oldest_start = int(oldest_ts - 3600)
+        wanted = {str(row["gid"]) for row in rows}
+        found: dict[str, dict[str, Any]] = {}
+        pages = 0
+        for page in range(1, max(1, int(max_pages)) + 1):
+            pages = page
+            cache_key = f"goods:page={page}|pageSize=20|from={oldest_start}"
+            result = self._read_cached(
+                cache_key,
+                lambda p=page: self.client().goods_list(
+                    page=p, pageSize=20, createdAtStart=oldest_start
+                ),
+            )
+            items = [row for row in result.get("data") or [] if isinstance(row, dict)]
+            if not items:
+                break
+            oldest_item_ms = 0
+            for item in items:
+                compact = _compact_goods_item(item)
+                gid = str(compact.get("product_id") or "")
+                if gid in wanted:
+                    found[gid] = compact
+                created = int(compact.get("created_at") or 0)
+                oldest_item_ms = created if not oldest_item_ms else min(oldest_item_ms, created)
+            if len(found) >= len(wanted):
+                break
+            # 这一页最老的一条都比目标时间还早：后面只会更早，别翻了
+            if oldest_item_ms and oldest_item_ms < oldest_start * 1000:
+                break
+        updated = 0
+        for row in rows:
+            hit = found.get(str(row["gid"]))
+            if not hit:
+                continue
+            image = str(hit.get("image") or "")
+            cat_name = str(hit.get("category") or "")
+            if not image and not cat_name:
+                continue
+            if image == row["image"] and cat_name == row["cat_name"]:
+                continue
+            submission_ledger.update_display_fields(
+                self.database_path, int(row["id"]), image=image, cat_name=cat_name
+            )
+            updated += 1
+        return {"checked": len(rows), "updated": updated, "pages": pages}
 
     def low_stock_goods(
         self,
@@ -884,7 +1056,7 @@ class TemuPublishService:
         while page <= max(1, int(max_pages)) and len(items) < want:
             cache_key = f"goods:page={page}|pageSize={size}"
             result = self._read_cached(
-                cache_key, lambda p=page: self.client().goods_list(page=p, page_size=size)
+                cache_key, lambda p=page: self.client().goods_list(page=p, pageSize=size)
             )
             rows = [row for row in result.get("data") or [] if isinstance(row, dict)]
             if not rows:
@@ -913,25 +1085,141 @@ class TemuPublishService:
             "can_update_stock": False,
         }
 
-    def size_charts(self, cat_id: int) -> dict[str, Any]:
-        """这个类目是否需要/有哪些尺码表。
+    # 这个类目不需要尺码表（网关明确回「没有找到当前类目对应的尺码组」）。
+    # 记下来，避免每次切类目都打一次必然失败的网关。
+    _size_chart_absent: set[int] = set()
 
-        只回答「有没有」—— 非空时的返回结构本店拿不到样例（宠物用品类目全是 null），
-        所以不猜字段名，原样把 raw 带回去给以后用。
+    @staticmethod
+    def _size_table_entry(row: Any) -> dict[str, Any] | None:
+        """把网关返回的一行尺码表收敛成 `{id, name}`。
+
+        网关这行的字段名一直没确认（`sizeSpecDataList` 里到底叫 businessId 还是
+        sizeSpecId 没人给过样例），所以这里按优先级挨个试，**认不出 id 就丢弃**——
+        宁可少列一张，也不要给前端一个填不进去的假 ID。
         """
-        if int(cat_id) <= 0:
-            return {"cat_id": 0, "has_size_chart": False, "count": 0, "raw": None}
-        result = self._read_cached(
-            f"size-charts:{int(cat_id)}", lambda: self.client().size_charts(int(cat_id))
-        )
-        items = result.get("sizeSpecDataList")
-        rows = items if isinstance(items, list) else []
+        if not isinstance(row, dict):
+            return None
+        table_id = 0
+        for key in ("businessId", "sizeSpecId", "sizeTemplateId", "specId", "templateId", "id"):
+            try:
+                value = int(row.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                table_id = value
+                break
+        if not table_id:
+            return None
+        name = ""
+        for key in ("name", "sizeSpecName", "groupName", "tableName", "title", "remark"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                name = value.strip()[:40]
+                break
+        return {"id": table_id, "name": name}
+
+    def size_charts(self, cat_id: int) -> dict[str, Any]:
+        """这个类目要不要尺码表、店里有哪些现成表。
+
+        判定顺序（2026-11-05 真实网关实测）：
+        1. `sizecharts.meta.get` 能给出测量项（胸围全围/裙长…）→ 这个类目**需要**尺码表；
+           报「没有找到当前类目对应的尺码组」→ 不需要（假发/女包/宠物都是这种）。
+           以前只看 `sizecharts.get` 有没有返回 —— 那是「店里建过没有」，
+           新店一张表都没有，会把「必须绑尺码表」的服装类目误判成「不需要」。
+        2. `sizecharts.get` 返回的表 = 能直接填进 `sizeTemplateIds` 的现成表。
+        3. `sizecharts.settings.get` 给出该尺码组可选的全部尺码名（S/M/L/one-size…）。
+
+        建表（`sizecharts.create`）参数结构还没打通：网关只回「参数错误」，
+        不告诉你哪个字段不对；等拿到真实请求样例再接。所以 `can_create` 恒为 False，
+        前端据此提示「去 Temu 后台建一张」。
+        """
+        cat = int(cat_id)
+        empty: dict[str, Any] = {
+            "cat_id": max(cat, 0),
+            "required": False,
+            "has_size_chart": False,
+            "count": 0,
+            "tables": [],
+            "raw": [],
+            "elements": [],
+            "required_elements": [],
+            "sizes": [],
+            "allow_range": False,
+            "can_create": False,
+            "error": "",
+        }
+        if cat <= 0 or cat in self._size_chart_absent:
+            return empty
+
+        meta: dict[str, Any] | None = None
+        error = ""
+        try:
+            meta = self._read_cached(
+                f"size-chart-meta:{cat}", lambda: self.client().size_chart_meta(cat)
+            )
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            # 「没有找到当前类目对应的尺码组」是结论，不是故障
+            if "尺码组" in message:
+                self._size_chart_absent.add(cat)
+                return empty
+            error = message[:180]
+
+        spec_meta = (meta or {}).get("sizeSpecMeta") or {}
+        raw_elements = spec_meta.get("elementList") or []
+        elements = [
+            {
+                "id": int(item.get("id") or 0),
+                "name": str(item.get("name") or ""),
+                "necessary": bool(item.get("necessary")),
+            }
+            for item in raw_elements
+            if isinstance(item, dict) and item.get("name")
+        ]
+        if not elements and not error:
+            self._size_chart_absent.add(cat)
+            return empty
+
+        rows: list[Any] = []
+        try:
+            result = self._read_cached(
+                f"size-charts:{cat}", lambda: self.client().size_charts(cat)
+            )
+            items = result.get("sizeSpecDataList")
+            rows = items if isinstance(items, list) else []
+        except Exception as exc:  # noqa: BLE001
+            error = error or str(exc)[:180]
+
+        sizes: list[str] = []
+        try:
+            settings = self._read_cached(
+                f"size-chart-settings:{cat}", lambda: self.client().size_chart_settings(cat)
+            )
+            size_list = settings.get("sizeList")
+            if isinstance(size_list, list):
+                sizes = [str(item) for item in size_list if item][:40]
+        except Exception:  # noqa: BLE001
+            pass
+
         return {
-            "cat_id": int(cat_id),
+            "cat_id": cat,
+            "required": True,
             "has_size_chart": bool(rows),
             "count": len(rows),
-            # 结构未知，原样返回（真要用时先看这条）
+            # 店里已有的表，收敛成 {id, name} 给前端点选；认不出 id 的丢掉（见 _size_table_entry）
+            "tables": [
+                entry
+                for entry in (self._size_table_entry(row) for row in rows[:20])
+                if entry is not None
+            ],
+            # 原始结构照旧带回去（真正接 selector 时先看这条）
             "raw": rows[:3],
+            "elements": elements,
+            "required_elements": [item["name"] for item in elements if item["necessary"]],
+            "sizes": sizes,
+            "allow_range": bool((meta or {}).get("allowRange")),
+            "can_create": False,
+            "error": error,
         }
 
     def goods_detail(self, product_id: int) -> dict[str, Any]:
@@ -941,19 +1229,23 @@ class TemuPublishService:
         )
 
     def dimension_check(
-        self, image_url: str, *, mall_id: str, cat_id: int | None = None, class_id: int | None = None
+        self,
+        image_url: str,
+        *,
+        mall_id: str = "",
+        cat_id: int | None = None,
+        class_id: int | None = None,
     ) -> dict[str, Any]:
-        """提交尺寸图检测（异步）：返回 uniqueId，再用 dimension_check_result 查结果。"""
-        if not str(mall_id or "").strip():
-            raise ValueError("尺寸图检测需要 mallId（Temu 店铺 id），请在卖家后台查到后填入")
+        """提交尺寸图检测（异步）：返回 uniqueId，再用 dimension_check_result 查结果。
+
+        `mallId` 不是必填（2026-11-05 实测只传 imageUrl 也能提交）。
+        """
         return self.client().dimension_image_check(
             image_url, mall_id=mall_id, cat_id=cat_id, class_id=class_id
         )
 
-    def dimension_check_result(self, task_id: str, *, mall_id: str) -> dict[str, Any]:
-        if not str(mall_id or "").strip():
-            raise ValueError("查询尺寸图检测结果需要 mallId")
-        return self.client().dimension_image_check_result(task_id, mall_id=mall_id)
+    def dimension_check_result(self, unique_id: str, *, mall_id: str = "") -> dict[str, Any]:
+        return self.client().dimension_image_check_result(unique_id, mall_id=mall_id)
 
     def find_published_goods(self, draft: GoodsDraftInput, *, within_seconds: int = 1800) -> dict[str, Any] | None:
         """在店铺里按 SKC 货号反查这件商品（发布后核对用）。
@@ -1025,7 +1317,20 @@ class TemuPublishService:
             len(skc.get("productSkuReqs") or []) for skc in payload.get("productSkcReqs") or []
         )
         submission_id = submission_ledger.begin(
-            self.database_path, self.owner_id, fingerprint, draft.title, sku_count
+            self.database_path,
+            self.owner_id,
+            fingerprint,
+            draft.title,
+            sku_count,
+            draft_id=str(getattr(draft, "draft_id", "") or ""),
+            leaf_cat_id=int(draft.category_ids[-1]) if draft.category_ids else 0,
+            image=(draft.carousel_image_urls[0] if draft.carousel_image_urls else ""),
+            # 下面几个只是给「发布历史」看的：类目路径名、价格区间（分）、店铺名。
+            # 老版本前端不会传 category_names，取不到就空着，历史页会退回显示类目 id。
+            cat_name=" > ".join(str(name) for name in (getattr(draft, "category_names", []) or []) if name),
+            price_min=int((built["summary"] or {}).get("price_min") or 0),
+            price_max=int((built["summary"] or {}).get("price_max") or 0),
+            shop_name=self._active_shop_name(),
         )
         try:
             result = self.client().add_goods(payload)
@@ -1060,7 +1365,13 @@ class TemuPublishService:
                         "request_payload": payload,
                         "submission_id": submission_id,
                     }
-            submission_ledger.finish(self.database_path, submission_id, "failed", error=str(exc))
+            submission_ledger.finish(
+                self.database_path,
+                submission_id,
+                "failed",
+                error=str(exc),
+                error_code=str(getattr(exc, "error_code", "") or ""),
+            )
             raise
         submission_ledger.finish(
             self.database_path, submission_id, "success", gid=submission_ledger.goods_id_from_result(result)
@@ -1080,11 +1391,19 @@ def _assemble_payload(
     draft: GoodsDraftInput,
     warnings: list[str],
     catalog: dict[str, Any] | None = None,
+    fallback_spec: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     category_ids = [int(value) for value in draft.category_ids]
     if any(value <= 0 for value in category_ids):
         raise ValueError("category_ids 必须是正整数")
     _validate_https_urls("carouselImageUrls", draft.carousel_image_urls)
+    # 轮播图至少 3 张：网关实测会回「轮播图最少 3 张」，补到 3 张后错误才往前推进
+    # （docs/temu-接口实测清单-20261028.md）。放在 https 校验之后 ——
+    # 格式错先报格式，别让「只有 1 张」把真正的原因盖住。
+    if len(draft.carousel_image_urls) < 3:
+        raise ValueError(
+            f"轮播图至少 3 张（当前 {len(draft.carousel_image_urls)} 张），Temu 会直接拒"
+        )
     _validate_https_urls("outerPackageImageReqs", draft.outer_package_image_urls, required=False)
     _validate_https_urls("goodsLayerDecorationReqs", draft.detail_image_urls, required=False)
     # 带尺寸的详情图是另一条分支（goodsLayerDecorationReqs），之前漏在校验之外
@@ -1208,10 +1527,17 @@ def _assemble_payload(
     #   - 主规格放两个规格 → 「Primary Sales Specification cannot exceed 1」
     #   - 单 SKC + 多个 SKU（颜色+长度都在 SKU 规格）→ 提交成功
     first_skc = draft.skcs[0]
+    # 主销售属性：
+    # - 类目**没有**预设销售属性（自定义规格 / 单 SKU）→ 全零占位能过（2026-10-27 真机）
+    # - 类目**有**预设销售属性（attrs 里 isSale=true，如连衣裙的颜色/尺码）→ 全零会被判
+    #   「主销售属性不合法」，必须填第一个 SKC 的真实主规格（2026-11-05 真机实测）
+    primary_spec_payload = dict(_EMPTY_MAIN_SPEC)
+    if first_skc.main_specs and _has_preset_sale_props(catalog):
+        primary_spec_payload = _spec_payload(first_skc.main_specs[0])
     skc_req: dict[str, Any] = {
         "extCode": first_skc.ext_code,
         "previewImgUrls": list(first_skc.preview_image_urls),
-        "mainProductSkuSpecReqs": [dict(_EMPTY_MAIN_SPEC)],
+        "mainProductSkuSpecReqs": [primary_spec_payload],
         "productSkuReqs": all_skus,
     }
     if first_skc.color_image_url:
@@ -1219,11 +1545,17 @@ def _assemble_payload(
     skc_reqs.append(skc_req)
 
     # 属性联动：父级取值不满足的子属性不要发（Temu 会判「属性不合法」）
-    applicable_pids, dropped_names = _resolve_applicable_properties(catalog, draft.properties)
+    applicable_keys, dropped_names = _resolve_applicable_properties(catalog, draft.properties)
+    # 同 pid 多条属性（面料克重1/2、里料克重）的 propName / templatePid 要按 refPid
+    # 精确取，按 pid 建字典会取到最后一条，名字和模板全错
+    property_index = _catalog_property_map(catalog)
     kept_properties = [
         item
         for item in draft.properties
-        if int(item.pid) not in sale_pids and int(item.pid) in applicable_pids
+        if int(item.pid) not in sale_pids
+        and _property_applicable(
+            applicable_keys, int(item.pid), int(item.ref_pid or 0)
+        )
     ]
     if dropped_names:
         extra = "…" if len(dropped_names) > 6 else ""
@@ -1254,7 +1586,12 @@ def _assemble_payload(
         **cat_fields,
         "productSpecPropertyReqs": product_spec_reqs,
         "productPropertyReqs": [
-            _property_payload(item, _catalog_property_map(catalog).get(int(item.pid)))
+            _property_payload(
+                item,
+                _catalog_property_of(
+                    property_index, int(item.pid), int(item.ref_pid or 0)
+                ),
+            )
             for item in kept_properties
         ],
         "productSkcReqs": skc_reqs,
@@ -1333,6 +1670,39 @@ def _assemble_payload(
     if draft.goods_label_name.strip():
         payload["productCustomReq"] = {"goodsLabelName": draft.goods_label_name.strip()}
 
+    # 类目没有销售属性：Temu 仍要求「规格列表不能为空」，必须补一条**真实**规格占位。
+    #
+    # ⚠️ 别再用 id 全 0 的假规格（款式/默认）：那样规格校验能过，但 goods.add 会一直回
+    #    6000002「货品类目属性更新」，而且跟填了哪个属性无关 —— 2026-11-03 把 12 个必填
+    #    逐个单发全部复现，清缓存/重选属性都无效。换成真实 specId 后同一份属性表立刻发布成功。
+    if not product_spec_reqs:
+        real_spec = fallback_spec if int((fallback_spec or {}).get("specId") or 0) > 0 else None
+        if real_spec:
+            decl = _spec_decl_payload(_SimpleSpec(real_spec), catalog)
+            sku_spec = {
+                "specId": int(real_spec["specId"]),
+                "specName": str(real_spec["specName"]),
+                "parentSpecId": int(real_spec["parentSpecId"]),
+                "parentSpecName": str(real_spec["parentSpecName"]),
+            }
+            warnings.append(
+                "该类目没有销售属性（Temu 后台会自动补默认规格）：已自动补真实规格"
+                f"「{sku_spec['parentSpecName']}/{sku_spec['specName']}」占位。"
+            )
+        else:
+            decl = dict(_VIRTUAL_SPEC_DECL)
+            sku_spec = dict(_VIRTUAL_SPEC_SKU)
+            warnings.append(
+                "该类目没有销售属性，且自动创建规格失败（连不上 Temu 网关？）："
+                "已退回 id 全 0 的占位规格。这样提交大概率被回「货品类目属性更新」，"
+                "请联网后重试，或在变种区手动选一个规格值。"
+            )
+        payload["productSpecPropertyReqs"] = [decl]
+        for skc_req in payload.get("productSkcReqs") or []:
+            for sku_req in skc_req.get("productSkuReqs") or []:
+                if not sku_req.get("productSkuSpecReqs"):
+                    sku_req["productSkuSpecReqs"] = [dict(sku_spec)]
+
     # ⚠️ 网关签名实现会「算签名时忽略空数组、转发时又带上」，两边 sign 对不上，
     # 一律回 7000015 sign is invalid（catsmandatory.get 长期踩的就是这个坑）。
     # 所以顶层数组为空就**整个字段不发**，而不是发 []：
@@ -1351,27 +1721,49 @@ def _validate_against_catalog(
     if not isinstance(properties, list):
         warnings.append("类目属性返回结构异常，跳过必填校验。")
         return
-    by_pid = {int(item.get("pid") or 0): item for item in properties if isinstance(item, dict)}
-    provided = {int(item.pid): item for item in draft.properties}
+    # 已提交的属性按 (pid, refPid) 索引：服装类目同 pid 多条（面料克重1/2、里料克重）
+    # 只按 pid 建字典会互相覆盖，等于只校验了最后一条。
+    provided = {
+        _property_key(int(item.pid), int(item.ref_pid or 0)): item for item in draft.properties
+    }
+    # 「没写 ref_pid」的提交项来自老版前端，只能按 pid 认。
+    # ⚠️ 不能拿「这个 pid 有没有提交过」当回退依据：新版前端带了 ref_pid 时，
+    # 同 pid 的另一条（面料纹理2）会把「面料纹理1 没填」遮掉。
+    legacy_pids = {int(item.pid) for item in draft.properties if not int(item.ref_pid or 0)}
+    catalog_index = _catalog_property_map(catalog)
     # 联动属性只有在父级取值满足时才算必填（否则「电池属性=不带电池」还会被要求填三种电池）
     applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
 
     missing = []
-    for pid, item in by_pid.items():
-        if pid not in applicable:
+    # ⚠️ 必须遍历**属性表全表**，不能遍历按 pid 建的字典：
+    # 同 pid 多条属性时字典只剩最后一条（面料纹理1 被面料纹理2 顶掉），
+    # 「面料纹理1 必填」就永远查不出来。
+    for item in properties:
+        if not isinstance(item, dict):
+            continue
+        pid = int(item.get("pid") or 0)
+        ref_pid = int(item.get("refPid") or 0)
+        if not _property_applicable(applicable, pid, ref_pid):
             continue
         # 销售属性（isSale）会被组装阶段从商品属性里剔除，改由「销售规格」承载，
         # 所以这里不能再按商品属性校验，否则会误报「缺少必填属性：颜色」。
-        if item.get("required") and not item.get("isSale") and pid not in provided:
+        if not (item.get("required") and not item.get("isSale")):
+            continue
+        key = _property_key(pid, ref_pid)
+        # refPid 对不上时，只在「这条提交项没带 ref_pid」（老版前端）的情况下按 pid 认；
+        # 不能因为「同 pid 有另一条填了」就放过 —— 那正是面料纹理1/2 会互相遮住的原因。
+        if key not in provided and pid not in legacy_pids:
             missing.append(_property_label(item))
     if missing:
         raise ValueError("缺少必填属性：" + "、".join(missing))
 
-    for pid, item in provided.items():
-        catalog_item = by_pid.get(pid)
+    for (pid, ref_pid), item in provided.items():
+        # 同 pid 多条属性时按 refPid 精确取，否则会拿「里料克重」的规则校验「面料克重1」
+        catalog_item = _catalog_property_of(catalog_index, pid, ref_pid)
         if catalog_item is None:
             warnings.append(f"属性 pid={pid} 不在当前类目属性表中，请确认是否误填。")
             continue
+        label = _property_label(catalog_item)
         values = catalog_item.get("values") or []
         allowed = {
             int(value.get("vid"))
@@ -1382,22 +1774,16 @@ def _validate_against_catalog(
         units = catalog_item.get("valueUnit")
         if isinstance(units, list) and units and str(units[0] or "").strip():
             if not str(item.prop_value or item.number_input_value or "").strip():
-                raise ValueError(
-                    f"属性「{_property_label(catalog_item)}」要填数值（单位 {units[0]}）"
-                )
+                raise ValueError(f"属性「{label}」要填数值（单位 {units[0]}）")
         # 数值型属性（如「长度 20」+ 单位 cm）本来就没有 vid，是靠 propValue /
         # numberInputValue 传文本的，vid=0 不能按「不在可选值内」拒掉，
         # 否则用户一填数值属性就永远发不出去。
         if int(item.vid) <= 0:
             if not str(item.prop_value or item.number_input_value or "").strip():
-                raise ValueError(
-                    f"属性「{_property_label(catalog_item)}」既没有选值也没有填数值"
-                )
+                raise ValueError(f"属性「{label}」既没有选值也没有填数值")
             continue
         if allowed and int(item.vid) not in allowed:
-            raise ValueError(
-                f"属性「{_property_label(catalog_item)}」的 vid={item.vid} 不在可选值内"
-            )
+            raise ValueError(f"属性「{label}」的 vid={item.vid} 不在可选值内")
 
 
 def _property_label(item: dict[str, Any]) -> str:
@@ -1409,80 +1795,41 @@ def _property_label(item: dict[str, Any]) -> str:
     )
 
 
-def _catalog_property_map(catalog: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+def _catalog_property_map(
+    catalog: dict[str, Any] | None,
+) -> dict[tuple[int, int], dict[str, Any]]:
+    """(pid, refPid) → 类目属性。
+
+    同 pid 多条属性（面料纹理1/2、面料克重1/2/里料克重）只按 pid 建字典会互相覆盖，
+    组装出来的 propName / templatePid 会张冠李戴。
+    """
     if not catalog:
         return {}
     properties = catalog.get("properties")
     if not isinstance(properties, list):
         return {}
     return {
-        int(item.get("pid") or 0): item
+        _property_key(item.get("pid") or 0, item.get("refPid") or 0): item
         for item in properties
         if isinstance(item, dict) and item.get("pid")
     }
 
 
-def _dedupe_catalog_properties(catalog: dict[str, Any]) -> dict[str, Any]:
-    """同一个 pid 出现多次时只保留一个，避免前端/组装/校验三处互相覆盖。
-
-    真实案例（类目 1004 桌垫）：Temu 同时返回
-      - pid=1「材质」required=True, templatePid=919952
-      - pid=1「主体材质」required=False, templatePid=1585830
-    发布页按 pid 存选择，两个下拉会共用同一个值；payload 的 ``propName`` /
-    ``refPid`` / ``templatePid`` 又会被后一个覆盖，最终可能把「材质」发成
-    「主体材质」。这里按 required 优先、其次 isSale 保留一个，顺序沿用第一次出现的位置。
-    """
-    properties = catalog.get("properties")
-    if not isinstance(properties, list) or not properties:
-        return catalog
-
-    kept: dict[int, dict[str, Any]] = {}
-    order: list[int] = []
-    dropped: list[str] = []
-    changed = False
-    for item in properties:
-        if not isinstance(item, dict):
-            changed = True
-            continue
-        pid = int(item.get("pid") or 0)
-        if pid <= 0:
-            changed = True
-            continue
-        current = kept.get(pid)
-        if current is None:
-            kept[pid] = item
-            order.append(pid)
-            continue
-        changed = True
-        if _property_priority(item) > _property_priority(current):
-            dropped.append(_describe_property(current))
-            kept[pid] = item
-        else:
-            dropped.append(_describe_property(item))
-
-    if not changed:
-        return catalog
-    if dropped:
-        logger.warning(
-            "类目属性存在重复 pid，已按 required/isSale 优先保留一个：%s",
-            "；".join(dropped),
-        )
-    result = dict(catalog)
-    result["properties"] = [kept[pid] for pid in order]
-    return result
-
-
-def _property_priority(item: dict[str, Any]) -> tuple[int, int]:
-    """重复 pid 的取舍顺序：必填优先，其次销售属性（变种靠它）。"""
-    return (1 if item.get("required") else 0, 1 if item.get("isSale") else 0)
-
-
-def _describe_property(item: dict[str, Any]) -> str:
-    return (
-        f"{_property_label(item)}"
-        f"(pid={item.get('pid')}, templatePid={item.get('templatePid')}, "
-        f"required={bool(item.get('required'))}, isSale={bool(item.get('isSale'))})"
-    )
+def _catalog_property_of(
+    index: dict[tuple[int, int], dict[str, Any]], pid: int, ref_pid: int
+) -> dict[str, Any] | None:
+    """按 (pid, refPid) 取类目属性；refPid 对不上时退回「这个 pid 的唯一一条」。"""
+    if ref_pid:
+        hit = index.get(_property_key(pid, ref_pid))
+        if hit is not None:
+            return hit
+    only = None
+    for (item_pid, _ref), item in index.items():
+        if item_pid == int(pid or 0):
+            if only is not None:
+                return None  # 同 pid 多条但 refPid 没命中：宁可不猜
+            only = item
+    return only
 
 
 def _property_payload(item: Any, catalog_item: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1527,6 +1874,62 @@ def _catalog_value_text(catalog_item: dict[str, Any], vid: int) -> str:
 
 # 主销售规格实测必须传全 0 的空对象：填真实规格反而被判「主销售属性不合法」。
 _EMPTY_MAIN_SPEC = {"specId": 0, "specName": "", "parentSpecId": 0, "parentSpecName": ""}
+
+# 无销售属性的类目（桌布 / 桌旗 / 餐垫这一整片）Temu 接口仍要求「规格列表非空」：
+#   Product Specification Attribute Cannot Be Empty
+#   Product SKU specification list cannot be empty
+# Temu 后台会自动补一条默认规格，接口不会，所以要我们补。
+# 实测（2026-11-03 用无效类目做安全实验）：id 全填 0、只把名称填成「款式 / 默认」，
+# 商品级与 SKU 级各一条，Temu 的全部规格校验都通过。
+_VIRTUAL_SPEC_PARENT = "款式"
+_VIRTUAL_SPEC_VALUE = "默认"
+_VIRTUAL_SPEC_DECL = {
+    "pid": 0,
+    "vid": 0,
+    "refPid": 0,
+    "templatePid": 0,
+    "specId": 0,
+    "propName": _VIRTUAL_SPEC_PARENT,
+    "specName": _VIRTUAL_SPEC_VALUE,
+    "propValue": _VIRTUAL_SPEC_VALUE,
+    "valueUnit": "",
+    "parentSpecId": 0,
+    "parentSpecName": _VIRTUAL_SPEC_PARENT,
+    "valueGroupId": 0,
+    "valueGroupName": "",
+}
+_VIRTUAL_SPEC_SKU = {
+    "specId": 0,
+    "specName": _VIRTUAL_SPEC_VALUE,
+    "parentSpecId": 0,
+    "parentSpecName": _VIRTUAL_SPEC_PARENT,
+}
+
+
+class _SimpleSpec:
+    """把「兜底规格」字典包成带属性的对象，好复用 _spec_decl_payload。"""
+
+    __slots__ = ("parent_spec_id", "parent_spec_name", "spec_id", "spec_name")
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.parent_spec_id = int(data.get("parentSpecId") or 0)
+        self.parent_spec_name = str(data.get("parentSpecName") or "")
+        self.spec_id = int(data.get("specId") or 0)
+        self.spec_name = str(data.get("specName") or "")
+
+
+def _has_preset_sale_props(catalog: dict[str, Any] | None) -> bool:
+    """类目属性表里是否存在「预设销售属性」（isSale=true）。
+
+    有它说明这个类目的变种靠类目自带的颜色/尺码维度区分，
+    `mainProductSkuSpecReqs` 不能再用全零占位。
+    """
+    if not isinstance(catalog, dict):
+        return False
+    for item in catalog.get("properties") or []:
+        if isinstance(item, dict) and item.get("isSale"):
+            return True
+    return False
 
 
 def _spec_payload(spec: Any) -> dict[str, Any]:
@@ -1575,14 +1978,21 @@ def _spec_decl_payload(spec: Any, catalog: dict[str, Any] | None = None) -> dict
 def _catalog_property_by_parent(
     catalog: dict[str, Any] | None, parent_spec_id: int, parent_spec_name: str
 ) -> dict[str, Any] | None:
-    """在类目属性里找「父规格 id 对得上」的那一项（销售属性）。"""
+    """在类目属性里找「父规格 id 对得上」的那一项（**真正的**销售属性）。
+
+    ⚠️ 不能退回到「按属性名匹配」：类目里可能有一个叫「颜色」的**商品属性**
+    （`isSale=false`、`parentSpecId=null`），跟销售规格「颜色」同名但不是一回事。
+    按名字兜底会把它的 pid/refPid/templatePid 拿去当规格声明的 id，
+    Temu 直接回（2026-11-03 化妆包 30988 实测）：
+
+        属性[颜色]校验错误:关键词属性 白色 不是有效值。
+
+    而把这三个 id 全填 parentSpecId（1001）后同一个请求发布成功。
+    所以这里只认 parentSpecId，认不出就返回 None，由调用方退回父规格 id。
+    """
     items = [i for i in ((catalog or {}).get("properties") or []) if isinstance(i, dict)]
     for item in items:
         if int(item.get("parentSpecId") or 0) == int(parent_spec_id):
-            return item
-    target = str(parent_spec_name or "").strip()
-    for item in items:
-        if str(item.get("name") or item.get("propertyName") or "").strip() == target:
             return item
     return None
 
@@ -1764,9 +2174,33 @@ def _i18n_title(title: str, title_en: str, warnings: list[str]) -> dict[str, Any
     return {"productI18nReqs": [{"language": "en", "productName": text}]}
 
 
+def _property_key(pid: int, ref_pid: int) -> tuple[int, int]:
+    """属性的实例键：(pid, refPid)。
+
+    服装类目实测（2026-11-05，女装连衣裙 39107）存在「同一个 pid 挂多条属性」：
+    面料纹理1/2 都是 pid 2054、面料克重1/2/里料克重都是 pid 2052，只有 refPid 不同。
+    只按 pid 索引会互相覆盖 —— 父属性「面料纹理1」的取值会被「面料纹理2」顶掉，
+    联动判断跟着错，网关回「缺少父属性值」。
+    """
+    return (int(pid or 0), int(ref_pid or 0))
+
+
+def _property_applicable(
+    keys: set[tuple[int, int]], pid: int, ref_pid: int
+) -> bool:
+    """这条属性在不在「适用集合」里。
+
+    refPid 是属性实例的唯一标识，优先精确匹配；调用方没给 refPid（老版前端、
+    或某些类目本来就不下发）时退回按 pid 判断，宁可宽一点也别把必填项误杀。
+    """
+    if int(ref_pid or 0):
+        return _property_key(pid, ref_pid) in keys
+    return any(key[0] == int(pid or 0) for key in keys)
+
+
 def _resolve_applicable_properties(
     catalog: dict[str, Any] | None, properties: list[Any]
-) -> tuple[set[int], list[str]]:
+) -> tuple[set[tuple[int, int]], list[str]]:
     """按 Temu 的属性联动规则，算出当前选择下哪些属性是「适用」的。
 
     Temu 的联动字段（实测 attrs.get 会返回）：
@@ -1775,42 +2209,93 @@ def _resolve_applicable_properties(
     规则：父属性没选、或选的 vid 不在任何一组的 parentVidList 里 → 子属性不出现
     （即使子属性 required=true 也不该填，填了会被判「属性不合法」）。
 
-    返回 (适用的 pid 集合, 被剔除的属性名)。
+    返回 (适用的 (pid, refPid) 集合, 被剔除的属性名)。
     """
     items = [item for item in (catalog or {}).get("properties") or [] if isinstance(item, dict)]
     if not items:
-        return {int(getattr(item, "pid", 0) or 0) for item in properties}, []
+        return {
+            _property_key(getattr(item, "pid", 0) or 0, getattr(item, "ref_pid", 0) or 0)
+            for item in properties
+        }, []
 
     by_template = {
         int(item.get("templatePid") or 0): item for item in items if item.get("templatePid")
     }
+    # showCondition 用父属性的 **refPid** 指代父级（不是 templatePid），两套规则各查各的索引
+    by_ref = {int(item.get("refPid") or 0): item for item in items if item.get("refPid")}
+    # 已选值按 (pid, refPid) 索引：同 pid 多条属性各自有值，不能互相顶掉
     selected = {
-        int(getattr(item, "pid", 0) or 0): int(getattr(item, "vid", 0) or 0) for item in properties
+        _property_key(
+            getattr(item, "pid", 0) or 0,
+            getattr(item, "ref_pid", 0) or 0,
+        ): int(getattr(item, "vid", 0) or 0)
+        for item in properties
     }
+    selected_any_pid = {
+        int(getattr(item, "pid", 0) or 0): int(getattr(item, "vid", 0) or 0)
+        for item in properties
+    }
+    pid_occurrences: dict[int, int] = {}
+    for item in items:
+        pid = int(item.get("pid") or 0)
+        pid_occurrences[pid] = pid_occurrences.get(pid, 0) + 1
 
-    applicable: set[int] = set()
+    def selected_vid(prop: dict[str, Any]) -> int:
+        """父属性的已选值。
+
+        ⚠️ 只在「这个 pid 在类目表里只有一条」时才退回按 pid 猜：
+        同 pid 多条时（面料纹理1/2 都是 2054），按 pid 猜会把「面料纹理1=光面」
+        错当成「面料纹理2=光面」，子属性「面料克重2」就被误判成必填。
+        """
+        pid = int(prop.get("pid") or 0)
+        ref_pid = int(prop.get("refPid") or 0)
+        if ref_pid:
+            key = _property_key(pid, ref_pid)
+            if key in selected:
+                return selected[key]
+            if pid_occurrences.get(pid, 0) > 1:
+                return 0
+        return selected_any_pid.get(pid, 0)
+
+    applicable: set[tuple[int, int]] = set()
     dropped: list[str] = []
     for item in items:
         pid = int(item.get("pid") or 0)
+        key = _property_key(pid, int(item.get("refPid") or 0))
+        name = str(item.get("name") or item.get("propertyName") or f"pid={pid}")
+        # ① showCondition（实测 2026-11-03，桌布类目「厚度（mm）」只带这个）
+        #    例：{"parentRefPid": 121, "parentVids": [2512]} —— 只有「材料」选了 2512 才该出现。
+        #    以前完全不认这条规则，于是把不该填的必填属性一起发出去，
+        #    Temu 就回一句「货品类目属性更新」（6000002），完全看不出是哪个属性多了。
+        conditions = item.get("showCondition") or []
+        if conditions:
+            visible = False
+            for cond in conditions:
+                parent = by_ref.get(int(cond.get("parentRefPid") or 0))
+                parent_vid = selected_vid(parent) if parent else 0
+                if parent_vid and parent_vid in set(cond.get("parentVids") or []):
+                    visible = True
+                    break
+            if not visible:
+                dropped.append(name)
+                continue
         rules = item.get("templatePropertyValueParentList") or []
         if not rules:
-            applicable.add(pid)
+            applicable.add(key)
             continue
         parent = by_template.get(int(item.get("parentTemplatePid") or 0))
         if parent is None:
             # 结构拿不到父属性：宁可显示也不误杀
-            applicable.add(pid)
+            applicable.add(key)
             continue
-        parent_vid = selected.get(int(parent.get("pid") or 0), 0)
+        parent_vid = selected_vid(parent)
         matched = bool(parent_vid) and any(
             parent_vid in (rule.get("parentVidList") or []) for rule in rules
         )
         if matched:
-            applicable.add(pid)
+            applicable.add(key)
         else:
-            dropped.append(
-                str(item.get("name") or item.get("propertyName") or f"pid={pid}")
-            )
+            dropped.append(name)
     return applicable, dropped
 
 
@@ -1862,21 +2347,30 @@ def _compact_goods_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def _missing_required_properties(draft: GoodsDraftInput, catalog: dict[str, Any]) -> list[dict[str, Any]]:
     """本地兜底：用 attrs.get 的 required 标记列出还没填的必填属性。"""
-    filled = {int(item.pid) for item in draft.properties if int(item.vid) > 0 or item.prop_value.strip()}
+    filled = {
+        _property_key(int(item.pid), int(item.ref_pid or 0))
+        for item in draft.properties
+        if int(item.vid) > 0 or item.prop_value.strip()
+    }
+    legacy_filled_pids = {
+        int(item.pid) for item in draft.properties if not int(item.ref_pid or 0)
+    }
     applicable, _ = _resolve_applicable_properties(catalog, draft.properties)
     missing: list[dict[str, Any]] = []
     for item in (catalog or {}).get("properties") or []:
         if not isinstance(item, dict) or not item.get("required"):
             continue
         pid = int(item.get("pid") or 0)
+        key = _property_key(pid, int(item.get("refPid") or 0))
         # 联动属性在当前父级取值下不适用 → 不必填
-        if pid and pid not in applicable:
+        if pid and not _property_applicable(applicable, pid, key[1]):
             continue
-        if pid and pid in filled:
+        if pid and (key in filled or pid in legacy_filled_pids):
             continue
         missing.append(
             {
                 "pid": pid,
+                "ref_pid": key[1],
                 "name": str(item.get("name") or item.get("propertyName") or f"pid={pid}"),
             }
         )

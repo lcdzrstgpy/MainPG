@@ -518,25 +518,51 @@ def create_product_processing_router(
     @router.get("/media-assets/{asset_id}/content", response_model=None)
     def media_asset_content(
         asset_id: str,
-        workspace_id: str = Query(...),
-        expires: int = Query(..., gt=0),
-        signature: str = Query(..., min_length=32, max_length=128),
+        workspace_id: str | None = Query(default=None),
+        expires: int | None = Query(default=None, gt=0),
+        signature: str | None = Query(default=None, min_length=32, max_length=128),
         w: int | None = Query(default=None, ge=64, le=1024),
         request_workspace: str | None = Header(default=None, alias="X-Workspace-ID"),
+        authorization: str | None = Header(default=None),
     ) -> FileResponse:
-        workspace = _workspace(workspace_id)
-        if request_workspace is not None and _workspace(request_workspace) != workspace:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found")
-        try:
-            path, media_type = service.media_asset_content(
-                asset_id,
-                workspace_id=workspace,
-                expires=expires,
-                signature=signature,
-                width=w,
-            )
-        except (LookupError, OSError, ValueError):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found") from None
+        """取媒体资源原图。
+
+        两条路：
+        1. **带 expires + signature** —— `<img src>` 直连用（不能带 Authorization）。
+           签名由每个资产自己的 access_token 派生，改不了也猜不出。
+        2. **不带签名** —— 必须已登录（Bearer）。前端 httpBlob 走这条。
+
+        为什么要有第 2 条：`preview_url()` 签出来的地址只活 ~2 小时。草稿库/发布页
+        把地址存进表单，过几小时再读图必然 404 —— 文件明明还在，用户却只看到
+        「请求的内容不存在或已被删除」，重传图也只能好两小时。
+        """
+        if expires is not None and signature is not None:
+            workspace = _workspace(workspace_id)
+            if request_workspace is not None and _workspace(request_workspace) != workspace:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found")
+            try:
+                path, media_type = service.media_asset_content(
+                    asset_id,
+                    workspace_id=workspace,
+                    expires=expires,
+                    signature=signature,
+                    width=w,
+                )
+            except (LookupError, OSError, ValueError):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found") from None
+        else:
+            # 无签名：只认登录态。workspace 用地址里带的（资产是按 workspace 分目录的），
+            # 没带才退回 token 里的工作区。
+            actor = actor_from_authorization(authorization)
+            workspace = _workspace(workspace_id or actor.workspace_id)
+            try:
+                path, media_type = service.media_asset_file(
+                    asset_id,
+                    workspace_id=workspace,
+                    width=w,
+                )
+            except (LookupError, OSError, ValueError):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "media asset not found") from None
         return FileResponse(
             path,
             media_type=media_type,

@@ -47,8 +47,9 @@ test("采集入口卡：旧高特异性规则不得回归（会顶掉卡片内�
   // （border-radius:999px + padding:12px 20px）会压掉卡片圆角与内边距，图就被挤出白边。
   assert.doesNotMatch(shopStyles, /\.collection-workspace-tabs button \{/, "旧按钮规则必须保持删除");
   assert.doesNotMatch(shopStyles, /\.collection-tab-thumb \{/, "旧滑块规则必须保持删除");
-  // 形状是胶囊（用户要求保持原样），内边距必须为 0 否则图会被挤出白边
-  assert.match(styles, /\.collection-mode-card \{[^}]*border-radius: 999px;/);
+  // 形状：2026-11 队友把全圆胶囊收成 20px 圆角卡片（全圆时两端各吃掉 60px 弧长，
+  // 文字居中显得又扁又空），内边距仍必须为 0 否则图会被挤出白边。
+  assert.match(styles, /\.collection-mode-card \{[^}]*border-radius: 20px;/);
   assert.match(styles, /\.collection-mode-card \{[^}]*padding: 0;/);
 });
 

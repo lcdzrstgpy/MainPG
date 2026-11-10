@@ -32,7 +32,7 @@ test("the spec-card entry sits below the SKU preset with its required marker and
   assert.match(listingEditorSource, /className="pod-spec-card-entry-button"[\s\S]*?>批量添加尺寸<em>\*<\/em>/);
   assert.match(listingEditorSource, /isSpecCardConfigured\(specCard\) \? "pod-spec-card-entry-summary" : "pod-spec-card-entry-summary is-warning"/);
   assert.match(listingEditorSource, /specCardSummaryText\(specCard\)/);
-  assert.match(styles, /\.pod-spec-card-entry-summary\.is-warning \{ color: #a84c48;/);
+  assert.match(styles, /\.pod-spec-card-entry-summary\.is-warning \{ color: var\(--theme-warning, #a84c48\);/);
 });
 
 test("the spec-card configuration is draft state restored from the local draft", () => {
