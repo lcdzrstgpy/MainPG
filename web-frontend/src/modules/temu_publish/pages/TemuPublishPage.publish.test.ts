@@ -1915,8 +1915,10 @@ test("发布历史列表要「看得懂」：缩略图、类目名、价格、�
   assert.match(history, /formatPriceRange\(item\.price_min, item\.price_max\)/);
   assert.match(history, /item\.shop_name/);
   assert.match(history, /sourceLabelOf\(item\.draft_id\)/);
-  // 统计与搜索（搜标题/商品 id/类目名），搜索要防抖并带进请求
-  assert.match(history, /成功率/);
+  // 搜索（搜标题/商品 id/类目名），要防抖并带进请求
+  // 2026-11-10 用户要求删掉页头的「成功/失败/成功率」统计卡（页签上已有计数，重复）
+  assert.doesNotMatch(history, /成功率/);
+  assert.doesNotMatch(history, /temu-history-stats/);
   assert.match(history, /搜标题、商品 id、类目名/);
   assert.match(history, /q: query/);
   assert.match(apiTs, /q: params\.q \?\? ""/);

@@ -5353,53 +5353,6 @@ textarea.temu-input {
   line-height: 1.5;
 }
 
-.temu-history-stats {
-  display: flex;
-  gap: 8px;
-}
-
-.temu-history-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 82px;
-  padding: 9px 15px;
-  border: 1px solid var(--theme-module-border, #e4ecf3);
-  border-radius: 12px;
-  background: var(--theme-module-surface-raised, var(--theme-module-surface, #fff));
-  box-shadow: var(--theme-shadow-soft, 0 1px 2px rgba(16, 40, 66, 0.05));
-}
-
-.temu-history-stat span {
-  color: var(--theme-text-muted, #7c8fa3);
-  font-size: 11.5px;
-}
-
-.temu-history-stat strong {
-  color: var(--theme-text-primary, #1f2d3d);
-  font-size: 20px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.05;
-}
-
-.temu-history-stat.is-success strong {
-  color: #1f7a4c;
-}
-
-.temu-history-stat.is-warn {
-  border-color: rgba(214, 69, 69, 0.35);
-  background: rgba(214, 69, 69, 0.06);
-}
-
-.temu-history-stat.is-warn strong {
-  color: #c0392b;
-}
-
-.temu-history-stat.is-rate strong {
-  color: var(--theme-primary, #087bf5);
-}
-
 /* ---------- 工具条：状态页签 + 搜索 ---------- */
 
 .temu-history-toolbar {
@@ -5823,14 +5776,6 @@ textarea.temu-input {
 @media (max-width: 720px) {
   .temu-history-page {
     padding: 16px 14px 24px;
-  }
-
-  .temu-history-stats {
-    width: 100%;
-  }
-
-  .temu-history-stat {
-    flex: 1;
   }
 
   .temu-history-search {

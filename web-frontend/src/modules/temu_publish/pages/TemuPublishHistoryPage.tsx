@@ -222,8 +222,6 @@ export function TemuPublishHistoryPage({
 
   const succeeded = counts.success;
   const failed = counts.failed;
-  const finished = succeeded + failed;
-  const successRate = finished ? Math.round((succeeded / finished) * 100) : 0;
 
   // 每个日期块有多少条：「今天 · 3 条」比一个孤零零的「今天」有用
   const dayCounts = new Map<string, number>();
@@ -258,21 +256,6 @@ export function TemuPublishHistoryPage({
         <div className="temu-history-title">
           <h1>发布历史</h1>
           <p>成功与失败分开记；成功过的成品会自动从成品库移除，避免重复上架。</p>
-        </div>
-
-        <div className="temu-history-stats" aria-label="发布统计">
-          <div className="temu-history-stat is-success">
-            <span>成功</span>
-            <strong>{succeeded}</strong>
-          </div>
-          <div className={`temu-history-stat${failed ? " is-warn" : ""}`}>
-            <span>失败</span>
-            <strong>{failed}</strong>
-          </div>
-          <div className="temu-history-stat is-rate">
-            <span>成功率</span>
-            <strong>{finished ? `${successRate}%` : "—"}</strong>
-          </div>
         </div>
       </header>
 
