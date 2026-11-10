@@ -2850,10 +2850,10 @@ test("批量发布：跑批途中能停，停下后说清还剩多少条", () =>
   // ref 而不是 state：循环里要读到最新值
   assert.match(library, /const batchAbortRef = useRef\(false\);/);
   assert.match(library, /batchAbortRef\.current = false;/);
-  assert.match(library, /if \(batchAbortRef\.current\) \{\s*\n\s*aborted = true;\s*\n\s*break;/);
+  assert.match(library, /if \(batchAbortRef\.current \|\| batchStopRequested\(\)\) \{\s*\n\s*aborted = true;\s*\n\s*break;/);
   assert.match(library, /batchAbortRef\.current = true;/);
   assert.match(library, /正在停止（当前这条发完就停）/);
-  assert.match(library, /已停止，还剩 \$\{restCount\} 条未发/);
+  assert.match(library, /const restText = restCount > 0 \? `，还剩 \$\{restCount\} 条未发` : "";/);
   assert.match(library, /className="temu-batch-stop"/);
   assert.match(css, /\.temu-batch-stop \{/);
 });
@@ -2869,4 +2869,67 @@ test("批量发布：每条十几张图走限并发，不再串行排队", () =>
   assert.match(batch, /if \(apparel && !firstRaw\) \{/);
   // 串行写法必须清干净
   assert.doesNotMatch(batch, /for \(const \[index, path\] of carouselSource/);
+});
+
+test("批量发布：循环本身炸了也要放开「发布中」，不能锁死界面", () => {
+  // 真实隐患：catch 里 localStore.addFailure 写满配额会抛，异常从 catch 冒出去 —
+  // async 函数 reject 没人接，batchState.running 永远 true：按钮锁死、弹窗打不开、
+  // 只能刷新页面。整批必须包 try/catch/finally 兜底。
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  assert.match(library, /let crashed = "";/);
+  assert.match(library, /} catch \(cause\) \{\s*\n\s*\/\/ 循环本身炸了/);
+  assert.match(library, /crashed = errorMessage\(cause\) \|\| "未知错误";/);
+  assert.match(library, /\} finally \{/);
+  // finally 里必须无条件把 running 放掉
+  assert.match(library, /\} finally \{[\s\S]{0,900}running: false,/);
+  assert.match(library, /中断：\$\{crashed\}（已成功 \$\{ok\} 条，失败 \$\{fail\} 条\$\{restText\}）/);
+  // 标题可能为空：进度文案不能直接 entry.title.slice
+  assert.match(library, /const label = \(entry\.title \|\| entry\.sku \|\| "（无标题）"\)\.slice\(0, 16\);/);
+  assert.doesNotMatch(library, /text: `\$\{index \+ 1\}\/\$\{targets\.length\} · \$\{entry\.title\.slice/);
+});
+
+test("批量发布：中止后没发的要留着勾选，点一下就能接着发", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  assert.match(library, /const handledIds: string\[\] = \[\];/);
+  // 成功 / 判定重复才算出「处理掉」，失败的要留着（用户可能想改完重发）
+  assert.match(library, /handledIds\.push\(entry\.id\);\s*\n\s*ok \+= 1;/);
+  assert.match(library, /skipped \+= 1;\s*\n\s*handledIds\.push\(entry\.id\);/);
+  // 中止分支只摘掉处理过的
+  assert.match(library, /if \(aborted \|\| crashed\) \{[\s\S]{0,400}setSelected\(\(current\) => new Set\(\[\.\.\.current\]\.filter\(\(id\) => !done\.has\(id\)\)\)\)/);
+  // 整批跑完才全清
+  assert.match(library, /\} else if \(ok > 0\) \{[\s\S]{0,200}setSelected\(new Set\(\)\);/);
+});
+
+test("批量发布：切页/刷新前发起的那批还在跑，不许再开一批（防重复上架）", () => {
+  // 真隐患：跑批途中切到别的模块，本页被卸载、batchState 归零；回来后用户以为没在跑，
+  // 再开一批 → 同一批草稿提交两次，店铺里多出重复商品（接口非幂等）。
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 跨实例标记：localStorage + 心跳，2 分钟没心跳视为已死（刷新会真的杀掉循环）
+  assert.match(library, /const BATCH_RUN_KEY = "temu_publish_batch_running_at";/);
+  assert.match(library, /const BATCH_STOP_KEY = "temu_publish_batch_stop";/);
+  assert.match(library, /const BATCH_HEARTBEAT_TIMEOUT = 120_000;/);
+  assert.match(library, /function batchRunningElsewhere\(\): boolean \{/);
+  assert.match(library, /return at > 0 && Date\.now\(\) - at < BATCH_HEARTBEAT_TIMEOUT;/);
+
+  // 开批前查跨实例标记（本实例的 state 可能根本不知道那批）：点按钮就拦，别等填完模板
+  assert.match(library, /const openBatchDialog = \(\) => \{[\s\S]{0,400}batchRunningElsewhere\(\)/);
+  assert.match(library, /if \(batchRunningElsewhere\(\)\) \{/);
+  assert.match(library, /并行提交会把同一批草稿重复上架/);
+
+  // 开批写标记、每轮心跳、finally 一定要清
+  assert.match(library, /writeBatchStore\(BATCH_RUN_KEY, String\(Date\.now\(\)\)\);/);
+  assert.match(library, /\} finally \{[\s\S]{0,300}writeBatchStore\(BATCH_RUN_KEY, ""\);/);
+
+  // 停止也要跨实例：写 STOP 标记，跑批循环每轮读
+  assert.match(library, /function batchStopRequested\(\): boolean \{/);
+  assert.match(library, /writeBatchStore\(BATCH_STOP_KEY, "1"\);/);
+  assert.match(library, /batchAbortRef\.current \|\| batchStopRequested\(\)/);
+
+  // 切回来要认领：进度条 + 停止按钮放回来，心跳停了就放开并刷新
+  assert.match(library, /if \(!batchRunningElsewhere\(\)\) return;/);
+  assert.match(library, /另一处发起的批量发布还在提交…/);
+  assert.match(library, /上一次批量发布已结束（在别的页签 \/ 切页前跑完的）/);
 });
