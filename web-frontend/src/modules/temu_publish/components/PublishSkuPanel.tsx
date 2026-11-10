@@ -571,6 +571,23 @@ export function PublishSkuPanel({
   };
 
   /**
+   * 尺码取值改了顺手同步到表格。
+   *
+   * 「变种属性二」的取值框和表格尺码列是两份数据，不点「生成变种」不同步 ——
+   * 草稿只带颜色时各行尺码都是空的，用户在上面填了「可定制尺寸」，
+   * 表格里还是「输入尺码」，检查清单报「N 行没填全」却看不出差在哪。
+   * 只有一种取值且各行尺码全空时直接写进去（只改这一格，不动别的数据）；
+   * 多个取值没法猜行对应关系，仍靠「生成变种」按颜色 × 尺码认领。
+   */
+  const handleSizesTextChange = (value: string) => {
+    onSizesTextChange(value);
+    const single = splitSizes(value);
+    if (single.length === 1 && rows.length && rows.every((row) => !row.sizeName.trim())) {
+      onRowsChange(rows.map((row) => ({ ...row, sizeName: single[0] })));
+    }
+  };
+
+  /**
    * 批量编辑里填了值、但还没点「应用到全部」的字段。
    * 这些值不会进提交（表格里那格还是空的），界面上必须点出来，否则用户以为已经填好了。
    */
@@ -729,7 +746,7 @@ export function PublishSkuPanel({
                   className={`temu-input${unknownSizes.length ? " is-bad" : ""}`}
                   list="temu-size-options"
                   value={sizesText}
-                  onChange={(event) => onSizesTextChange(event.target.value)}
+                  onChange={(event) => handleSizesTextChange(event.target.value)}
                   placeholder={`${sizeSpecName}值，多个用逗号分隔`}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") generate();
@@ -741,7 +758,7 @@ export function PublishSkuPanel({
                 </span>
               )}
             </div>
-            {sizeParentId > 0 ? renderSpecChoices(sizeOptions, sizesText, onSizesTextChange, sizeSpecName, "size") : null}
+            {sizeParentId > 0 ? renderSpecChoices(sizeOptions, sizesText, handleSizesTextChange, sizeSpecName, "size") : null}
             {sizeParentId > 0 && unknownSizes.length > 0 && (
               <div className="temu-spec-bad">
                 <p>

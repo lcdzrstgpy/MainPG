@@ -2888,19 +2888,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const carouselCount = splitLines(form.carousel).length;
 
   // 分区顺序按 Temu 刊登习惯，且只保留「真会提交」的字段：基本信息 → 产品信息 → 变种信息 → 包装信息 → 发布
-  /** 一行变种是否填全（价格/尺寸/重量/货号/仓库都要有） */
-  const rowIncomplete = (row: VariantRow) =>
-    !(
-      row.sizeName.trim() &&
-      row.extCode.trim() &&
-      row.warehouseId &&
-      row.supplierPrice.trim() &&
-      row.weightG.trim() &&
-      row.lengthCm.trim() &&
-      row.widthCm.trim() &&
-      row.heightCm.trim()
-    );
-  const incompleteRows = rows.filter(rowIncomplete).length;
+  /**
+   * 一行变种缺哪些必填列。
+   *
+   * 尺码只在类目有第二销售属性时才算必填 —— 和提交校验（sizeParent 才查尺码）一致。
+   * 以前无条件要求尺码：单维类目（只有颜色）的行永远「没填全」，
+   * 检查清单一直红着，而提交其实能过。
+   */
+  const rowMissingLabels = (row: VariantRow): string[] => {
+    const missing: string[] = [];
+    if (sizeParentId > 0 && !row.sizeName.trim()) missing.push("尺码");
+    if (!row.extCode.trim()) missing.push("货号");
+    if (!row.warehouseId) missing.push("发货仓库");
+    if (!row.supplierPrice.trim()) missing.push("申报价格");
+    if (!row.weightG.trim()) missing.push("重量");
+    if (!row.lengthCm.trim() || !row.widthCm.trim() || !row.heightCm.trim()) missing.push("长宽高");
+    return missing;
+  };
+  const incompleteRows = rows.filter((row) => rowMissingLabels(row).length > 0).length;
+  /** 没填全的行都缺什么（去重）：清单直接说缺哪列，不用用户逐格找 */
+  const missingRowLabels = Array.from(new Set(rows.flatMap(rowMissingLabels)));
   const missingAttrs = requiredProps.length - filledRequired;
 
   /**
@@ -2934,7 +2941,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       hint: "颜色尺码、申报价格、尺寸重量",
       missing: [
         ...(!rows.length ? ["至少一个变种"] : []),
-        ...(rows.length && incompleteRows ? [`${incompleteRows} 行没填全`] : []),
+        ...(rows.length && incompleteRows ? [`${incompleteRows} 行没填全（缺：${missingRowLabels.join("、")}）`] : []),
       ],
     },
     {

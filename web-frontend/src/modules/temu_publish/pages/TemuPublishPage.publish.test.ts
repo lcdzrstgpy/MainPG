@@ -1129,9 +1129,15 @@ test("发布检查：每一项都说清「还差什么」，被拦时自动定�
   // 检查清单不再是静态说明：没填完就列缺项
   assert.match(page, /const flowBase: Array<\{ id: string; label: string; hint: string; missing: string\[\] \}> = \[/);
   assert.match(page, /missingAttrs > 0 \? \[`\$\{missingAttrs\} 个必填属性`\] : \[\]/);
-  assert.match(page, /incompleteRows \? \[`\$\{incompleteRows\} 行没填全`\] : \[\]/);
+  assert.match(page, /行没填全（缺：\$\{missingRowLabels\.join\("、"\)\}）/);
   assert.match(page, /还差：\$\{step\.missing\.join\("、"\)\}/);
   assert.match(page, /remainingContentSteps\.length \? `还差 \$\{remainingContentSteps\.length\} 项` : "可提交"/);
+
+  // 变种行缺哪列直接列出来；尺码只在有第二销售属性时才算缺
+  //（和提交校验一致 —— 单维类目行尺码本来就该是空的，不能永远「没填全」）
+  assert.match(page, /const rowMissingLabels = \(row: VariantRow\): string\[\] => \{/);
+  assert.match(page, /if \(sizeParentId > 0 && !row\.sizeName\.trim\(\)\) missing\.push\("尺码"\);/);
+  assert.match(page, /const missingRowLabels = Array\.from\(new Set\(rows\.flatMap\(rowMissingLabels\)\)\);/);
 
   // 点发布被拦：标红必填项 + 滚到第一个没填完的区块
   assert.match(page, /const draft = await composeDraft\(\)\.catch\(\(cause: unknown\) => \{/);
@@ -2051,6 +2057,22 @@ test("生成变种按钮：组合齐了就置灰，别让人对着一个点了�
   // 组合判断抽成纯函数（有单测）
   assert.match(merge, /export function variantCoverage\(/);
   assert.match(merge, /inSync: wanted\.size > 0 && missing === 0 && extra === 0/);
+});
+
+test("尺码取值只有一个值且各行尺码全空 → 直接写进表格（不用点生成）", () => {
+  // 用户在「变种属性二」填「可定制尺寸」，表格里还是「输入尺码」占位符，
+  // 检查清单报「N 行没填全」却看不出差在哪 —— 取值框和表格是两份数据，
+  // 同步原来只能靠「生成变种」按钮，太隐蔽。单值全空时自动写入。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  assert.match(panel, /const handleSizesTextChange = \(value: string\) => \{/);
+  assert.match(panel, /onSizesTextChange\(value\);/);
+  assert.match(panel, /const single = splitSizes\(value\);/);
+  assert.match(panel, /if \(single\.length === 1 && rows\.length && rows\.every\(\(row\) => !row\.sizeName\.trim\(\)\)\)/);
+  assert.match(panel, /onRowsChange\(rows\.map\(\(row\) => \(\{ \.\.\.row, sizeName: single\[0\] \}\)\)\);/);
+  // 输入框和预设 chips 都走它
+  assert.match(panel, /onChange=\{\(event\) => handleSizesTextChange\(event\.target\.value\)\}/);
+  assert.match(panel, /renderSpecChoices\(sizeOptions, sizesText, handleSizesTextChange, sizeSpecName, "size"\)/);
 });
 
 test("从成品库挑图：三个图片槽位都能直接挑，不用先存本地再上传", () => {
