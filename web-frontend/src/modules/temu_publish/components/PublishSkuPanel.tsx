@@ -322,6 +322,11 @@ export function PublishSkuPanel({
   const [copiedSpec, setCopiedSpec] = useState(false);
   /** 变种属性值「+」输入框里还没加进去的半截值（color/size 各一份） */
   const [specDraft, setSpecDraft] = useState<{ color: string; size: string }>({ color: "", size: "" });
+  /** chips 的输入框：点「+」/点空白/加完值都要能把焦点还给它，方便连续加 */
+  const chipInputRefs = useRef<{ color: HTMLInputElement | null; size: HTMLInputElement | null }>({
+    color: null,
+    size: null,
+  });
 
   /** 「生成变种」被拦下时的原因（第二维没填，不能凭空造「均码」） */
   const [genHint, setGenHint] = useState("");
@@ -638,9 +643,20 @@ export function PublishSkuPanel({
     const bad = kind === "color" ? unknownColors : unknownSizes;
     const badLower = new Set(bad.map((value) => value.toLowerCase()));
     const draft = specDraft[kind];
-    const commit = () => addSpecValues(kind, draft);
+    const commit = () => {
+      if (draft.trim()) addSpecValues(kind, draft);
+      // 空着点 + 也必须有反应：焦点给输入框，直接开打。
+      // 之前 + 是 disabled（!draft.trim()），一进页面就是灰的，用户「+都点不了」。
+      chipInputRefs.current[kind]?.focus();
+    };
     return (
-      <div className={`temu-spec-chips${bad.length ? " is-bad" : ""}`}>
+      <div
+        className={`temu-spec-chips${bad.length ? " is-bad" : ""}`}
+        // 点 chips 空白处 = 点输入框（标签输入框的常见手感）
+        onClick={(event) => {
+          if (event.target === event.currentTarget) chipInputRefs.current[kind]?.focus();
+        }}
+      >
         {values.map((value) => (
           <span
             key={value}
@@ -658,6 +674,9 @@ export function PublishSkuPanel({
           </span>
         ))}
         <input
+          ref={(el) => {
+            chipInputRefs.current[kind] = el;
+          }}
           className="temu-spec-chip-input"
           list={kind === "color" ? "temu-color-options" : "temu-size-options"}
           value={draft}
@@ -671,7 +690,7 @@ export function PublishSkuPanel({
           }}
           placeholder={`${label}，回车或 + 添加`}
         />
-        <button type="button" className="temu-spec-add" onClick={commit} disabled={!draft.trim()} title="添加">
+        <button type="button" className="temu-spec-add" onClick={commit} title="添加">
           +
         </button>
       </div>

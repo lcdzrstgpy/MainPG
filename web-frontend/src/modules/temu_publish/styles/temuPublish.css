@@ -4345,13 +4345,8 @@ textarea.temu-input {
   cursor: pointer;
 }
 
-.temu-spec-add:hover:not(:disabled) {
+.temu-spec-add:hover {
   border-color: var(--theme-module-primary-strong, #087bf5);
-}
-
-.temu-spec-add:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 
 /* ---- 尺寸与重量按尺码分组：一组一行，改了直接落到同尺码的行上 ---- */

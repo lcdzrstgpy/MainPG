@@ -2092,6 +2092,11 @@ test("变种属性值用 chips +「+」一个个加，不用逗号拼字符串",
   assert.match(panel, /if \(draft\.trim\(\)\) commit\(\);/);
   assert.match(panel, /className="temu-spec-add"/);
   assert.match(panel, /const incoming = splitSizes\(raw\);/);
+  // + 绝不能是 disabled（用户反馈「+都点不了」：输入框空着时按钮灰着，
+  // 一进页面就点不动）。空着点 + 要把焦点丢回输入框；
+  assert.doesNotMatch(panel, /disabled=\{!draft\.trim\(\)\}/);
+  assert.match(panel, /if \(draft\.trim\(\)\) addSpecValues\(kind, draft\);/);
+  assert.match(panel, /chipInputRefs\.current\[kind\]\?\.focus\(\);/);
   // chips 的样式
   assert.match(css, /\.temu-spec-chips \{/);
   assert.match(css, /\.temu-spec-chip-item \{/);
