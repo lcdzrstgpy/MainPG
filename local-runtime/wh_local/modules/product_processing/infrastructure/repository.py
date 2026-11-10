@@ -3095,6 +3095,7 @@ class ProductProcessingRepository:
             "preview_revision": int(row.preview_revision or 0),
             "media_contract_version": int(row.media_contract_version or 1),
             "sku_availability_raw": str(row.sku_availability_json or ""),
+            "precision_annotation": str(row.precision_annotation or ""),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

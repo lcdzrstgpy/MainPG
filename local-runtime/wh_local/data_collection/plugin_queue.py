@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 from .normalizer import sanitize_raw_payload
+
+logger = logging.getLogger("wh_local.data_collection.plugin_queue")
 
 
 TEMU_LINK_CAPTURE = "temu_link_capture"
@@ -778,6 +781,15 @@ class DataCollectionPluginQueue:
                 migrations / "003_plugin_command_requests.sql",
                 migrations / "004_plugin_devices.sql",
             ):
+                # 打包漏带 migrations 目录时只能缺表，不能让整个后端启动失败（1.6.x
+                # 正式版就因缺 004_plugin_devices.sql 直接弹「后端启动失败」）。
+                if not migration.is_file():
+                    logger.error(
+                        "插件队列迁移脚本缺失：%s，请确认打包包含 data_collection/migrations；"
+                        "本次跳过该脚本，相关表缺失",
+                        migration,
+                    )
+                    continue
                 conn.executescript(migration.read_text(encoding="utf-8"))
             columns = {
                 str(row["name"])
@@ -785,7 +797,7 @@ class DataCollectionPluginQueue:
                     "PRAGMA table_info('data_collection_plugin_sessions')"
                 ).fetchall()
             }
-            if "device_id" not in columns:
+            if columns and "device_id" not in columns:
                 conn.execute(
                     "ALTER TABLE data_collection_plugin_sessions "
                     "ADD COLUMN device_id TEXT NOT NULL DEFAULT ''"

@@ -604,6 +604,36 @@
   flex-shrink: 0;
 }
 
+/* 草稿池手动精小品标注：轻量胶囊，不抢主操作按钮的视觉权重。 */
+.pool-precision {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid #e2d9f3;
+  background: #f6f2fd;
+  color: #6a4f9c;
+  font-size: 0.66rem;
+  font-weight: 800;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.pool-precision input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #7c5cc4;
+  cursor: pointer;
+}
+
+.pool-precision input:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .pool-source-link {
   display: inline-flex;
   align-items: center;

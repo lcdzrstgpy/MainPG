@@ -6,7 +6,7 @@ import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdat
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
 import { BackendOfflineNotice } from "../shared/components/BackendOfflineNotice";
-import { getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
+import { apiUrl, getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
 import type { BrandLogoRect } from "../shared/brand";
 
 type MeResponse = {
@@ -26,7 +26,7 @@ async function fetchActiveTaskCount(): Promise<number> {
     const headers: Record<string, string> = { "X-Workspace-ID": account.workspace_id || account.workspace_code || "local" };
     const token = getAuthToken();
     if (token) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch("/api/product-processing/tasks/active-count", { headers });
+    const response = await fetch(apiUrl("/api/product-processing/tasks/active-count"), { headers });
     if (!response.ok) return 0;
     const data = (await response.json().catch(() => ({}))) as { count?: unknown };
     return typeof data?.count === "number" ? data.count : 0;

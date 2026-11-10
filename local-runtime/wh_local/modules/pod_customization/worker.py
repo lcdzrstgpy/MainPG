@@ -49,6 +49,12 @@ from .billing_contract import (
     PodExecutionGrant,
 )
 from .images import PatternQualityGate, split_grid_2x2
+from ..product_processing.domain.precision_prompts import (
+    assert_grid_cell_budget,
+    canvas_size_for_precision,
+    min_cell_pixels_for,
+    resolve_precision_class,
+)
 from .remote_billing import classify_billing_exception, expected_points_for
 from .image_providers.catalog import model_supports_multi_view
 from .prompts import (
@@ -1079,7 +1085,7 @@ class PodBatchWorker:
                             self._generate_listing_grid, batch, call, request, run, provider_call_id
                         ).result()
                         failure_kind = "artifact_validation"
-                        panels, fingerprints = self._validate_style_grid(grid)
+                        panels, fingerprints = self._validate_style_grid(batch, grid)
                         prepared = [(call, grid, panels, fingerprints)]
                     break
                 except PodBillingAuthorizationRequired:
@@ -2817,6 +2823,22 @@ class PodBatchWorker:
             current_round=role,
             execution_epoch=epoch,
         )
+        precision_class = resolve_precision_class(batch)
+        precision_budget = (batch.get("generation_meta") or {}).get("precision_budget") or {}
+        detail_units = int(precision_budget.get("detail_units") or 0)
+        if role == PRIMARY_ROLE and group_index == 1 and precision_budget:
+            business_logger("pod_processing").info(
+                "POD 精小品预算 | batch_id=%s | class=%s | level=%s | score=%s | 单元=%s | px/单元=%s "
+                "| 建议=%s | 原因=%s",
+                batch["batch_id"],
+                precision_class,
+                precision_budget.get("level") or "-",
+                precision_budget.get("score") or 0,
+                detail_units,
+                precision_budget.get("pixels_per_unit") or 0,
+                precision_budget.get("recommendation") or "-",
+                "; ".join(precision_budget.get("reasons") or []) or "-",
+            )
         fresh_prompt = build_column_round_prompt(
             batch["prompt_snapshot"],
             role=role,
@@ -2826,6 +2848,8 @@ class PodBatchWorker:
             group_index=group_index,
             attempt=task.attempt,
             flat_product=flat_product,
+            precision_class=precision_class,
+            detail_units=detail_units,
         )
         # 提示词首次执行即冻结；续跑/重启沿用同一份快照。
         sheet = self.repository.claim_group_sheet(
@@ -2845,6 +2869,10 @@ class PodBatchWorker:
             prompt_snapshot=prompt,
         )
         task.call = call
+        canvas_size = canvas_size_for_precision(
+            precision_class, product_category=fields.product_category
+        )
+        canvas_kwargs = {"size": canvas_size} if canvas_size else {}
         if role == PRIMARY_ROLE:
             primary_kwargs = self._column_primary_reference_kwargs(
                 batch, template_content, template_content_type
@@ -2860,6 +2888,7 @@ class PodBatchWorker:
                 template_image=primary_kwargs.get("template_image") or b"",
                 template_content_type=str(primary_kwargs.get("template_content_type") or ""),
                 reference_images=tuple(primary_kwargs.get("reference_images") or ()),
+                **canvas_kwargs,
             )
         else:
             request = DirectListingGridRequest(
@@ -2874,6 +2903,7 @@ class PodBatchWorker:
                     group["style_indices"],
                     fallback=task.attempt >= ROLE_ATTEMPTS,
                 ),
+                **canvas_kwargs,
             )
         provider_call_id = column_image_call_id(
             batch["batch_id"], group_index, role, task.attempt
@@ -3791,10 +3821,17 @@ class PodBatchWorker:
 
     def _validate_style_grid(
         self,
+        batch: dict[str, Any],
         grid: Any,
     ) -> tuple[list[Any], list[str]]:
+        min_cell_pixels = min_cell_pixels_for(resolve_precision_class(batch))
         with _LOCAL_IMAGE_SEMAPHORE:
-            panels = self.ai_runtime.split_listing_grid(grid)
+            if min_cell_pixels:
+                assert_grid_cell_budget(grid.content, min_cell_pixels=min_cell_pixels)
+                panels = self.ai_runtime.split_listing_grid(grid, preserve_aspect=True)
+            else:
+                # standard 路径保持既有调用签名，兼容历史运行时替身。
+                panels = self.ai_runtime.split_listing_grid(grid)
         if len(panels) != 4:
             raise RuntimeError("generated four-grid image did not yield exactly four panels")
         return panels, [hashlib.sha256(panel.content).hexdigest() for panel in panels]
@@ -3945,7 +3982,7 @@ class PodBatchWorker:
             if panels is None:
                 # 四宫格校验/拆图/清晰化：在池线程里做，不占协调线程。
                 try:
-                    panels, fingerprints = self._validate_style_grid(grid)
+                    panels, fingerprints = self._validate_style_grid(batch, grid)
                 except PodBillingAuthorizationRequired:
                     raise
                 except Exception as exc:

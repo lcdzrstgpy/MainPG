@@ -174,6 +174,38 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 $dist = Join-Path $PSScriptRoot "dist\MainPG"
 if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 
+# 4a. Fail the build when runtime assets did not make it into the bundle.
+# Missing files only surface on the customer machine (1.6.x shipped without
+# data_collection/migrations/004_plugin_devices.sql -> "backend failed to start",
+# 1.6.7 shipped without the browser extension -> "no extracted plugin directory").
+$requiredPaths = @(
+    "MainPG.exe",
+    "_internal\web-frontend\dist\index.html",
+    "_internal\browser-extension\manifest.json",
+    "_internal\wh_local\data",
+    "_internal\launcher\assets\splash"
+)
+$missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath (Join-Path $dist $_) ) })
+Get-ChildItem -Path (Join-Path $PSScriptRoot "wh_local") -Recurse -Filter "*.sql" -File |
+    Where-Object { $_.FullName -like "*\migrations\*" } |
+    ForEach-Object {
+        $rel = $_.FullName.Substring($PSScriptRoot.Length + 1)
+        if (-not (Test-Path -LiteralPath (Join-Path $dist ("_internal\" + $rel)) -PathType Leaf)) {
+            $missing += $rel
+        }
+    }
+Get-ChildItem -Path (Join-Path $PSScriptRoot "wh_local\modules\product_processing\templates") -Filter "*.xlsx" -File -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $rel = "_internal\wh_local\modules\product_processing\templates\" + $_.Name
+        if (-not (Test-Path -LiteralPath (Join-Path $dist $rel) -PathType Leaf)) {
+            $missing += $rel
+        }
+    }
+if ($missing.Count -gt 0) {
+    throw "bundle is missing required assets: $($missing -join ', ')"
+}
+Write-Host "[build] verified bundled assets (frontend, extension, migrations, templates, splash, data)"
+
 # Ship the verified, immutable artifact plus the exact Node executable that built
 # it. This is intentionally a copied build artifact, not a Git submodule/reference
 # and not a dependency on a customer-installed Node runtime. The artifact already
@@ -206,6 +238,7 @@ $csc = @(
 if (-not $csc) { throw "csc.exe (.NET Framework) not found - cannot build MainPG-Updater.exe" }
 & $csc /nologo /target:winexe "/out:$dist\MainPG-Updater.exe" "updater\MainPGUpdater.cs"
 if ($LASTEXITCODE -ne 0) { throw "MainPG-Updater.exe compile failed" }
+if (-not (Test-Path -LiteralPath "$dist\MainPG-Updater.exe")) { throw "MainPG-Updater.exe missing after compile" }
 
 # 4c. Write version.json (UTF-8 without BOM - Python json.loads rejects BOM).
 $versionJson = Join-Path $dist "version.json"
@@ -242,20 +275,37 @@ $cosSource = if ($env:MAINPG_COS_CONFIG_PATH) {
 } else {
     Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
 }
+
+# 明文缺失时，从上一版产物里复用密文。查找顺序：补丁基线目录、本次备份、dist 下的历史
+# 打包目录。1.6.8 曾因新增的「资产校验」失败重跑，dist 被半成品覆盖导致 onebound.enc
+# 没被备份、也没被复用，最终安装包缺采集凭据——这里把兜底范围扩大，并在彻底找不到时
+# 直接让构建失败，不再只打一行 WARNING。
+function Find-ReusableEnc([string]$name) {
+    $candidates = @()
+    if ($PatchFromDir) { $candidates += (Join-Path $PatchFromDir $name) }
+    $candidates += (Join-Path $credBackupDir $name)
+    Get-ChildItem -Path (Join-Path $PSScriptRoot "dist") -Directory -Filter "_baseline-*" -ErrorAction SilentlyContinue |
+        ForEach-Object { $candidates += (Join-Path $_.FullName $name) }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
 if (Test-Path -LiteralPath $cosSource) {
     & $python -m wh_local.secrets encrypt $cosSource (Join-Path $dist "cos.enc") cos
     if ($LASTEXITCODE -ne 0) { throw "encrypting cos credentials failed" }
     Write-Host "[build] bundled cos.enc (media publishing, encrypted)"
-} elseif (Test-Path -LiteralPath (Join-Path $credBackupDir "cos.enc") -PathType Leaf) {
-    Copy-Item -LiteralPath (Join-Path $credBackupDir "cos.enc") -Destination (Join-Path $dist "cos.enc") -Force
-    Write-Host "[build] reused cos.enc from previous build (plaintext source absent)"
 } else {
-    Write-Host "[build] WARNING: cos.local.json missing - preview export cannot publish images"
+    $reuse = Find-ReusableEnc "cos.enc"
+    if (-not $reuse) { throw "cos.enc not available: set MAINPG_COS_CONFIG_PATH to the plaintext cos config" }
+    Copy-Item -LiteralPath $reuse -Destination (Join-Path $dist "cos.enc") -Force
+    Write-Host "[build] reused cos.enc from $reuse"
 }
 
 # OneBound collection credentials: daily-selection / 1688 collection needs the
-# project-local API key. Missing file still installs (feature degrades) but is
-# flagged loudly so release builds never silently ship without it.
+# project-local API key. A bundle without it silently breaks 1688 collection on
+# customer machines, so this is a hard failure.
 $oneboundSource = if ($env:MAINPG_ONEBOUND_CONFIG_PATH) {
     $env:MAINPG_ONEBOUND_CONFIG_PATH
 } else {
@@ -265,12 +315,18 @@ if (Test-Path -LiteralPath $oneboundSource) {
     & $python -m wh_local.secrets encrypt $oneboundSource (Join-Path $dist "onebound.enc") onebound
     if ($LASTEXITCODE -ne 0) { throw "encrypting onebound credentials failed" }
     Write-Host "[build] bundled onebound.enc (collection credentials, encrypted)"
-} elseif (Test-Path -LiteralPath (Join-Path $credBackupDir "onebound.enc") -PathType Leaf) {
-    Copy-Item -LiteralPath (Join-Path $credBackupDir "onebound.enc") -Destination (Join-Path $dist "onebound.enc") -Force
-    Write-Host "[build] reused onebound.enc from previous build (plaintext source absent)"
 } else {
-    Write-Host "[build] WARNING: onebound.local.json missing - installed users cannot collect 1688 data"
+    $reuse = Find-ReusableEnc "onebound.enc"
+    if (-not $reuse) { throw "onebound.enc not available: set MAINPG_ONEBOUND_CONFIG_PATH to the plaintext onebound config" }
+    Copy-Item -LiteralPath $reuse -Destination (Join-Path $dist "onebound.enc") -Force
+    Write-Host "[build] reused onebound.enc from $reuse"
 }
+foreach ($credName in @("cos.enc", "onebound.enc")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $dist $credName))) {
+        throw "bundle is missing $credName"
+    }
+}
+Write-Host "[build] verified bundled credentials (cos.enc, onebound.enc)"
 
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."

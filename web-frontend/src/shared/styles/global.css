@@ -3536,3 +3536,36 @@ html:not([data-ui-mode="apple"]) .tab-strip[data-indicator-ready="true"] > .page
   .pod-agreement-foot { flex-direction: column; align-items: stretch; gap: 12px; padding: 14px 18px 18px; }
   .pod-agreement-action { width: 100%; }
 }
+
+/* ---- 侧边栏字号层级（2026-11-05）----
+   一级菜单原来直接继承 16px 根字号，比二级 .84rem 的落差过大、行高也偏高；
+   统一收到 15/13.5px 两档并压匀行高，图标同步缩小，避免文字比图标抢眼。 */
+@media (min-width: 801px) {
+  .sidebar-item {
+    font-size: .94rem;
+    line-height: 1.32;
+    letter-spacing: .01em;
+  }
+
+  .sidebar-item span:first-child {
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  .sidebar-subitem {
+    font-size: .845rem;
+    line-height: 1.35;
+    font-weight: 500;
+    letter-spacing: .008em;
+  }
+
+  .sidebar-subitem span:first-child {
+    font-size: .9rem;
+    line-height: 1;
+  }
+}
+
+.sidebar-caption {
+  font-size: .7rem;
+  letter-spacing: .06em;
+}

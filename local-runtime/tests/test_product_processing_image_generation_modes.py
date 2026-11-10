@@ -230,6 +230,151 @@ def test_unsplittable_four_grid_never_repeats_the_paid_whole_grid_call(monkeypat
     assert output.carousel_urls == ()
 
 
+def test_precision_profile_routes_to_precision_prompt_and_wide_canvas(monkeypatch) -> None:
+    """主体识别判定为精小品时：切专属模板、宽画布、补边拆图，且不回到场景契约。"""
+    service, processor = _service(monkeypatch)
+    split_kwargs: list[bool] = []
+
+    def split_four_grid(media, *, enhance=None, preserve_aspect=False):
+        split_kwargs.append(preserve_aspect)
+        return _Processor.split_four_grid(media, enhance=enhance)
+
+    monkeypatch.setattr(processor, "split_four_grid", split_four_grid)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": []},
+    )
+    vision_identity = {
+        "sellable_subject": "mechanical keyboard",
+        "subject_explanation": "The full keyboard is the sellable product.",
+        "visible_attributes": ["wide rectangular body", "printed keycap legends"],
+        "precision_profile": {
+            "is_small_or_intricate": True,
+            "has_legible_text": True,
+            "is_flat": False,
+            "part_count": 120,
+            "dominant_shape": "wide",
+        },
+    }
+
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Mechanical Keyboard",
+        "Computer Peripherals",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+        vision_identity=vision_identity,
+    )
+
+    assert len(processor.calls) == 1
+    call = processor.calls[0]
+    assert "PRECISION BLOCK A" in call["prompt"]
+    assert "PRECISION BLOCK D2" in call["prompt"]
+    assert "about 120 distinct repeated units" in call["prompt"]
+    assert "SCENE PLAN" not in call["prompt"]
+    assert call["image_size"] == "2880x1440"
+    assert call.get("layout_scaffold") is not True
+    assert split_kwargs == [True]
+    assert len(output.carousel_urls) == 4
+
+
+def test_manual_precision_annotation_overrides_vision_profile(monkeypatch) -> None:
+    """草稿池手动勾选后，即使主体识别说普通品也强制走精小品模板。"""
+    service, processor = _service(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": []},
+    )
+    vision_identity = {
+        "sellable_subject": "travel mug",
+        "subject_explanation": "The full travel mug is the sellable product.",
+        "visible_attributes": ["cylindrical body"],
+        "excluded_elements": ["desk"],
+        "explicit_measurements": {},
+        "usage_scene": {},
+        "confidence": "high",
+        "uncertainty_reason": "",
+        "precision_profile": {
+            "is_small_or_intricate": False,
+            "has_legible_text": False,
+            "is_flat": False,
+            "part_count": 0,
+            "dominant_shape": "square",
+        },
+    }
+
+    output = service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Travel Mug",
+        "Drinkware",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+        vision_identity=vision_identity,
+        precision_annotation="precision",
+    )
+
+    assert len(processor.calls) == 1
+    assert "PRECISION BLOCK A" in processor.calls[0]["prompt"]
+    assert processor.calls[0]["image_size"] == "2048x2048"
+    assert len(output.carousel_urls) == 4
+
+
+def test_manual_standard_annotation_disables_auto_precision(monkeypatch) -> None:
+    """手动标注为普通品后，主体识别的精小品信号不再生效。"""
+    service, processor = _service(monkeypatch)
+    monkeypatch.setattr(
+        service_module,
+        "inspect_visible_text",
+        lambda _content: {"chinese": [], "prominent": []},
+    )
+    vision_identity = {
+        "sellable_subject": "mechanical keyboard",
+        "subject_explanation": "The full keyboard is the sellable product.",
+        "visible_attributes": ["wide rectangular body", "printed keycap legends"],
+        "excluded_elements": ["desk", "monitor"],
+        "explicit_measurements": {},
+        "usage_scene": {},
+        "confidence": "high",
+        "uncertainty_reason": "",
+        "precision_profile": {
+            "is_small_or_intricate": True,
+            "has_legible_text": True,
+            "part_count": 120,
+            "dominant_shape": "wide",
+        },
+    }
+
+    service._generate_grid_images(
+        1,
+        2,
+        _raw(),
+        "Mechanical Keyboard",
+        "Computer Peripherals",
+        ["https://example.com/source.jpg"],
+        "en",
+        "US",
+        image_generation_count=4,
+        vision_identity=vision_identity,
+        precision_annotation="standard",
+    )
+
+    assert len(processor.calls) == 1
+    call = processor.calls[0]
+    assert "PRECISION BLOCK A" not in call["prompt"]
+    assert "SCENE PLAN" in call["prompt"]
+    assert call["image_size"] == "2048x2048"
+
+
 def test_four_grid_source_with_chinese_allows_printed_design_panels(monkeypatch) -> None:
     """麻将/定制印刷类商品：来源图含中文 → 面板中文属产品设计，只拦横幅级、放行入库。"""
     from wh_local.modules.product_processing.infrastructure import media as media_module

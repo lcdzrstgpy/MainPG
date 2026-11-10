@@ -19,6 +19,11 @@ function apiBaseUrl() {
   return (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 }
 
+/** 拼出带部署前缀的 API 地址：子路径部署（如 /workbench/）时自动带上 base。 */
+export function apiUrl(path: string) {
+  return `${apiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 /** 本地后端健康端点。打包版同源直连（8010）；开发态需 vite 代理 /health 转发。 */
 export function backendHealthUrl(): string {
   return `${apiBaseUrl()}/health`;

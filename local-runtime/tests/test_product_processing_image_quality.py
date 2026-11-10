@@ -650,6 +650,41 @@ def test_split_four_grid_accepts_provider_1k_fallback() -> None:
             assert image.size == (800, 800)
 
 
+def _wide_grid_with_edge_marker() -> bytes:
+    image = Image.new("RGB", (2880, 1440), "white")
+    image.paste((210, 30, 30), (0, 0, 1432, 712))
+    image.paste((30, 180, 50), (1448, 0, 2880, 712))
+    image.paste((30, 70, 210), (0, 728, 1432, 1440))
+    image.paste((220, 180, 30), (1448, 728, 2880, 1440))
+    # 左边缘标记：只有不居中裁方时才应保留下来。
+    image.paste((255, 0, 255), (40, 40, 120, 120))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_split_four_grid_preserve_aspect_keeps_wide_canvas_edges() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_four_grid(
+        _media(_wide_grid_with_edge_marker()), preserve_aspect=True
+    )
+
+    assert len(parts) == 5
+    with Image.open(BytesIO(parts[0].content)) as image:
+        assert image.size == (800, 800)
+        colors = image.convert("RGB").getcolors(maxcolors=1_000_000) or []
+        assert any(r > 180 and g < 110 and b > 180 for _count, (r, g, b) in colors)
+
+
+def test_split_four_grid_default_still_center_crops_non_square_source() -> None:
+    processor = ProductImageProcessor(lambda: {})
+    parts = processor.split_four_grid(_media(_wide_grid_with_edge_marker()))
+
+    with Image.open(BytesIO(parts[0].content)) as image:
+        colors = image.convert("RGB").getcolors(maxcolors=1_000_000) or []
+        assert all(not (r > 180 and g < 110 and b > 180) for _count, (r, g, b) in colors)
+
+
 def test_split_four_grid_rejects_source_below_1k_with_dimensions() -> None:
     processor = ProductImageProcessor(lambda: {})
     with pytest.raises(MediaProcessingError, match=r"900x900.*at least 1024px"):

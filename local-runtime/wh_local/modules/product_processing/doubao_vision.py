@@ -18,9 +18,9 @@ from .doubao_ark import (
 )
 
 
-# v5：主体识别的同一次调用里顺带返回 usage_scene（真实使用位置/动作），
-# 不额外发请求、不额外计费；版本号用于失效旧回执——旧缓存里没有这个字段。
-PROMPT_VERSION = "doubao-subject-v5"
+# v6：主体识别同一次调用里返回 precision_profile（小件/多零件/带字/外形比例），
+# 供 AI 处理链路决定是否切到精小品模式；v5 旧回执缺该字段时按普通品处理。
+PROMPT_VERSION = "doubao-subject-v6"
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 0.5
 MAX_VISION_IMAGES = 6
@@ -55,6 +55,14 @@ Return exactly one JSON object with no Markdown and no additional text:
     "on_person": "short English phrase: how it attaches to or is worn on a person; empty string when it is never worn or carried"
   },
   "explicit_measurements": {"length_cm": null, "width_cm": null, "height_cm": null, "weight_g": null},
+  "precision_profile": {
+    "is_small_or_intricate": false,
+    "has_legible_text": false,
+    "is_flat": false,
+    "part_count": 0,
+    "dominant_shape": "square",
+    "reason": ""
+  },
   "excluded_elements": ["background, props, people, or packaging that are not the product"],
   "confidence": "high or medium or low",
   "uncertainty_reason": "empty when confident; otherwise explain the visual ambiguity"
@@ -66,6 +74,14 @@ usage_scene rules (this feeds the lifestyle/in-use image prompt, so it must be p
 - Never output a generic answer such as "in a home", "on a table", "in daily life" - that is a failed answer.
 - If the product is a bag charm, keychain, or pendant, the place must be the thing it is attached to (belt loop, bag strap, zipper pull, backpack ring), not a flat surface.
 - If the product is not worn or carried at all, set on_person to an empty string.
+
+precision_profile rules (this routes the image prompt, so answer only from visible evidence):
+- is_small_or_intricate=true when the product is small in frame, is built from many separate or repeating units, has a fine regular grid, a dense high-frequency pattern, or a detail-critical surface (keyboards, keycaps, mahjong tiles, puzzles, miniatures, badges, stickers).
+- has_legible_text=true when the product itself shows letters, numbers or legends that must stay readable (keycap legends, mahjong faces, printed words).
+- is_flat=true when the product is essentially a flat sheet, plate or tile (mat, sticker, card, tile, plate).
+- part_count = approximate number of distinct visible parts or repeating units on the product; 0 when not applicable; never above 500.
+- dominant_shape = the product silhouette: wide when width/height >= 1.3, tall when <= 0.77, otherwise square.
+- reason = one short English sentence; empty when the product is ordinary.
 """
 
 DoubaoVisionError = DoubaoArkError
@@ -83,9 +99,11 @@ class SubjectAnalysis:
     # 这条链接自己的真实使用场景（位置/动作/与人的关系），用于「真实使用」模板，
     # 避免所有链接都套同一句“放在生活场景里”。
     usage_scene: dict[str, str] = field(default_factory=dict)
+    # 精小品路由信号：小件/多零件/带字/平片/外形比例。旧回执缺该字段时为空。
+    precision_profile: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "sellable_subject": self.sellable_subject,
             "subject_explanation": self.subject_explanation,
             "visible_attributes": list(self.visible_attributes),
@@ -95,6 +113,10 @@ class SubjectAnalysis:
             "explicit_measurements": dict(self.explicit_measurements),
             "usage_scene": dict(self.usage_scene),
         }
+        # 只在模型真的给出识别信号时才写回：历史回执/手工构造的 analysis 保持原形状。
+        if self.precision_profile:
+            payload["precision_profile"] = dict(self.precision_profile)
+        return payload
 
 
 def append_subject_analysis(
@@ -115,8 +137,11 @@ def append_subject_analysis(
         if not payload.get("sellable_subject"):
             return str(prompt or "")
         normalized = _subject_analysis_from_payload(payload)
+    # precision_profile 只用于本地路由，不进入生图提示词，避免给模型增加无关字段。
+    identity_payload = normalized.as_dict()
+    identity_payload.pop("precision_profile", None)
     subject_json = json.dumps(
-        normalized.as_dict(),
+        identity_payload,
         ensure_ascii=False,
         sort_keys=True,
     )
@@ -278,6 +303,7 @@ def _subject_analysis_from_payload(payload: dict[str, Any]) -> SubjectAnalysis:
     excluded = _text_list(payload.get("excluded_elements"), limit=12, item_limit=160)
     measurements = _measurement_map(payload.get("explicit_measurements"))
     usage_scene = _usage_scene_map(payload.get("usage_scene"))
+    precision_profile = _precision_profile_map(payload.get("precision_profile"))
     if not subject or not explanation or confidence not in {"high", "medium", "low"}:
         raise DoubaoVisionError(
             "Doubao vision subject output failed validation",
@@ -302,6 +328,7 @@ def _subject_analysis_from_payload(payload: dict[str, Any]) -> SubjectAnalysis:
         uncertainty_reason=uncertainty,
         explicit_measurements=measurements,
         usage_scene=usage_scene,
+        precision_profile=precision_profile,
     )
 
 
@@ -318,6 +345,31 @@ def _usage_scene_map(value: Any) -> dict[str, str]:
         text = _bounded_text(value.get(key), limit=160, allow_empty=True)
         if text:
             result[key] = text
+    return result
+
+
+def _precision_profile_map(value: Any) -> dict[str, Any]:
+    """解析精小品路由信号；缺失/类型不符时返回空对象，绝不因此判视觉失败。
+
+    该字段只影响生图提示词与画布选择，不参与可售主体判定，所以任何异常值都
+    降级成"普通品"而不是让整条识别失败。
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("is_small_or_intricate", "has_legible_text", "is_flat"):
+        flag = value.get(key)
+        if isinstance(flag, bool):
+            result[key] = flag
+    count = value.get("part_count")
+    if isinstance(count, int) and not isinstance(count, bool):
+        result["part_count"] = max(0, min(500, count))
+    shape = str(value.get("dominant_shape") or "").strip().lower()
+    if shape in {"wide", "square", "tall"}:
+        result["dominant_shape"] = shape
+    reason = _bounded_text(value.get("reason"), limit=200, allow_empty=True)
+    if reason and not _contains_instruction_like_text(reason):
+        result["reason"] = reason
     return result
 
 

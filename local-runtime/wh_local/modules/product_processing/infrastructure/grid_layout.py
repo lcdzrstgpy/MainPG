@@ -209,7 +209,29 @@ def _center_crop_to_square(image: Any) -> Any:
     return image.crop((left, top, left + side, top + side))
 
 
-def extract_grid_panels(value: bytes | Any, guides: GridSplitGuides) -> list[Any]:
+def _pad_to_square(image: Any) -> Any:
+    """把非方形单格补成方形：保留完整内容，用左上角背景色补齐留白。
+
+    精小品宽画布（如 2880×1440）单格是 1440×720，直接居中裁方会切掉产品两侧；
+    这里改为补边，交付尺寸仍是方形，但产品不被裁切。
+    """
+    from PIL import Image  # type: ignore
+
+    side = max(image.width, image.height)
+    if image.width == image.height:
+        return image
+    background = image.getpixel((0, 0))
+    canvas = Image.new(image.mode, (side, side), background)
+    canvas.paste(image, ((side - image.width) // 2, (side - image.height) // 2))
+    return canvas
+
+
+def extract_grid_panels(
+    value: bytes | Any,
+    guides: GridSplitGuides,
+    *,
+    preserve_aspect: bool = False,
+) -> list[Any]:
     image = _open_rgb(value)
     width, height = image.size
     boxes = (
@@ -223,7 +245,8 @@ def extract_grid_panels(value: bytes | Any, guides: GridSplitGuides) -> list[Any
         panel = image.crop(box)
         # 拆图尽力切：不做面板内容独立性校验，避免模型排版偏差导致整组拆图失败阻断流程。
         # 质量门改为软性（重绘尽力 + 回退来源图），不再因内容问题阻止入库。
-        panels.append(_center_crop_to_square(panel))
+        # preserve_aspect=True 用于非方形母图：补边而非居中裁方，避免切掉产品两侧。
+        panels.append(_pad_to_square(panel) if preserve_aspect else _center_crop_to_square(panel))
     return panels
 
 

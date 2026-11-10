@@ -269,6 +269,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       dimensionCard: false,
       // 场景风格：默认花哨（花艺/礼赠/丝绒/镜面），按需再切极简或生活。
       sceneStyle: 'ornate',
+      // 麻将专业模式默认关闭；开启后默认仍走 AI 生图，需要时再切 3D 渲染。
+      mahjongMode: false,
+      mahjongRender: 'ai',
     }
   );
   const imageSelection: PhotoSelection = {
@@ -882,6 +885,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         main_background: options.mainBackground || 'scene',
         // 手选的系统背景底板；空=按品类自动选片段
         background_template: options.backgroundTemplate || '',
+        // 麻将专业模式：AI 只出空白牌，字/花纹由本地图案库回贴。
+        mahjong_mode: options.mahjongMode === true,
+        // 麻将出图方式：ai=AI 生图；3d=本地 Blender 渲染。
+        mahjong_render: options.mahjongRender === '3d' ? '3d' : 'ai',
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -1275,6 +1282,35 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <span>自动烧制尺寸图</span>
                   <span className="verify-sub">第 4 格尺寸卡 · 默认关闭，按品类开启</span>
                 </label>
+                <label className="verify-scope-check verify-inline-check" title="麻将/牌类专用：AI 只画空白牌体，牌面的字与花纹从你的原图抠成图案库后本地回贴，避免 AI 造字错纹。同一批不会重复贴同一个花纹；图案库按品类+标题缓存复用">
+                  <input
+                    type="checkbox"
+                    checked={options.mahjongMode === true}
+                    onChange={(e) => setOptions((p) => ({ ...p, mahjongMode: e.target.checked }))}
+                  />
+                  <span>麻将专业模式</span>
+                  <span className="verify-sub">空白牌体 + 本地图案库回贴 · 不重画字纹</span>
+                </label>
+                {options.mahjongMode === true ? (
+                  <label
+                    className="verify-scope-check verify-inline-check"
+                    title="AI 生图：有台面/场景实景，但牌面字纹仍可能出错；3D 渲染：本地建模渲染牌体与标准牌面（中發白/筒条万），字纹与厚度绝对准确、不会造字，但背景是纯色棚拍。3D 需要本机装有 Blender，找不到会自动回退 AI 生图"
+                  >
+                    <span>麻将出图</span>
+                    <select
+                      value={options.mahjongRender || 'ai'}
+                      onChange={(e) =>
+                        setOptions((p) => ({
+                          ...p,
+                          mahjongRender: e.target.value as ProductProcessingOptions['mahjongRender'],
+                        }))
+                      }
+                    >
+                      <option value="ai">AI 生图（默认）</option>
+                      <option value="3d">3D 渲染 · 字纹/尺寸准确</option>
+                    </select>
+                  </label>
+                ) : null}
               </div>
             </div>
             <ImageComboPicker
