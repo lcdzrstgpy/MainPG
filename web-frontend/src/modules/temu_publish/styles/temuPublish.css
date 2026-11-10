@@ -2533,7 +2533,8 @@ textarea.temu-input {
      以前是 4 列（属性二被拆成两格），合并后按 4 列排会把第二列压到 0.8fr，
      输入框里的占位文字直接被截断。 */
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
-  align-items: end;
+  /* 顶部对齐：chips 编辑器多行时，旁边的「尺码」栏和生成按钮不会被压到底部 */
+  align-items: start;
   gap: 10px;
 }
 
@@ -4267,6 +4268,21 @@ textarea.temu-input {
   border: 1px solid var(--theme-module-border, #cfe0eb);
   border-radius: var(--radius-sm, 6px);
   background: var(--theme-module-surface-raised, #ffffff);
+}
+
+/*
+ * 值列表限高自己滚（约 3 行）：11 个长中文颜色名每个占一行，
+ * 不限高会把整块撑到 400px 高、把旁边「尺码」那栏压到底部（align-items:end）。
+ * 输入框和「+」在列表外面，不会被滚走。
+ */
+.temu-spec-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  max-height: 78px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .temu-spec-chips.is-bad {

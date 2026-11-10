@@ -2101,6 +2101,12 @@ test("变种属性值用 chips +「+」一个个加，不用逗号拼字符串",
   assert.match(css, /\.temu-spec-chips \{/);
   assert.match(css, /\.temu-spec-chip-item \{/);
   assert.match(css, /\.temu-spec-add \{/);
+  // 值多时限高自己滚（11 个长颜色名会把整块撑到 400px 高、把旁边尺码栏压到底部），
+  // 输入框和 + 在列表外面，不会被滚走
+  assert.match(panel, /className="temu-spec-chip-list"/);
+  assert.match(css, /\.temu-spec-chip-list \{[\s\S]{0,220}max-height: 78px;[\s\S]{0,80}overflow-y: auto;/);
+  // 变种属性区三列顶部对齐（以前 align-items:end，chips 一高旁边的栏就被压到底）
+  assert.match(css, /\.is-console \.temu-variant-spec \{[\s\S]{0,600}align-items: start;/);
 });
 
 test("尺寸与重量按尺码绑定，不跟着「应用到全部」一把梭", () => {

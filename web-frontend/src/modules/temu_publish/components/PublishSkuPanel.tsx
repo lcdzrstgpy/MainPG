@@ -657,22 +657,27 @@ export function PublishSkuPanel({
           if (event.target === event.currentTarget) chipInputRefs.current[kind]?.focus();
         }}
       >
-        {values.map((value) => (
-          <span
-            key={value}
-            className={`temu-spec-chip-item${badLower.has(value.toLowerCase()) ? " is-bad" : ""}`}
-          >
-            {value}
-            <button
-              type="button"
-              className="temu-spec-chip-remove"
-              aria-label={`移除 ${value}`}
-              onClick={() => removeSpecValue(kind, value)}
-            >
-              ×
-            </button>
+        {values.length ? (
+          // 值多时列表自己滚（最多约 3 行），输入框和 + 钉在下面 —— 别让输入框被滚出视野
+          <span className="temu-spec-chip-list">
+            {values.map((value) => (
+              <span
+                key={value}
+                className={`temu-spec-chip-item${badLower.has(value.toLowerCase()) ? " is-bad" : ""}`}
+              >
+                {value}
+                <button
+                  type="button"
+                  className="temu-spec-chip-remove"
+                  aria-label={`移除 ${value}`}
+                  onClick={() => removeSpecValue(kind, value)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </span>
-        ))}
+        ) : null}
         <input
           ref={(el) => {
             chipInputRefs.current[kind] = el;
