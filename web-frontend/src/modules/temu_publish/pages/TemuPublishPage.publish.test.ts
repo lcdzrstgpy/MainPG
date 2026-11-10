@@ -11,18 +11,29 @@ const attrModel = readFileSync(new URL("../data/attributeModel.ts", import.meta.
 const imageShape = readFileSync(new URL("../data/imageShape.ts", import.meta.url), "utf8");
 
 test("发布商品：提交前必须人工确认（外部副作用，不允许自动触发）", () => {
-  // 真提交会在这个店铺里创建商品，必须先 confirm 再发请求
+  // 真提交会在这个店铺里创建商品，必须先确认再发请求。
+  // 2026-11-10：原生 window.confirm → 应用内弹窗（WebView 可能禁用原生框，
+  // 点了提交直接返回 false，看着像「没反应」）。
   assert.match(page, /const publishGoods = \(\) =>/, "缺少 publishGoods 处理函数");
-  assert.match(page, /window\.confirm\(/, "提交前必须有确认弹窗");
+  assert.match(page, /const \[publishConfirm, setPublishConfirm\] = useState</);
+  // 点提交：先校验、弹确认框，不能直接打接口
   assert.ok(
-    page.indexOf("window.confirm(") < page.indexOf("temuPublishApi.publish(draft)"),
+    page.indexOf('setPublishConfirm({ kind: "submit", draft, skuCount })') <
+      page.indexOf('temuPublishApi.publish(draft, job.kind'),
     "确认必须发生在调用提交接口之前",
   );
-  // 用户取消时直接返回，不发请求
-  assert.match(page, /if \(!confirmed\) return;/);
-  // confirm 文案要说明后果：真实创建 + 不重试
+  // 真正提交只在 confirmPublish（弹窗里点「确认提交」）里发生
+  assert.match(page, /const confirmPublish = async \(\) => \{/);
+  assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 弹窗要说明后果：真实创建 + 不重试
   assert.match(page, /真的在店铺里创建商品/);
   assert.match(page, /不支持重试/);
+  // 发布流程内不再用原生 confirm（店铺删除等其它位置不受影响）
+  const publishFlow = page.slice(
+    page.indexOf("const publishGoods = () =>"),
+    page.indexOf("const copyPayload = async () => {"),
+  );
+  assert.doesNotMatch(publishFlow, /window\.confirm\(/);
 });
 
 test("发布商品：build 与 publish 复用同一份草稿，避免两条路径走偏", () => {
@@ -33,7 +44,7 @@ test("发布商品：build 与 publish 复用同一份草稿，避免两条路�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const built = await temuPublishApi\.buildPayload\(draft\);/);
-  assert.match(page, /const published = await temuPublishApi\.publish\(draft\);/);
+  assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
 });
 
 test("发布商品：接口指向 /publish，按钮提交中要禁用", () => {
@@ -46,7 +57,7 @@ test("发布商品：接口指向 /publish，按钮提交中要禁用", () => {
     "缺少提交禁用条件",
   );
   // 发布进行中别的任务跑完不能把它解禁：要么看 publishing，要么有 ref 兜底
-  assert.match(page, /if \(publishingRef\.current\) return;/, "发布要能挡住重复点击");
+  assert.match(page, /if \(publishingRef\.current \|\| publishConfirm\) return;/, "发布要能挡住重复点击（弹窗开着也算）");
   assert.match(page, /setBusy\(\(current\) => \(current === label \? "" : current\)\);/);
   assert.ok(page.includes("disabled={submitDisabled}"), "提交中必须禁用按钮");
   assert.match(page, /提交发布/);
@@ -591,7 +602,7 @@ test("发布：同一条草稿 24 小时内重复提交要先二次确认", () =
   assert.match(api, /\$\{BASE\}\/publish\$\{force \? "\?force=true" : ""\}/);
   // 后端 409 会带「重复提交：…」前缀，前端识别后弹确认，确认才带 force 再发
   assert.match(page, /if \(\/重复提交\/\.test\(text\)\)/);
-  assert.match(page, /await temuPublishApi\.publish\(draft, true\)/);
+  assert.match(page, /setPublishConfirm\(\{ kind: "duplicate", draft, skuCount: job\.skuCount, note: text \}\);/);
   assert.ok(page.includes("店铺里会多出一件相同商品"));
 });
 
@@ -1202,7 +1213,7 @@ test("发下一条：只清本商品特有的内容，类目/属性/运费/仓�
 test("Ctrl/⌘ + Enter 直接提交，且不会重复上架", () => {
   assert.match(page, /if \(event\.key !== "Enter" \|\| !\(event\.ctrlKey \|\| event\.metaKey\)\) return;/);
   // 提交中/别的任务在跑/未就绪时直接忽略，避免连按重复提交
-  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready\) return;/);
+  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready \|\| publishConfirm\) return;/);
   assert.match(page, /event\.preventDefault\(\);/);
   // 用 ref 取最新函数，不是每次 render 重绑监听
   assert.match(page, /const publishRef = useRef\(publishGoods\);/);
@@ -1689,10 +1700,10 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
   // 只提示「请重新选一遍」是句废话：他打开属性区一看跟原来一样，只能盲选再被拒一次。
   // 必须把「新增了哪个必填项 / 哪个选择失效了」点名出来。
   const publish = page.slice(
-    page.indexOf("const publishGoods = () =>"),
-    page.indexOf("}).finally(() => {\n      publishingRef.current = false;"),
+    page.indexOf("const confirmPublish = async () => {"),
+    page.indexOf("const copyPayload = async () => {"),
   );
-  assert.ok(publish.length > 0, "expected publishGoods block");
+  assert.ok(publish.length > 0, "expected confirmPublish block");
   assert.match(publish, /if \(\/6000002\|类目属性更新\/\.test\(text\)\) \{/);
   assert.match(publish, /const diff = await reloadCategoryAttributes\(attributes\)\.catch\(/);
   assert.match(publish, /const detail = diff \? attributeDiffText\(diff\) : "";/);
@@ -2666,4 +2677,37 @@ test("提交失败要「红到哪里」：出错区块描红 + 清单同步 + �
   assert.match(css, /\.is-console \.temu-sec\.is-error \.temu-sec-num \{/);
   assert.match(css, /\.is-console \.temu-rail-list li\.is-error \.temu-rail-dot \{/);
   assert.match(css, /\[data-theme="alpine"\] \.is-console \.temu-sec\.is-error \{/);
+});
+
+test("发布确认用应用内弹窗：列清标题/类目/变种，重复提交也能二次确认", () => {
+  // 原生 window.confirm 在 WebView 里可能被禁（点了直接 false），样式也不搭。
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(page, /className="temu-edit-dialog temu-confirm-dialog"/);
+  assert.match(page, /<dt>标题<\/dt>/);
+  assert.match(page, /<dt>类目<\/dt>/);
+  assert.match(page, /<dt>变种<\/dt>/);
+  assert.match(page, /确认提交/);
+  assert.match(page, /仍然提交/);
+  // 重复提交：换成二次确认，不再走原生 confirm
+  assert.match(page, /setPublishConfirm\(\{ kind: "duplicate", draft, skuCount: job\.skuCount, note: text \}\);/);
+  // 快捷键在弹窗开着时不能再触发一次
+  assert.match(page, /if \(publishing \|\| busy !== "" \|\| !ready \|\| publishConfirm\) return;/);
+  assert.match(css, /\.temu-confirm-dialog \{/);
+  assert.match(css, /\[data-theme="alpine"\] \.temu-confirm-dialog \{/);
+});
+
+test("失败红到字段：showErrors 传给变种面板，缺的格子直接红框", () => {
+  // 区块级描红只说「这块有问题」，这块再说清楚「第几行的哪一格空着」。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /showErrors=\{showFieldErrors\}/);
+  assert.match(panel, /showErrors = false/);
+  assert.match(panel, /const cellBad = \(missing: boolean\) => \(showErrors && missing \? " is-bad" : ""\);/);
+  for (const field of ["colorName", "sizeName", "extCode", "supplierPrice", "lengthCm", "widthCm", "heightCm", "weightG"]) {
+    assert.ok(
+      panel.includes("cellBad(!row." + field + ".trim())"),
+      field + " 缺值要标红",
+    );
+  }
 });

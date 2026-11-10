@@ -2652,10 +2652,21 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       jumpTo("sec-publish");
     });
 
-  /** 真正提交到店铺。非幂等 + 有外部副作用，必须先让用户确认。 */
+  /**
+   * 发布确认弹窗（替代 window.confirm）。
+   *
+   * WebView 宿主可能禁用原生 confirm（直接返回 false）—— 点了提交看着像没反应，
+   * 原生框样式也跟工作台不搭。这里换成应用内弹窗，顺便把「要提交什么」列清楚。
+   * kind=duplicate 是后端说「24 小时内提交过同一条」时的二次确认。
+   */
+  const [publishConfirm, setPublishConfirm] = useState<
+    null | { kind: "submit" | "duplicate"; draft: TemuGoodsDraft; skuCount: number; note?: string }
+  >(null);
+
+  /** 点「提交发布」：先过校验，再弹应用内确认框（真正提交在 confirmPublish 里）。 */
   const publishGoods = () => {
     // 双击 / 发布期间又点了一次：直接忽略（接口非幂等，重复提交就重复上架）
-    if (publishingRef.current) return;
+    if (publishingRef.current || publishConfirm) return;
     publishingRef.current = true;
     setPublishing(true);
     return run("publish", async () => {
@@ -2666,37 +2677,33 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         throw cause;
       });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
-      const confirmed = window.confirm(
-        [
-          "即将把这件商品直接提交到 Temu 店铺：",
-          "",
-          `标题：${draft.title}`,
-          `类目：${draft.category_ids[draft.category_ids.length - 1]}`,
-          `变种：${skuCount} 个`,
-          "",
-          "提交成功后是真的在店铺里创建商品；接口不支持重试（重复提交可能重复上架）。确认提交？",
-        ].join("\n"),
-      );
-      if (!confirmed) return;
-      setPublishResult(null);
-      try {
-        const published = await temuPublishApi.publish(draft);
-        setPublishResult(published);
-      } catch (cause) {
+      setPublishConfirm({ kind: "submit", draft, skuCount });
+    }).finally(() => {
+      publishingRef.current = false;
+      setPublishing(false);
+    });
+  };
+
+  /** 确认框里点「确认提交」：真正打 Temu 接口。 */
+  const confirmPublish = async () => {
+    const job = publishConfirm;
+    if (!job || publishingRef.current) return;
+    setPublishConfirm(null);
+    publishingRef.current = true;
+    setPublishing(true);
+    try {
+      await run("publish", async () => {
+        const draft = job.draft;
+        setPublishResult(null);
+        try {
+          const published = await temuPublishApi.publish(draft, job.kind === "duplicate");
+          setPublishResult(published);
+        } catch (cause) {
         const text = errorMessage(cause);
         // 后端台账发现 24 小时内提交过同一条：不是失败，是「可能已经在店铺里了」
         if (/重复提交/.test(text)) {
-          const again = window.confirm(
-            [
-              text,
-              "",
-              "确认还要再提交一次吗？确认后店铺里会多出一件相同商品；",
-              "如果只是想改内容，先点取消，回草稿库改完再发。",
-            ].join("\n"),
-          );
-          if (!again) return;
-          const published = await temuPublishApi.publish(draft, true);
-          setPublishResult(published);
+          // 换成应用内「仍然提交」确认框（原生 confirm 在 WebView 里可能被禁）
+          setPublishConfirm({ kind: "duplicate", draft, skuCount: job.skuCount, note: text });
           return;
         }
         // 6000002 = Temu 说「货品类目属性更新」。后端已经把属性缓存清掉了，
@@ -2765,10 +2772,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         });
         throw cause;
       }
-    }).finally(() => {
+      });
+    } finally {
       publishingRef.current = false;
       setPublishing(false);
-    });
+    }
   };
 
   const copyPayload = async () => {
@@ -3031,13 +3039,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
-      if (publishing || busy !== "" || !ready) return;
+      if (publishing || busy !== "" || !ready || publishConfirm) return;
       event.preventDefault();
       void publishRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [publishing, busy, ready]);
+  }, [publishing, busy, ready, publishConfirm]);
 
   return (
     <div className="temu-publish-page is-console">
@@ -4173,6 +4181,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               onPreviewImage={(src, alt) => setImagePreview({ src, alt })}
               singleSku={singleSkuMode}
               presetsReady={attributes !== null}
+              showErrors={showFieldErrors}
             />
             {/* 显示条件用 required（类目要不要），不是 has（店里有没有）：
                 服装类目新店一张表都没有，用 has 判会把整个字段藏掉，
@@ -4615,6 +4624,70 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               >
                 ×
               </button>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {publishConfirm
+        ? createPortal(
+            <div className="temu-edit-backdrop" onClick={() => setPublishConfirm(null)}>
+              <div
+                className="temu-edit-dialog temu-confirm-dialog"
+                role="alertdialog"
+                aria-modal="true"
+                aria-label={publishConfirm.kind === "submit" ? "确认提交发布" : "可能重复提交"}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <header className="temu-edit-head">
+                  <div>
+                    <strong>{publishConfirm.kind === "submit" ? "确认提交发布" : "可能重复提交"}</strong>
+                    <span>
+                      {publishConfirm.kind === "submit"
+                        ? "提交后是真的在店铺里创建商品"
+                        : "后端台账发现 24 小时内提交过同一条"}
+                    </span>
+                  </div>
+                  <button type="button" onClick={() => setPublishConfirm(null)} aria-label="关闭">
+                    ×
+                  </button>
+                </header>
+                {publishConfirm.kind === "submit" ? (
+                  <dl className="temu-confirm-summary">
+                    <div>
+                      <dt>标题</dt>
+                      <dd title={publishConfirm.draft.title}>{publishConfirm.draft.title}</dd>
+                    </div>
+                    <div>
+                      <dt>类目</dt>
+                      <dd>{publishConfirm.draft.category_ids[publishConfirm.draft.category_ids.length - 1]}</dd>
+                    </div>
+                    <div>
+                      <dt>变种</dt>
+                      <dd>{publishConfirm.skuCount} 个</dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className="temu-confirm-note">{publishConfirm.note}</p>
+                )}
+                <p className="temu-confirm-note">
+                  {publishConfirm.kind === "submit"
+                    ? "接口不支持重试（连点可能重复上架）；提交成功后商品会出现在店铺里。"
+                    : "确认还要再提交一次吗？确认后店铺里会多出一件相同商品；如果只是想改内容，先取消，回草稿库改完再发。"}
+                </p>
+                <div className="temu-confirm-actions">
+                  <button type="button" className="temu-btn" onClick={() => setPublishConfirm(null)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-primary"
+                    onClick={() => void confirmPublish()}
+                  >
+                    {publishConfirm.kind === "submit" ? "确认提交" : "仍然提交"}
+                  </button>
+                </div>
+              </div>
             </div>,
             document.body,
           )

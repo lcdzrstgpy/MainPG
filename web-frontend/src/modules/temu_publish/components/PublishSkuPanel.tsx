@@ -169,6 +169,7 @@ export function PublishSkuPanel({
   onPreviewImage,
   singleSku = false,
   presetsReady = true,
+  showErrors = false,
 }: {
   rows: VariantRow[];
   onRowsChange: (rows: VariantRow[]) => void;
@@ -210,6 +211,12 @@ export function PublishSkuPanel({
    * 那句提示会让用户以为可以自由填，提交时才被 Temu 打回。
    */
   presetsReady?: boolean;
+  /**
+   * 「提交发布」被拦过一次之后才为 true：把缺的格子直接标红。
+   * 区块级描红（is-error）只说明是哪一块，这里红到具体字段 ——
+   * 第几行的尺码/价格/尺寸空了，一眼就能看到并点进去改。
+   */
+  showErrors?: boolean;
 }) {
   const [batch, setBatch] = useState<VariantBatch>(EMPTY_BATCH);
   const [batchTouched, setBatchTouched] = useState(false);
@@ -266,6 +273,12 @@ export function PublishSkuPanel({
     const text = String(row.stock ?? "").trim();
     return text === "" || Number(text) <= 0;
   }).length;
+
+  /**
+   * 被「提交发布」拦下后，缺的格子直接标红（正常状态零颜色）。
+   * 区块级描红只说「这块有问题」，这里红到具体字段：第几行的尺码/价格/尺寸空了。
+   */
+  const cellBad = (missing: boolean) => (showErrors && missing ? " is-bad" : "");
 
   /**
    * 输入里不在类目预设里的值 —— Temu 会直接判「不是合法的规格值」。
@@ -1215,7 +1228,7 @@ export function PublishSkuPanel({
               {!singleSku && (
                 <>
                   <input
-                    className="temu-input"
+                    className={`temu-input${cellBad(!row.colorName.trim())}`}
                     list="temu-color-options"
                     value={row.colorName}
                     onChange={(event) => onUpdateRow(row.key, { colorName: event.target.value })}
@@ -1228,7 +1241,7 @@ export function PublishSkuPanel({
                   />
                   {sizeParentId > 0 ? (
                     <input
-                      className="temu-input"
+                      className={`temu-input${cellBad(!row.sizeName.trim())}`}
                       list="temu-size-options"
                       value={row.sizeName}
                       onChange={(event) => onUpdateRow(row.key, { sizeName: event.target.value })}
@@ -1238,12 +1251,12 @@ export function PublishSkuPanel({
                 </>
               )}
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.extCode.trim())}`}
                 value={row.extCode}
                 onChange={(event) => onUpdateRow(row.key, { extCode: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.supplierPrice.trim())}`}
                 inputMode="decimal"
                 value={row.supplierPrice}
                 onChange={(event) => onUpdateRow(row.key, { supplierPrice: event.target.value })}
@@ -1253,7 +1266,7 @@ export function PublishSkuPanel({
                   但一列里塞三个框只能分到 39~72px，看着挤成一堆小方块；
                   三列分开每格都有自己的标题，填错列时反而更容易发现。 */}
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.lengthCm.trim())}`}
                 inputMode="decimal"
                 aria-label="长（厘米）"
                 title="长（厘米）"
@@ -1262,7 +1275,7 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { lengthCm: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.widthCm.trim())}`}
                 inputMode="decimal"
                 aria-label="宽（厘米）"
                 title="宽（厘米）"
@@ -1271,7 +1284,7 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { widthCm: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.heightCm.trim())}`}
                 inputMode="decimal"
                 aria-label="高（厘米）"
                 title="高（厘米）"
@@ -1280,7 +1293,7 @@ export function PublishSkuPanel({
                 onChange={(event) => onUpdateRow(row.key, { heightCm: event.target.value })}
               />
               <input
-                className="temu-input"
+                className={`temu-input${cellBad(!row.weightG.trim())}`}
                 inputMode="decimal"
                 aria-label="重量（克）"
                 placeholder="重量"
