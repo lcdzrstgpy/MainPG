@@ -1729,8 +1729,9 @@ test("变种规格值要把 Temu 的预设值摆出来，而不是让用户猜",
   assert.match(panel, /不是合法的\{sizeSpecName\}值（Temu 只认类目预设）/);
   assert.match(panel, /const suggestSpecValues = /);
   assert.match(panel, /replaceSpecValue\(colorsText, value, name\)/);
-  assert.match(panel, /unknownColors\.length \? " is-bad" : ""/);
-  assert.match(panel, /unknownSizes\.length \? " is-bad" : ""/);
+  // 手填非法值在 chips 编辑器上标红（容器 + 单个 chip）
+  assert.match(panel, /temu-spec-chips\$\{bad\.length \? " is-bad" : ""\}/);
+  assert.match(panel, /temu-spec-chip-item\$\{badLower\.has\(value\.toLowerCase\(\)\) \? " is-bad" : ""\}/);
   // 两个输入框都要能下拉搜
   assert.match(panel, /list="temu-color-options"/);
   assert.match(panel, /list="temu-size-options"/);
@@ -2070,9 +2071,48 @@ test("尺码取值只有一个值且各行尺码全空 → 直接写进表格（
   assert.match(panel, /const single = splitSizes\(value\);/);
   assert.match(panel, /if \(single\.length === 1 && rows\.length && rows\.every\(\(row\) => !row\.sizeName\.trim\(\)\)\)/);
   assert.match(panel, /onRowsChange\(rows\.map\(\(row\) => \(\{ \.\.\.row, sizeName: single\[0\] \}\)\)\);/);
-  // 输入框和预设 chips 都走它
-  assert.match(panel, /onChange=\{\(event\) => handleSizesTextChange\(event\.target\.value\)\}/);
+  // chips 加值和预设 chips 都走它（逗号输入框已废）
+  assert.match(panel, /if \(kind === "color"\) onColorsTextChange\(next\);\n\s*else handleSizesTextChange\(next\);/);
   assert.match(panel, /renderSpecChoices\(sizeOptions, sizesText, handleSizesTextChange, sizeSpecName, "size"\)/);
+});
+
+test("变种属性值用 chips +「+」一个个加，不用逗号拼字符串", () => {
+  // 以前是逗号拼一串文本（"咖色,粉色,白色,黑色"）：加值找逗号、拼错整串歪掉、
+  // 删也删不干净。现在 chips 单个加/删（回车或 + 提交），底层仍存逗号串。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(panel, /const addSpecValues = \(kind: "color" \| "size", raw: string\) => \{/);
+  assert.match(panel, /const removeSpecValue = \(kind: "color" \| "size", value: string\) => \{/);
+  assert.match(panel, /const renderSpecEditor = \(kind: "color" \| "size", label: string\) => \{/);
+  // 颜色/尺码两个入口都换成 chips 编辑器
+  assert.match(panel, /\{renderSpecEditor\("color", colorSpecName\)\}/);
+  assert.match(panel, /renderSpecEditor\("size", sizeSpecName\)/);
+  // 回车或 + 添加；粘贴一串（"s,m,l"）拆开逐个加
+  assert.match(panel, /if \(draft\.trim\(\)\) commit\(\);/);
+  assert.match(panel, /className="temu-spec-add"/);
+  assert.match(panel, /const incoming = splitSizes\(raw\);/);
+  // chips 的样式
+  assert.match(css, /\.temu-spec-chips \{/);
+  assert.match(css, /\.temu-spec-chip-item \{/);
+  assert.match(css, /\.temu-spec-add \{/);
+});
+
+test("尺寸与重量按尺码绑定，不跟着「应用到全部」一把梭", () => {
+  // 不同尺码的长宽高/重量本来就不一样，批量套全部行等于逼人回头逐行改。
+  // 现在按尺码分组、改了即生效；「应用到全部」只管价格/库存。
+  const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  assert.match(panel, /const BATCH_APPLY_KEYS: Array<keyof VariantBatch> = \["supplierPrice", "suggestedPrice", "stock"\];/);
+  assert.match(panel, /for \(const key of BATCH_APPLY_KEYS\) \{/);
+  assert.match(panel, /BATCH_APPLY_KEYS\.filter\(\(key\) => \{/);
+  assert.match(panel, /const sizeDimGroups = \(\(\) => \{/);
+  assert.match(panel, /const patchSizeDim = \(/);
+  // 即改即生效：直接落到同尺码的行上
+  assert.match(panel, /onChange=\{\(e\) => patchSizeDim\(group\.sizeName, "lengthCm", e\.target\.value\)\}/);
+  assert.match(panel, /onChange=\{\(e\) => patchSizeDim\(group\.sizeName, "weightG", e\.target\.value\)\}/);
+  assert.match(css, /\.temu-size-dims \{/);
 });
 
 test("从成品库挑图：三个图片槽位都能直接挑，不用先存本地再上传", () => {
