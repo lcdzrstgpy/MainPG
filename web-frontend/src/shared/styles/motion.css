@@ -1,0 +1,173 @@
+/* ---- 统一交互与动效层（2026-11-05）----
+   覆盖：产品处理（.verify-page / .dimension-page / .product-processing-page）、
+        商品自定义（.pod-customization-page）、店铺数据（.order-profit-page）。
+   目标不是加花活，而是把三块里"有的页面有 hover、有的没有、时长 0.14–2.8s 混杂、
+   完全没有按下反馈"的状态收敛成一套克制的手感：
+   1) 页面进入：只淡入，不做位移（避免 transform 把内部 position:fixed 抽屉变成相对定位）；
+   2) 卡片 hover：1px 抬升 + 阴影渐显，统一 0.22s；
+   3) 按钮/链接：按下 .975 缩放 + 键盘焦点环；
+   4) 表格行 hover：底色渐变，替代硬切换；
+   5) prefers-reduced-motion 下关闭以上装饰动效，加载类动画保留。
+   用 html 前缀提升一级优先级，避免被各页面后加载的模块 CSS 覆盖。 */
+
+html .verify-page,
+html .dimension-page,
+html .pod-customization-page,
+html .order-profit-page,
+html .product-processing-page {
+  animation: motion-page-fade var(--duration-slow) var(--ease-out) both;
+}
+
+@keyframes motion-page-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---- 卡片：统一 hover 手感 ---- */
+html .verify-section,
+html .pool-card,
+html .precheck-card,
+html .product-draft-card,
+html .verify-template-card,
+html .pod-setup-card,
+html .pod-inspector,
+html .pod-history,
+html .op-card,
+html .op-stat,
+html .op-entry,
+html .op-table-card {
+  transition:
+    transform var(--duration-base) var(--ease-standard),
+    box-shadow var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
+}
+
+html .pool-card:hover,
+html .precheck-card:hover,
+html .product-draft-card:hover,
+html .verify-template-card:hover,
+html .pod-setup-card:hover,
+html .pod-inspector:hover,
+html .op-stat:hover,
+html .op-entry:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(16, 60, 96, .1);
+}
+
+/* ---- 按钮与链接：按下反馈 + 键盘焦点 ---- */
+html .verify-actions button,
+html .verify-upload-btn,
+html .psc-refresh,
+html .pod-primary-button,
+html .pod-start-button,
+html .pod-save-system-template-button,
+html .op-btn,
+html .op-link,
+html .op-jump {
+  transition:
+    transform var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+html .verify-actions button:active:not(:disabled),
+html .verify-upload-btn:active:not(:disabled),
+html .psc-refresh:active:not(:disabled),
+html .pod-primary-button:active:not(:disabled),
+html .pod-start-button:active:not(:disabled),
+html .pod-save-system-template-button:active:not(:disabled),
+html .op-btn:active:not(:disabled),
+html .op-jump:active:not(:disabled) {
+  transform: scale(.975);
+}
+
+html .verify-actions button:focus-visible,
+html .verify-upload-btn:focus-visible,
+html .psc-refresh:focus-visible,
+html .pod-primary-button:focus-visible,
+html .pod-start-button:focus-visible,
+html .pod-save-system-template-button:focus-visible,
+html .op-btn:focus-visible,
+html .op-link:focus-visible,
+html .op-jump:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--theme-primary, #0a8fca) 62%, transparent);
+  outline-offset: 2px;
+}
+
+/* ---- 表格：行 hover 渐变 ---- */
+html .verify-table tbody tr,
+html .psc-table tbody tr,
+html .psc-sku-table tbody tr,
+html .pod-spec-card-table tbody tr,
+html .op-table tbody tr,
+html .op-sub-table tbody tr {
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+html .verify-table tbody tr:hover,
+html .psc-table tbody tr:hover,
+html .psc-sku-table tbody tr:hover,
+html .pod-spec-card-table tbody tr:hover,
+html .op-table tbody tr:hover,
+html .op-sub-table tbody tr:hover {
+  background-color: color-mix(in srgb, var(--theme-primary, #0a8fca) 4%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html .verify-page,
+  html .dimension-page,
+  html .pod-customization-page,
+  html .order-profit-page,
+  html .product-processing-page {
+    animation: none;
+  }
+
+  html .verify-section,
+  html .pool-card,
+  html .precheck-card,
+  html .product-draft-card,
+  html .verify-template-card,
+  html .pod-setup-card,
+  html .pod-inspector,
+  html .pod-history,
+  html .op-card,
+  html .op-stat,
+  html .op-entry,
+  html .op-table-card,
+  html .verify-actions button,
+  html .verify-upload-btn,
+  html .psc-refresh,
+  html .pod-primary-button,
+  html .pod-start-button,
+  html .pod-save-system-template-button,
+  html .op-btn,
+  html .op-link,
+  html .op-jump,
+  html .verify-table tbody tr,
+  html .psc-table tbody tr,
+  html .psc-sku-table tbody tr,
+  html .pod-spec-card-table tbody tr,
+  html .op-table tbody tr,
+  html .op-sub-table tbody tr {
+    transition: none;
+  }
+
+  html .pool-card:hover,
+  html .precheck-card:hover,
+  html .product-draft-card:hover,
+  html .verify-template-card:hover,
+  html .pod-setup-card:hover,
+  html .pod-inspector:hover,
+  html .op-stat:hover,
+  html .op-entry:hover {
+    transform: none;
+  }
+
+  html .pod-pulse,
+  html .pod-dot,
+  html .op-seal {
+    animation: none;
+  }
+}
