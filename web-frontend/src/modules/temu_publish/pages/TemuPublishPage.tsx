@@ -141,6 +141,12 @@ const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hin
 /** 各槽位最多几张：上传时就挡，别等提交才被 Temu 拒。 */
 const IMAGE_LIMITS: Record<ImageSlot, number> = { carousel: 10, outer: 6, detail: 30 };
 
+/** 产品标题长度上限：Temu 官方文档写明 goodsName ≤500 字符（只支持英文/数字/常见符号）。 */
+const TITLE_MAX_CHARS = 500;
+/** 重量（g）范围：实测回执「重量不符合类目2~1000000g限制」里的边界。 */
+const WEIGHT_MIN_G = 2;
+const WEIGHT_MAX_G = 1_000_000;
+
 /**
  * 提交前传图床的并发数。
  *
@@ -362,6 +368,21 @@ function parseStock(value: string, label: string): number {
   const number = Number(text);
   if (!text || !Number.isFinite(number) || number < 0) throw new Error(`${label}必须填 0 或正整数`);
   return Math.round(number);
+}
+
+/**
+ * 重量（g）：除了 >0，还有 Temu 的范围限制。
+ * 实测报错原文「重量不符合类目2~1000000g限制，无法售卖」—— 提交才说，
+ * 本地先拦，别等图传完了才被拒。范围取实测回执里的边界。
+ */
+function parseWeightG(value: string, label: string): number {
+  const number = parsePositive(value, label);
+  if (number < WEIGHT_MIN_G || number > WEIGHT_MAX_G) {
+    throw new Error(
+      `${label}要在 ${WEIGHT_MIN_G}~${WEIGHT_MAX_G}g 之间（Temu 限制，当前 ${number}g）`,
+    );
+  }
+  return number;
 }
 
 /**
@@ -2306,6 +2327,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const leaf = categoryPath[categoryPath.length - 1];
     if (!leaf?.isLeaf) throw new Error("请选择到叶子类目");
     if (!form.title.trim()) throw new Error("请填写产品标题");
+    // Temu 官方：goodsName ≤500 字符。超长提交才被拒，这里先拦。
+    if (form.title.trim().length > TITLE_MAX_CHARS) {
+      throw new Error(`产品标题超过 ${TITLE_MAX_CHARS} 字符（Temu 上限，当前 ${form.title.trim().length}）`);
+    }
     const carouselSource = splitLines(form.carousel);
     // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」），界面上也是这么写的。
     // 以前只拦空，1~2 张能一路传到网关才被拒 —— 白等一轮图片上传。
@@ -2494,7 +2519,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         stock: parseStock(row.stock, `${at}库存`),
         warehouse_id: row.warehouseId,
         // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米。三维已按降序排好（见上面）
-        weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
+        weight_mg: Math.round(parseWeightG(row.weightG, `${at}重量`) * 1000),
         length_mm: Math.round(longest * 10),
         width_mm: Math.round(middle * 10),
         height_mm: Math.round(shortest * 10),

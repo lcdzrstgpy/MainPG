@@ -2965,3 +2965,22 @@ test("失败原因说人话：黑话翻译 + 修法 + 原文留着复制", () =>
   assert.match(css, /\.temu-history-reason-human \{/);
   assert.match(css, /\.temu-history-reason-fix \{/);
 });
+
+test("Temu 硬性限制本地先拦：标题 ≤500 字符、重量 2~1000000g", () => {
+  // 两个都是「提交才被拒、本地完全能提前算出来」的类型。
+  // 标题上限来自 Temu 官方文档（goodsName ≤500 字符）；
+  // 重量边界来自实测回执「重量不符合类目2~1000000g限制，无法售卖」。
+  assert.match(page, /const TITLE_MAX_CHARS = 500;/);
+  assert.match(page, /const WEIGHT_MIN_G = 2;/);
+  assert.match(page, /const WEIGHT_MAX_G = 1_000_000;/);
+  assert.match(page, /if \(form\.title\.trim\(\)\.length > TITLE_MAX_CHARS\) \{/);
+  assert.match(page, /function parseWeightG\(value: string, label: string\): number \{/);
+  assert.match(page, /number < WEIGHT_MIN_G \|\| number > WEIGHT_MAX_G/);
+  // 变种行的重量必须走范围校验，不能再用只查 >0 的 parsePositive
+  assert.match(page, /parseWeightG\(row\.weightG/);
+  assert.doesNotMatch(page, /parsePositive\(row\.weightG/);
+  // 批量预检同口径（batchPrecheck.test.ts 里有行为测试）
+  const precheck = readFileSync(new URL("../data/batchPrecheck.ts", import.meta.url), "utf8");
+  assert.match(precheck, /超过 Temu 上限/);
+  assert.match(precheck, /超出 Temu 允许范围/);
+});

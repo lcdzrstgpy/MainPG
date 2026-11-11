@@ -18,6 +18,12 @@ export type BatchPrecheck = {
   warnings: string[];
 };
 
+/** 产品标题长度上限：Temu 官方文档写明 goodsName ≤500 字符。 */
+const TITLE_MAX_CHARS = 500;
+/** 重量（g）范围：实测回执「重量不符合类目2~1000000g限制」里的边界。 */
+const WEIGHT_MIN_G = 2;
+const WEIGHT_MAX_G = 1_000_000;
+
 export function splitList(text: string): string[] {
   return text
     .split(/[\n,，、;；]+/)
@@ -59,7 +65,11 @@ export function precheckBatchItem(
   if (!productTemplate.warehouseId) blocked.push("产品模板里没有默认发货仓库");
   if (!productTemplate.freightId) blocked.push("产品模板里没有运费模板");
 
-  if (!String(prefill.title ?? "").trim()) blocked.push("没有标题");
+  const title = String(prefill.title ?? "").trim();
+  if (!title) blocked.push("没有标题");
+  else if (title.length > TITLE_MAX_CHARS) {
+    blocked.push(`标题 ${title.length} 字符，超过 Temu 上限 ${TITLE_MAX_CHARS}`);
+  }
 
   const carousel = splitList(prefill.images.join("\n"));
   if (carousel.length < 3) blocked.push(`轮播图只有 ${carousel.length} 张（Temu 要求至少 3 张）`);
@@ -70,10 +80,14 @@ export function precheckBatchItem(
   );
   if (priceError) blocked.push(priceError);
 
+  const weightG = Number(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000));
   const weightError = checkError(() =>
     positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量"),
   );
   if (weightError) blocked.push(weightError);
+  else if (weightG < WEIGHT_MIN_G || weightG > WEIGHT_MAX_G) {
+    blocked.push(`重量 ${weightG}g 超出 Temu 允许范围 ${WEIGHT_MIN_G}~${WEIGHT_MAX_G}g`);
+  }
   for (const [label, value] of [
     ["长度", batch?.lengthCm || prefill.lengthCm || ""],
     ["宽度", batch?.widthCm || prefill.widthCm || ""],

@@ -115,3 +115,21 @@ test("预检：库存 0 / 没有变种值只算提醒，不拦发布", () => {
   assert.ok(result.warnings.some((item) => item.includes("库存 0")));
   assert.ok(result.warnings.some((item) => item.includes("1 个 SKU")));
 });
+
+test("预检：标题超过 500 字符要拦（Temu 官方上限）", () => {
+  const result = precheckBatchItem(makePrefill({ title: "x".repeat(501) }), makeTemplate(), null);
+  assert.equal(result.blocked.length, 1);
+  assert.match(result.blocked[0], /标题 501 字符，超过 Temu 上限 500/);
+});
+
+test("预检：重量超出 2~1000000g 要拦（实测回执里的边界）", () => {
+  const tooLight = precheckBatchItem(makePrefill({ weightKg: "0.001" }), makeTemplate(), null);
+  assert.ok(tooLight.blocked.some((item) => /重量.*超出 Temu 允许范围 2~1000000g/.test(item)));
+
+  const tooHeavy = precheckBatchItem(makePrefill({ weightKg: "1001" }), makeTemplate(), null);
+  assert.ok(tooHeavy.blocked.some((item) => /重量.*超出 Temu 允许范围 2~1000000g/.test(item)));
+
+  // 边界值 2g / 1000000g 合法
+  const ok = precheckBatchItem(makePrefill({ weightKg: "0.002" }), makeTemplate(), null);
+  assert.deepEqual(ok.blocked, []);
+});
