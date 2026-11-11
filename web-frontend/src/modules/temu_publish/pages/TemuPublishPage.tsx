@@ -342,10 +342,9 @@ function firstWarehouse(groups: TemuWarehouseGroup[]): TemuWarehouse | null {
   return all.find((warehouse) => warehouse.managementType && warehouse.managementType !== "3") ?? all[0] ?? null;
 }
 
-/** 仓库下拉文案：3 类型仓标注风险，避免选完才发现不支持。 */
+/** 仓库下拉文案：只给名字和 ID。3 类型仓不在下拉里标风险（选起来太吵），真被拒了失败原因会说。 */
 function warehouseLabel(warehouse: TemuWarehouse): string {
-  const risk = warehouse.managementType === "3" ? "（可能不支持该商品）" : "";
-  return `${warehouse.warehouseName} · ${warehouse.warehouseId}${risk}`;
+  return `${warehouse.warehouseName} · ${warehouse.warehouseId}`;
 }
 
 function parsePositive(value: string, label: string): number {

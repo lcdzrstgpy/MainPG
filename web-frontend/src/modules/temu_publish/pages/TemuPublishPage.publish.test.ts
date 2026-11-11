@@ -105,10 +105,13 @@ test("提交发布：币种 CNY、图片裁 1:1、仓库避开 type=3", () => {
   // 非服饰类目轮播图强制 1:1 ≥800px，上传前必须裁（详情图例外，见详情图那条测试）
   assert.match(imageShape, /export function toSquareDataUrl\(dataUrl: string, size = SQUARE_IMAGE_SIZE\)/);
   assert.match(page, /toSquareDataUrl\(raw\)/);
-  // 仓库：managementType=3 的仓发部分商品会被拒，默认要避开并在下拉里标注
+  // 仓库：managementType=3 的仓发部分商品会被拒，默认要避开；
+  // 下拉里不标「可能不支持」（用户嫌吵），真被拒时失败原因会给提示
   assert.match(types, /managementType\?: string;/);
   assert.match(page, /managementType !== "3"/);
   assert.match(page, /function warehouseLabel\(warehouse: TemuWarehouse\): string/);
+  assert.doesNotMatch(page, /可能不支持该商品/);
+  assert.doesNotMatch(page, /const risk = warehouse\.managementType/);
 });
 
 test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", () => {
