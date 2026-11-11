@@ -3,7 +3,8 @@ import { createPortal } from "react-dom";
 import type { ClipboardEvent as ReactClipboardEvent, MouseEvent as ReactMouseEvent } from "react";
 
 import { listProductSources, loadProductImage, updateProductSourceGroup } from "../api/profitActivityApi";
-import type { ProfitActivityProduct, ProductSources } from "../types/products";
+import type { ProfitActivityProduct, ProductSourceLink, ProductSources } from "../types/products";
+import { priceVerificationApi } from "../../price_verification/api/priceVerificationApi";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import type { PreviewImage } from "./ImagePreviewModal";
 
@@ -107,11 +108,98 @@ function SourceCardImage({ skc, site, group, imagePaths, fallbackUrl, onPreview 
   );
 }
 
+/**
+ * 一条货源的多张货源图（标准审核表截图 1/2/3）。
+ *
+ * 后端 `/products/{skc}/sources` 返回的是 `image_paths: string[]` + `group`，
+ * **没有 `images` 字段**（那是个一直在等后端填空的类型，永远 undefined，渲染出来是空的）。
+ * 这里按路径逐张走 `/image` 接口换签名 URL，和后端契约对齐。
+ */
+function SourceThumbStrip({
+  skc,
+  site,
+  group,
+  imagePaths,
+  onPreview,
+}: {
+  skc: string;
+  site: string;
+  group?: number;
+  imagePaths: string[];
+  onPreview: (image: PreviewImage) => void;
+}) {
+  const [urls, setUrls] = useState<string[]>([]);
+  const pathsKey = imagePaths.join("|");
+
+  useEffect(() => {
+    let cancelled = false;
+    const created: string[] = [];
+    const paths = pathsKey ? pathsKey.split("|") : [];
+    // 第一张已经由上面的 SourceCardImage 大图展示，这里只补「其余的」，
+    // 否则同一张图会在编辑行里出现两次。
+    const extras = paths.slice(1);
+    if (!extras.length) {
+      setUrls([]);
+      return undefined;
+    }
+    Promise.all(
+      extras.map((path, offset) =>
+        loadProductImage({
+          skc,
+          site: (site || "US") as "US" | "CO" | "EC",
+          kind: "source",
+          group: group ?? 0,
+          // 索引要对上原始数组位置（第 2 张起），不能从 0 开始
+          index: offset + 1,
+          version: path,
+        })
+          .then((loaded) => {
+            created.push(loaded);
+            return loaded;
+          })
+          // 单张失败不该连累其它张，也不该让整页报错
+          .catch(() => ""),
+      ),
+    ).then((loaded) => {
+      if (cancelled) {
+        created.forEach((url) => URL.revokeObjectURL(url));
+        return;
+      }
+      setUrls(loaded.filter(Boolean));
+    });
+    return () => {
+      cancelled = true;
+      created.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [skc, site, group, pathsKey]);
+
+  if (!urls.length) return null;
+  return (
+    <span className="profit-source-thumbs" title="这条货源的其它货源图">
+      {urls.map((url, index) => (
+        <img
+          key={`${url}-${index}`}
+          className="profit-source-thumb"
+          src={url}
+          alt="货源图"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          title="点击查看大图"
+          onClick={() => onPreview({ url, label: "货源图" })}
+        />
+      ))}
+    </span>
+  );
+}
+
 export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
   const [sources, setSources] = useState<ProductSources | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
+  // 解除关联（核价入库产品专有）：合并 release/1.5.8 时这段功能在对方分支被删了，这里保留
+  const [unlinkBusy, setUnlinkBusy] = useState<number | null>(null);
+  const [unlinkError, setUnlinkError] = useState("");
   // 非核价产品货源卡片的编辑态：可新增/删除多条货源链接与截图
   const [editingSources, setEditingSources] = useState(false);
   const [editRows, setEditRows] = useState<EditSourceRow[]>([]);
@@ -201,6 +289,36 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
 
   // 使用抽屉内最新产品数据（保存后刷新），避免编辑态复用旧的 source_groups
   const current = productData ?? product;
+
+  // 核价入库产品的货源链接是核价流程建的，要能单独「解除关联」
+  const isPriceVerification = current.source_type === "price_verification";
+
+  const unlinkSource = async (link: ProductSourceLink) => {
+    if (!link.batch_id) return;
+    setUnlinkBusy(link.id);
+    setUnlinkError("");
+    try {
+      await priceVerificationApi.removeSkcSourceLink(link.batch_id, link.id);
+      await refresh();
+      onChanged?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setUnlinkError(
+        /401|token|登录|过期|会话/.test(message)
+          ? "登录会话已失效或无权解除该关联：请登录数据所属工作区后重试。"
+          : `解除关联失败：${message}`,
+      );
+    } finally {
+      setUnlinkBusy(null);
+    }
+  };
+
+  /** 编辑行对应的原始货源链接（按 URL 对上）；对不上就没有「解除关联」可点。 */
+  const linkOfRow = (row: EditSourceRow): ProductSourceLink | undefined => {
+    const url = row.url.trim();
+    if (!url) return undefined;
+    return (sources?.links ?? []).find((item) => (item.source_url || "").trim() === url);
+  };
 
   const cancelEditSources = () => {
     for (const row of editRows) {
@@ -432,9 +550,32 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
                               {editingRowKeys.includes(row.key) ? "完成" : "编辑"}
                             </button>
                           </div>
+                          {/* 这条货源已有的货源图（可能多张）：对方分支把只读卡片去掉了，
+                              但「一个链接对应多张货源图」是我们要保留的能力，挂到编辑行里。
+                              数据源是后端返回的 image_paths（不是 images，那个字段后端从来没有过）。 */}
+                          <SourceThumbStrip
+                            skc={current.skc}
+                            site={sources?.site || current.site || current.site_code || "US"}
+                            group={row.originalGroup}
+                            imagePaths={original?.image_paths ?? []}
+                            onPreview={setPreviewImage}
+                          />
                         </div>
                       </div>
                       <div className="profit-source-edit-row-actions">
+                        {isPriceVerification && linkOfRow(row) ? (
+                          <button
+                            className="profit-source-unlink"
+                            onClick={() => {
+                              const link = linkOfRow(row);
+                              if (link) void unlinkSource(link);
+                            }}
+                            disabled={unlinkBusy === linkOfRow(row)?.id}
+                            title="把这条货源链接从当前 SKC 上解除关联（不会删掉货源本身）"
+                          >
+                            {unlinkBusy === linkOfRow(row)?.id ? "解除中…" : "解除关联"}
+                          </button>
+                        ) : null}
                         <button
                           className="profit-source-remove-row"
                           onClick={() => removeEditRow(row.key)}
@@ -478,6 +619,7 @@ export function ProductSourceDrawer({ product, onClose, onChanged }: Props) {
           ) : null}
 
           {actionError ? <p className="profit-source-drawer-status is-error">{actionError}</p> : null}
+          {unlinkError ? <p className="profit-source-drawer-status is-error">{unlinkError}</p> : null}
         </div>
 
         <footer className="profit-source-drawer-foot">

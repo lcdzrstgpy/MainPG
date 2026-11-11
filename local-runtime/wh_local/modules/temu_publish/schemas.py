@@ -156,7 +156,13 @@ class DetailImageInput(BaseModel):
 class GoodsDraftInput(BaseModel):
     """发布商品草稿（只用于组装 goods.add 请求体，不提交）。"""
 
+    # 草稿库条目 id（ai:任务:项 / pod:批次:款式）。发布成功后靠它把这条草稿从草稿库移除，
+    # 也用来在发布历史里显示「这条是从哪来的」。手填/无来源时留空。
+    draft_id: str = Field(default="", max_length=160)
     category_ids: list[int] = Field(min_length=1, max_length=10)
+    # 类目路径名（和 category_ids 一一对应，只用于发布历史展示）。
+    # 只存 id 的话历史页只能显示「类目 31035」，用户对不上自己卖的是什么。
+    category_names: list[str] = Field(default_factory=list, max_length=10)
     title: str = Field(min_length=1, max_length=255)
     # 英文标题（选填）：填了就作为 productI18nReqs 的 en 标题，不填则按标题内容自动判断。
     title_en: str = Field(default="", max_length=255)
@@ -169,8 +175,10 @@ class GoodsDraftInput(BaseModel):
     # 实测字段名是顶层 materialImgUrl（2026-10-26 真调确认），文档里没写。
     material_image_url: str = ""
     freight_template_id: str = Field(min_length=1)
-    # 默认 7 天：1 天等于承诺 24 小时发货，POD/定制做不到（会被判延迟发货）
-    shipment_limit_seconds: int = Field(default=7 * 86400, ge=1)
+    # 默认 9 天 = Temu 半托管的预设值（777600 秒）。
+    # 依据（2026-11-03 扫店铺 230 件商品）：213 件历史商品全是 777600，服务商文档的
+    # 发布成功案例也是 777600。1 天等于承诺 24 小时发货，POD/定制做不到，会被判延迟发货。
+    shipment_limit_seconds: int = Field(default=9 * 86400, ge=1)
     properties: list[GoodsPropertyInput] = Field(default_factory=list)
     skcs: list[SkcInput] = Field(min_length=1)
     size_template_ids: list[int] = Field(default_factory=list)
@@ -191,11 +199,12 @@ class GoodsDraftInput(BaseModel):
 class DimensionCheckRequest(BaseModel):
     """尺寸图检测（bg.algo.dimension.image.check，CN 网关，异步）。
 
-    mallId 是 Temu 店铺 id（卖家后台可见），接口必填，这里不做默认值猜测。
+    实测 2026-11-05：`mallId` **不是必填**，只传 image_url 也能提交并拿到 uniqueId。
+    （`bg.mall.info.get` 虽然在 scope 列表里，实际回「Client is not allowed」，拿不到 mallId）
     """
 
     image_url: str = Field(min_length=8)
-    mall_id: str = Field(default="", description="Temu 店铺 id；留空会报错")
+    mall_id: str = Field(default="", description="Temu 店铺 id；实测可以不传")
     cat_id: int | None = Field(default=None, ge=1)
     class_id: int | None = Field(default=None, ge=1)
 

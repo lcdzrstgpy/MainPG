@@ -45,6 +45,19 @@ ANCHOR_CONTINUITY = (
     "never invent a new set."
 )
 
+# 精小品派生轮：只允许换机位，景深必须保持深焦（浅景深会把小件文字与零件糊掉）。
+ANCHOR_CONTINUITY_DEEP_FOCUS = (
+    "ANCHOR CONTINUITY — keep the anchor's IDENTITY, never its camera:\n"
+    "- MUST stay identical: product identity, structure, material, base colour, printed artwork, scene, "
+    "set surface, light direction, colour temperature and contrast.\n"
+    "- MUST change with this round's direction: camera angle, shot distance, crop and framing only. "
+    "Depth of field must stay deep: the whole product stays in focus.\n"
+    "- Never reproduce the reference camera: a panel that is the same shot as its reference image "
+    "(same distance, same crop, same full-product view) is a FAILED result.\n"
+    "- If the previous round's scene cannot be reproduced from the anchor, keep the anchor's scene — "
+    "never invent a new set."
+)
+
 CAMERA_MUST_DIFFER = (
     "CAMERA MUST DIFFER — this round's camera must be visibly different from the reference images' "
     "camera and from every other round: different shot distance and different framing. Reproducing "
@@ -55,6 +68,7 @@ CAMERA_MUST_DIFFER = (
 __all__ = [
     "ANCHOR_BINDING",
     "ANCHOR_CONTINUITY",
+    "ANCHOR_CONTINUITY_DEEP_FOCUS",
     "CAMERA_MUST_DIFFER",
     "OUTPUT_FORMAT_LOCK",
     "RIGID_ARTWORK_LOCK",

@@ -1019,6 +1019,7 @@ function toggleSet(source: Set<string>, value: string, checked: boolean) {
 function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityProduct; onPreview?: (image: PreviewImage) => void; onEdit?: () => void }) {
   const site = (item.site || item.site_code || "US") as ProfitActivitySite;
   const [url, setUrl] = useState("");
+  const [hover, setHover] = useState<{ url: string; top: number; left: number } | null>(null);
   const previewTimerRef = useRef<number | null>(null);
   // 核价入库没有本地商品图时，复用执行图搜前的 Temu 主图作为产品库商品图。
   const sourcingImageUrl = item.source_type === "price_verification"
@@ -1067,21 +1068,48 @@ function ProductImageCell({ item, onPreview, onEdit }: { item: ProfitActivityPro
     onEdit?.();
   };
 
+  // 悬停放大走浮层：表格是滚动容器，原地 scale 会被裁掉。
+  const showHover = (event: ReactMouseEvent<HTMLElement>) => {
+    if (!url) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const width = 260;
+    const gap = 12;
+    const left = rect.right + gap + width > window.innerWidth
+      ? Math.max(8, rect.left - gap - width)
+      : rect.right + gap;
+    const top = Math.min(Math.max(8, rect.top + rect.height / 2 - 130), window.innerHeight - 300);
+    setHover({ url, top, left });
+  };
+
   const content = url ? (
     <img className="profit-product-image" src={url} alt={`${item.skc} 商品图`} loading="lazy" referrerPolicy="no-referrer" />
   ) : <span className="profit-product-image-empty">无图</span>;
 
+  const thumb = (
+    <span className="profit-product-image-hover-anchor" onMouseEnter={showHover} onMouseLeave={() => setHover(null)}>
+      {content}
+      {hover
+        ? createPortal(
+            <div className="profit-product-image-hover" style={{ top: hover.top, left: hover.left }}>
+              <img src={hover.url} alt="" referrerPolicy="no-referrer" />
+            </div>,
+            document.body,
+          )
+        : null}
+    </span>
+  );
+
   if (!url || !onPreview) {
-    if (!onEdit) return <span className="profit-product-image-cell">{content}</span>;
+    if (!onEdit) return <span className="profit-product-image-cell">{thumb}</span>;
     return (
       <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); startEdit(); }} title="点击上传或粘贴商品图">
-        {content}
+        {thumb}
       </button>
     );
   }
   return (
     <button type="button" className="profit-product-image-cell" onClick={(event) => { event.stopPropagation(); openPreview({ url, label: `${productIdText(item)} 商品图` }); }} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); startEdit(); }} title="点击查看商品图，双击更换">
-      {content}
+      {thumb}
     </button>
   );
 }

@@ -27,7 +27,7 @@ import type {
   TaskOutputsResponse,
 } from '../types';
 import { registerRunningTask } from '../../../shared/runtime/taskActivity';
-import { SYSTEM_BACKGROUNDS, backgroundAssetUrl } from '../data/backgroundTemplates';
+import { SYSTEM_BACKGROUNDS, backgroundAssetUrl, backgroundById } from '../data/backgroundTemplates';
 import '../styles/ProductProcessingVerifyPage.css';
 
 const IMAGE_LAYER_OPTION_KEYS: Record<
@@ -267,8 +267,11 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       autoRepull: false,
       // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
       dimensionCard: false,
-      // 场景风格：默认智能混合（按批次在极简/生活/花哨之间轮换），保证四格背景不趋同。
-      sceneStyle: 'smart',
+      // 场景风格：默认花哨（花艺/礼赠/丝绒/镜面），按需再切极简或生活。
+      sceneStyle: 'ornate',
+      // 麻将专业模式默认关闭；开启后默认仍走 AI 生图，需要时再切 3D 渲染。
+      mahjongMode: false,
+      mahjongRender: 'ai',
     }
   );
   const imageSelection: PhotoSelection = {
@@ -392,7 +395,20 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 后端出主图时把商品抠图合成到这张底板上（不是只当提示词参考）。
   const [userBackgrounds, setUserBackgrounds] = useState<UserBackgroundItem[]>([]);
   const [bgUploading, setBgUploading] = useState(false);
+  // 底板列表默认收起：20 张缩略图常驻会把设置区撑得很长，只在需要挑底板时展开。
+  const [bgPickerOpen, setBgPickerOpen] = useState(false);
   const bgFileInputRef = useRef<HTMLInputElement | null>(null);
+  // 当前选中的底板（系统或上传）：收起时只显示一张小缩略图 + 名称。
+  const selectedBackground = (() => {
+    const template = options.backgroundTemplate || '';
+    if (!template) return null;
+    if (template.startsWith('user:')) {
+      const item = userBackgrounds.find((entry) => entry.template_id === template);
+      return item ? { name: item.name, url: userBackgroundUrl(item.id, ctx.workspaceId) } : null;
+    }
+    const item = backgroundById(template);
+    return item ? { name: item.name, url: backgroundAssetUrl(item.id) } : null;
+  })();
 
   // 成功类提示统一走右上角 toast：3 秒后自动消失；新消息会清理旧定时器，卸载时也不留悬挂回调。
   useEffect(() => {
@@ -864,11 +880,15 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         // 是否自动烧制第 4 格尺寸图（默认关闭，需用户在处理设置里显式勾选）
         dimension_card: options.dimensionCard === true,
         // 场景风格：smart / minimal / lifestyle / ornate（后端按档位给四格分配不同背景族）
-        scene_style: options.sceneStyle || 'smart',
+        scene_style: options.sceneStyle || 'ornate',
         // 主图背景：scene=主图也带场景背景（默认）；white=主图保持纯白
         main_background: options.mainBackground || 'scene',
         // 手选的系统背景底板；空=按品类自动选片段
         background_template: options.backgroundTemplate || '',
+        // 麻将专业模式：AI 只出空白牌，字/花纹由本地图案库回贴。
+        mahjong_mode: options.mahjongMode === true,
+        // 麻将出图方式：ai=AI 生图；3d=本地 Blender 渲染。
+        mahjong_render: options.mahjongRender === '3d' ? '3d' : 'ai',
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -1081,7 +1101,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
               <h2>处理设置</h2>
-              <span className="verify-sub">站点 / 语言 / 生图组合</span>
+              <span className="verify-sub">基础参数 · 出图风格 · 生图组合</span>
             </div>
             <div className="verify-form-row">
               <label>站点
@@ -1098,16 +1118,16 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <option value="es">西班牙语 · Espanol</option>
                 </select>
               </label>
-              <label title="决定四格的背景风格：智能混合按批次在极简/生活/花哨之间轮换；花哨档适合节庆、潮玩、礼品类，会使用花艺、礼赠、丝绒、金属镜面等背景">
+              <label title="决定四格的背景风格：花哨档默认使用花艺、礼赠、丝绒、金属镜面等背景；极简/生活更克制；智能混合按批次在三档之间轮换">
                 场景风格
                 <select
-                  value={options.sceneStyle || 'smart'}
+                  value={options.sceneStyle || 'ornate'}
                   onChange={(e) => setOptions((p) => ({ ...p, sceneStyle: e.target.value as ProductProcessingOptions['sceneStyle'] }))}
                 >
-                  <option value="smart">智能混合（默认）</option>
-                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面（默认）</option>
                   <option value="lifestyle">生活 · 桌面/窗影/梳妆台</option>
-                  <option value="ornate">花哨 · 花艺/礼赠/丝绒/镜面</option>
+                  <option value="minimal">极简 · 纯色/渐变/木石台</option>
+                  <option value="smart">智能混合 · 按批次轮换</option>
                 </select>
               </label>
               <label title="主图背景：场景背景会让主图也带真实台面与背景（默认，解决纯白单调）；纯白则保持死白底">
@@ -1121,7 +1141,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                 </select>
               </label>
               {options.mainBackground !== 'white' ? (
-                <div className="verify-bg-picker">
+                <div className={`verify-bg-picker${bgPickerOpen ? ' is-open' : ''}`}>
                   <div className="verify-bg-picker-head">
                     <strong>背景模板</strong>
                     <small>
@@ -1132,6 +1152,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                         : '自动：按品类匹配背景，不锁死风格'}
                     </small>
                     <div className="verify-bg-actions">
+                      <button
+                        type="button"
+                        className="verify-bg-toggle"
+                        aria-expanded={bgPickerOpen}
+                        onClick={() => setBgPickerOpen((open) => !open)}
+                      >
+                        {bgPickerOpen ? '收起底板' : '选择底板'}
+                      </button>
                       <button
                         type="button"
                         className="verify-bg-upload"
@@ -1163,6 +1191,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       ) : null}
                     </div>
                   </div>
+                  {!bgPickerOpen && selectedBackground ? (
+                    <div className="verify-bg-current">
+                      <img src={selectedBackground.url} alt={selectedBackground.name} />
+                      <span>{selectedBackground.name}</span>
+                    </div>
+                  ) : null}
+                  {bgPickerOpen ? (
+                    <>
                   {userBackgrounds.length ? (
                     <div className="verify-bg-user">
                       <span className="verify-bg-group-label">我的背景</span>
@@ -1223,6 +1259,8 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       </button>
                     ))}
                   </div>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
               <div className="verify-inline-checks">
@@ -1244,6 +1282,35 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <span>自动烧制尺寸图</span>
                   <span className="verify-sub">第 4 格尺寸卡 · 默认关闭，按品类开启</span>
                 </label>
+                <label className="verify-scope-check verify-inline-check" title="麻将/牌类专用：AI 只画空白牌体，牌面的字与花纹从你的原图抠成图案库后本地回贴，避免 AI 造字错纹。同一批不会重复贴同一个花纹；图案库按品类+标题缓存复用">
+                  <input
+                    type="checkbox"
+                    checked={options.mahjongMode === true}
+                    onChange={(e) => setOptions((p) => ({ ...p, mahjongMode: e.target.checked }))}
+                  />
+                  <span>麻将专业模式</span>
+                  <span className="verify-sub">空白牌体 + 本地图案库回贴 · 不重画字纹</span>
+                </label>
+                {options.mahjongMode === true ? (
+                  <label
+                    className="verify-scope-check verify-inline-check"
+                    title="AI 生图：有台面/场景实景，但牌面字纹仍可能出错；3D 渲染：本地建模渲染牌体与标准牌面（中發白/筒条万），字纹与厚度绝对准确、不会造字，但背景是纯色棚拍。3D 需要本机装有 Blender，找不到会自动回退 AI 生图"
+                  >
+                    <span>麻将出图</span>
+                    <select
+                      value={options.mahjongRender || 'ai'}
+                      onChange={(e) =>
+                        setOptions((p) => ({
+                          ...p,
+                          mahjongRender: e.target.value as ProductProcessingOptions['mahjongRender'],
+                        }))
+                      }
+                    >
+                      <option value="ai">AI 生图（默认）</option>
+                      <option value="3d">3D 渲染 · 字纹/尺寸准确</option>
+                    </select>
+                  </label>
+                ) : null}
               </div>
             </div>
             <ImageComboPicker

@@ -235,7 +235,17 @@ function DraftThumb({
       </div>
     );
   if (!onPreview)
-    return <img className="temu-draft-thumb" src={src} alt={alt} loading="lazy" ref={thumbRef} />;
+    // alicdn 图床校验 Referer：带上本机地址会 403，缩略图整个空白
+    return (
+      <img
+        className="temu-draft-thumb"
+        src={src}
+        alt={alt}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        ref={thumbRef}
+      />
+    );
   return (
     <button
       type="button"
@@ -244,7 +254,13 @@ function DraftThumb({
       title="点击放大预览"
       ref={thumbRef}
     >
-      <img className="temu-draft-thumb" src={src} alt={alt} loading="lazy" />
+      <img
+        className="temu-draft-thumb"
+        src={src}
+        alt={alt}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+      />
     </button>
   );
 }
@@ -318,6 +334,27 @@ function leafCatIdOf(path?: TemuCategory[]): number {
 }
 
 /**
+ * 从 goods.add 的返回里挑商品 id。
+ *
+ * 不同网关字段名不一样（goodsId / goods_id / productId / gid / id），还有把结果
+ * 再包一层（result / data）的。后台 submissions.goods_id_from_result 是同一套
+ * 顺序，这里只用于「批量完成」那行提示，取不到就不显示，别影响发布结果。
+ */
+function pickGoodsId(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const record = result as Record<string, unknown>;
+  for (const key of ["goodsId", "goods_id", "productId", "product_id", "gid", "id"]) {
+    const value = record[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") return String(value);
+  }
+  for (const key of ["result", "data"]) {
+    const nested = pickGoodsId(record[key]);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+/**
  * 属性预填里「填了几个」：估出来的 picks 里真正有值的项数。
  * 只用于界面显示，不参与任何判定。
  */
@@ -374,6 +411,11 @@ function entryPrefill(
     specValue1: entry.spec_value_1 || "",
     specName2: entry.spec_name_2 || "",
     specValue2: entry.spec_value_2 || "",
+    // 全部规格值 + 每个 SKU 一行：发布页据此一次铺满变种表，
+    // 不用用户再手填「颜色」和「尺码」，也不用再点一次生成
+    specValues1: entry.spec_values_1 ?? [],
+    specValues2: entry.spec_values_2 ?? [],
+    variants: entry.variants ?? [],
     description: entry.description || "",
     sourceUrl: entry.source_url || "",
     // 带上 id 和上次选过的类目：发布页选完会回写，下次带入直接选中
@@ -392,9 +434,12 @@ function entryPrefill(
 export function TemuDraftLibraryPage({
   onUseDraft,
   onCreateProduct,
+  onOpenHistory,
 }: {
   onUseDraft: (prefill: TemuPublishPrefill) => void;
   onCreateProduct?: () => void;
+  /** 跳「发布历史」：发过的商品在草稿库里已经看不到了，得有个地方能回看 */
+  onOpenHistory?: () => void;
 }) {
   const [data, setData] = useState<TemuDraftLibrary | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -413,7 +458,19 @@ export function TemuDraftLibraryPage({
     loadMap<Record<string, string>>(scoped(DRAFT_REMARKS_KEY), {}),
   );
   const [hidden, setHidden] = useState<string[]>(() => loadMap<string[]>(scoped(DRAFT_HIDDEN_KEY), []));
+  /** 批量备注 / 批量删除的弹窗：选中哪些条、输入了什么 */
+  const [remarkTargets, setRemarkTargets] = useState<string[]>([]);
+  const [remarkText, setRemarkText] = useState("");
+  const [deleteTargets, setDeleteTargets] = useState<string[]>([]);
   const [page, setPage] = useState(1);
+  /**
+   * 每个批次的起始偏移：后端每次只取每批的一页（20 个），
+   * 点「加载更多」把它推进 20 —— 一个批次里放 500 个商品也能一个个翻出来，
+   * 而每次请求的成本恒定（不会因为 500 而变慢）。
+   */
+  const [itemOffset, setItemOffset] = useState(0);
+  /** 后续页追加进来的条目（第一页仍在 data.entries 里，避免重复拉） */
+  const [deepEntries, setDeepEntries] = useState<TemuDraftEntry[]>([]);
   /** 输入框里的即时值；防抖 300ms 后才写进 query 触发请求 */
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
@@ -426,7 +483,6 @@ export function TemuDraftLibraryPage({
   const [picker, setPicker] = useState<"product" | "variant" | null>(null);
   // 点「用于发布」先弹基础信息确认，确认后才带进发布页
   const [confirmEntry, setConfirmEntry] = useState<TemuDraftEntry | null>(null);
-  const [failures, setFailures] = useState(() => localStore.failures());
   // 草稿 → 上次在发布页选过的 Temu 类目：进页面/切回来都重读，刚选完的能立刻显示
   const [categoryMemo, setCategoryMemo] = useState<Record<string, DraftCategoryMemo>>(() =>
     localStore.draftCategories(),
@@ -435,7 +491,6 @@ export function TemuDraftLibraryPage({
   const [attrPrefills, setAttrPrefills] = useState<Record<string, DraftAttrPrefill>>(() =>
     readDraftAttrPrefills(storageScope()),
   );
-  const [showFailures, setShowFailures] = useState(false);
   const [productTpl, setProductTpl] = useState("");
   const [variantTpl, setVariantTpl] = useState("");
   const [batchState, setBatchState] = useState<{ running: boolean; text: string }>({
@@ -452,10 +507,18 @@ export function TemuDraftLibraryPage({
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
 
+  /**
+   * 请求序号：搜索是边打边发的，两个请求可能乱序回来。
+   * 只有「最后一次」的结果才允许写进状态，否则用户会看到上一秒那个关键字的列表
+   * （或者刚清空的搜索又被旧结果填回来）。
+   */
+  const loadSeqRef = useRef(0);
+
   const load = async (
     refresh = false,
     override?: { page?: number; filter?: Filter; query?: string },
   ) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError("");
     try {
@@ -465,23 +528,47 @@ export function TemuDraftLibraryPage({
         pageSize: PAGE_SIZE,
         source: nextFilter === "all" ? "" : nextFilter,
         q: override?.query ?? query,
+        itemOffset,
         refresh,
       });
+      if (seq !== loadSeqRef.current) return; // 已经有更新的请求了，丢掉这份结果
       setData(result);
+      if (itemOffset > 0) {
+        // 「加载更多」拿到的是每批的下一段，和第一页不重叠 → 追加而不是替换
+        setDeepEntries((prev) => {
+          const merged = new Map(prev.map((entry) => [entry.id, entry]));
+          for (const entry of result.entries) merged.set(entry.id, entry);
+          return [...merged.values()];
+        });
+      } else {
+        setDeepEntries([]);
+      }
       // 后端会把越界页码夹回最后一页，以前端返回值为准
       setPage(result.page);
     } catch (cause) {
+      if (seq !== loadSeqRef.current) return;
       setError(errorMessage(cause));
     } finally {
-      setLoading(false);
+      // 旧请求收尾时不能把 loading 关掉：新请求还在飞
+      if (seq === loadSeqRef.current) setLoading(false);
     }
+  };
+
+  /**
+   * 切页 / 换筛选 / 改关键字：把「加载更多」的进度一起归零。
+   * 不归零的话，上一屏追加进来的条目会跟新结果混在一起（数量对不上、还删不掉）。
+   */
+  const goPage = (next: number) => {
+    setItemOffset(0);
+    setDeepEntries([]);
+    setPage(next);
   };
 
   // 页码 / 页签 / 关键字任一变化都走一次请求：翻页只拉这一页，不再一次拉 80 条
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, filter, query]);
+  }, [page, filter, query, itemOffset]);
 
   // 翻页、换页签、改关键字都清空勾选：批量操作必须只作用于「你现在看得见的这些」，
   // 否则跨页残留的勾选会让人以为在发 30 条、实际发了 60 条。
@@ -495,7 +582,7 @@ export function TemuDraftLibraryPage({
       const next = queryInput.trim();
       if (next !== query) {
         setQuery(next);
-        setPage(1);
+        goPage(1);
       }
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -513,10 +600,10 @@ export function TemuDraftLibraryPage({
 
   // 本页数据：来源筛选与分页都已在后端完成，这里只合并「本机编辑」并剔除本机隐藏
   const entries = useMemo(
-    () => (data?.entries ?? [])
+    () => [...(data?.entries ?? []), ...deepEntries]
       .filter((entry) => !hidden.includes(entry.id))
       .map((entry) => (edits[entry.id] ? { ...entry, ...edits[entry.id] } : entry)),
-    [data, edits, hidden],
+    [data, deepEntries, edits, hidden],
   );
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
@@ -797,11 +884,7 @@ export function TemuDraftLibraryPage({
       try {
         const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
         const result = await temuPublishApi.publish(draft);
-        const goodsId = String(
-          (result.result as Record<string, unknown> | undefined)?.goodsId ??
-            (result.result as Record<string, unknown> | undefined)?.productId ??
-            "",
-        );
+        const goodsId = pickGoodsId(result.result);
         if (goodsId) publishedIds.push(goodsId);
         if (result.warnings?.length) {
           warned += 1;
@@ -833,7 +916,6 @@ export function TemuDraftLibraryPage({
           priceLabel: price ? `CNY ${price}` : "",
           at: new Date().toLocaleString("zh-CN"),
           reason: parsed.reason,
-          hint: parsed.hint,
           traceId: parsed.traceId,
           // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
           prefill: {
@@ -871,27 +953,44 @@ export function TemuDraftLibraryPage({
     saveMap(scoped(DRAFT_EDITS_KEY), next);
   };
 
+  // 备注 / 删除走应用内弹窗，不用 window.prompt / window.confirm：
+  // 原生弹窗样式跟工作台完全不搭，而且它在 WebView 里可能被宿主禁用
+  // （禁用时 prompt 返回 null、confirm 返回 false，功能静默失效）。
   const bulkRemark = () => {
     const ids = selectedIds();
     if (!ids.length) return;
-    const text = window.prompt(`给选中的 ${ids.length} 条加备注：`) ?? "";
-    if (!text.trim()) return;
+    setRemarkTargets(ids);
+    setRemarkText("");
+  };
+
+  const confirmBulkRemark = () => {
+    const text = remarkText.trim();
+    if (!text) {
+      setRemarkTargets([]);
+      return;
+    }
     const next = { ...remarks };
-    ids.forEach((id) => {
-      next[id] = text.trim();
+    remarkTargets.forEach((id) => {
+      next[id] = text;
     });
     setRemarks(next);
     saveMap(scoped(DRAFT_REMARKS_KEY), next);
+    setRemarkTargets([]);
+    setRemarkText("");
   };
 
   const bulkDelete = () => {
     const ids = selectedIds();
     if (!ids.length) return;
-    if (!window.confirm(`把选中的 ${ids.length} 条从草稿库隐藏？（只影响本机展示，可随时恢复）`)) return;
-    const next = Array.from(new Set([...hidden, ...ids]));
+    setDeleteTargets(ids);
+  };
+
+  const confirmBulkDelete = () => {
+    const next = Array.from(new Set([...hidden, ...deleteTargets]));
     setHidden(next);
     saveMap(scoped(DRAFT_HIDDEN_KEY), next);
     setSelected(new Set());
+    setDeleteTargets([]);
   };
 
   const restoreHidden = () => {
@@ -972,15 +1071,56 @@ export function TemuDraftLibraryPage({
 
   return (
     <div className="temu-publish-page">
-      <header className="temu-publish-head">
-        <div>
-          <p className="eyebrow">DRAFT LIBRARY</p>
-          <h1>草稿库</h1>
-          <p>汇总 AI 处理与 POD 的成品数据，选中后可直接带入「发布商品」。</p>
+      <header className="temu-library-head">
+        <div className="temu-library-title">
+          <p className="eyebrow">PRODUCT LIBRARY</p>
+          <h1>成品库</h1>
+          <p>AI 处理与 POD 定制的成品都在这里。成功发布过的会自动移出，可在「发布历史」回看。</p>
         </div>
-        <div className="temu-publish-head-actions">
+
+        {/* 分类筛选做成统计卡：一眼看到各类有多少条，点一下就筛 */}
+        <div className="temu-library-stats" role="tablist" aria-label="草稿来源筛选">
+          {(
+            [
+              // counts 也要兜：接口回 `{}`（网关吞错 / 老版本没有这个字段）时
+              // data 存在但 data.counts 是 undefined，`data?.counts.total` 照样抛，
+              // 整个草稿库白屏。
+              ["all", "全部", data?.counts?.total ?? 0, ""],
+              ["ai", "AI 处理", data?.counts?.ai ?? 0, "ai"],
+              ["pod", "POD", data?.counts?.pod ?? 0, "pod"],
+            ] as Array<[Filter, string, number, string]>
+          ).map(([key, label, count, tone]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={filter === key}
+              className={`temu-library-stat${tone ? ` is-${tone}` : ""}${filter === key ? " is-active" : ""}`}
+              onClick={() => {
+                setFilter(key);
+                goPage(1);
+                // 切筛选清空勾选：勾选数与「当前页可见待发布条数」必须一致，
+                // 否则批量发布只发可见的那些，界面上的数字会误导人
+                setSelected(new Set());
+              }}
+            >
+              <span>{label}</span>
+              <strong>{count}</strong>
+            </button>
+          ))}
+        </div>
+
+        <div className="temu-library-head-actions">
+          {onOpenHistory ? (
+            <button type="button" className="temu-btn" onClick={onOpenHistory}>
+              发布历史
+            </button>
+          ) : null}
           <button type="button" className="temu-btn" onClick={() => void load(true)} disabled={loading}>
             {loading ? "刷新中…" : "刷新"}
+          </button>
+          <button type="button" className="temu-btn temu-btn-primary" onClick={() => onCreateProduct?.()}>
+            创建产品
           </button>
         </div>
       </header>
@@ -1001,30 +1141,25 @@ export function TemuDraftLibraryPage({
       )}
 
       <section className="temu-card">
-        <div className="temu-card-head">
-          <div className="temu-draft-tabs">
-            {(
-              [
-                ["all", `全部 ${data?.counts.total ?? 0}`],
-                ["ai", `AI 处理 ${data?.counts.ai ?? 0}`],
-                ["pod", `POD ${data?.counts.pod ?? 0}`],
-              ] as Array<[Filter, string]>
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                className={`temu-draft-tab${filter === key ? " is-active" : ""}`}
-                onClick={() => {
-                  setFilter(key);
-                  // 切页签清空勾选：勾选数与「当前页可见待发布条数」必须一致，
-                  // 否则批量发布只发可见的那些，界面上的数字会误导人
-                  setSelected(new Set());
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div className="temu-library-toolbar">
+          <TemuDraftBulkBar
+            selectedCount={selected.size}
+            totalCount={totalCount}
+            hiddenCount={hidden.length}
+            categories={categories}
+            onApplyField={applyBulkField}
+            onRemark={bulkRemark}
+            onDelete={bulkDelete}
+            onMoveCategory={moveCategory}
+            onAddCategory={addCategory}
+            onRestoreHidden={restoreHidden}
+            canBatchPublish={Boolean(productTpl)}
+            batchRunning={batchState.running}
+            templateCount={productTemplates.length + variantTemplates.length}
+            onBatchPublish={openBatchDialog}
+            onPickTemplate={setPicker}
+            onClearSelection={() => setSelected(new Set())}
+          />
           <label className="temu-draft-search">
             <input
               className="temu-input"
@@ -1047,41 +1182,8 @@ export function TemuDraftLibraryPage({
               </button>
             ) : null}
           </label>
-          <span className="temu-muted temu-draft-meta">
-            {query ? `匹配 ${totalCount} 条 · ` : ""}
-            最近 8 个 AI 批次 / 6 个 POD 批次
-            {productTpl ? ` · 产品模板：${productTpl}` : ""}
-            {variantTpl ? ` · 变种模板：${variantTpl}` : ""}
-          </span>
-          <button
-            type="button"
-            className={`temu-fail-entry${failures.length ? " has-dot" : ""}`}
-            onClick={() => setShowFailures((value) => !value)}
-            title="发布失败的产品会记在这里，点开看原因并可重试"
-          >
-            发布失败历史{failures.length ? ` (${failures.length})` : ""}
-            {failures.length > 0 && <em className="temu-fail-dot" aria-hidden="true" />}
-          </button>
         </div>
 
-          <TemuDraftBulkBar
-            selectedCount={selected.size}
-            totalCount={totalCount}
-            hiddenCount={hidden.length}
-            categories={categories}
-            onApplyField={applyBulkField}
-            onRemark={bulkRemark}
-            onDelete={bulkDelete}
-            onMoveCategory={moveCategory}
-            onAddCategory={addCategory}
-            onRestoreHidden={restoreHidden}
-            onCreateProduct={() => onCreateProduct?.()}
-            canBatchPublish={Boolean(productTpl)}
-            batchRunning={batchState.running}
-            templateCount={productTemplates.length + variantTemplates.length}
-            onBatchPublish={openBatchDialog}
-            onPickTemplate={setPicker}
-          />
 
           {(batchState.running || batchState.text) && (
             <p className="temu-batch-progress">
@@ -1098,61 +1200,7 @@ export function TemuDraftLibraryPage({
             </p>
           )}
 
-          {showFailures && (
-            <div className="temu-fail-panel">
-              <div className="temu-fail-panel-head">
-                <strong>发布失败历史（{failures.length}）</strong>
-                {failures.length > 0 && (
-                  <button
-                    type="button"
-                    className="temu-link"
-                    onClick={() => {
-                      localStore.clearFailures();
-                      setFailures([]);
-                    }}
-                  >
-                    清空
-                  </button>
-                )}
-              </div>
-              {failures.length === 0 ? (
-                <p className="temu-muted">暂无失败记录。发布失败时会自动记在这里。</p>
-              ) : (
-                failures.map((item) => (
-                  <div className="temu-fail-row" key={item.id}>
-                    <div className="temu-fail-main">
-                      <strong>{item.draftTitle}</strong>
-                      <span className="temu-muted">
-                        {item.siteLabel} · {item.categoryLabel} · {item.skuLabel} · {item.priceLabel} · {item.at}
-                      </span>
-                      <em>失败原因：{item.reason}</em>
-                      <em className="is-hint">解决方案：{item.hint}</em>
-                      {item.traceId && <span className="temu-muted">Trace {item.traceId}</span>}
-                    </div>
-                    <div className="temu-fail-ops">
-                      <button
-                        type="button"
-                        className="temu-btn temu-btn-sm"
-                        onClick={() => {
-                          if (item.prefill) onUseDraft(item.prefill as never);
-                          setShowFailures(false);
-                        }}
-                      >
-                        重试
-                      </button>
-                      <button
-                        type="button"
-                        className="temu-link"
-                        onClick={() => setFailures(localStore.removeFailure(item.id))}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
+
 
           {picker && (
             <div className="temu-template-picker">
@@ -1205,15 +1253,31 @@ export function TemuDraftLibraryPage({
           )}
 
         {entries.length === 0 ? (
-          <p className="temu-empty">
-            {!data
-              ? "正在读取草稿…"
-              : query
-                ? `没有匹配「${query}」的草稿：换个关键字，或清空搜索看全部。`
+          // 首次进入（还没拿到过任何数据）先铺骨架：原来只有一行「正在读取草稿…」，
+          // 聚合要跑 8 个任务的预览（约 1 秒），这行小字看着像没反应，
+          // 而且 data 为 null 时 loading 初值还是 false，会先闪一下「暂无可用成品」。
+          !data ? (
+            <div className="temu-draft-skeleton" aria-busy="true" aria-live="polite">
+              {[0, 1, 2, 3, 4, 5].map((row) => (
+                <div className="temu-draft-skeleton-row" key={row}>
+                  <span className="temu-skel is-thumb" />
+                  <span className="temu-skel is-title" />
+                  <span className="temu-skel is-mid" />
+                  <span className="temu-skel is-mid is-short" />
+                  <span className="temu-skel is-num" />
+                </div>
+              ))}
+              <p className="temu-muted">正在聚合 AI 处理与 POD 成品…</p>
+            </div>
+          ) : (
+            <p className="temu-empty">
+              {query
+                ? `没有匹配「${query}」的成品：换个关键字，或清空搜索看全部。`
                 : hidden.length > 0
                   ? `当前页的 ${hidden.length} 条都被本机隐藏了，翻页或点「恢复隐藏」查看。`
-                  : "暂无可用草稿：先完成一批 AI 处理或 POD 生成。"}
-          </p>
+                  : "暂无可用成品：先完成一批 AI 处理或 POD 生成。"}
+            </p>
+          )
         ) : (
           // 翻页时保留上一页内容并压暗，避免整块塌成「加载中」闪一下
           <div className={`temu-draft-table-wrap${loading ? " is-loading" : ""}`}>
@@ -1269,8 +1333,15 @@ export function TemuDraftLibraryPage({
                           alt={entry.title || "草稿图"}
                           onPreview={(src, alt) => setPreview({ src, alt })}
                         />
+                        {/* 角标「+N」= 除了这张缩略图还有 N 张（轮播 + 详情合集）。
+                            鼠标悬浮缩略图会放大并隐藏它，所以这里补个 title 说明。 */}
                         {entry.images.length > 1 ? (
-                          <span className="temu-draft-more">+{entry.images.length - 1}</span>
+                          <span
+                            className="temu-draft-more"
+                            title={`共 ${entry.images.length} 张图（轮播 + 详情），另有 ${entry.images.length - 1} 张`}
+                          >
+                            +{entry.images.length - 1}
+                          </span>
                         ) : null}
                       </span>
                     </td>
@@ -1403,8 +1474,9 @@ export function TemuDraftLibraryPage({
                         );
                       })()}
                     </td>
-                    <td className="col-time">
-                      {(entry.updated_at || "").slice(0, 16).replace("T", " ") || "—"}
+                    <td className="col-time" title={entry.updated_at || undefined}>
+                      {/* 只到分钟：列宽有限，年份对「哪批最新」没有帮助 */}
+                      {(entry.updated_at || "").replace("T", " ").slice(5, 16) || "—"}
                     </td>
                     <td className="col-actions">
                       <button
@@ -1430,6 +1502,34 @@ export function TemuDraftLibraryPage({
           </div>
         )}
 
+        <p className="temu-muted temu-draft-meta is-foot">
+          {query ? `匹配 ${totalCount} 条 · ` : ""}
+          {/* 搜索是在库里全量筛的（不是只筛当前这几页），这点必须说清楚，
+              否则用户会以为「搜不到 = 没有」 */}
+          {query ? "已在全部商品里搜过" : "最近 8 个 AI 批次 / 6 个 POD 批次"}
+          {productTpl ? ` · 产品模板：${productTpl}` : ""}
+          {variantTpl ? ` · 变种模板：${variantTpl}` : ""}
+        </p>
+
+        {/* 每个批次每次只取一页（20 个）：批次里放了 500 个商品时，
+            以前只显示前 20 个、也没有任何提示。这里明确告诉用户「加载到第几个」，
+            点一下让后端把每批的偏移往后推一页。成本恒定，不会因为 500 而变慢。 */}
+        {data?.has_more ? (
+          <div className="temu-draft-load-more">
+            <span className="temu-muted">
+              每个批次已加载前 {itemOffset + 20} 个，还有更多
+            </span>
+            <button
+              type="button"
+              className="temu-btn temu-btn-sm"
+              disabled={loading}
+              onClick={() => setItemOffset((current) => current + 20)}
+            >
+              {loading ? "加载中…" : "加载更多"}
+            </button>
+          </div>
+        ) : null}
+
         {totalCount > 0 && (
           <div className="temu-draft-pager">
             <span>
@@ -1438,13 +1538,13 @@ export function TemuDraftLibraryPage({
               {hidden.length > 0 ? `（另有 ${hidden.length} 条本机隐藏）` : ""}
             </span>
             <div className="temu-draft-pager-ctrl">
-              <button type="button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>
+              <button type="button" disabled={currentPage <= 1} onClick={() => goPage(currentPage - 1)}>
                 ‹
               </button>
               <button
                 type="button"
                 disabled={currentPage >= totalPages}
-                onClick={() => setPage(currentPage + 1)}
+                onClick={() => goPage(currentPage + 1)}
               >
                 ›
               </button>
@@ -1456,7 +1556,7 @@ export function TemuDraftLibraryPage({
                 value={currentPage}
                 onChange={(event) => {
                   const next = Number(event.target.value);
-                  if (Number.isFinite(next)) setPage(Math.min(Math.max(1, next), totalPages));
+                  if (Number.isFinite(next)) goPage(Math.min(Math.max(1, next), totalPages));
                 }}
               />
               <span>/ {totalPages} 页 · {PAGE_SIZE} 条/页</span>
@@ -1557,7 +1657,7 @@ export function TemuDraftLibraryPage({
                   </p>
                 ) : (
                   <p className="temu-edit-note">
-                    接口非幂等：重复提交会在店铺里多出商品；中途某条失败只跳过它，原因进「发布失败历史」。
+                    接口非幂等：重复提交会在店铺里多出商品；中途某条失败只跳过它，原因进「发布历史」。
                     同一条草稿 24 小时内重复提交会被拦一次，需要你二次确认。
                   </p>
                 )}
@@ -1583,12 +1683,101 @@ export function TemuDraftLibraryPage({
                   <button
                     type="button"
                     className="temu-btn temu-btn-primary"
-                    disabled={!productTpl || batchState.running || !batchTargets.length}
+                    // 现场配置（manualTemplate）也是一份合法模板：只看 productTpl 的话，
+                    // 一个模板都没存过的用户按提示填完现场配置，按钮还是灰的 —— 死路。
+                    disabled={(!productTpl && !manualTemplate) || batchState.running || !batchTargets.length}
                     onClick={() => void runBatchPublish()}
                   >
                     {batchState.running ? "提交中…" : `开始发布（${batchTargets.length} 条）`}
                   </button>
                 </div>
+              </footer>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {remarkTargets.length > 0 &&
+        createPortal(
+          <div className="temu-edit-backdrop" onClick={() => setRemarkTargets([])}>
+            <div
+              className="temu-edit-dialog temu-confirm-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label="批量备注"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="temu-edit-head">
+                <div>
+                  <strong>批量备注</strong>
+                  <span>
+                    给选中的 {remarkTargets.length} 条加一句备注 · 只在本机显示，不会提交到 Temu
+                  </span>
+                </div>
+                <button type="button" onClick={() => setRemarkTargets([])} aria-label="关闭">
+                  ×
+                </button>
+              </header>
+              <label className="temu-field">
+                <span>备注内容</span>
+                <input
+                  className="temu-input"
+                  autoFocus
+                  value={remarkText}
+                  onChange={(event) => setRemarkText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") confirmBulkRemark();
+                  }}
+                  placeholder="例如：主图待补 / 价格待核 / 等供应商回复"
+                />
+              </label>
+              <footer className="temu-edit-foot">
+                <button type="button" className="temu-btn" onClick={() => setRemarkTargets([])}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="temu-btn temu-btn-primary"
+                  disabled={!remarkText.trim()}
+                  onClick={confirmBulkRemark}
+                >
+                  保存备注
+                </button>
+              </footer>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {deleteTargets.length > 0 &&
+        createPortal(
+          <div className="temu-edit-backdrop" onClick={() => setDeleteTargets([])}>
+            <div
+              className="temu-edit-dialog temu-confirm-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label="批量删除"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="temu-edit-head">
+                <div>
+                  <strong>从成品库移除</strong>
+                  <span>只影响本机展示，Temu 店铺里的商品不受影响，随时可以恢复</span>
+                </div>
+                <button type="button" onClick={() => setDeleteTargets([])} aria-label="关闭">
+                  ×
+                </button>
+              </header>
+              <p className="temu-edit-note">
+                选中的 {deleteTargets.length} 条会从成品库隐藏，右上角「已隐藏 N 条 · 恢复」可以全部还原。
+              </p>
+              <footer className="temu-edit-foot">
+                <button type="button" className="temu-btn" onClick={() => setDeleteTargets([])}>
+                  取消
+                </button>
+                <button type="button" className="temu-btn temu-btn-primary" onClick={confirmBulkDelete}>
+                  隐藏这 {deleteTargets.length} 条
+                </button>
               </footer>
             </div>
           </div>,
@@ -1767,7 +1956,12 @@ export function TemuDraftLibraryPage({
           aria-label="图片预览"
           onClick={() => setPreview(null)}
         >
-          <img src={preview.src} alt={preview.alt} onClick={(event) => event.stopPropagation()} />
+          <img
+            src={preview.src}
+            alt={preview.alt}
+            referrerPolicy="no-referrer"
+            onClick={(event) => event.stopPropagation()}
+          />
           <button
             type="button"
             className="temu-image-preview-close"

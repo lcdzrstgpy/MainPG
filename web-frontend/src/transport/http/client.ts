@@ -19,6 +19,11 @@ function apiBaseUrl() {
   return (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 }
 
+/** 拼出带部署前缀的 API 地址：子路径部署（如 /workbench/）时自动带上 base。 */
+export function apiUrl(path: string) {
+  return `${apiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 /** 本地后端健康端点。打包版同源直连（8010）；开发态需 vite 代理 /health 转发。 */
 export function backendHealthUrl(): string {
   return `${apiBaseUrl()}/health`;
@@ -148,6 +153,17 @@ if (!interceptorWindow[FETCH_INTERCEPTOR_KEY]) {
 }
 
 /**
+ * 把接口里的「列表字段」收成数组。
+ *
+ * 后端回空对象（204 / 非 JSON / 网关把错误吞成 `{}`）或字段改名时，`payload.batches`
+ * 会是 undefined，下游 `.map` / `[...batches]` 直接抛渲染期异常 —— 这类异常只能靠
+ * 错误边界兜，用户看到的是整块页面变成「出错了」。宁可按空列表渲染。
+ */
+export function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/**
  * 把服务端/网络错误转换为用户可读的中文提示（不再外露英文）。
  * - 已知业务错误映射为具体中文 + 解决建议；
  * - 纯英文的未知错误兜底为通用中文提示；
@@ -231,9 +247,21 @@ export function toUserMessage(raw: string): string {
   if (/no eligible products to dispatch/i.test(message)) return "没有可提交的产品，请检查勾选和站点";
   if (/profit_activity_company_write_required/i.test(message)) return "当前账号没有修改公司数据的权限，请联系对接人";
   // 后端把缺失字段用逗号拼在一起返回（如 product_image_required,source_url_required），
-  // 逐字翻译没意义，统一提示去补哪几列。
-  if (/^[a-z_]+_required(,[a-z_]+_required)+$/.test(message)) {
-    return "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
+  // 只有一个缺失字段时也要给出具体提示，不能落回「操作失败」。
+  if (/^[a-z_]+_required(?:,[a-z_]+_required)*$/.test(message)) {
+    const labels: Record<string, string> = {
+      product_image_required: "商品主图",
+      source_url_required: "货源链接",
+      source_image_required: "货源图",
+      note_required: "备注",
+    };
+    const missing = message
+      .split(",")
+      .map((code) => labels[code])
+      .filter(Boolean);
+    return missing.length
+      ? `还缺：${missing.join("、")}，请补齐后再提交`
+      : "表格里还缺必填项，请把商品 ID、售价、成本、重量、商品主图和货源链接补齐后再导入";
   }
 
   // ---- 计费授权（产品处理的「继续处理」/重试等在计费服务侧的鉴权失败）----
@@ -375,6 +403,11 @@ export function toUserMessage(raw: string): string {
   if (/\bforbidden\b|permission denied|no permission|not authorized|insufficient permission|permission required/i.test(message)) {
     return "没有权限执行此操作，请确认账号权限后重试";
   }
+  // 后端已经用中文把原因说清楚了（典型是 temu 那层包装的
+  // 「Temu 拒绝了这次提交：The requested content does not exist or has been deleted（错误码 2000000）」），
+  // 就原样返回，别被下面按英文关键词做的通用映射盖掉 —— 一盖掉，用户只剩
+  // 「请求的内容不存在或已被删除」这一句，既看不到上游原话也看不到错误码，无从下手。
+  if (/[\u4e00-\u9fa5]/.test(message) && /not found|does not exist/i.test(message)) return message;
   // 内容不存在
   if (/not found|does not exist/i.test(message)) return "请求的内容不存在或已被删除";
   // 服务器繁忙
@@ -588,10 +621,41 @@ export async function httpJson<T>(path: string, options: RequestOptions = {}): P
       ? "本地服务无响应，请检查 MainPG 后台组件是否被杀毒软件拦截"
       : detailFromPayload(payload, response.status);
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
-    throw new Error(toUserMessage(detail));
+    const error = new Error(toUserMessage(detail)) as Error & { section?: string };
+    // 后端在 detail 里带了「该去哪个区块改」（发布页据此给一个「去改」按钮）。
+    // detailFromPayload 只取 message，这里单独取一次 section —— 不给公共返回类型加字段，
+    // 免得所有调用方都被迫处理一个只有发布页用得上的东西。
+    const section = (payload as { detail?: { section?: unknown } } | null)?.detail?.section;
+    if (typeof section === "string" && section) error.section = section;
+    throw error;
   }
 
   return payload as T;
+}
+
+/**
+ * 媒体资源地址里的 `expires` / `signature` 只活 ~2 小时（后端 `_preview_url()` 签的）。
+ *
+ * 草稿库、发布页表单会把当时的地址原样存下来，过几小时再拿它读图必然 404 ——
+ * 记录还在、文件也在，纯粹是签名过期，用户却只看到「请求的内容不存在或已被删除」，
+ * 重传图也只能好两小时。
+ *
+ * httpBlob 自带 `Authorization`，后端对「不带签名 + 已登录」的请求直接放行，
+ * 所以这里把过期签名剥掉，只留路径和 workspace_id。
+ * **保留 workspace_id**：图片是按工作区目录存的，后端要靠它定位。
+ */
+function stripMediaSignature(path: string): string {
+  if (!/\/media-assets\/[^/]+\/content(?:[?#]|$)/.test(path)) return path;
+  if (!/[?&]signature=/.test(path)) return path;
+  try {
+    const url = new URL(path, window.location.origin);
+    url.searchParams.delete("signature");
+    url.searchParams.delete("expires");
+    return `${url.pathname}${url.search}`;
+  } catch {
+    // 解析不了就原样发：让后端按签名分支给出真实结果，别在这里吞错
+    return path;
+  }
 }
 
 export async function httpBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
@@ -599,8 +663,13 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
   const token = authToken(options.token);
   if (token) headers.authorization = `Bearer ${token}`;
 
+  // 绝对地址直接用：有些调用方（缩略图）拿到的是 `http://127.0.0.1:8010/api/...`
+  // 这种指回本地后端的完整地址，再拼一次 apiBaseUrl 会变成
+  // `http://127.0.0.1:8010http://127.0.0.1:8010/api/...`。
+  const target = stripMediaSignature(path);
+  const url = /^https?:\/\//i.test(target) ? target : `${apiBaseUrl()}${target}`;
   const response = await fetchWithTimeout(
-    `${apiBaseUrl()}${path}`,
+    url,
     {
       method: options.method ?? "GET",
       headers,
@@ -617,7 +686,10 @@ export async function httpBlob(path: string, options: RequestOptions = {}): Prom
     if (isBackendUnreachable(response, detail)) notifyBackendOffline();
     else noteBackendReachable();
     if (isSessionExpired(response, detail)) notifySessionExpired(detail);
-    throw new Error(toUserMessage(detail || "请求失败"));
+    // 404 把请求路径带上：不然「请求的内容不存在或已被删除」完全看不出是哪个资源没的
+    // （草稿图 / 素材 / 商品 / 路由写错，四种情况文案一模一样）。
+    const brief = response.status === 404 ? `（${path}）` : "";
+    throw new Error(toUserMessage(detail || "请求失败") + brief);
   }
 
   const blob = await response.blob();

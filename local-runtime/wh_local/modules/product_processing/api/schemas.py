@@ -50,6 +50,8 @@ class DraftUpdateRequest(BaseModel):
     cost: float | None = None
     declared_price: float | None = None
     status: str | None = None
+    # 手动精小品标注：''=自动识别，precision=强制精小品，standard=强制普通。
+    precision_annotation: str | None = None
     sku_name_edits: dict[str, str] | None = None
     sku_name_deletes: list[str] | None = None
 
@@ -142,10 +144,14 @@ class DraftProcessRequest(BaseModel):
     # 是否自动烧制第 4 格尺寸图（尺寸卡）：默认开启。部分商品不需要尺寸图，
     # 关闭后整批不导入尺寸画布、不烧卡，也不做原链接尺寸图 OCR 预取。
     dimension_card: bool = True
-    # 场景风格：决定四格背景族（smart 智能混合 / minimal 极简 / lifestyle 生活 / ornate 花哨）。
-    scene_style: str = "smart"
+    # 场景风格：决定四格背景族（ornate 花哨（默认） / lifestyle 生活 / minimal 极简 / smart 智能混合）。
+    scene_style: str = "ornate"
     # 主图背景：scene=主图也用场景背景（默认，客户反馈纯白单调）；white=主图保持纯白。
     main_background: str = "scene"
+    # 麻将专业模式：AI 只出空白牌，牌面字/花纹由本地图案库扣取后回贴（不重画图案）。
+    mahjong_mode: bool = False
+    # 麻将出图方式：ai=AI 生图（默认）；3d=本地 Blender 建模渲染（字纹真实、尺寸一致，但没有台面实景）。
+    mahjong_render: str = "ai"
     # 手选系统底板 id（bg_*）；空=按品类自动选背景片段。
     background_template: str = ""
     qualification_mode: bool | str = False

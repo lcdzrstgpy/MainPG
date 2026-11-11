@@ -5,7 +5,8 @@
 所以这里走确定性像素路径：
 
 1. rembg 取出商品前景蒙版（复用 ``dimension_source_reuse._subject_mask``）；
-2. 底板按 1:1 铺满，商品等比缩放到画面 ~78% 高，落在画面下沿的「台面」上；
+2. 底板按 1:1 铺满，商品等比缩放到画面 ~72% 高（给背景留出空间，比例才不像贴纸），
+   落在画面下沿的「台面」上；
 3. 加一层模糊椭圆接触阴影，避免商品像贴纸浮在背景上；
 4. 蒙版边缘羽化，并按底板整体亮度做轻微曝光匹配（只动 6% 以内，
    不改色相、不改商品本身颜色，保证商品保真优先）。
@@ -22,7 +23,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 from .dimension_source_reuse import _subject_mask
 
-_SUBJECT_FILL_RATIO = 0.78
+_SUBJECT_FILL_RATIO = 0.72
 _BASELINE_RATIO = 0.88
 _MIN_FOREGROUND_RATIO = 0.02
 _MAX_FOREGROUND_RATIO = 0.98

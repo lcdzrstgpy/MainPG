@@ -336,7 +336,61 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
     <section className="shop-collection-panel plugin-capture-panel" aria-label="插件采集">
       <div className="shop-collection-grid">
         <div className="shop-batch-detail">
-          {!selectedBatch && batches.length > 0 && <div className="shop-empty"><strong>请选择一个插件采集批次</strong><p>这里仅展示插件已经发起的采集任务。</p></div>}
+          {!selectedBatch && batches.length === 0 && (
+            <div className="shop-onboard">
+              <div className="shop-onboard-copy">
+                <span className="shop-onboard-eyebrow">BROWSER PLUGIN · 插件采集</span>
+                <strong>在页面上点一下，商品就进来了</strong>
+                <p>插件采集不需要在这里填链接：先用浏览器插件发起采集，回到这个页面审核入池即可。</p>
+                <ol className="shop-onboard-steps">
+                  <li><b>01</b><span><strong>装好采集插件</strong><small>下载「W-H-浏览器采集插件」，解压后在扩展管理里加载</small></span></li>
+                  <li><b>02</b><span><strong>页面上一键采集</strong><small>在 1688 / 淘宝的商品页或列表页点插件，按整页或单品采集</small></span></li>
+                  <li><b>03</b><span><strong>回来审核入池</strong><small>按 SKU 筛选、补齐规格，确认后进入产品池</small></span></li>
+                </ol>
+                <div className="shop-onboard-inputs">
+                  <span>1688</span><span>淘宝 / 天猫</span><span>整页采集</span><span>单品采集</span>
+                </div>
+              </div>
+              <div className="shop-onboard-side">
+                <svg className="shop-onboard-art" viewBox="0 0 240 168" aria-hidden="true" focusable="false">
+                  <rect x="24" y="30" width="152" height="110" rx="12" fill="rgba(99,203,232,.12)" stroke="#8fd3e6" />
+                  <path d="M24 54h152" stroke="#8fd3e6" />
+                  <circle cx="38" cy="42" r="3" fill="#8fd3e6" />
+                  <circle cx="50" cy="42" r="3" fill="#8fd3e6" opacity=".7" />
+                  <circle cx="62" cy="42" r="3" fill="#8fd3e6" opacity=".45" />
+                  <rect x="40" y="68" width="54" height="54" rx="7" fill="#fff" stroke="#bfe4ef" />
+                  <path d="M50 84h34M50 94h26M50 104h30" stroke="#9fd8e9" strokeWidth="1.6" strokeLinecap="round" />
+                  <rect x="104" y="68" width="58" height="14" rx="7" fill="rgba(37,189,163,.24)" />
+                  <rect x="104" y="90" width="44" height="10" rx="5" fill="rgba(18,137,184,.18)" />
+                  <rect x="104" y="108" width="52" height="10" rx="5" fill="rgba(18,137,184,.12)" />
+                  <path d="M168 116l32 14-13.5 3-7 12.5z" fill="#25bda3" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
+                  <g stroke="#9fd8e9" strokeWidth="1" strokeDasharray="3 7" opacity=".55">
+                    <path d="M196 30h-20" /><path d="M196 22h-44" />
+                  </g>
+                </svg>
+                <small className="shop-onboard-note">插件发起的批次会自动出现在这里，无需手动创建。</small>
+              </div>
+            </div>
+          )}
+          {!selectedBatch && batches.length > 0 && (
+            <div className="plugin-batch-quick">
+              <div className="plugin-batch-quick-head">
+                <strong>选择一个插件批次</strong>
+                <small>{batches.length} 个批次，点一下即可查看候选商品。</small>
+              </div>
+              <div className="plugin-batch-quick-list">
+                {batches.slice(0, 6).map((batch) => (
+                  <button key={batch.batch_id} type="button" onClick={() => { setSelectedBatchId(batch.batch_id); setCandidateOffset(0); }}>
+                    <span>
+                      <strong>{batch.display_name || `批次 ${batch.batch_id.slice(0, 8)}`}</strong>
+                      <small>{pluginCaptureStatusLabel(batch.status)} · {batch.total_count} 个商品</small>
+                    </span>
+                    <b>{pluginCaptureProgress(batch).percent}%</b>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {selectedBatch && progress && (
             <>
               <div className="shop-batch-summary">
@@ -411,7 +465,25 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                   </div>
 
                   {filteredCandidates.length === 0 && (
-                    <p className="shop-empty">{isTerminalPluginCaptureStatus(selectedBatch.status) ? "没有符合 SKU 筛选条件的候选商品。" : "采集完成后，候选商品会显示在这里。"}</p>
+                    <div className={`shop-pending${candidates.length === 0 && !isTerminalPluginCaptureStatus(selectedBatch.status) ? "" : " is-done"}`}>
+                      <span className="shop-pending-radar" aria-hidden="true"><i /><i /><i /></span>
+                      <div>
+                        <strong>
+                          {candidates.length > 0
+                            ? "没有符合 SKU 筛选条件的候选商品"
+                            : isTerminalPluginCaptureStatus(selectedBatch.status)
+                              ? "本批次没有候选商品"
+                              : "采集进行中，候选马上就到"}
+                        </strong>
+                        <p>
+                          {candidates.length > 0
+                            ? "调大 SKU 数量区间或清空筛选条件再看看。"
+                            : isTerminalPluginCaptureStatus(selectedBatch.status)
+                              ? "可以回到原页面重新发起一次采集，或在批次管理里重试失败项。"
+                              : "插件正在逐页拉取详情，完成后会自动出现在这里，期间可以先去处理别的事。"}
+                        </p>
+                      </div>
+                    </div>
                   )}
                   <div className="plugin-candidate-list">
                     {pagedCandidates.map((candidate) => {

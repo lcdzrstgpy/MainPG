@@ -706,6 +706,7 @@ class ProductImageProcessor:
         enhance: EnhanceOptions | None = None,
         on_enhance_metrics: Callable[[EnhanceMetrics], None] | None = None,
         include_summary: bool = True,
+        preserve_aspect: bool = False,
     ) -> list[GeneratedMedia]:
         """Split a generated 2x2 grid into four listing images plus its summary.
 
@@ -721,6 +722,9 @@ class ProductImageProcessor:
 
         ``include_summary=False`` 时不生成汇总图：POD 只用四格面板，汇总图要额外解码 4 张
         JPEG、建 1600×1600 画布再编码，纯属白烧 CPU。
+
+        ``preserve_aspect=True`` 用于精小品非方形母图：不居中裁方，单格补边成方形，
+        保证宽/竖画布里的产品不被切掉；默认 False 与历史逐字节一致。
         """
         try:
             from PIL import Image  # type: ignore
@@ -729,15 +733,26 @@ class ProductImageProcessor:
         try:
             self.validate_four_grid(media)
             source = Image.open(BytesIO(media.content)).convert("RGB")
-            # 自适应：非正方形时居中裁方，保证 2x2 拆分几何正确。
-            source = _center_crop_to_square(source)
-            try:
-                guides = locate_split_guides(source)
-            except GridLayoutError:
-                # 无精确分隔线证据时回退正中切分；面板独立性校验仍由
-                # extract_grid_panels 强制执行，明显跨区内容不会通过。
+            if preserve_aspect:
+                # 非方形母图（精小品宽/竖画布）不再居中裁方，避免切掉产品两侧；
+                # 方形母图仍走自适应分隔线检测，行为与历史一致。
                 guides = center_split_guides(source)
-            panels = extract_grid_panels(source, guides)
+                if source.width == source.height:
+                    try:
+                        guides = locate_split_guides(source)
+                    except GridLayoutError:
+                        pass
+                panels = extract_grid_panels(source, guides, preserve_aspect=True)
+            else:
+                # 自适应：非正方形时居中裁方，保证 2x2 拆分几何正确。
+                source = _center_crop_to_square(source)
+                try:
+                    guides = locate_split_guides(source)
+                except GridLayoutError:
+                    # 无精确分隔线证据时回退正中切分；面板独立性校验仍由
+                    # extract_grid_panels 强制执行，明显跨区内容不会通过。
+                    guides = center_split_guides(source)
+                panels = extract_grid_panels(source, guides)
         except Exception as exc:
             detail = str(exc).strip()
             message = "generated four-grid image cannot be split"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { orderProfitApi } from "../api/orderProfitApi";
+import { EmptyBlock, Metric, MetricBand, SectionCard } from "../components/ShopDataPrimitives";
 import { beijingTime, numberText } from "../format";
 import type { CaptureBatch } from "../types";
 
@@ -46,11 +47,29 @@ export function OrderProfitRecordsTab({
     <section className="op-view">
       {error ? <div className="op-alert is-error">{error}</div> : null}
 
-      <div className="op-card op-capture-result">
-        <div className="op-panel-head">
-          <strong>最近一次入库</strong>
-          <span className="op-chip">{loading ? "读取中…" : `${batches.length} 批`}</span>
-        </div>
+      <MetricBand>
+        <Metric
+          label="最近入库父订单"
+          value={latest ? numberText(Number(latest.order_count) || 0) : "—"}
+          hint={latest ? beijingTime(latest.captured_at as string | undefined) : "还没有入库记录"}
+          glyph="orders"
+        />
+        <Metric
+          label="最近入库子订单"
+          value={latest ? numberText(Number(latest.sub_order_count) || 0) : "—"}
+          hint="订单明细行数"
+          glyph="box"
+        />
+        <Metric label="累计入库批次" value={numberText(batches.length)} hint="每次采集生成一批" glyph="archive" />
+      </MetricBand>
+
+      <SectionCard
+        title="最近一次入库"
+        desc="确认上一批数据是否成功写入，再决定要不要重新采集。"
+        meta={<span className="op-chip">{loading ? "读取中…" : latest ? "已入库" : "暂无记录"}</span>}
+        icon="clock"
+        scene="records"
+      >
         {latest ? (
           <div className="op-capture-summary">
             <div><span>父订单</span><strong>{numberText(Number(latest.order_count) || 0)}</strong></div>
@@ -59,15 +78,21 @@ export function OrderProfitRecordsTab({
             <div><span>批次</span><strong className="op-batch-id" title={String(latest.id || "")}>{String(latest.id || "—")}</strong></div>
           </div>
         ) : (
-          <p className="op-hint">还没有采集入库记录。采集成功后这里会显示最近一批。</p>
+          <EmptyBlock
+            art="records"
+            title="还没有采集入库记录"
+            desc="到「数据采集」同步一次数据，成功后这里会显示最近一批与全部批次。"
+          />
         )}
-      </div>
+      </SectionCard>
 
-      <div className="op-card op-capture-result">
-        <div className="op-panel-head">
-          <strong>采集批次</strong>
-          <span className="op-chip">{batches.length} 批</span>
-        </div>
+      <SectionCard
+        className="op-section-table"
+        title="入库批次"
+        desc="每一批都可追溯；失败或跳过项请回「数据采集」重试对应步骤。"
+        meta={<span className="op-chip">{batches.length} 批</span>}
+        icon="archive"
+      >
         {batches.length ? (
           <div className="op-table-wrap op-batch-wrap">
             <table className="op-table op-table-batches">
@@ -98,9 +123,17 @@ export function OrderProfitRecordsTab({
             </table>
           </div>
         ) : (
-          <p className="op-hint">还没有采集批次。列表/详情采集成功后会记录在这里。</p>
+          <EmptyBlock
+            art="records"
+            title="还没有采集批次"
+            desc="列表/详情采集成功后会记录在这里。"
+          />
         )}
-      </div>
+      </SectionCard>
+
+      <p className="op-footnote">
+        步骤级采集结果与失败项补采在「数据采集 → 采集中心」查看；这里保留订单入库批次。
+      </p>
     </section>
   );
 }

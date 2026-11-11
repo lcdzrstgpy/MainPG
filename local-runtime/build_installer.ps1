@@ -174,6 +174,38 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 $dist = Join-Path $PSScriptRoot "dist\MainPG"
 if (-not (Test-Path $dist)) { throw "bundle output missing: $dist" }
 
+# 4a. Fail the build when runtime assets did not make it into the bundle.
+# Missing files only surface on the customer machine (1.6.x shipped without
+# data_collection/migrations/004_plugin_devices.sql -> "backend failed to start",
+# 1.6.7 shipped without the browser extension -> "no extracted plugin directory").
+$requiredPaths = @(
+    "MainPG.exe",
+    "_internal\web-frontend\dist\index.html",
+    "_internal\browser-extension\manifest.json",
+    "_internal\wh_local\data",
+    "_internal\launcher\assets\splash"
+)
+$missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath (Join-Path $dist $_) ) })
+Get-ChildItem -Path (Join-Path $PSScriptRoot "wh_local") -Recurse -Filter "*.sql" -File |
+    Where-Object { $_.FullName -like "*\migrations\*" } |
+    ForEach-Object {
+        $rel = $_.FullName.Substring($PSScriptRoot.Length + 1)
+        if (-not (Test-Path -LiteralPath (Join-Path $dist ("_internal\" + $rel)) -PathType Leaf)) {
+            $missing += $rel
+        }
+    }
+Get-ChildItem -Path (Join-Path $PSScriptRoot "wh_local\modules\product_processing\templates") -Filter "*.xlsx" -File -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $rel = "_internal\wh_local\modules\product_processing\templates\" + $_.Name
+        if (-not (Test-Path -LiteralPath (Join-Path $dist $rel) -PathType Leaf)) {
+            $missing += $rel
+        }
+    }
+if ($missing.Count -gt 0) {
+    throw "bundle is missing required assets: $($missing -join ', ')"
+}
+Write-Host "[build] verified bundled assets (frontend, extension, migrations, templates, splash, data)"
+
 # Ship the verified, immutable artifact plus the exact Node executable that built
 # it. This is intentionally a copied build artifact, not a Git submodule/reference
 # and not a dependency on a customer-installed Node runtime. The artifact already
@@ -206,6 +238,7 @@ $csc = @(
 if (-not $csc) { throw "csc.exe (.NET Framework) not found - cannot build MainPG-Updater.exe" }
 & $csc /nologo /target:winexe "/out:$dist\MainPG-Updater.exe" "updater\MainPGUpdater.cs"
 if ($LASTEXITCODE -ne 0) { throw "MainPG-Updater.exe compile failed" }
+if (-not (Test-Path -LiteralPath "$dist\MainPG-Updater.exe")) { throw "MainPG-Updater.exe missing after compile" }
 
 # 4c. Write version.json (UTF-8 without BOM - Python json.loads rejects BOM).
 $versionJson = Join-Path $dist "version.json"
@@ -215,6 +248,8 @@ Write-Host "[build] wrote $versionJson"
 $forbiddenNames = @(
     "cos.local.json",
     "onebound.local.json",
+    "temu_gateway.local.json",
+    "temu_gateway.enc",
     ".env",
     "workbench.sqlite3"
 )
@@ -224,6 +259,17 @@ $forbiddenFiles = Get-ChildItem -LiteralPath $dist -Recurse -File | Where-Object
 }
 if ($forbiddenFiles) {
     throw "Refusing to package local credentials or databases"
+}
+
+# The temu template that lands in the package must stay empty. Credentials are
+# never bundled at all (see the block further down); filling this file would put
+# the shared provider pair into every installer in clear text.
+$gatewayTemplate = Join-Path $dist "wh_local\data\temu_gateway.json"
+if (Test-Path -LiteralPath $gatewayTemplate) {
+    $templateText = [IO.File]::ReadAllText($gatewayTemplate, [Text.Encoding]::UTF8)
+    if ($templateText -match '"yl_(client|token)"\s*:\s*"[^"]+"') {
+        throw "temu_gateway.json must stay an empty template - Temu credentials are never bundled"
+    }
 }
 
 # Media publishing: precheck finalization exports final images as public COS
@@ -242,20 +288,37 @@ $cosSource = if ($env:MAINPG_COS_CONFIG_PATH) {
 } else {
     Join-Path $PSScriptRoot "wh_local\modules\product_processing\cos.local.json"
 }
+
+# 明文缺失时，从上一版产物里复用密文。查找顺序：补丁基线目录、本次备份、dist 下的历史
+# 打包目录。1.6.8 曾因新增的「资产校验」失败重跑，dist 被半成品覆盖导致 onebound.enc
+# 没被备份、也没被复用，最终安装包缺采集凭据——这里把兜底范围扩大，并在彻底找不到时
+# 直接让构建失败，不再只打一行 WARNING。
+function Find-ReusableEnc([string]$name) {
+    $candidates = @()
+    if ($PatchFromDir) { $candidates += (Join-Path $PatchFromDir $name) }
+    $candidates += (Join-Path $credBackupDir $name)
+    Get-ChildItem -Path (Join-Path $PSScriptRoot "dist") -Directory -Filter "_baseline-*" -ErrorAction SilentlyContinue |
+        ForEach-Object { $candidates += (Join-Path $_.FullName $name) }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
 if (Test-Path -LiteralPath $cosSource) {
     & $python -m wh_local.secrets encrypt $cosSource (Join-Path $dist "cos.enc") cos
     if ($LASTEXITCODE -ne 0) { throw "encrypting cos credentials failed" }
     Write-Host "[build] bundled cos.enc (media publishing, encrypted)"
-} elseif (Test-Path -LiteralPath (Join-Path $credBackupDir "cos.enc") -PathType Leaf) {
-    Copy-Item -LiteralPath (Join-Path $credBackupDir "cos.enc") -Destination (Join-Path $dist "cos.enc") -Force
-    Write-Host "[build] reused cos.enc from previous build (plaintext source absent)"
 } else {
-    Write-Host "[build] WARNING: cos.local.json missing - preview export cannot publish images"
+    $reuse = Find-ReusableEnc "cos.enc"
+    if (-not $reuse) { throw "cos.enc not available: set MAINPG_COS_CONFIG_PATH to the plaintext cos config" }
+    Copy-Item -LiteralPath $reuse -Destination (Join-Path $dist "cos.enc") -Force
+    Write-Host "[build] reused cos.enc from $reuse"
 }
 
 # OneBound collection credentials: daily-selection / 1688 collection needs the
-# project-local API key. Missing file still installs (feature degrades) but is
-# flagged loudly so release builds never silently ship without it.
+# project-local API key. A bundle without it silently breaks 1688 collection on
+# customer machines, so this is a hard failure.
 $oneboundSource = if ($env:MAINPG_ONEBOUND_CONFIG_PATH) {
     $env:MAINPG_ONEBOUND_CONFIG_PATH
 } else {
@@ -265,12 +328,42 @@ if (Test-Path -LiteralPath $oneboundSource) {
     & $python -m wh_local.secrets encrypt $oneboundSource (Join-Path $dist "onebound.enc") onebound
     if ($LASTEXITCODE -ne 0) { throw "encrypting onebound credentials failed" }
     Write-Host "[build] bundled onebound.enc (collection credentials, encrypted)"
-} elseif (Test-Path -LiteralPath (Join-Path $credBackupDir "onebound.enc") -PathType Leaf) {
-    Copy-Item -LiteralPath (Join-Path $credBackupDir "onebound.enc") -Destination (Join-Path $dist "onebound.enc") -Force
-    Write-Host "[build] reused onebound.enc from previous build (plaintext source absent)"
 } else {
-    Write-Host "[build] WARNING: onebound.local.json missing - installed users cannot collect 1688 data"
+    $reuse = Find-ReusableEnc "onebound.enc"
+    if (-not $reuse) { throw "onebound.enc not available: set MAINPG_ONEBOUND_CONFIG_PATH to the plaintext onebound config" }
+    Copy-Item -LiteralPath $reuse -Destination (Join-Path $dist "onebound.enc") -Force
+    Write-Host "[build] reused onebound.enc from $reuse"
 }
+foreach ($credName in @("cos.enc", "onebound.enc")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $dist $credName))) {
+        throw "bundle is missing $credName"
+    }
+}
+Write-Host "[build] verified bundled credentials (cos.enc, onebound.enc)"
+
+# Temu semi-managed listing credentials: NEVER bundle them.
+#
+# The YL client/token pair is shared by every user. Anything shipped in the
+# installer can be extracted (the AES key lives in wh_local/secrets.py and the
+# app ships its own decrypt command), so bundling it means one leaked installer
+# leaks the credentials for all users - and it cannot be revoked remotely.
+#
+# The app instead pulls the pair from the customer center after login:
+#   GET /api/customer/temu-gateway   (env on the server: WH_TEMU_YL_CLIENT/TOKEN)
+# Rotation: the server-side pair is fingerprinted; when it changes, every
+# installed client overwrites its local copy within 5 minutes. So rotating on
+# the server is the revoke switch - no rebuild, no reinstall.
+$temuPlain = Join-Path $PSScriptRoot "wh_local\data\temu_gateway.local.json"
+$temuEnc = Join-Path $dist "temu_gateway.enc"
+if (Test-Path -LiteralPath $temuEnc -PathType Leaf) {
+    Remove-Item -LiteralPath $temuEnc -Force
+}
+if (Test-Path -LiteralPath $temuPlain -PathType Leaf) {
+    throw ("Refusing to build: " + $temuPlain + " exists.`n" +
+        "Temu provider credentials must NOT be bundled - a leaked installer would leak them for every user.`n" +
+        "Delete or rename that file and rebuild. Installed clients fetch the pair from the customer center after login.")
+}
+Write-Host "[build] no Temu provider credentials bundled (fetched from the customer center after login)"
 
 # 5. Pack a portable zip
 Write-Host "[build] creating portable zip ..."

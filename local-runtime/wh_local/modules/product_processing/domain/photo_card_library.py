@@ -675,6 +675,8 @@ def assemble_panel_image_prompt(
     panels: list[Any] | tuple[Any, ...] | None = None,
     global_selection: dict[str, Any] | None = None,
     preset_id: str = "auto",
+    scene_style: str = "",
+    subject_title: str = "",
 ) -> PanelAssembly:
     """Assemble a four-panel prompt with per-panel cards and aux elements.
 
@@ -682,6 +684,8 @@ def assemble_panel_image_prompt(
     plus up to three companion prop cards.  ``auto``/missing values inherit the
     batch-level ``global_selection`` and then the category default pack.
     ``preset_id`` adds the four simple-template commercial intents.
+    ``scene_style`` / ``subject_title``：未手选零件时用品类专属预设
+    （scene_props.json），件数按场景风格、同一件不跨格重复。
     """
 
     resolved_category = _resolve_category(category_id)
@@ -691,6 +695,13 @@ def assemble_panel_image_prompt(
     aux_defaults = CATEGORY_AUX_DEFAULTS[resolved_category]
     default_scenes = list(aux_defaults.get("scenes") or ("scene_plaster",))
     default_props = list(aux_defaults.get("props") or ())
+    style_props: list[list[str]] = []
+    if scene_style or subject_title:
+        from .scene_props import panel_props
+
+        style_props = panel_props(
+            resolved_category, title=subject_title, style=scene_style or ""
+        )
 
     base_layers: dict[str, str] = {}
     for layer in LAYER_KEYS:
@@ -741,9 +752,10 @@ def assemble_panel_image_prompt(
             if defaulted:
                 used_defaults.append(f"panel{index + 1}:{layer}")
 
+        prop_ids: list[str] = []
+        prop_names: list[str] = []
         if white_hero and index == 0:
             scene_id = "scene_white_sweep"
-            prop_ids: list[str] = []
         else:
             raw_scene = raw.get("scene")
             scene_id = (
@@ -754,20 +766,34 @@ def assemble_panel_image_prompt(
             if not scene_id:
                 scene_id = default_scenes[0] if default_scenes else "scene_plaster"
             raw_props = raw.get("props")
-            if raw_props is None:
-                prop_ids = (
-                    default_props[:1]
-                    if index == 1
-                    else default_props[:2]
-                    if index == 2
-                    else []
-                )
+            if raw_props is None or (
+                isinstance(raw_props, str)
+                and raw_props.strip().lower() in {"", "auto"}
+            ):
+                if style_props:
+                    prop_ids = []
+                    auto_names = (
+                        style_props[index - 1]
+                        if 1 <= index <= len(style_props)
+                        else []
+                    )
+                    prop_names = [str(name) for name in auto_names if str(name).strip()]
+                else:
+                    prop_ids = (
+                        default_props[:1]
+                        if index == 1
+                        else default_props[:2]
+                        if index == 2
+                        else []
+                    )
             else:
                 prop_ids = _safe_props(raw_props)
 
         scene_text = AUX_CARDS[scene_id].prompt_en
         props_text = (
-            ", ".join(AUX_CARDS[prop_id].prompt_en for prop_id in prop_ids)
+            ", ".join(prop_names)
+            if prop_names
+            else ", ".join(AUX_CARDS[prop_id].prompt_en for prop_id in prop_ids)
             if prop_ids
             else "no companion props"
         )
@@ -791,7 +817,7 @@ def assemble_panel_image_prompt(
         selection_summary[f"panel{index + 1}"] = {
             "role": role,
             "scene": scene_id,
-            "props": prop_ids,
+            "props": prop_names or prop_ids,
             "white_hero": white_hero,
             **resolved_layers,
         }

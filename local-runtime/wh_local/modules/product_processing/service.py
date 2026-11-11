@@ -13,7 +13,7 @@ import sys
 import threading
 import unicodedata
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -73,6 +73,12 @@ from .domain.category_image_presets import CATEGORY_IMAGE_PROMPTS
 from .domain.background_presets import detect_category_id, select_backdrop_fragment
 from .domain.custom_backgrounds import CustomBackgroundStore, user_background_id
 from .domain.usage_rooms import resolve_usage_place
+from .domain.scene_props import (
+    STYLE_PROP_RANGES,
+    panel_props,
+    scene_text,
+    split_prop_shares,
+)
 from .domain.variant_axes import normalize_variant_attributes
 from .domain.photo_card_library import (
     CARD_LIBRARIES,
@@ -111,6 +117,26 @@ from .domain.policy import (
 )
 from .domain.preview_images import task_item_result_version
 from .domain import sku_availability as sku_availability_domain
+from .domain.mahjong_panel import (
+    MAHJONG_BLANK_FACE_RULE,
+    MahjongPatternLibrary,
+    PatternAsset,
+    build_pattern_library,
+    build_source_panels,
+    choose_distinct_patterns,
+    library_key,
+    paste_patterns_in_scene,
+)
+from .domain.mahjong_faces import write_standard_faces as _mahjong_write_standard_faces
+from .domain.mahjong_faces_us import write_faces as _mahjong_write_us_faces
+from .domain.mahjong_render import (
+    art_dir as _mahjong_art_dir,
+    extract_profile as _mahjong_extract_profile,
+    preset_path as _mahjong_preset_path,
+    render_available as _mahjong_render_available,
+    render_cluster as _mahjong_render_cluster,
+    write_pattern as _mahjong_write_pattern,
+)
 from .domain.prompts import (
     ARK_GRID_IMAGE_PROMPT,
     ARK_GRID_IMAGE_PROMPT_B,
@@ -124,6 +150,18 @@ from .domain.prompts import (
     TWO_IMAGE_RUNTIME_CONTRACT,
     format_prompt,
 )
+from .domain.precision_prompts import (
+    PRECISION_STANDARD,
+    PRECISION_TEXT,
+    assess_precision_budget,
+    build_precision_panel_blocks,
+    build_precision_product_facts,
+    build_precision_sheet_prompt,
+    build_precision_single_prompt,
+    canvas_size_for_precision,
+    normalize_precision_class,
+    precision_class_for_subject,
+)
 from .domain.visual_planner import listing_prompt_context
 from .domain.workbooks import (
     is_variant_value_noise,
@@ -132,6 +170,7 @@ from .domain.workbooks import (
     variant_grid_gaps,
 )
 from .infrastructure.assets import ProductProcessingAssets
+from .infrastructure.database import default_storage_root
 from .infrastructure.ocr_gate import (
     detect_chinese_text,
     inspect_sku_text,
@@ -721,11 +760,16 @@ _SCENE_PANEL1_REWRITES: tuple[tuple[str, str], ...] = (
     (
         "2 Panel 1: pure white seamless, 78%-85%, no text, no room.",
         "2 Panel 1: one real category-matched backdrop with visible surface and depth, no companion props, "
-        "74%-82%, no text.",
+        "62%-74%, no text.",
     ),
     (
         "The white hero fills 78%-85% with a 7% inner safe margin",
-        "The hero panel fills 74%-82% with a 7% inner safe margin",
+        "The hero panel fills 62%-74% with a 7% inner safe margin",
+    ),
+    # 方舟 A/B/C/D 四套模板的「首图必须做大」：场景档下留出空间感，比例才不像贴上去的。
+    (
+        "**首图必须做大——约占画幅 78%-85%**",
+        "**主图约占画幅 62%-74%，给背景留出真实空间感**",
     ),
     # 逐格角色文案（单格重绘 / 精品模式的预设主图）
     (
@@ -735,6 +779,12 @@ _SCENE_PANEL1_REWRITES: tuple[tuple[str, str], ...] = (
     (
         "on a pure white seamless background",
         "on one real, category-matched backdrop with visible surface and depth",
+    ),
+    (
+        "- Every panel shows at least four separate props; zero, one or two is a failure, "
+        "and no prop set repeats across panels.",
+        "- Panels 2-4 each show at least four separate props; zero, one or two is a failure, "
+        "and no prop set repeats across panels. Panel 1 has no added props.",
     ),
     (
         "on a pure white seamless sweep",
@@ -749,7 +799,7 @@ _SCENE_PANEL1_REWRITES: tuple[tuple[str, str], ...] = (
         "Complete product centered on a seamless studio sweep at about 78%-85% with balanced, even negative space "
         "and a crisp grounded contact shadow.",
         "Complete product centered on a real, category-matched backdrop with visible surface and depth at about "
-        "74%-82%, balanced negative space and a crisp grounded contact shadow.",
+        "62%-74%, balanced negative space and a crisp grounded contact shadow.",
     ),
     # 导演模式逐格卡片的兜底句
     (
@@ -794,6 +844,32 @@ def _apply_scene_main_background(text: str) -> str:
     return _PRESET_PANEL1_LINE_RE.sub(_PANEL1_SCENE_LINE, result)
 
 
+# 道具件数：模板逐格写死「≥4 件」，件数应由场景风格（SCENE PLAN）决定，不该所有档位都堆四件。
+_PROP_COUNT_REWRITES: tuple[tuple[str, str], ...] = (
+    ("（≥4 件真实环境元素）", "（件数按 SCENE PLAN）"),
+    ("≥4 件真实环境元素构成可信的生活场景", "按 SCENE PLAN 件数布置真实环境元素，构成可信的生活场景"),
+    ("（≥4 件）", "（件数按 SCENE PLAN）"),
+)
+
+
+def _apply_prop_count_rules(text: str) -> str:
+    """把所有「≥4 件」的写法定点降成 SCENE PLAN 的件数口径。"""
+
+    result = str(text or "")
+    for old, new in _PROP_COUNT_REWRITES:
+        result = result.replace(old, new)
+    # 方舟四套模板里「≥4 件」的写法有十几种（家具软装 / 真实环境元素 / 该格配饰物…），
+    # 逐条列举容易漏，这里统一兜底。
+    return re.sub(r"≥\s*4\s*件", "件数按 SCENE PLAN", result)
+
+
+# 运行时契约里的道具预算句：主图不放道具，2-4 格按场景计划件数。
+_REAL_PLACE_BUDGET = (
+    "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with only 1-2 large simple everyday "
+    "objects that really belong there; Panels 1 and 4 have no added props. Decorative prop clusters are a "
+    "failure."
+)
+
 # 知道这个 SKU 的真实使用位置后，还要把「每格至少四件道具 / 2-4 格三个不同地点」
 # 一起改掉：这两条会把真实场景换成摄影棚式的摆拍堆道具（浴室地垫被摆到厨房台面、
 # 窗台就是这么来的）。只在 usage_place 有值时应用。
@@ -801,9 +877,7 @@ _REAL_USAGE_REWRITES: tuple[tuple[str, str], ...] = (
     (
         "- PROP BUDGET: at least four separate props per panel, source-compatible and subordinate to the product; "
         "never zero, one or two, and never the same prop set twice.",
-        "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with only 1-2 large simple everyday "
-        "objects that really belong there; Panels 1 and 4 have no added props. Decorative prop clusters are a "
-        "failure.",
+        _REAL_PLACE_BUDGET,
     ),
     (
         "Panels 2-4 use three DIFFERENT places (wood or textile, stone or marble, wall with real light, outdoor or "
@@ -855,9 +929,7 @@ def _apply_real_usage_rules(text: str) -> str:
 # 「只放 1-2 件日用品」会把花艺/丝带/烛台这些装饰压掉，界面选花哨也看不出差别。
 _ORNATE_REWRITES: tuple[tuple[str, str], ...] = (
     (
-        "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with only 1-2 large simple everyday "
-        "objects that really belong there; Panels 1 and 4 have no added props. Decorative prop clusters are a "
-        "failure.",
+        _REAL_PLACE_BUDGET,
         "- PROP BUDGET: Panels 2-3 sit in the product's real place of use with 1-3 objects, including at least "
         "one decorative flourish that suits an ornate styling (dried flowers, a silk ribbon, a brass tray or a "
         "lit candle); Panels 1 and 4 have no added props; nothing may touch, cover or outshine the product.",
@@ -887,13 +959,18 @@ def _apply_background_rules(
     usage_place: str = "",
     scene_style: str = "",
 ) -> str:
-    """scene 档 + 真实场景 + 场景风格的统一改写入口。"""
+    """主图背景 / 真实场景 / 道具件数的统一改写入口（所有档位都走这里）。
+
+    件数本身由 ``_scene_family_plan`` 按 ``scene_style`` 写进 SCENE PLAN；
+    这里只负责把模板里写死的「每格 4 件」改成指向 SCENE PLAN。
+    """
 
     result = str(text or "")
     if str(main_background or "scene").strip().lower() != "white":
         result = _apply_scene_main_background(result)
     if str(usage_place or "").strip():
         result = _apply_real_usage_rules(result)
+    result = _apply_prop_count_rules(result)
     if str(scene_style or "").strip().lower() == "ornate":
         result = _apply_ornate_rules(result)
     return result
@@ -907,6 +984,17 @@ PET_PRODUCT_RULE = """PET PRODUCT REALISM (this SKU is used by a pet; this block
 - If a pet appears, the WHOLE pet must be in frame: head, ears, torso, all four legs and tail, anatomically correct and in proportion, wearing the item properly. Never render only legs, paws, a rear end, a headless body or a tail inside, under or beside the garment.
 - Do not place a human hand or person in a panel where a pet wears the item; the pet is the wearer. A hand may appear only when the panel explicitly asks for adjustment, and then the pet must still be complete and the hand anatomically correct.
 - If the pet or the garment cannot be rendered completely and correctly, show the item empty on a hanger or as a flat lay instead."""
+
+# 场景背景最容易翻车的另一类：商品像抠图贴纸贴在背景上——比例跟场景里的地板缝、
+# 路沿、家具对不上，没有接地阴影、透视也不一致。这条规则永远放在提示词最末尾，
+# 覆盖前面所有「商品占画面 74%-82%」的构图描述。
+SCENE_REALISM_RULE = """SCENE REALISM (hard rule; applies to every panel):
+- Scale: size the product against real anchors already in the scene (plank and tile seams, kerbs, table edges, chair legs, door height) so the picture reads at true life scale. The product must never look larger or smaller than it would in real life beside those anchors.
+- Contact: the product rests ON the surface with a grounded contact shadow and correct occlusion; it must never float, hover, sink into, or be pasted onto the surface. No cut-out edge, white halo, doubled outline or sticker look.
+- Perspective: the product's camera height and vanishing points must match the backdrop. Never paste a straight-on product view into a 45-degree, top-down or low-angle scene.
+- Light: key-light direction, colour temperature and reflections must match the scene, including the shadow the product throws onto the floor or wall.
+- Form: keep the product's real proportions, geometry, material and print exactly as the reference; never stretch, squash, bend, mirror or duplicate it.
+- If a believable true-scale placement is impossible, use a simple calm surface instead of a busy scene."""
 
 _PET_KEYWORDS = ("宠物", "猫", "狗", "pet", "dog", "cat", "puppy", "kitten")
 _PET_EXCLUSIONS = ("热狗", "hot dog", "hotdog")
@@ -1048,7 +1136,8 @@ _PRESET_PANEL_ROLES: dict[str, tuple[tuple[str, str], ...]] = {
             "detail",
             "Composition - Real-place shot: show the product already installed, carried or stored at its real "
             "place of use from usage_scene.place - a keychain clipped onto a belt loop or bag strap, a hook holding "
-            "a towel on a rail, a bottle in a car cup holder - with 1-2 large simple companion objects, natural "
+            "a towel on a rail, a bottle in a car cup holder - with the prop count set by the scene style, drawn "
+            "only from objects that genuinely belong there, natural "
             "window light and real three-layer depth. No hand in this panel, no inset close-up, no bare studio "
             "surface; product complete and unobstructed.",
         ),
@@ -1132,7 +1221,7 @@ _PRESET_GRID_PANEL_PLAN: dict[str, str] = {
 - Every other hard rule still binds absolutely: the 2x2 layout, both center dividers, panel coordinates, product fidelity, geometry integrity, completeness, safe margins, realistic light physics and the zero-added-text rule.
 - SOURCE OF TRUTH FOR THE SCENE: the "usage_scene" object inside the AUTHORITATIVE SUBJECT ANALYSIS JSON above belongs to THIS exact product. Stage Panel 2 and Panel 3 at usage_scene.place doing usage_scene.action. If usage_scene is missing, derive the place from what this exact product physically is - never fall back to a generic tabletop or an empty room. Two decorative standing still lifes are a FAILED batch.
 - Panel 1 (top-left): unchanged - pure white seamless marketplace hero, product only, no hand, no props, no scene.
-- Panel 2 (top-right): THE REAL PLACE. Show the product already installed, carried or stored at usage_scene.place the way an owner really keeps it - a keychain clipped onto a belt loop or a bag strap, a hook holding a towel on a rail, a bottle standing in a car cup holder, a spatula resting in its crock. Real everyday surroundings at true object scale with 1-2 large simple companion objects, natural window light, real three-layer depth. No hand in this panel, no macro crop, no bare studio surface.
+- Panel 2 (top-right): THE REAL PLACE. Show the product already installed, carried or stored at usage_scene.place the way an owner really keeps it - a keychain clipped onto a belt loop or a bag strap, a hook holding a towel on a rail, a bottle standing in a car cup holder, a spatula resting in its crock. Real everyday surroundings at true object scale with the prop count set by the scene style, drawn only from objects that genuinely belong there, natural window light, real three-layer depth. No hand in this panel, no macro crop, no bare studio surface.
 - Panel 3 (bottom-left): THE IN-USE CLOSE-UP. A real partial adult hand - or a partial person (hands, forearms, torso, or a head turned away) - must be actively performing usage_scene.action on the exact product at usage_scene.place: clipping it on, hooking it, wearing it, filling it, pulling it, wiping it. Exactly five anatomically correct fingers, a continuous wrist, no visible face, no full body. Frame it close enough that the hand-to-product interaction is the subject of the shot. The hand must visibly touch and move the product; the product alone on a cloth or table in this panel is a FAILED panel. The hand must never hide the product's shape or key features - the complete product stays sharp and readable.
 - Panels 2 and 3 must show the SAME real place so the set reads as one product story, but with clearly different camera angle, shot scale and light direction.
 - Panel 4 (bottom-right): unchanged orthographic dimension background.
@@ -1168,7 +1257,7 @@ _DEFAULT_GRID_PANEL_ROLES = (
 _PRESET_GRID_PANEL_ROLES: dict[str, tuple[str, str, str, str]] = {
     "lifestyle_use": (
         "Hero product image: complete product on a pure white seamless background, no hand, no props",
-        "Real-place image: the product already installed, carried or stored at its real place of use (belt loop, bag strap, hook, cup holder) with 1-2 large simple companion objects, natural window light, no hand",
+        "Real-place image: the product already installed, carried or stored at its real place of use (belt loop, bag strap, hook, cup holder) with the prop count set by the scene style, drawn only from objects that genuinely belong there, natural window light, no hand",
         "In-use close-up: a real partial adult hand or partial person (hands, forearms, torso, head turned away, no visible face) actively operating the exact product at its real place of use, five correct fingers, product complete and unobstructed",
         "Clean dimension annotation background",
     ),
@@ -1359,6 +1448,15 @@ def _scene_style_seed(task_id: int, draft_id: int) -> int:
     return int(hashlib.sha256(f"{task_id}:{draft_id}:scene".encode("utf-8")).hexdigest()[:8], 16)
 
 
+def _share_phrase(share: int) -> str:
+    """把份额说成人话：2 件 / 1 件。"""
+
+    count = max(0, int(share))
+    if count <= 0:
+        return "no added props"
+    return f"{count} simple everyday object" + ("" if count == 1 else "s")
+
+
 def _scene_family_plan(
     scene_style: str,
     seed: int,
@@ -1368,6 +1466,8 @@ def _scene_family_plan(
     main_background: str = "scene",
     usage_place: str = "",
     hero_backdrop: str = "",
+    category: str = "",
+    subject_title: str = "",
 ) -> str:
     """按「模板 + 场景风格」生成本批次的地点、配饰物与主体位置。
 
@@ -1375,9 +1475,10 @@ def _scene_family_plan(
     所以用户切换模板时能立刻看出这是另一种摄影，而不是同一套景换个角度。
     ``main_background``：scene=主图也带真实背景（默认）；white=主图沿用纯白棚。
     ``usage_place``：这个 SKU 真实的使用位置（视觉识别或品类兜底）。一旦有值，
-    2-3 格就锁死在这个真实场景里，不再套模板的通用台面/窗户/木地板。
+    2-4 格就锁死在这个真实场景里，不再套模板的通用台面/窗户/木地板。
     ``hero_backdrop``：用户在界面上显式选中的背景底板描述。显式选择优先于
     ``usage_place``——否则同一批里有的商品按模板出丝绒、有的被真实场景顶掉。
+    ``category`` / ``subject_title``：用于取品类专属台面与零件（scene_props.json）。
     """
 
     key = _SCENE_TEMPLATE_ALIASES.get(str(template or "").strip().lower(), "a")
@@ -1393,6 +1494,19 @@ def _scene_family_plan(
     # 主图背景优先级：用户选的底板 > 产品真实使用位置 > 品类匹配背景。
     hero_source = hero or usage
 
+    # 整套件数按场景风格拆分（极简 1 / 生活 3 / 花哨 4-6），再由 _shares_for 分到第 2/3/4 格。
+    shares = split_prop_shares(style)
+    prop_count = sum(shares)
+    share_text = "/".join(str(value) for value in shares)
+    style_note = {
+        "ornate": "top it with one clearly visible decorative flourish and a warmer, richer colour story",
+        "minimal": "keep a low-saturation palette and generous empty space",
+        "lifestyle": "keep warm, lived-in everyday styling",
+    }[style]
+    preset_panels = (
+        panel_props(category, title=subject_title, style=style) if category else []
+    )
+
     if usage:
         panel1_line = (
             f"- Panel 1: {hero_source}, framed as the hero backdrop - surface and wall only, no added props, "
@@ -1407,7 +1521,7 @@ def _scene_family_plan(
             place_lines = [
                 f"- Panel 2: {usage}. The product sits in its real position there, styled ORNATE: one clearly "
                 "visible decorative flourish (a small dried-flower sprig, a silk ribbon, a brass or ceramic tray, "
-                "or a lit candle) plus 1-2 everyday objects of that place, warmer and richer colour story, real "
+                "or a lit candle) plus 1-3 everyday objects of that place, warmer and richer colour story, real "
                 "three-layer depth, no hand. Camera: 45-degree three-quarter view at eye level, product filling "
                 "55%-70% with the room still readable behind it.",
                 f"- Panel 3: the same real place, framed closer on the product and on how it is used there, with "
@@ -1472,20 +1586,33 @@ def _scene_family_plan(
             "as the hero backdrop - surface and wall only, no added props, no corner badge, seal or sticker "
             "anywhere in frame."
             if scene_main
-            else "- Panel 1: pure white seamless studio, plus four low matte neutrals beside the product "
-            "(riser block, folded linen, ceramic dish, dried stem)."
+            else "- Panel 1: pure white seamless studio, no props beside the product, balanced empty space."
         )
-        place_lines = [
-            f"- Panel {index + 2}: {place}. At least four props go around the product - {props} - behind or "
-            "beside it, never covering it."
-            for index, (place, props) in enumerate(chosen)
-        ]
+        place_lines = []
+        for index, (place, fallback_props) in enumerate(chosen):
+            # 品类专属台面/背景描述（scene_props.json），模板仍决定摄影类型与机位。
+            surface = scene_text(category, "alt" if index == 1 else "main") if category else ""
+            props_text = (
+                ", ".join(preset_panels[index])
+                if preset_panels and preset_panels[index]
+                else fallback_props
+            )
+            backdrop = f" ({surface})" if surface else ""
+            if shares[index] <= 0:
+                place_lines.append(
+                    f"- Panel {index + 2}: {place}{backdrop}. No added props beside the product - keep the frame "
+                    f"clean; {style_note}."
+                )
+                continue
+            place_lines.append(
+                f"- Panel {index + 2}: {place}{backdrop}. Place {_share_phrase(shares[index])} around the product "
+                f"- {props_text} - behind or beside it, never covering it; {style_note}."
+            )
         prop_budget_line = (
-            "- Panels 2-4 each show at least four separate props; zero, one or two is a failure, and no prop set "
-            "repeats across panels. Panel 1 has no added props."
-            if scene_main
-            else "- Every panel shows at least four separate props; zero, one or two is a failure, and no prop set "
-            "repeats across panels."
+            f"- Panels 2-4 together carry {prop_count} (split {share_text}); Panel 1 has no added props; no prop "
+            "is repeated across panels."
+            if prop_count
+            else "- No added props on any panel; the product stays the single subject."
         )
         place_rule_line = (
             "- Panels 2-4 are three different places: never two crops of one set and never the same room twice."
@@ -1605,6 +1732,89 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     if value in (None, ""):
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mahjong_source_direct_enabled() -> bool:
+    """麻将「原图直出」开关（默认关闭）。
+
+    直出不做任何生成，违背生图链路的本意，只适合原图本身就够干净的商品；
+    需要时用 ``WH_MAHJONG_SOURCE_DIRECT=1`` 显式打开。
+    """
+
+    return str(os.environ.get("WH_MAHJONG_SOURCE_DIRECT", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _mahjong_local_paste_enabled() -> bool:
+    """麻将本地贴图开关（默认关闭）。
+
+    图案库目前只能从几十像素的电商原图里抠，贴上去是糊斑，比 AI 自己画得更差；
+    等有清晰牌面素材（或接入抠图模型）再用 ``WH_MAHJONG_LOCAL_PASTE=1`` 打开。
+    """
+
+    return str(os.environ.get("WH_MAHJONG_LOCAL_PASTE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _mahjong_3d_enabled() -> bool:
+    """麻将 3D 渲染出图开关（默认关闭）。
+
+    打开后麻将专业模式不再调 provider：牌体/牌面/光影全部由本地 Blender 渲染，
+    四张方图只换摆位和机位。好处是字纹 100% 真实、尺寸绝对一致；代价是画面里
+    没有台面实景，需要额外准备背景。找不到 Blender 时自动回退 AI 生图。
+    """
+
+    return str(os.environ.get("WH_MAHJONG_3D", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _mahjong_3d_requested(value: str = "") -> bool:
+    """本次任务是否要用 3D 渲染出图：任务级选择优先，环境变量兜底。"""
+
+    if str(value or "").strip().lower() in {"3d", "render", "blender", "local"}:
+        return True
+    return _mahjong_3d_enabled()
+
+
+def _mahjong_face_source() -> str:
+    """3D 渲染时的牌面来源：``standard``（程序生成的标准牌）或 ``extracted``（图案库）。
+
+    标准牌（筒/条/万/字牌）本来就是规则图形 + 规范字形，程序画出来比从电商
+    实拍图里抠更清晰、字号也更统一；只有自定义花纹（定制款）才需要用图案库。
+    """
+
+    value = str(os.environ.get("WH_MAHJONG_FACES", "")).strip().lower()
+    return "extracted" if value in {"extracted", "library", "source"} else "standard"
+
+
+# 牌型判定：中式标准牌和美式牌的设计语言完全不同，选错等于换了商品。
+_US_MAHJONG_TOKENS = (
+    "美式",
+    "美国麻将",
+    "american",
+    "joker",
+    "扑克麻将",
+    "西式",
+)
+
+
+def _mahjong_style(*texts: str) -> str:
+    """按标题/品类判定牌型：``us``=美式（金/银牌体、Joker、东南西北带英文），``cn``=中式。"""
+
+    haystack = " ".join(str(text or "") for text in texts).lower()
+    return "us" if any(token in haystack for token in _US_MAHJONG_TOKENS) else "cn"
 
 
 def _image_generation_count(value: Any, *, default: int = 4) -> int:
@@ -2100,6 +2310,10 @@ class ProductProcessingService:
                 panels,
                 global_selection,
                 preset_id=preset_id,
+                scene_style=_resolve_scene_style(
+                    str(payload.get("scene_style") or "ornate"), 0
+                ),
+                subject_title=str(payload.get("title") or ""),
             )
             return {
                 "prompt": assembly.prompt,
@@ -3486,6 +3700,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "cost",
             "declared_price",
             "status",
+            "precision_annotation",
         }
         for key in direct_fields:
             if key in payload:
@@ -3495,11 +3710,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 elif key not in {"skc", "sku"}:
                     value = self._text(value)
                 fields[key] = value
+        if "precision_annotation" in fields:
+            annotation = str(fields["precision_annotation"] or "").strip().lower()
+            if annotation not in {"", "precision", "precision_text", "standard"}:
+                raise ValueError("precision_annotation 只能是空、precision、precision_text 或 standard")
+            fields["precision_annotation"] = annotation
         if "main_image_url" in payload and "image_url" not in fields:
             fields["image_url"] = self._text(payload["main_image_url"])
         self._apply_sku_changes(raw, payload.get("sku_name_edits"), payload.get("sku_name_deletes"))
         for key, value in payload.items():
-            if key not in {"status", "sku_name_edits", "sku_name_deletes"}:
+            if key not in {"status", "precision_annotation", "sku_name_edits", "sku_name_deletes"}:
                 raw[key] = value
         updated = self.repository.update_draft(draft_id, fields, raw, workspace_id=workspace_id)
         if updated is None:
@@ -4264,12 +4484,21 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             s["product_video_template"] = True
         s["skip_duplicates"] = _as_bool(s.get("skip_duplicates"), default=False)
         s["ip_check"] = _as_bool(s.get("ip_check"), default=True)
+        # 麻将专业模式：AI 只出空白牌，牌面字/花纹由本地图案库回贴（不重画图案）。
+        s["mahjong_mode"] = _as_bool(s.get("mahjong_mode"), default=False)
+        # 麻将出图方式：3d 走本地 Blender 渲染；其它值（含空）保持 AI 生图。
+        s["mahjong_render"] = (
+            "3d"
+            if str(s.get("mahjong_render") or "").strip().lower()
+            in {"3d", "render", "blender", "local"}
+            else "ai"
+        )
         # 是否自动烧制第 4 格尺寸图：默认开启；关闭后整批跳过尺寸画布导入/烧卡与 OCR 预取。
         s["dimension_card"] = _as_bool(s.get("dimension_card"), default=True)
-        # 场景风格：决定四格背景族；未知值回落 smart（按批次稳定轮换三档）。
-        _scene_style = str(s.get("scene_style") or "smart").strip().lower()
+        # 场景风格：决定四格背景族；默认花哨，未知值回落 ornate。
+        _scene_style = str(s.get("scene_style") or "ornate").strip().lower()
         s["scene_style"] = (
-            _scene_style if _scene_style in {"smart", "minimal", "lifestyle", "ornate"} else "smart"
+            _scene_style if _scene_style in {"smart", "minimal", "lifestyle", "ornate"} else "ornate"
         )
         # 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景。
         _image_template = str(s.get("image_template") or "A").strip().upper()
@@ -4519,7 +4748,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         try:
             pending = self.repository.drafts_awaiting_sku_availability(workspace_id=workspace_id)
         except Exception:  # noqa: BLE001 - 粗筛失败不影响物化结果
-            logger.warning("sku availability recheck lookup failed", exc_info=True)
+            _LOGGER.warning("sku availability recheck lookup failed", exc_info=True)
             return
         grouped: dict[str, list[int]] = {}
         for row in pending:
@@ -4530,7 +4759,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             try:
                 self.check_draft_sku_availability(draft_ids, workspace_id=target_workspace)
             except Exception:  # noqa: BLE001 - 补判失败保持暂缓状态，等下次物化再来
-                logger.warning(
+                _LOGGER.warning(
                     "sku availability recheck failed after materialization",
                     extra={"draft_ids": draft_ids},
                     exc_info=True,
@@ -5745,6 +5974,107 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "excluded_draft_ids": sorted(excluded_ids),
         }
 
+    def task_search_preview(
+        self,
+        task_id: int,
+        needle: str,
+        *,
+        workspace_id: str = "local",
+        limit: int = 2000,
+        match_all: bool = False,
+        matched_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """按关键字在**整个任务**里搜商品项（成品库全量搜索用）。
+
+        和 ``task_preview`` 的区别只有两点：筛选在库里做（JSON1 + LIKE），
+        以及**不投影图片**（``media_limit=0`` 同款口径）。命中之后由调用方
+        按当前页补图片，所以几百个商品的任务也只付「几毫秒 SQL + 命中条数」的钱。
+
+        ``matched_ids``：调用方已经用 ``search_task_items_bulk`` 一次查完了
+        所有批次，这里就不再重复查一遍库。
+        """
+        task = self._require_task_meta(task_id, workspace_id)
+        if task["status"] not in {"completed", "failed", "partial_failure", "cancelled"}:
+            raise ProductProcessingConflict(f"任务尚未完成（当前状态：{task['status']}）")
+        excluded_ids = {
+            int(value)
+            for value in task["settings"].get("excluded_preview_draft_ids", [])
+            if str(value).isdigit()
+        }
+        completed_only = task["status"] == "cancelled"
+        if matched_ids is None:
+            matched_ids = self.repository.search_task_items(
+                task_id,
+                needle,
+                limit=max(1, int(limit)),
+                completed_only=completed_only,
+                match_all=match_all,
+            )
+        else:
+            matched_ids = [int(value) for value in matched_ids][: max(1, int(limit))]
+        items = self.repository.get_task_items_by_ids(
+            task_id, matched_ids, completed_only=completed_only
+        )
+        draft_ids = [
+            int(item["product_draft_id"])
+            for item in items
+            if item.get("product_draft_id")
+        ]
+        draft_meta = (
+            self.repository.drafts_preview_meta(draft_ids, workspace_id=workspace_id)
+            if draft_ids
+            else {}
+        )
+        from .domain.preview_images import PreviewImageManifest  # noqa: PLC0415
+
+        empty_manifest = PreviewImageManifest().as_dict()
+        previews: list[dict[str, Any]] = []
+        for item in items:
+            result = item.get("result") or {}
+            draft_id = item.get("product_draft_id")
+            meta = draft_meta.get(int(draft_id)) if draft_id else {}
+            saved = (meta or {}).get("preview_overrides") or {}
+            if not isinstance(saved, dict):
+                saved = {}
+            previews.append(
+                {
+                    **self._preview_item(
+                        item,
+                        result,
+                        saved,
+                        preview_revision=int((meta or {}).get("preview_revision") or 0),
+                    ),
+                    "media_contract_version": int(
+                        (meta or {}).get("media_contract_version") or 1
+                    ),
+                    "excluded": bool(draft_id) and int(draft_id) in excluded_ids,
+                    "media_loaded": False,
+                    "sku_availability": None,
+                    "dimension_image": None,
+                    # 和 task_preview 里 media_limit=0 的分支同一口径：图片留空，
+                    # 但「能不能导出」的结论要给（成品库靠它筛可发布条目）。
+                    "assets": [],
+                    "image_manifest": empty_manifest,
+                    "main_image": "",
+                    "carousel_images": [],
+                    "detail_images": [],
+                    **self.preview_images.lazy_export_readiness(
+                        result,
+                        title=str(
+                            (saved.get("title") if isinstance(saved, Mapping) else "")
+                            or result.get("optimized_title")
+                            or ""
+                        ).strip(),
+                    ),
+                }
+            )
+        return {
+            "task_id": int(task_id),
+            "item_count": len(previews),
+            "truncated": len(previews) >= max(1, int(limit)),
+            "items": previews,
+        }
+
     def task_preview_media(
         self,
         task_id: int,
@@ -6762,6 +7092,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except LookupError as exc:
             raise ProductProcessingNotFound(str(exc)) from exc
 
+    def media_asset_file(
+        self,
+        asset_id: str,
+        *,
+        workspace_id: str,
+        width: int | None = None,
+    ) -> tuple[Path, str]:
+        """按登录会话取图（不校验临时签名）。见 MediaAssetService.media_asset_file。"""
+        try:
+            return self.media_assets.media_asset_file(
+                asset_id,
+                workspace_id=workspace_id,
+                width=width,
+            )
+        except LookupError as exc:
+            raise ProductProcessingNotFound(str(exc)) from exc
+
     def retry_media_asset(self, asset_id: str, *, workspace_id: str = "local") -> dict[str, Any]:
         try:
             asset = self.media_assets.retry_asset(asset_id, workspace_id=workspace_id)
@@ -7530,17 +7877,41 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             "overrides": saved,
         }
 
+    def _output_root_resolved(self) -> Path:
+        """输出根目录的 resolve 结果只算一次。
+
+        Windows 上 `Path.resolve()` 要走文件系统（解析短路径/符号链接），
+        每张图都算一遍在首屏就是几十毫秒的纯浪费。
+        """
+        cached = getattr(self, "_output_root_resolved_cache", None)
+        if cached is None:
+            cached = self.assets.output_root.resolve()
+            self._output_root_resolved_cache = cached
+        return cached
+
     def _display_url(self, value: Any) -> str:
-        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；http(s) 外链原样返回。"""
+        """本地生成图路径 → /pp-media/ 相对 URL（后端静态图床）；已经是 URL 的原样返回。"""
         text = str(value or "").strip()
         if not text:
             return ""
-        if text.lower().startswith(("http://", "https://")):
+        # 已经是可用的 URL 就直接返回，别拿它当文件路径去碰文件系统。
+        # 实测成品库首屏 175 次调用**全是** `/api/product-processing/preview/assets/...`，
+        # 以前每条都走一次 Path.resolve()（Windows 会逐级 realpath + readlink），
+        # 光这一项就 0.26 秒。
+        if text.startswith(("http://", "https://", "/api/", "/pp-media/")):
             return text
+        root = self._output_root_resolved()
+        # 用 os.path.abspath 而不是 Path.resolve()：
+        # resolve 会解析符号链接（每级一次 _getfinalpathname），abspath 只做字符串规范化。
+        # 真的因为符号链接导致相对化失败时，再退回 resolve 重试。
+        candidate = Path(os.path.abspath(text))
         try:
-            relative = Path(text).resolve().relative_to(self.assets.output_root.resolve())
+            relative = candidate.relative_to(root)
         except (ValueError, OSError):
-            return text
+            try:
+                relative = Path(text).resolve().relative_to(root)
+            except (ValueError, OSError):
+                return text
         return f"/pp-media/{relative.as_posix()}"
 
     def process_workbook(
@@ -8080,6 +8451,15 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         item_panels,
                         layer_selections,
                         preset_id=item_preset,
+                        # 未手选场景/零件时，用品类专属预设（scene_props.json）：
+                        # 件数按场景风格，同一件不跨格重复。
+                        scene_style=_resolve_scene_style(
+                            str(item_settings.get("scene_style") or "ornate"),
+                            _scene_style_seed(task_id, int(draft_id)),
+                        ),
+                        subject_title=str((draft or {}).get("title") or "")
+                        if isinstance(draft, dict)
+                        else "",
                     )
                     item_image_prompt = assembly.prompt
                     if panel_plan_override_enabled:
@@ -9869,6 +10249,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                             "image_generation_count": image_generation_count,
                             # 2K 四宫格链路同样要按预设改写第 2/3 格。
                             "image_preset": str(settings.get("image_preset") or "auto"),
+                            # 草稿池手动标注优先于主体识别自动判断。
+                            "precision_annotation": str(draft.get("precision_annotation") or ""),
+                            # 麻将专业模式：空白牌提示词 + 本地图案库回贴。
+                            "mahjong_mode": bool(settings.get("mahjong_mode")),
+                            # 麻将出图方式：ai / 3d（本地 Blender 渲染）。
+                            "mahjong_render": str(settings.get("mahjong_render") or "ai"),
                             "allow_quality_override": int(draft["id"])
                             in {
                                 int(value)
@@ -10219,6 +10605,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         panel_plan_override=panel_plan_override,
                         main_background=str(settings.get("main_background") or "scene"),
                         background_template=str(settings.get("background_template") or ""),
+                        scene_style=str(settings.get("scene_style") or "ornate"),
                     )
                 else:
                     grid_future = _submit_with_context(
@@ -10240,7 +10627,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         workspace_id=workspace_id,
                         batch_image_prompt=batch_image_prompt,
                         panel_plan_override=panel_plan_override,
-                        scene_style=str(settings.get("scene_style") or "smart"),
+                        scene_style=str(settings.get("scene_style") or "ornate"),
+                        precision_annotation=str(draft.get("precision_annotation") or ""),
+                        mahjong_mode=bool(settings.get("mahjong_mode")),
+                        mahjong_render=str(settings.get("mahjong_render") or "ai"),
                     )
             elif need_detail:
                 direct_detail_future = _submit_with_context(
@@ -10353,9 +10743,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     batch_image_prompt=batch_image_prompt,
                     image_preset=str(settings.get("image_preset") or "auto"),
                     panel_plan_override=panel_plan_override,
-                    scene_style=str(settings.get("scene_style") or "smart"),
+                    scene_style=str(settings.get("scene_style") or "ornate"),
                     main_background=str(settings.get("main_background") or "scene"),
                     background_template=str(settings.get("background_template") or ""),
+                    precision_annotation=str(draft.get("precision_annotation") or ""),
+                    mahjong_mode=bool(settings.get("mahjong_mode")),
+                    mahjong_render=str(settings.get("mahjong_render") or "ai"),
                 )
                 record_stage("grid_pipeline", stage_started)
             grid_image_paths, grid_summary_path = grid_output
@@ -11057,11 +11450,87 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         batch_image_prompt: str = "",
         image_preset: str = "",
         panel_plan_override: str = "",
-        scene_style: str = "smart",
+        scene_style: str = "ornate",
         main_background: str = "scene",
         background_template: str = "",
+        precision_annotation: str = "",
+        mahjong_mode: bool = False,
+        mahjong_render: str = "",
     ) -> GridImageOutput:
         """Generate four carousel images with a selectable 1/2/4-image transport layout."""
+        # 草稿池手动标注优先：标注过的草稿不再走主体识别自动判断。
+        annotation = str(precision_annotation or "").strip().lower()
+        precision_profile = (
+            vision_identity.get("precision_profile")
+            if isinstance(vision_identity, dict)
+            else {}
+        )
+        if not isinstance(precision_profile, dict):
+            precision_profile = {}
+        if annotation in {"precision", "precision_text", "standard"}:
+            precision_class = normalize_precision_class(annotation)
+            precision_source = "manual"
+        else:
+            precision_class = precision_class_for_subject(
+                precision_profile, product_category=category, title=optimized_title
+            )
+            precision_source = (
+                "vision"
+                if any(
+                    isinstance(precision_profile.get(key), bool)
+                    for key in ("is_small_or_intricate", "has_legible_text", "is_flat")
+                )
+                else "category-fallback"
+            )
+        precision_mode = (
+            precision_class != PRECISION_STANDARD and image_generation_count == 4
+        )
+        precision_shape = str(precision_profile.get("dominant_shape") or "")
+        precision_flat = bool(precision_profile.get("is_flat"))
+        precision_part_count = int(precision_profile.get("part_count") or 0)
+        precision_canvas = (
+            canvas_size_for_precision(
+                precision_class, product_category=category, shape=precision_shape
+            )
+            if precision_mode
+            else ""
+        )
+        precision_budget = (
+            assess_precision_budget(
+                precision_class,
+                part_count=precision_part_count,
+                canvas_size=precision_canvas or "2048x2048",
+                has_text=precision_class == PRECISION_TEXT,
+                products_per_call=1,
+            )
+            if precision_mode
+            else None
+        )
+        precision_over_budget = bool(
+            precision_budget is not None and precision_budget.level == "over_budget"
+        )
+        precision_facts = (
+            build_precision_product_facts(
+                title=optimized_title,
+                category=category,
+                vision_identity=vision_identity,
+            )
+            if precision_mode
+            else []
+        )
+        precision_panel_blocks = (
+            build_precision_panel_blocks(
+                over_budget=precision_over_budget, flat_product=precision_flat
+            )
+            if precision_mode
+            else []
+        )
+        if precision_budget is not None and ai_notes is not None:
+            ai_notes.append(
+                "precision_mode:"
+                f"{precision_class}:{precision_budget.level}:"
+                f"{precision_budget.recommendation}:{precision_source}"
+            )
         if not _ai_enabled() or not reference_urls:
             return GridImageOutput()
         media_types = _media_types()
@@ -11069,6 +11538,68 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             return GridImageOutput()
         processor_cls, media_config_error, media_error = media_types
         image_generation_count = _effective_image_generation_count(image_generation_count)
+        # 麻将专业模式：默认仍走 AI 生图（生图才是这个链路的价值），
+        # 只有显式开启 WH_MAHJONG_SOURCE_DIRECT 时才改成「原图直出」。
+        mahjong_active = bool(mahjong_mode) and image_generation_count == 4
+        if mahjong_active:
+            precision_mode = False
+        if mahjong_active and _mahjong_source_direct_enabled():
+            source_panels = self._mahjong_source_panels(reference_urls, ai_notes)
+            if source_panels:
+                return self._mahjong_source_output(
+                    source_panels, task_id, draft_id, workspace_id, ai_notes
+                )
+            if ai_notes is not None:
+                ai_notes.append("mahjong:no-source:fallback")
+        mahjong_assets: list[PatternAsset] = []
+        mahjong_render_mode = (
+            mahjong_active
+            and _mahjong_3d_requested(mahjong_render)
+            and _mahjong_render_available()
+        )
+        if mahjong_render_mode:
+            # 优先用这套商品自己的实拍图提取牌面与参数；提取不到再退回程序生成的
+            # 标准牌面（字纹清晰但不一定是这个商品），最后才用图案库。
+            extracted = self._mahjong_extracted(reference_urls, ai_notes)
+            pool: list[PatternAsset] = []
+            if extracted is None and _mahjong_face_source() == "extracted":
+                pool = self._mahjong_pattern_pool(
+                    reference_urls,
+                    category=category,
+                    title=optimized_title,
+                    workspace_id=workspace_id,
+                    ai_notes=ai_notes,
+                )
+            rendered = self._mahjong_render_panels(
+                pool,
+                ai_notes,
+                style=_mahjong_style(optimized_title, category),
+                extracted=extracted,
+            )
+            if rendered:
+                return self._mahjong_source_output(
+                    rendered,
+                    task_id,
+                    draft_id,
+                    workspace_id,
+                    ai_notes,
+                    provider="mahjong-3d",
+                    model="local-render",
+                )
+            if ai_notes is not None:
+                ai_notes.append("mahjong:render:fallback-ai")
+        if mahjong_active and _mahjong_local_paste_enabled():
+            mahjong_assets = self._mahjong_pattern_pool(
+                reference_urls,
+                category=category,
+                title=optimized_title,
+                workspace_id=workspace_id,
+                ai_notes=ai_notes,
+            )
+            if not mahjong_assets:
+                mahjong_active = False
+                if ai_notes is not None:
+                    ai_notes.append("mahjong:no-patterns:fallback")
         note_key = "four_grid" if image_generation_count == 4 else "image_set"
         attempt_count = 0
         provider_status_class = "success"
@@ -11144,27 +11675,29 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             resolved_scene_style = _resolve_scene_style(
                 scene_style, _scene_style_seed(task_id, draft_id)
             )
-            if scene_main or usage_place:
-                # 模板逐格矩阵里写死的「主图纯白 / 四件道具 / 三个不同地点」在这里先改掉：
-                # 后续单格重绘、两格重绘都从 prompt 派生，改一次就都生效。
-                prompt = _apply_background_rules(
-                    prompt,
-                    main_background=main_background,
-                    usage_place=usage_place,
-                    scene_style=resolved_scene_style,
-                )
+            # 模板逐格矩阵里写死的「主图纯白 / 每格四件道具 / 三个不同地点」在这里先改掉：
+            # 后续单格重绘、两格重绘都从 prompt 派生，改一次就都生效。
+            # 件数口径在白底档同样适用，所以不再按 scene_main 短路。
+            prompt = _apply_background_rules(
+                prompt,
+                main_background=main_background,
+                usage_place=usage_place,
+                scene_style=resolved_scene_style,
+            )
 
-            panel_roles = _grid_panel_roles(image_preset)
-            if scene_main or usage_place:
-                panel_roles = tuple(
+            panel_roles = (
+                tuple(precision_panel_blocks)
+                if precision_mode
+                else tuple(
                     _apply_background_rules(
                         role,
                         main_background=main_background,
                         usage_place=usage_place,
                         scene_style=resolved_scene_style,
                     )
-                    for role in panel_roles
+                    for role in _grid_panel_roles(image_preset)
                 )
+            )
             # 小白模板的逐格改写必须排在运行时契约之后：契约是“不可覆盖”的硬规则，
             # 只有放在它后面并显式声明优先级，才能压住模板里写死的第 2/3 格规划。
             preset_panel_plan = _grid_preset_panel_plan(image_preset)
@@ -11199,21 +11732,34 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 )
                 if allows_people:
                     standalone_prompt = _relax_hands_free(standalone_prompt)
-                if scene_main or usage_place:
-                    standalone_prompt = _apply_background_rules(
-                        standalone_prompt,
-                        main_background=main_background,
-                        usage_place=usage_place,
-                        scene_style=resolved_scene_style,
-                    )
+                standalone_prompt = _apply_background_rules(
+                    standalone_prompt,
+                    main_background=main_background,
+                    usage_place=usage_place,
+                    scene_style=resolved_scene_style,
+                )
 
             def single_prompt(role: str) -> str:
+                if precision_mode:
+                    return build_precision_single_prompt(
+                        facts=precision_facts,
+                        panel_block=role,
+                        precision_class=precision_class,
+                        flat_product=precision_flat,
+                        detail_units=precision_part_count,
+                    )
                 base = append_subject_analysis(
                     f"{standalone_prompt.rstrip()}\n\n"
                     f"{format_prompt(SINGLE_IMAGE_RUNTIME_CONTRACT, panel_role=role)}",
                     vision_identity,
                 )
-                return f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
+                if scene_main:
+                    base = f"{base}\n\n{SCENE_REALISM_RULE}"
+                base = f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
+                if mahjong_active and _mahjong_local_paste_enabled():
+                    # 槽位重绘同样保留场景，只把牌面留白；否则重绘出来的字会和图案叠一起。
+                    base = f"{base}\n\n{MAHJONG_BLANK_FACE_RULE}"
+                return base
 
             def two_image_prompt(left_role: str, right_role: str) -> str:
                 base = append_subject_analysis(
@@ -11221,6 +11767,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     f"{format_prompt(TWO_IMAGE_RUNTIME_CONTRACT, left_panel_role=left_role, right_panel_role=right_role)}",
                     vision_identity,
                 )
+                if scene_main:
+                    base = f"{base}\n\n{SCENE_REALISM_RULE}"
                 return f"{base}\n\n{PET_PRODUCT_RULE}" if pet_product else base
 
             def generate_one(
@@ -11268,6 +11816,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     # 用户在界面上显式选过的系统底板优先于「真实使用位置」推断，
                     # 否则同一批里会出现有的主图是丝绒、有的是普通卧室墙。
                     hero_backdrop=backdrop_fragment if system_backdrop_selected else "",
+                    # 品类专属台面/背景/零件（scene_props.json）。
+                    category=category,
+                    subject_title=optimized_title,
                 )
                 final_gate = GRID_FINAL_GATE.format(
                     template_check=GRID_TEMPLATE_GATES.get(
@@ -11278,36 +11829,54 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     # 闸门是最末尾、权重最高的一层：主图要按用户选的底板，这里也必须点名。
                     selected_gate = (
                         f"2 Panel 1: the selected backdrop ({backdrop_fragment}), no companion props, "
-                        "74%-82%, no text, no badge or sticker."
+                        "62%-74%, no text, no badge or sticker."
                     )
                     for candidate in (
                         "2 Panel 1: pure white seamless, 78%-85%, no text, no room.",
                         "2 Panel 1: one real category-matched backdrop with visible surface and depth, "
-                        "no companion props, 74%-82%, no text.",
+                        "no companion props, 62%-74%, no text.",
                     ):
                         final_gate = final_gate.replace(candidate, selected_gate)
-                grid_prompt = append_subject_analysis(
-                    f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
-                    vision_identity,
-                ) + "\n\n" + final_gate
-                if scene_main or usage_place:
+                if precision_mode:
+                    # 精小品：完全绕开场景/道具/逐格艺术指导，只保留产品事实 + 机位锁 + 微距角色。
+                    grid_prompt = build_precision_sheet_prompt(
+                        facts=precision_facts,
+                        panel_blocks=precision_panel_blocks,
+                        precision_class=precision_class,
+                        flat_product=precision_flat,
+                        detail_units=precision_part_count,
+                        same_design=True,
+                    )
+                else:
+                    grid_prompt = append_subject_analysis(
+                        f"{GRID_PROMPT_PRIORITY}\n\n{prompt.rstrip()}\n\n{_grid_runtime_contract(allows_people)}\n\n{scene_block}{preset_plan_block}{custom_plan_block}",
+                        vision_identity,
+                    ) + "\n\n" + final_gate
                     # 运行时契约 / 场景计划 / 预设块 / 收尾闸门在 prompt 之外单独拼装，
-                    # 这里对整段再改一次，保证「主图纯白 / 四件道具 / 三个地点」不残留。
+                    # 这里对整段再改一次，保证「主图纯白 / 每格四件道具 / 三个地点」不残留。
                     grid_prompt = _apply_background_rules(
                         grid_prompt,
                         main_background=main_background,
                         usage_place=usage_place,
                         scene_style=resolved_scene_style,
                     )
-                if pet_product:
-                    # 放在整段最后：必须压过逐格角色/预设里「手持使用」的写法。
-                    grid_prompt = f"{grid_prompt}\n\n{PET_PRODUCT_RULE}"
+                    if scene_main:
+                        # 场景背景的贴纸感/比例失真：放在整段最后，压过前面的构图比例描述。
+                        grid_prompt = f"{grid_prompt}\n\n{SCENE_REALISM_RULE}"
+                    if pet_product:
+                        # 放在整段最后：必须压过逐格角色/预设里「手持使用」的写法。
+                        grid_prompt = f"{grid_prompt}\n\n{PET_PRODUCT_RULE}"
+                    if mahjong_active and _mahjong_local_paste_enabled():
+                        # 麻将：场景/道具/机位/光影全部沿用上面的正常四宫格，
+                        # 只在最末尾压一层「牌面留白」，字纹由本地图案库按透视贴回。
+                        grid_prompt = f"{grid_prompt}\n\n{MAHJONG_BLANK_FACE_RULE}"
                 # Do not rely on the provider default here. Some OpenAI-compatible
                 # gateways silently fall back to 1024 when size is omitted.
                 media = generate_one(
                     grid_prompt,
-                    image_size="2048x2048",
-                    layout_scaffold=True,
+                    image_size=precision_canvas or "2048x2048",
+                    # 非方形画布不能套用方阵 scaffold（坐标契约按 2048 方图写死）。
+                    layout_scaffold=not precision_mode or precision_shape in {"", "square"},
                 )
                 provider_originals.append(media)
                 provider_original_paths = self._persist_provider_grid_originals(
@@ -11321,7 +11890,17 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     # Scaffolded square transport is split deterministically at the
                     # exact center. Never redraw the whole 2K image for a local split
                     # concern; only identified bad slots may use the 1K repair path.
-                    split_parts = processor.split_four_grid(media, enhance=options_from_env())
+                    # 精小品宽/竖画布：补边而不是居中裁方，避免切掉产品两侧。
+                    if precision_mode and precision_shape in {"wide", "tall"}:
+                        split_parts = processor.split_four_grid(
+                            media,
+                            enhance=options_from_env(),
+                            preserve_aspect=True,
+                        )
+                    else:
+                        split_parts = processor.split_four_grid(
+                            media, enhance=options_from_env()
+                        )
 
                     summary_parts = [
                         part
@@ -11460,6 +12039,17 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     if failed_slots or len(usable_parts) != 4:
                         raise ValueError("four-grid slot recovery did not produce four usable images")
                     usable_parts.sort(key=lambda part: int(str(getattr(part, "stage", "0")).rsplit("_", 1)[-1]))
+                    if (
+                        mahjong_active
+                        and mahjong_assets
+                        and _mahjong_local_paste_enabled()
+                    ):
+                        # 必须在 OCR/空白门之后贴：贴完才出现的汉字属于产品设计字符。
+                        # 默认关闭：当前图案库来自几十像素的原图，贴上去是糊斑，
+                        # 反而比 AI 自己画得更差；等有清晰牌面素材再打开。
+                        usable_parts = self._apply_mahjong_patterns(
+                            usable_parts, mahjong_assets, ai_notes
+                        )
                     if slot_recovery_used:
                         summary_parts = [processor.compose_grid_summary(usable_parts)]
                     parts = [*usable_parts, *summary_parts[:1]]
@@ -11701,6 +12291,351 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             paths.append(str(path))
         return tuple(paths)
 
+    def _mahjong_library_root(self) -> Path:
+        root = getattr(getattr(self, "assets", None), "root", None)
+        return Path(root) / "mahjong-patterns" if root else Path(default_storage_root()) / "mahjong-patterns"
+
+    def _mahjong_source_panels(
+        self,
+        reference_urls: Sequence[str],
+        ai_notes: list[str] | None = None,
+    ) -> list[bytes]:
+        """下载该商品原图，按「干净程度」挑几张裁成 4 张 1:1 直出面板。"""
+
+        fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+        images: list[bytes] = []
+        for url in list(reference_urls)[:6]:
+            try:
+                image = fetcher(str(url), max_bytes=8 * 1024 * 1024, timeout_seconds=10)
+            except Exception:
+                continue
+            content = bytes(getattr(image, "content", b"") or b"")
+            if content:
+                images.append(content)
+        panels = build_source_panels(images, side=2048, count=4)
+        if ai_notes is not None and panels:
+            ai_notes.append(f"mahjong:source-direct:{len(images)}:{len(panels)}")
+        return panels
+
+    def _mahjong_source_output(
+        self,
+        panels: Sequence[bytes],
+        task_id: int,
+        draft_id: int,
+        workspace_id: str,
+        ai_notes: list[str] | None = None,
+        *,
+        provider: str = "mahjong-source",
+        model: str = "source-direct",
+    ) -> GridImageOutput:
+        """把本地产出的面板（原图直出 / 3D 渲染）落成正式轮播图，不经过 provider。"""
+
+        from .infrastructure.media import GeneratedMedia
+
+        parts = [
+            GeneratedMedia(
+                stage=f"grid_image_{index}",
+                content=content,
+                content_type="image/png",
+                suffix=".png",
+                provider=provider,
+                model=model,
+                reference_count=0,
+                attempt_count=0,
+                provider_status_class="local_source",
+            )
+            for index, content in enumerate(panels, start=1)
+        ]
+        published = self._persist_media_for_preview(parts, task_id, draft_id, workspace_id)
+        if ai_notes is not None:
+            ai_notes.append("mahjong:no-ai-image")
+        return GridImageOutput(
+            carousel_urls=tuple(str(value) for value in published[:4]),
+            carousel_media=tuple(parts[:4]),
+            attempt_count=0,
+            provider_status_class="local_source",
+        )
+
+    def _mahjong_pattern_pool(
+        self,
+        reference_urls: Sequence[str],
+        *,
+        category: str,
+        title: str,
+        workspace_id: str = "local",
+        ai_notes: list[str] | None = None,
+    ) -> list[PatternAsset]:
+        """取麻将图案资产：先读持久化图案库，不够再从来源图里扣。
+
+        只下载前 2 张来源图、每张限时 15s、抠图整体限时 6s：图案库的价值是
+        “同一批只扣一次”，不能为了补全图案把整批处理节奏拖慢。
+        """
+        key = library_key(category, title, extra=workspace_id)
+        library = MahjongPatternLibrary(self._mahjong_library_root())
+        cached = library.load(key)
+        if not cached:
+            # 同品类其它麻将链接扣过的图案也能复用：先按品类兜一次。
+            cached = library.load(library_key(category, "", extra=workspace_id))
+        if len(cached) >= 4:
+            return cached
+        fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+        images: list[bytes] = []
+        for url in list(reference_urls)[:6]:
+            try:
+                image = fetcher(str(url), max_bytes=8 * 1024 * 1024, timeout_seconds=10)
+            except Exception:
+                continue
+            content = bytes(getattr(image, "content", b"") or b"")
+            if content:
+                images.append(content)
+        if not images:
+            return cached
+        extracted = build_pattern_library(
+            images,
+            max_patterns=32,
+            max_faces_per_image=10,
+            time_budget_s=10.0,
+        )
+        merged = library.extend(key, extracted)
+        library.extend(library_key(category, "", extra=workspace_id), extracted)
+        if ai_notes is not None:
+            ai_notes.append(f"mahjong:patterns:{len(merged)}:{len(extracted)}")
+        return merged
+
+    def _mahjong_extracted(
+        self,
+        reference_urls: Sequence[str],
+        ai_notes: list[str] | None = None,
+    ) -> tuple[Path, list[Path], list[Path]] | None:
+        """跑一次通用提取器，拿到「商品自己的牌面 + 实测牌型参数」。
+
+        这是 3D 渲染最准的来源：牌面是从这套商品的实拍图里直接切出来的，
+        尺寸比例和牌体色也是量出来的，不是套用某个预设。拿不到就返回 None，
+        由调用方退回程序生成的牌面。
+        """
+
+        images = self._mahjong_source_image_files(reference_urls)
+        if not images:
+            if ai_notes is not None:
+                ai_notes.append("mahjong:extract:no-source")
+            return None
+        digest = hashlib.sha256("|".join(sorted(path.name for path in images)).encode("utf-8")).hexdigest()[:16]
+        out_dir = self._mahjong_library_root() / "render-cache" / f"extract-{digest}"
+        result = _mahjong_extract_profile(images, out_dir)
+        if result is None:
+            if ai_notes is not None:
+                ai_notes.append("mahjong:extract:none")
+            return None
+        params, faces, hi_faces = result
+        if ai_notes is not None:
+            ai_notes.append(f"mahjong:extract:{len(faces)}:{len(hi_faces)}")
+        return params, faces, hi_faces
+
+    def _mahjong_source_image_files(self, reference_urls: Sequence[str], limit: int = 8) -> list[Path]:
+        """把来源图落到本地：提取器只能读文件，且要能跨批次复用。"""
+
+        fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+        target = self._mahjong_library_root() / "source-cache"
+        target.mkdir(parents=True, exist_ok=True)
+        paths: list[Path] = []
+        for url in list(reference_urls)[:limit]:
+            text = str(url or "").strip()
+            if not text:
+                continue
+            path = target / f"{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}.img"
+            if path.is_file() and path.stat().st_size > 2048:
+                paths.append(path)
+                continue
+            try:
+                image = fetcher(text, max_bytes=8 * 1024 * 1024, timeout_seconds=10)
+            except Exception:
+                continue
+            content = bytes(getattr(image, "content", b"") or b"")
+            if len(content) < 2048:
+                continue
+            try:
+                path.write_bytes(content)
+            except OSError:
+                continue
+            paths.append(path)
+        return paths
+
+    def _mahjong_render_panels(
+        self,
+        assets: Sequence[PatternAsset],
+        ai_notes: list[str] | None = None,
+        *,
+        style: str = "cn",
+        extracted: tuple[Path, list[Path], list[Path]] | None = None,
+    ) -> list[bytes]:
+        """用本地 Blender 渲染 4 张方图（开机位/摆位，不经过 provider）。
+
+        牌面来源按优先级：商品实拍图提取（``extracted``）→ 程序生成的标准牌面 →
+        图案库。第一种才是「这个商品自己」的样子：牌面是从实拍图里切出来的，
+        尺寸比例与牌体色是量出来的，所以不会出现「渲染得干净但不是这个商品」。
+        渲染按「牌面来源 + 牌型参数 + 机位」缓存，同一批商品重跑不会重复烤图。
+        """
+
+        cache_root = self._mahjong_library_root() / "render-cache"
+        pattern_paths: list[Path] = []
+        signature = ""
+        params = _mahjong_preset_path(
+            "us_mahjong_gold_glitter" if style == "us" else "cn_mahjong_ivory"
+        )
+        hi_faces: list[Path] = []
+        if extracted is not None:
+            # 最优先：这套商品实拍图里切出来的真实牌面 + 实测牌型参数。
+            extract_params, extract_faces, extract_hi = extracted
+            pattern_paths = list(extract_faces)
+            hi_faces = list(extract_hi)
+            params = extract_params
+            signature = "vision:" + ",".join(
+                f"{path.parent.parent.name}/{path.stem}" for path in pattern_paths + hi_faces
+            )
+            if ai_notes is not None:
+                ai_notes.append(f"mahjong:faces:extracted:{len(pattern_paths)}")
+        elif _mahjong_face_source() == "standard":
+            try:
+                if style == "us":
+                    pattern_paths = _mahjong_write_us_faces(
+                        cache_root / "faces_us",
+                        art_dir=_mahjong_art_dir("us_mahjong_v1"),
+                    )
+                else:
+                    pattern_paths = _mahjong_write_standard_faces(cache_root / "faces")
+                signature = f"{style}:" + ",".join(path.stem for path in pattern_paths)
+            except (OSError, RuntimeError, KeyError) as exc:
+                _LOGGER.info("mahjong %s faces unavailable: %s", style, exc)
+                pattern_paths = []
+        if not pattern_paths:
+            picked = choose_distinct_patterns(assets, 6, seed="mahjong-3d")
+            if not picked:
+                return []
+            pattern_dir = cache_root / "patterns"
+            pattern_paths = [
+                _mahjong_write_pattern(
+                    asset.content, pattern_dir, name=f"{index}-{asset.signature or 'p'}"
+                )
+                for index, asset in enumerate(picked)
+            ]
+            signature = "extracted:" + ",".join(asset.signature or "p" for asset in picked)
+            if ai_notes is not None:
+                ai_notes.append(f"mahjong:faces:extracted:{len(picked)}")
+        elif ai_notes is not None and extracted is None:
+            ai_notes.append(f"mahjong:faces:{style}:{len(pattern_paths)}")
+
+        # (slug, layout, 用几张牌面, 仰角, 方位角, 画面留白系数)
+        # cover（图案占牌面宽度比）由牌型预设决定，这里传的只是兜底值。
+        cover = 0.80 if signature.startswith("standard:") else 0.70
+
+        def spread(count: int) -> list[Path]:
+            """从整副牌面里等距取几张：连着取会拿到同一行的同色牌。"""
+
+            if count >= len(pattern_paths):
+                return list(pattern_paths)
+            step = len(pattern_paths) / count
+            return [pattern_paths[int(index * step)] for index in range(count)]
+
+        def detailed(count: int) -> list[Path]:
+            """优先用高清牌面（特写图里挑出来的完整大图），不够再用平铺牌面补齐。
+
+            高清牌面通常只有一两张，所以只用在牌少、单张占画面大的构图上；
+            四张以上的构图里混进一张特别清晰的牌反而显得不协调。
+            """
+
+            picked = list(hi_faces[:count])
+            if len(picked) < count:
+                picked.extend(spread(count - len(picked)))
+            return picked
+
+        plans = (
+            ("cover", "single", detailed(1), 40.0, 20.0, 1.20),
+            ("row4", "row", spread(4), 46.0, 26.0, 1.12),
+            ("fan3", "fan", detailed(3), 40.0, 12.0, 1.15),
+            ("grid6", "grid", spread(6), 50.0, 14.0, 1.18),
+        )
+        key = hashlib.sha256(
+            "|".join(
+                [signature, f"preset:{(params.stem if params else '')}", f"cover:{cover:g}"]
+                + [
+                    f"{slug}:{layout}:{len(paths)}:{elevation:g}:{azimuth:g}:{margin:g}"
+                    for slug, layout, paths, elevation, azimuth, margin in plans
+                ]
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        panels: list[bytes] = []
+        for slug, layout, paths, elevation, azimuth, margin in plans:
+            output = cache_root / f"{key}-{slug}.png"
+            if not output.is_file():
+                done = _mahjong_render_cluster(
+                    paths,
+                    output,
+                    layout=layout,
+                    res=1280,
+                    samples=40,
+                    elevation=elevation,
+                    azimuth=azimuth,
+                    cover=cover,
+                    margin=margin,
+                    params=params,
+                )
+                if done is None:
+                    break
+            try:
+                panels.append(output.read_bytes())
+            except OSError:
+                break
+        if len(panels) != len(plans):
+            if ai_notes is not None:
+                ai_notes.append(f"mahjong:render-incomplete:{len(panels)}")
+            return []
+        if ai_notes is not None:
+            ai_notes.append(f"mahjong:render:{len(panels)}:{len(pattern_paths)}")
+        return panels
+
+    def _apply_mahjong_patterns(
+        self,
+        parts: Sequence[Any],
+        assets: Sequence[PatternAsset],
+        ai_notes: list[str] | None = None,
+    ) -> list[Any]:
+        """保留原始实景与多牌构图，只把每张牌的面换成图案库里的真实花纹。
+
+        贴图按检测到的牌面四边形做透视变换，因此台面、暖光、堆叠、手部全部保留；
+        检测不到牌面就原样保留 AI 图（绝不换灰底空白牌，那会把场景整格抹掉）。
+        """
+        picked = choose_distinct_patterns(assets, 4, seed="mahjong")
+        if not picked:
+            return list(parts)
+        updated: list[Any] = []
+        total_faces = 0
+        skipped = 0
+        for part in parts:
+            panel = bytes(getattr(part, "content", b"") or b"")
+            if not panel:
+                updated.append(part)
+                continue
+            pasted, count = paste_patterns_in_scene(panel, picked, max_faces=4)
+            total_faces += count
+            if count <= 0 or pasted == panel:
+                # 没识别到牌面（或解码失败）：保留 AI 原图，下一个 SKU 仍可继续。
+                skipped += 1
+                updated.append(part)
+                continue
+            updated.append(
+                replace(
+                    part,
+                    content=pasted,
+                    suffix=".png",
+                    content_type="image/png",
+                )
+            )
+        if ai_notes is not None:
+            ai_notes.append(f"mahjong:faces:{total_faces}")
+            if skipped:
+                ai_notes.append(f"mahjong:no-face-detected:{skipped}")
+        return updated
+
     def _generate_premium_images(
         self,
         task_id: int,
@@ -11720,6 +12655,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         panel_plan_override: str = "",
         main_background: str = "scene",
         background_template: str = "",
+        scene_style: str = "ornate",
     ) -> GridImageOutput:
         """精品模式：一次 4K 四宫格，本地拆成四张不降采样的高清轮播图。"""
         if not _ai_enabled() or not reference_urls:
@@ -11738,6 +12674,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except Exception:
             pass
         allows_people = str(image_preset or "").strip().lower() == "lifestyle_use"
+        scene_main = str(main_background or "scene").strip().lower() != "white"
+        resolved_scene_style = _resolve_scene_style(
+            scene_style, _scene_style_seed(task_id, draft_id)
+        )
         system_backdrop_selected = bool(str(background_template or "").strip()) and not str(
             background_template
         ).strip().lower().startswith("user:")
@@ -11792,20 +12732,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 f"the product's real place of use: {usage_place}."
                 if system_backdrop_selected
                 else f"Every non-orthographic panel shows the product in or immediately beside that place, "
-                "with only 1-2 large everyday objects that really belong there; never substitute a generic "
-                "tabletop, a kitchen counter, a windowsill or an empty studio."
+                "with the prop count set by the scene style, drawn only from objects that genuinely belong "
+                "there; never substitute a generic tabletop, a kitchen counter, a windowsill or an empty studio."
             )
             base_prompt = (
                 f"{base_prompt.rstrip()}\n\nREAL PLACE OF USE (this exact product): {usage_place}. "
                 f"{hero_rule}"
             )
-        if str(main_background or "scene").strip().lower() != "white" or usage_place:
-            # 精品链路同样是「主图白底 / 四件道具 / 三个不同地点」写死在模板与逐格角色里。
-            base_prompt = _apply_background_rules(
-                base_prompt,
-                main_background=main_background,
-                usage_place=usage_place,
-            )
+        # 精品链路同样是「主图白底 / 每格四件道具 / 三个不同地点」写死在模板与逐格角色里，
+        # 件数口径在白底档同样生效。
+        base_prompt = _apply_background_rules(
+            base_prompt,
+            main_background=main_background,
+            usage_place=usage_place,
+            scene_style=resolved_scene_style,
+        )
+        if scene_main:
+            base_prompt = f"{base_prompt.rstrip()}\n\n{SCENE_REALISM_RULE}"
         if _is_pet_product(category, optimized_title):
             base_prompt = f"{base_prompt.rstrip()}\n\n{PET_PRODUCT_RULE}"
         self._note_content_reference(ai_notes, "image_reference", reference.reference_id)

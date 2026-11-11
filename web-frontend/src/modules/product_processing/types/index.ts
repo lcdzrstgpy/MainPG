@@ -27,6 +27,8 @@ export type Draft = {
   media_contract_version: number;
   /** 落库的 SKU 规格图可用性结论（JSON 字符串；空串=从未判定）。 */
   sku_availability_raw?: string;
+  /** 手动精小品标注：空串=自动识别，precision=强制精小品，standard=强制普通。 */
+  precision_annotation?: string;
   created_at: string;
   updated_at: string;
 };
@@ -62,6 +64,7 @@ export type DraftUpdateRequest = {
   cost?: number;
   declared_price?: number;
   status?: string;
+  precision_annotation?: string;
   sku_name_edits?: Record<string, string>;
   sku_name_deletes?: string[];
 };
@@ -194,10 +197,14 @@ export interface ProductProcessingOptions {
   autoRepull?: boolean;
   /** 是否自动烧制第 4 格尺寸图（尺寸卡）：默认关闭；需要尺寸图的品类可在处理设置里显式开启。 */
   dimensionCard?: boolean;
-  /** 场景风格：smart 智能混合（默认）/ minimal 极简 / lifestyle 生活 / ornate 花哨。 */
+  /** 场景风格：ornate 花哨（默认）/ lifestyle 生活 / minimal 极简 / smart 智能混合。 */
   sceneStyle?: 'smart' | 'minimal' | 'lifestyle' | 'ornate';
   /** 主图背景：scene 主图也用场景背景（默认）/ white 主图保持纯白。 */
   mainBackground?: 'scene' | 'white';
+  /** 麻将专业模式：AI 只出空白牌，牌面字/花纹由本地图案库抠取后回贴（不重画图案）。 */
+  mahjongMode?: boolean;
+  /** 麻将出图方式：ai=AI 生图（默认）；3d=本地 3D 渲染（牌面按标准牌程序生成，尺寸/字纹绝对一致）。 */
+  mahjongRender?: 'ai' | '3d';
   /** 手选的系统背景底板 id（bg_*）；空=按品类自动选背景片段。 */
   backgroundTemplate?: string;
   /** 「一键随机模板」：默认关闭；开启后忽略选定的模板，本批次每条链接随机分配生图/描述模板（一个批次内混搭多套处理方式）。 */

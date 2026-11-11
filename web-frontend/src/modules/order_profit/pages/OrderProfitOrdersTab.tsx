@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { showToast } from "../../../shared/components/toastStore";
 import { orderProfitApi } from "../api/orderProfitApi";
 import { MonthMultiSelect } from "../components/ChartControls";
+import { ShopDataGlyph, type ShopDataGlyphName } from "../components/ShopDataGlyph";
+import { EmptyBlock, Metric, MetricBand, SectionCard } from "../components/ShopDataPrimitives";
 import { amountTone, money, numberText } from "../format";
 import type { OrderProfitOrdersResponse, OrderProfitStore } from "../types";
 
@@ -23,6 +25,22 @@ const STATUS_PATTERN: Record<Exclude<OrderStatusPreset, "all">, RegExp> = {
   cancelled: /已取消|取消/,
 };
 
+// Temu 订单接口有时只返回数字状态码：仅把已确认的码翻译成中文，其余保留原始码并加说明。
+const STATUS_CODE_TEXT: Record<string, string> = { "2": "待发货", "5": "已签收" };
+
+function statusLabel(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text) return "—";
+  if (!/^\d+$/.test(text)) return text;
+  return STATUS_CODE_TEXT[text] || `状态码 ${text}`;
+}
+
+function statusHint(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text || !/^\d+$/.test(text) || STATUS_CODE_TEXT[text]) return "";
+  return "Temu 接口返回的原始状态码，暂未映射为中文";
+}
+
 function defaultFilters() {
   return {
     months: [] as string[],
@@ -40,10 +58,12 @@ export function OrderProfitOrdersTab({
   isActive,
   refreshToken,
   shop = "",
+  onOpenCapture,
 }: {
   isActive: boolean;
   refreshToken: number;
   shop?: string;
+  onOpenCapture?: () => void;
 }) {
   const [status, setStatus] = useState<OrderStatusPreset>("all");
   const [draft, setDraft] = useState(defaultFilters);
@@ -153,9 +173,10 @@ export function OrderProfitOrdersTab({
         const haystack = `${order.parent_order_sn} ${order.items.map((item) => item.sub_order_sn).join(" ")}`;
         if (!numbers.some((value) => haystack.includes(value))) return false;
       }
-      if (applied.salesZero && Number(order.sales_payback) !== 0) return false;
-      if (applied.profitStatus === "profit" && Number(order.profit) < 0) return false;
-      if (applied.profitStatus === "loss" && Number(order.profit) >= 0) return false;
+      // 缺失值（null）不属于「为 0」，避免把没采到当成 0 参与筛选。
+      if (applied.salesZero && (order.sales_payback == null || Number(order.sales_payback) !== 0)) return false;
+      if (applied.profitStatus === "profit" && (order.profit == null || order.profit < 0)) return false;
+      if (applied.profitStatus === "loss" && (order.profit == null || order.profit >= 0)) return false;
       if (applied.country !== "all" && order.site !== applied.country) return false;
       if (applied.penalty === "has" && Number(order.penalty) <= 0) return false;
       if (applied.penalty === "none" && Number(order.penalty) > 0) return false;
@@ -193,21 +214,40 @@ export function OrderProfitOrdersTab({
   useEffect(() => {
     setPage(1);
   }, [status, applied, pageSize, sortKey, sortDir]);
-  const cards = useMemo(    () => [
-      { label: "订单数", value: numberText(summary?.order_count), tone: "is-info" },
-      { label: "销售回款", value: money(summary?.sales_payback), tone: "is-positive" },
-      { label: "已结算总额", value: money(summary?.settled_total), tone: "is-positive" },
-      { label: "销售冲回", value: money(-(summary?.sales_reversal || 0)), tone: "is-negative" },
-      { label: "采购成本", value: money(summary?.purchase_cost), tone: "" },
-      { label: "头程运费", value: money(summary?.head_freight), tone: "" },
-      { label: "尾程面单费用", value: money(-(summary?.tail_freight || 0)), tone: "" },
-      { label: "平台罚款", value: money(-(summary?.penalty || 0)), tone: "is-negative" },
-      { label: "广告费用", value: money(-(summary?.ad_cost || 0)), tone: "is-negative" },
+  // 先给结论：订单量、回款、利润；成本与费用拆到「成本明细」里，避免一屏十个数字。
+  const primaryCards = useMemo(
+    () => [
+      { label: "订单数", value: numberText(summary?.order_count), tone: "is-info", hint: "当前月份与筛选条件下", glyph: "orders" as ShopDataGlyphName },
+      { label: "销售回款", value: money(summary?.sales_payback), tone: "is-positive", hint: "Temu 已回款的销售额", glyph: "wallet" as ShopDataGlyphName },
       {
         label: "总利润",
         value: money(summary?.profit),
-        tone: (summary?.profit || 0) >= 0 ? "is-positive" : "is-negative",
+        tone: summary?.profit == null ? "" : summary.profit >= 0 ? "is-positive" : "is-negative",
+        hint: summary?.profit_rate === null || summary?.profit_rate === undefined
+          ? "回款 - 成本 - 费用"
+          : `利润率 ${(summary.profit_rate * 100).toFixed(1)}%`,
+        glyph: "profit" as ShopDataGlyphName,
       },
+    ],
+    [summary],
+  );
+  const secondaryCards = useMemo(
+    () => [
+      { label: "已结算总额", value: money(summary?.settled_total), tone: "is-positive" },
+      {
+        label: "销售冲回",
+        value: money(summary?.sales_reversal == null ? null : -summary.sales_reversal),
+        tone: "is-negative",
+      },
+      { label: "采购成本", value: money(summary?.purchase_cost), tone: "" },
+      { label: "头程运费", value: money(summary?.head_freight), tone: "" },
+      {
+        label: "尾程面单费用",
+        value: money(summary?.tail_freight == null ? null : -summary.tail_freight),
+        tone: "",
+      },
+      { label: "平台罚款", value: money(-(summary?.penalty || 0)), tone: "is-negative" },
+      { label: "广告费用", value: money(-(summary?.ad_cost || 0)), tone: "is-negative" },
     ],
     [summary],
   );
@@ -238,14 +278,14 @@ export function OrderProfitOrdersTab({
   };
   const exportCsv = () => {
     const headers = [
-      "店铺", "PO单号", "子订单数", "国家", "订单状态", "订单时间", "SKU数", "件数",
-      "GMV", "销售回款", "销售冲回", "运费回款", "运费冲回", "采购成本", "头程", "尾程", "总利润",
+      "店铺", "PO单号", "子订单数", "订单状态", "订单时间", "SKU数", "件数",
+      "销售回款", "运费回款", "采购成本", "尾程", "总利润",
     ];
     const lines = visibleOrders.map((row) => [
-      row.shop_name || row.mall_id, row.parent_order_sn, row.sub_order_count, row.site,
+      row.shop_name || row.mall_id, row.parent_order_sn, row.sub_order_count,
       row.order_status, row.order_time, row.sku_count, row.item_count,
-      row.gmv_total, row.sales_payback, row.sales_reversal, row.freight_payback,
-      row.freight_reversal, row.purchase_cost, row.head_freight, row.tail_freight, row.profit,
+      row.sales_payback, row.freight_payback,
+      row.purchase_cost, row.tail_freight, row.profit,
     ]);
     const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
     const text = "\uFEFF" + [headers, ...lines].map((line) => line.map(escape).join(",")).join("\r\n");
@@ -269,18 +309,24 @@ export function OrderProfitOrdersTab({
 
   return (
     <section className="op-view">
-      <div className="op-tabs">
-        {STATUS_TABS.map((tab) => (
-          <button
-            key={tab.value}
-            type="button"
-            className={`op-tab ${status === tab.value ? "is-active" : ""}`}
-            onClick={() => setStatus(tab.value)}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="op-view-toolbar">
+        <div className="op-tabs">
+          {STATUS_TABS.map((tab) => (
+            <button
+              key={tab.value}
+              type="button"
+              className={`op-tab ${status === tab.value ? "is-active" : ""}`}
+              onClick={() => setStatus(tab.value)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <span className="op-view-toolbar-meta">
+          {loading ? "加载中…" : `共 ${numberText(data?.total ?? 0)} 单${visibleOrders.length !== orders.length ? ` · 筛选后 ${visibleOrders.length}` : ""}`}
+        </span>
       </div>
+
       <div className="op-card op-filter-card">
         <div className="op-filter-row">
           <div className="op-field">
@@ -321,97 +367,132 @@ export function OrderProfitOrdersTab({
             <button type="button" className="op-btn" onClick={reset}>
               重置
             </button>
-            <button type="button" className="op-btn" disabled={busy} onClick={() => void recalculate()}>
-              {busy ? "计算中…" : "一键计算利润"}
-            </button>
-            <button type="button" className="op-btn" disabled={!visibleOrders.length} onClick={exportCsv}>
-              导出
-            </button>
-            <button type="button" className="op-btn" onClick={() => setReloadToken((value) => value + 1)}>
-              刷新
-            </button>
           </div>
         </div>
-        <div className="op-filter-row op-filter-row-secondary">
-          <label className="op-field op-field-wide">
-            <span>订单号（可批量，换行/空格/逗号分隔）</span>
-            <input
-              type="text"
-              value={draft.orderNumbers}
-              placeholder="PO-... 211-..."
-              onChange={(event) => setDraft({ ...draft, orderNumbers: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") query();
-              }}
-            />
-          </label>
-          <label className="op-field">
-            <span>盈利状态</span>
-            <select value={draft.profitStatus} onChange={(event) => setDraft({ ...draft, profitStatus: event.target.value })}>
-              <option value="all">全部</option>
-              <option value="profit">仅盈利</option>
-              <option value="loss">仅亏损</option>
-            </select>
-          </label>
-          <label className="op-field">
-            <span>国家</span>
-            <select value={draft.country} onChange={(event) => setDraft({ ...draft, country: event.target.value })}>
-              <option value="all">全部</option>
-              {countries.map((country) => (
-                <option key={country} value={country}>{country}</option>
-              ))}
-            </select>
-          </label>
-          <label className="op-field">
-            <span>平台罚款</span>
-            <select value={draft.penalty} onChange={(event) => setDraft({ ...draft, penalty: event.target.value })}>
-              <option value="all">全部</option>
-              <option value="has">有罚款</option>
-              <option value="none">无罚款</option>
-            </select>
-          </label>
-          <label className="op-check">
-            <input
-              type="checkbox"
-              checked={draft.salesZero}
-              onChange={(event) => setDraft({ ...draft, salesZero: event.target.checked })}
-            />
-            <span>销售回款为 0</span>
-          </label>
-        </div>
+
+        <details className="op-disclosure op-filter-more">
+          <summary>
+            <ShopDataGlyph name="search" />
+            <span>更多筛选</span>
+            <small>盈利状态 · 国家 · 平台罚款 · 批量订单号</small>
+          </summary>
+          <div className="op-disclosure-body">
+            <div className="op-filter-row op-filter-row-secondary">
+              <label className="op-field op-field-wide">
+                <span>订单号（可批量，换行/空格/逗号分隔）</span>
+                <input
+                  type="text"
+                  value={draft.orderNumbers}
+                  placeholder="多个 PO / 子订单号"
+                  onChange={(event) => setDraft({ ...draft, orderNumbers: event.target.value })}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") query();
+                  }}
+                />
+              </label>
+              <label className="op-field">
+                <span>盈利状态</span>
+                <select value={draft.profitStatus} onChange={(event) => setDraft({ ...draft, profitStatus: event.target.value })}>
+                  <option value="all">全部</option>
+                  <option value="profit">仅盈利</option>
+                  <option value="loss">仅亏损</option>
+                </select>
+              </label>
+              <label className="op-field">
+                <span>国家</span>
+                <select value={draft.country} onChange={(event) => setDraft({ ...draft, country: event.target.value })}>
+                  <option value="all">全部</option>
+                  {countries.map((country) => (
+                    <option key={country} value={country}>{country}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="op-field">
+                <span>平台罚款</span>
+                <select value={draft.penalty} onChange={(event) => setDraft({ ...draft, penalty: event.target.value })}>
+                  <option value="all">全部</option>
+                  <option value="has">有罚款</option>
+                  <option value="none">无罚款</option>
+                </select>
+              </label>
+              <label className="op-check">
+                <input
+                  type="checkbox"
+                  checked={draft.salesZero}
+                  onChange={(event) => setDraft({ ...draft, salesZero: event.target.checked })}
+                />
+                <span>销售回款为 0</span>
+              </label>
+            </div>
+          </div>
+        </details>
       </div>
 
       {loading && !data ? (
-        <div className="op-stats-grid">
-          {Array.from({ length: 10 }).map((_, index) => (
+        <MetricBand>
+          {Array.from({ length: 4 }).map((_, index) => (
             <div className="op-skeleton op-skeleton-stat" key={index} />
           ))}
-        </div>
+        </MetricBand>
       ) : (
-        <div className="op-stats-grid">
-          {cards.map((card) => (
-            <div className={`op-stat ${card.tone === "is-negative" ? "is-loss" : ""}`} key={card.label}>
-              <span>{card.label}</span>
-              <strong className={card.tone}>{card.value}</strong>
-            </div>
+        <MetricBand>
+          {primaryCards.map((card) => (
+            <Metric key={card.label} label={card.label} value={card.value} tone={card.tone} hint={card.hint} glyph={card.glyph} />
           ))}
-        </div>
+        </MetricBand>
       )}
+
+      <details className="op-disclosure">
+        <summary>
+          <ShopDataGlyph name="cost" />
+          <span>成本与费用明细</span>
+          <small>已结算 · 冲回 · 采购 · 头程 · 尾程 · 罚款 · 广告</small>
+        </summary>
+        <div className="op-disclosure-body">
+          <div className="op-stats-grid op-secondary-grid">
+            {secondaryCards.map((card) => (
+              <div className={`op-stat ${card.tone === "is-negative" ? "is-loss" : ""}`} key={card.label}>
+                <span>{card.label}</span>
+                <strong className={card.tone}>{card.value}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      </details>
 
       {error ? <div className="op-alert is-error">{error}</div> : null}
 
-      <div className="op-card op-table-card">
-        <div className="op-table-head">
-          <strong>订单明细</strong>
-          <span>
-            {loading ? "加载中…" : `共 ${data?.total ?? 0} 单${visibleOrders.length !== orders.length ? ` · 筛选后 ${visibleOrders.length}` : ""}`}
-            {summary?.missing_declared ? ` · 申报价待补 ${summary.missing_declared} 行` : ""}
-            {summary?.missing_gmv ? ` · GMV待补 ${summary.missing_gmv} 行` : ""}
-            {summary?.missing_purchase_sku ? ` · 采购成本待补 ${summary.missing_purchase_sku} SKU` : ""}
-            {summary?.missing_weight_sku ? ` · 重量待补 ${summary.missing_weight_sku} SKU` : ""}
-          </span>
-          <small>点行首箭头展开子订单；GMV/申报价来自订单详情页采集</small>
-        </div>
+      <SectionCard
+        className="op-section-table"
+        title="订单明细"
+        desc="点行首箭头展开子订单；采购成本可直接点数字修改，改完利润会重算。"
+        icon="receipt"
+        scene="orders"
+        meta={
+          <div className="op-table-meta">
+            {summary?.missing_declared ? <span className="op-chip is-warn">申报价待补 {summary.missing_declared} 行</span> : null}
+            {summary?.missing_gmv ? <span className="op-chip is-warn">GMV 待补 {summary.missing_gmv} 行</span> : null}
+            {summary?.missing_purchase_sku ? <span className="op-chip is-warn">采购成本待补 {summary.missing_purchase_sku} SKU</span> : null}
+            {summary?.missing_weight_sku ? <span className="op-chip is-warn">重量待补 {summary.missing_weight_sku} SKU</span> : null}
+            {!summary?.missing_declared && !summary?.missing_gmv && !summary?.missing_purchase_sku && !summary?.missing_weight_sku ? (
+              <span className="op-chip is-ok">金额与成本已齐</span>
+            ) : null}
+          </div>
+        }
+        action={
+          <div className="op-section-actions">
+            <button type="button" className="op-btn op-btn-sm" disabled={busy} onClick={() => void recalculate()}>
+              {busy ? "计算中…" : "一键计算利润"}
+            </button>
+            <button type="button" className="op-btn op-btn-sm" disabled={!visibleOrders.length} onClick={exportCsv}>
+              导出
+            </button>
+            <button type="button" className="op-btn op-btn-sm" onClick={() => setReloadToken((value) => value + 1)}>
+              刷新
+            </button>
+          </div>
+        }
+      >
         <div className={`op-table-wrap ${loading ? "is-loading" : ""}`}>
           <table className="op-table op-table-orders">
             <thead>
@@ -419,17 +500,12 @@ export function OrderProfitOrdersTab({
                 <th className="op-col-exp" />
                 <th>店铺</th>
                 <th>PO-单号</th>
-                <th>站点</th>
                 <th>订单状态</th>
                 <th><button type="button" className={`op-th-sort ${sortKey === "order_time" ? "is-active" : ""}`} onClick={() => toggleSort("order_time")}>订单时间<i>{sortArrow("order_time")}</i></button></th>
                 <th><button type="button" className={`op-th-sort ${sortKey === "item_count" ? "is-active" : ""}`} onClick={() => toggleSort("item_count")}>SKU/件数<i>{sortArrow("item_count")}</i></button></th>
-                <th className="op-num"><button type="button" className={`op-th-sort ${sortKey === "gmv_total" ? "is-active" : ""}`} onClick={() => toggleSort("gmv_total")}>GMV<i>{sortArrow("gmv_total")}</i></button></th>
                 <th className="op-num"><button type="button" className={`op-th-sort ${sortKey === "sales_payback" ? "is-active" : ""}`} onClick={() => toggleSort("sales_payback")}>销售回款<i>{sortArrow("sales_payback")}</i></button></th>
-                <th className="op-num">销售冲回</th>
                 <th className="op-num">运费回款</th>
-                <th className="op-num">运费冲回</th>
                 <th className="op-num">采购成本</th>
-                <th className="op-num">头程</th>
                 <th className="op-num">尾程</th>
                 <th className="op-num"><button type="button" className={`op-th-sort ${sortKey === "profit" ? "is-active" : ""}`} onClick={() => toggleSort("profit")}>总利润<i>{sortArrow("profit")}</i></button></th>
               </tr>
@@ -437,15 +513,24 @@ export function OrderProfitOrdersTab({
             <tbody>
               {!visibleOrders.length && !loading ? (
                 <tr>
-                  <td colSpan={16}>
-                    <div className="op-empty">
-                      <strong>{orders.length ? "当前筛选没有订单" : "还没有订单数据"}</strong>
-                      <span>
-                        {orders.length
+                  <td colSpan={11}>
+                    <EmptyBlock
+                      compact
+                      art="orders"
+                      title={orders.length ? "当前筛选没有订单" : "还没有订单数据"}
+                      desc={
+                        orders.length
                           ? "调整订单号、盈利状态、国家或罚款筛选后再试。"
-                          : "去「数据采集」页签，先在 Temu 订单列表页采集，再打开订单详情页补金额。"}
-                      </span>
-                    </div>
+                          : "去「数据采集」页签，先在 Temu 订单列表页采集，再打开订单详情页补金额。"
+                      }
+                      action={
+                        !orders.length && onOpenCapture ? (
+                          <button type="button" className="op-btn op-btn-primary op-btn-sm" onClick={onOpenCapture}>
+                            去数据采集
+                          </button>
+                        ) : null
+                      }
+                    />
                   </td>
                 </tr>
               ) : null}
@@ -499,7 +584,7 @@ export function OrderProfitOrdersTab({
             </button>
           </div>
         </div>
-      </div>
+      </SectionCard>
     </section>
   );
 }
@@ -538,27 +623,22 @@ function FragmentRow({
           </div>
         </td>
         <td className="op-mono">{row.parent_order_sn}</td>
-        <td>{row.site || "—"}</td>
         <td>
-          <span className="op-badge">{row.order_status || "—"}</span>
+          <span className="op-badge" title={statusHint(row.order_status)}>{statusLabel(row.order_status)}</span>
         </td>
         <td className="op-muted">{row.order_time || "—"}</td>
         <td>{row.sku_count} / {row.item_count}</td>
-        <td className="op-num">{money(row.gmv_total)}</td>
         <td className="op-num">{money(row.sales_payback)}</td>
-        <td className={`op-num is-negative`}>{money(-(row.sales_reversal || 0))}</td>
         <td className="op-num">{money(row.freight_payback)}</td>
-        <td className={`op-num is-negative`}>{money(-(row.freight_reversal || 0))}</td>
         <td className="op-num">
           <EditableCost row={row} shop={shop} onSaved={onCostSaved} />
         </td>
-        <td className="op-num">{money(row.head_freight)}</td>
-        <td className="op-num">{money(-(row.tail_freight || 0))}</td>
+        <td className="op-num">{money(row.tail_freight == null ? null : -row.tail_freight)}</td>
         <td className={`op-num ${amountTone(row.profit)}`}>{money(row.profit)}</td>
       </tr>
       {open ? (
         <tr className="op-detail-row">
-          <td colSpan={16}>
+          <td colSpan={11}>
             <div className="op-sub-table-wrap">
               <table className="op-table op-sub-table">
                 <thead>
@@ -569,7 +649,6 @@ function FragmentRow({
                     <th>商品</th>
                     <th className="op-num">件数</th>
                     <th className="op-num">申报价</th>
-                    <th className="op-num">GMV</th>
                     <th className="op-num">尾程(CNY)</th>
                     <th className="op-num">采购成本</th>
                     <th className="op-num">预估利润</th>
@@ -588,7 +667,6 @@ function FragmentRow({
                       <td className="op-title" title={item.goods_name}>{item.goods_name || "—"}</td>
                       <td className="op-num">{item.quantity}</td>
                       <td className="op-num">{money(item.declared_price)}</td>
-                      <td className="op-num">{money(item.gmv_cny)}</td>
                       <td className="op-num">{money(item.tail_freight_cny)}</td>
                       <td className="op-num">
                         {item.purchase_cost_cny === null || item.purchase_cost_cny === undefined ? (

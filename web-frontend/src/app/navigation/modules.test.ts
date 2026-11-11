@@ -57,7 +57,7 @@ test("image service nests the existing workflows one level deeper", () => {
     "产品处理",
     "POD定制",
     "商品自定义",
-    "AI视频（实验）",
+    "AI 视频（实验）",
   ]);
 
   const productWorkflow = findGroup("product_workflow");
@@ -69,6 +69,23 @@ test("image service nests the existing workflows one level deeper", () => {
     "product_processing_sourcing",
     "dimension_canvas",
   ]);
+
+  // 海外上架（原「发布商品」）：草稿库在前、发布页在后；默认进来停在草稿库
+  // （空发布表单没什么可填的，先让用户看到有哪些成品可发）。
+  const overseas = findGroup("overseas_listing");
+  assert.equal(overseas?.label, "海外上架");
+  assert.equal(overseas?.defaultChildId, "temu_draft_library");
+  assert.deepEqual(overseas?.children?.map((child) => child.id), [
+    "temu_draft_library",
+    "temu_publish",
+    "temu_publish_history",
+  ]);
+  assert.deepEqual(overseas?.children?.map((child) => child.label), [
+    "成品库",
+    "发布商品",
+    "发布历史",
+  ]);
+  assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
 
   const podWorkflow = findGroup("pod_workflow");
   // 自由创意是 POD 首项，点开分组默认落到它。
@@ -107,8 +124,14 @@ test("overseas listing keeps the publish page and draft library side by side", (
   const overseas = findGroup("overseas_listing");
 
   assert.equal(overseas?.label, "海外上架");
-  assert.equal(overseas?.defaultChildId, "temu_publish");
-  assert.deepEqual(overseas?.children.map((child) => child.id), ["temu_publish", "temu_draft_library"]);
+  // 默认停在草稿库而不是发布页：空发布表单没什么可填的，先让用户看到有哪些成品可发
+  // （合并 release/1.5.8 时保留的 bigdogbujiao 决定，对方分支默认是 temu_publish）
+  assert.equal(overseas?.defaultChildId, "temu_draft_library");
+  assert.deepEqual(overseas?.children.map((child) => child.id), [
+    "temu_draft_library",
+    "temu_publish",
+    "temu_publish_history",
+  ]);
 });
 
 test("data insights groups sourcing profit and store data management", () => {
@@ -128,17 +151,10 @@ test("data insights groups sourcing profit and store data management", () => {
   ]);
 
   const storeData = findGroup("order_profit");
-  assert.equal(storeData?.defaultChildId, "order_profit_overview");
+  assert.equal(storeData?.defaultChildId, "order_profit_binding");
   assert.deepEqual(
     storeData?.children.filter((child) => !isWorkspaceNavigationGroup(child) && !child.hiddenFromSidebar).map((child) => child.id),
-    [
-      "order_profit_overview",
-      "order_profit_orders",
-      "order_profit_funds",
-      "order_profit_accounts",
-      "order_profit_capture",
-      "order_profit_records",
-    ],
+    ["order_profit_binding", "order_profit_costs"],
   );
   // 合并前的单页入口仍保留在页面路由里，避免浏览器已保存的旧页签失效。
   for (const legacyId of [
@@ -186,4 +202,53 @@ test("system configuration is not a standalone workspace module", () => {
 test("system admin module is not registered in user-visible workspace navigation", () => {
   assert.equal(workspaceModules.some((item) => item.id === "system_admin"), false);
   assert.equal(workspacePageModules.some((item) => item.id === "system_admin"), false);
+});
+
+// 侧栏能点到的每个「页面」都必须在 workspacePageModules 里有一份完整定义。
+// 2026-11-04 发布历史（temu_publish_history）只加进了分组 children、漏了扁平表，
+// 点一下就在 moduleTab 里解构 undefined 抛错 → 整个工作台白屏。这条断言把这类
+// 「加了一半」的漏项挡在提交前。
+//
+// 侧栏改成三层（图像服务 → 产品处理 → 页面）之后必须递归：children 里可能还是分组，
+// 只有「在 pageById 里查得到」的才算页面、才停；查不到的当分组继续往下走。
+test("every sidebar leaf module has a full page definition (no half-registered entries)", () => {
+  const pageById = new Map(workspacePageModules.map((module) => [module.id, module]));
+  const missing: string[] = [];
+
+  type NavNode = {
+    id: string;
+    label: string;
+    children?: NavNode[];
+    defaultChildId?: string;
+  };
+
+  const walk = (node: NavNode, path: string) => {
+    const page = pageById.get(node.id);
+    if (page) {
+      assert.equal(page.label, node.label, `${node.id} 的 label 在分组和扁平表里不一致`);
+      return;
+    }
+    const children = node.children ?? [];
+    if (!children.length) {
+      missing.push(`${path} → ${node.id}`);
+      return;
+    }
+    // defaultChildId 允许指向**深层**的默认项（如 ai_image_service 默认 daily_selection，
+    // 而 daily_selection 是 product_workflow 的子项），所以要在整个后代里找
+    if (node.defaultChildId) {
+      const descendants = new Set<string>();
+      const collect = (child: NavNode) => {
+        descendants.add(child.id);
+        (child.children ?? []).forEach(collect);
+      };
+      children.forEach(collect);
+      if (!descendants.has(node.defaultChildId)) {
+        missing.push(`${node.id} 的默认子项 ${node.defaultChildId} 不在 children 里`);
+      }
+    }
+    for (const child of children) walk(child, path ? `${path} → ${node.id}` : node.id);
+  };
+
+  for (const group of workspaceModules as NavNode[]) walk(group, "");
+  assert.deepEqual(missing, []);
 });

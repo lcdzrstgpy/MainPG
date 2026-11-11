@@ -796,7 +796,7 @@
 .pod-spec-card-entry-button:not(:disabled):hover { border-color: var(--pod-primary); box-shadow: 0 6px 16px var(--pod-shadow); }
 .pod-spec-card-entry-button em { color: #d76862; font-style: normal; }
 .pod-spec-card-entry-summary { min-width: 0; color: var(--pod-text-secondary); font-size: .68rem; }
-.pod-spec-card-entry-summary.is-warning { color: #a84c48; font-weight: 700; }
+.pod-spec-card-entry-summary.is-warning { color: var(--theme-warning, #a84c48); font-weight: 700; }
 
 .pod-spec-card-drawer-layer { position: fixed; z-index: 520; inset: 0; }  /* 必须高于「返回顶部」悬浮按钮(80)与工作区外壳各层：抽屉已 portal 到 body */
 .pod-spec-card-drawer-backdrop { position: absolute; inset: 0; width: 100%; border: 0; background: var(--theme-module-overlay, rgba(15, 36, 53, .36)); backdrop-filter: blur(3px); }

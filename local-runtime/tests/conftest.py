@@ -42,3 +42,7 @@ def _deterministic_public_dns(monkeypatch):
         ),
     )
     yield
+
+# 每次 create_app 都做路由预热的话，122 个用例要多花好几分钟（预热是给真实
+# 启动用的，测试里没有「用户第一次进页面」这个场景）。
+os.environ.setdefault("WH_SKIP_ROUTE_WARM", "1")

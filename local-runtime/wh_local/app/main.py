@@ -605,6 +605,11 @@ def create_app(database_path: Path | None = None) -> FastAPI:
             logger.info("lifespan step: starting team_rollup_task")
             team_rollup_task.start()
             logger.info("lifespan step: team_rollup_task started")
+        auto_capture_task = getattr(runtime_app.state, "auto_capture_task", None)
+        if auto_capture_task is not None:
+            logger.info("lifespan step: starting auto_capture_task")
+            auto_capture_task.start()
+            logger.info("lifespan step: auto_capture_task started")
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()
@@ -1024,16 +1029,54 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         session = customer_sessions.store.get_session(token)
         return str(getattr(session, "remote_token", "") or "")
 
+    order_profit_service = OrderProfitService(
+        OrderProfitRepository(db_path),
+        plugin_queue=plugin_queue,
+    )
     app.include_router(
         create_order_profit_router(
-            OrderProfitService(
-                OrderProfitRepository(db_path),
-                plugin_queue=plugin_queue,
-            ),
+            order_profit_service,
             team_client=TeamApiClient(config.team_api_base_url),
             remote_token_provider=_team_remote_token,
         ),
         prefix="/api",
+    )
+
+    # 成本桥接：向采集服务器拉取绑定店铺的链接数据，并回传填写的成本。
+    from ..modules.bridge.client import BridgeApiClient
+    from ..modules.bridge.routes import create_bridge_router
+
+    app.include_router(
+        create_bridge_router(
+            BridgeApiClient(
+                config.bridge_base_url,
+                config.bridge_key,
+                config.bridge_client_id,
+                label=config.bridge_client_label,
+            )
+        ),
+        prefix="/api",
+    )
+
+    # 自动同步：本机常驻时按间隔给已绑定店铺下发采集，用户无需点击。
+    from ..modules.order_profit.auto_capture import AutoCaptureTask
+
+    def _auto_capture_workspaces() -> list[str]:
+        resolver = getattr(customer_sessions, "active_remote_sessions", None)
+        workspace_ids: list[str] = []
+        if callable(resolver):
+            try:
+                workspace_ids = [
+                    str(workspace) for _user, workspace, _token in resolver() if str(workspace)
+                ]
+            except Exception:  # noqa: BLE001 - 取不到会话时退回默认工作区
+                workspace_ids = []
+        return workspace_ids or ["default"]
+
+    app.state.order_profit_service = order_profit_service
+    app.state.auto_capture_task = AutoCaptureTask(
+        service=order_profit_service,
+        workspaces=_auto_capture_workspaces,
     )
 
     # 每周六自动把店铺汇总提交到团队服务；其余时间由用户在采集页手动补交。
@@ -1128,7 +1171,58 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         )
     )
 
+    _warm_route_contexts(app)
     return app
+
+
+# 启动时预热的路由前缀：这些是打开频率最高的页面（成品库 / 商品处理 / POD / 数据信息）。
+# 每条只要打一次不带 token 的请求，走到 401 就够 —— 编译在依赖解析阶段已经发生。
+_WARM_ROUTE_PATHS: tuple[str, ...] = (
+    "/api/temu-publish/draft-library",
+    "/api/product-processing/tasks/active-count",
+    "/api/pod-customization/batches",
+    "/api/sourcing-ledger/sites",
+)
+
+
+def _warm_route_contexts(app: Any) -> None:
+    """把 FastAPI「首次访问某组路由要构建依赖上下文」的成本挪到启动阶段。
+
+    实测：应用刚起来第一次打开成品库，`fastapi.routing._build_effective_context`
+    就占 1.47 秒（按 router 分组，每组一次）—— 用户看到的是「加载慢」，
+    实际是框架在编译依赖树，跟我们的聚合查询无关。预热后首次访问
+    1.57s → 0.83s，剩下的才是真正要优化的业务耗时。
+
+    只在同步上下文里跑（`create_app` 通常在 uvicorn 启动线程里调用）；
+    已在事件循环里就跳过，别在这里跟调用方抢 loop。
+    """
+    if os.environ.get("WH_SKIP_ROUTE_WARM"):
+        # 测试环境关掉：每个用例都 create_app 时，预热纯属浪费好几分钟
+        return
+    try:
+        import asyncio
+
+        import httpx
+    except Exception:  # noqa: BLE001 - 预热失败不该挡住应用启动
+        return
+
+    async def _warm() -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://warm.local") as client:
+            for path in _WARM_ROUTE_PATHS:
+                try:
+                    # 不带 token → 依赖解析完就 401，不会真的查库或调网关
+                    await client.get(path, timeout=10.0)
+                except Exception:  # noqa: BLE001
+                    continue
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        try:
+            asyncio.run(_warm())
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _frontend_dist_dir() -> Path:

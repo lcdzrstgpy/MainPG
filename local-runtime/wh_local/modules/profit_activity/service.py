@@ -304,8 +304,8 @@ class ProfitActivityService:
                 missing.append("product_image_required")
             if not source_url:
                 missing.append("source_url_required")
-            if not source_image_path:
-                missing.append("source_image_required")
+            # 货源图是可选补充资料（与前端表单「货源图为可选」一致）：
+            # 不再强制 source_image_required，否则用户只传商品主图 + 货源链接会被拒。
             if missing:
                 raise ValueError(",".join(missing))
         record = self._repository.upsert_record(

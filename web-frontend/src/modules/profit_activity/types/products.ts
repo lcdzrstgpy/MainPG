@@ -78,8 +78,6 @@ export type ProductSourceLink = {
   source_decision: string;
   note?: string;
   status?: string;
-  /** 货源台账里的图片（主图 + 用户补充），与「货源与利润」展示一致。 */
-  images?: Array<{ id: string; image_url: string }>;
 };
 
 export type ProductSkuRow = {

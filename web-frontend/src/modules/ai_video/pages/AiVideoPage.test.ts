@@ -40,7 +40,7 @@ test("AI video path lives on the workspace tab so tab switches and refresh keep 
   assert.match(workspaceShell, /aiVideoPath/);
   assert.match(workspaceShell, /path=\{aiVideoPath\}/);
   assert.match(workspaceShell, /onPathChange=\{setAiVideoPath\}/);
-  assert.match(workspaceShell, /tab\.moduleId === "ai_video" \? \{ \.\.\.tab, aiVideoPath \}/);
+  assert.match(workspaceShell, /tab\.moduleId === "ai_video" \? \{ aiVideoPath \} : \{\}/);
   assert.match(tabsPersistence, /"aiVideoPath"/);
 });
 

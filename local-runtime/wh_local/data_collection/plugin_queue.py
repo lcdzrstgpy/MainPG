@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 from .normalizer import sanitize_raw_payload
+
+logger = logging.getLogger("wh_local.data_collection.plugin_queue")
 
 
 TEMU_LINK_CAPTURE = "temu_link_capture"
@@ -448,71 +451,6 @@ class DataCollectionPluginQueue:
             conn.execute("UPDATE data_collection_plugin_sessions SET last_seen_at = ?, status = 'connected' WHERE id = ?", (now, session["id"]))
             return self._command(conn, command_id)
 
-    def list_sessions_for_workspace(
-        self,
-        *,
-        workspace_id: str,
-        command_type: str = "",
-        active_only: bool = True,
-    ) -> tuple[Mapping[str, Any], ...]:
-        """工作台侧查询：某工作区下所有插件会话（可按能力过滤）。"""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT id, actor_id, workspace_id, capabilities_json, status, created_at, last_seen_at "
-                "FROM data_collection_plugin_sessions WHERE workspace_id = ? "
-                "ORDER BY last_seen_at DESC, id DESC",
-                (workspace_id,),
-            ).fetchall()
-        sessions: list[Mapping[str, Any]] = []
-        for row in rows:
-            capabilities = _load(row["capabilities_json"])
-            online = _active(str(row["last_seen_at"]))
-            if active_only and not online:
-                continue
-            if command_type and capabilities.get(command_type) is not True:
-                continue
-            sessions.append({
-                "session_id": int(row["id"]),
-                "actor_id": str(row["actor_id"]),
-                "workspace_id": str(row["workspace_id"]),
-                "capabilities": capabilities,
-                "status": str(row["status"]),
-                "online": online,
-                "last_seen_at": str(row["last_seen_at"]),
-            })
-        return tuple(sessions)
-
-    def get_command_for_workspace(self, *, workspace_id: str, command_id: int) -> PluginCommand:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT c.id FROM data_collection_plugin_commands c "
-                "JOIN data_collection_plugin_sessions s ON s.id = c.session_id "
-                "WHERE c.id = ? AND s.workspace_id = ?",
-                (int(command_id), workspace_id),
-            ).fetchone()
-            if row is None:
-                raise PermissionError("plugin command not found")
-            return self._command(conn, int(row["id"]))
-
-    def cancel_command(self, *, workspace_id: str, command_id: int) -> PluginCommand:
-        now = _now()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT c.id, c.status FROM data_collection_plugin_commands c "
-                "JOIN data_collection_plugin_sessions s ON s.id = c.session_id "
-                "WHERE c.id = ? AND s.workspace_id = ?",
-                (int(command_id), workspace_id),
-            ).fetchone()
-            if row is None:
-                raise PermissionError("plugin command not found")
-            if str(row["status"]) not in _TERMINAL:
-                conn.execute(
-                    "UPDATE data_collection_plugin_commands SET status = 'cancelled', updated_at = ? "
-                    "WHERE id = ?",
-                    (now, int(command_id)),
-                )
-            return self._command(conn, int(command_id))
-
     def get_command(self, *, actor_id: str, workspace_id: str, command_id: int) -> PluginCommand:
         with self._connect() as conn:
             row = conn.execute(
@@ -732,6 +670,23 @@ class DataCollectionPluginQueue:
             ).fetchall()
             return tuple(self._command(conn, int(row["id"])) for row in rows)
 
+    def list_capture_commands(
+        self, *, workspace_id: str, limit: int = 20
+    ) -> tuple[PluginCommand, ...]:
+        """最近的数据采集指令（全量/增量/单步补采），用于工作台采集中心。"""
+        limit = max(1, min(int(limit), 50))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT c.id FROM data_collection_plugin_commands c
+                JOIN data_collection_plugin_sessions s ON s.id = c.session_id
+                WHERE s.workspace_id = ?
+                  AND c.command_type IN ('temu_capture_all', 'temu_capture_incremental',
+                                         'temu_capture_resource')
+                ORDER BY c.created_at DESC, c.id DESC LIMIT ?""",
+                (workspace_id, limit),
+            ).fetchall()
+            return tuple(self._command(conn, int(row["id"])) for row in rows)
+
     def workspace_for_session(self, session_token: str) -> str:
         """Return the workspace bound to a connected browser session."""
         with self._connect() as conn:
@@ -761,6 +716,15 @@ class DataCollectionPluginQueue:
                 migrations / "003_plugin_command_requests.sql",
                 migrations / "004_plugin_devices.sql",
             ):
+                # 打包漏带 migrations 目录时只能缺表，不能让整个后端启动失败（1.6.x
+                # 正式版就因缺 004_plugin_devices.sql 直接弹「后端启动失败」）。
+                if not migration.is_file():
+                    logger.error(
+                        "插件队列迁移脚本缺失：%s，请确认打包包含 data_collection/migrations；"
+                        "本次跳过该脚本，相关表缺失",
+                        migration,
+                    )
+                    continue
                 conn.executescript(migration.read_text(encoding="utf-8"))
             columns = {
                 str(row["name"])
@@ -768,7 +732,7 @@ class DataCollectionPluginQueue:
                     "PRAGMA table_info('data_collection_plugin_sessions')"
                 ).fetchall()
             }
-            if "device_id" not in columns:
+            if columns and "device_id" not in columns:
                 conn.execute(
                     "ALTER TABLE data_collection_plugin_sessions "
                     "ADD COLUMN device_id TEXT NOT NULL DEFAULT ''"

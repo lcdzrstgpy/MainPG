@@ -2,10 +2,14 @@ import { useEffect, useState } from "react";
 
 import { showToast } from "../../../shared/components/toastStore";
 import { orderProfitApi } from "../api/orderProfitApi";
+import { ActiveCaptureBanner } from "../components/ActiveCaptureBanner";
+import { PageHero } from "../components/ShopDataPrimitives";
 import { OrderProfitAccountsTab } from "./OrderProfitAccountsTab";
 import { OrderProfitCaptureTab } from "./OrderProfitCaptureTab";
 import { OrderProfitFinanceTab } from "./OrderProfitFinanceTab";
+import { OrderProfitHotProductsTab } from "./OrderProfitHotProductsTab";
 import { OrderProfitOrdersTab } from "./OrderProfitOrdersTab";
+import { OrderProfitOverviewTab } from "./OrderProfitOverviewTab";
 import { OrderProfitRecordsTab } from "./OrderProfitRecordsTab";
 import { OrderProfitSalesTab } from "./OrderProfitSalesTab";
 import { OrderProfitSettlementTab } from "./OrderProfitSettlementTab";
@@ -16,7 +20,7 @@ import "../styles/orderProfit.css";
 
 /**
  * 店铺数据侧栏合并成四个板块：
- * 经营概览（首页/流量/销量）、订单列表、账户资金（对账/结算）、数据采集。
+ * 经营概览（总览/首页/流量/销量）、订单列表、账户资金（对账/结算）、数据采集。
  * 旧的单页 id 仍然保留在类型里，只用于兼容浏览器里已保存的旧页签。
  */
 export type OrderProfitView =
@@ -36,25 +40,53 @@ type BoardView = "overview" | "orders" | "funds" | "capture" | "records" | "acco
 
 type SubTab = { key: string; label: string; resource?: string; hint?: string };
 
-const VIEW_META: Record<BoardView, { title: string; hint: string }> = {
-  overview: { title: "经营概览", hint: "店铺首页指标、商品/店铺流量与销量库存水位" },
-  orders: { title: "订单列表", hint: "全部、待发货、已发货、已签收、已取消订单的利润明细" },
-  funds: { title: "账户资金", hint: "对账中心财务流水与按 PO 单的结算回款" },
-  capture: { title: "数据采集", hint: "插件会话、一键采集与采集进度" },
-  records: { title: "采集记录", hint: "最近一次入库记录与采集批次" },
-  accounts: { title: "店铺账号", hint: "多账号独立浏览器、自动登录与验证码在线等待" },
+const VIEW_META: Record<BoardView, { eyebrow: string; title: string; hint: string }> = {
+  overview: {
+    eyebrow: "看经营",
+    title: "经营概览",
+    hint: "先看总览判断今天该做什么，再进入首页指标、流量或销量找原因。",
+  },
+  orders: {
+    eyebrow: "看订单",
+    title: "订单列表",
+    hint: "按状态和月份查看每一单的钱从哪来、成本花在哪、利润是否正常。",
+  },
+  funds: {
+    eyebrow: "看资金",
+    title: "账户资金",
+    hint: "对账流水看费用扣在哪，结算回款看每个 PO 单最终到账多少。",
+  },
+  capture: {
+    eyebrow: "管数据",
+    title: "数据采集",
+    hint: "先确认插件与店铺就绪，再同步数据；进度和结果都留在这一页。",
+  },
+  records: {
+    eyebrow: "管数据",
+    title: "入库记录",
+    hint: "每次采集写入了多少订单，都在这里留下可追溯的批次。",
+  },
+  accounts: {
+    eyebrow: "管账号",
+    title: "店铺账号",
+    hint: "先绑定店铺账号，采集才有明确的写入目标。",
+  },
 };
 
 const SUB_TABS: Record<BoardView, SubTab[]> = {
   overview: [
-    { key: "store", label: "店铺首页", resource: "store" },
-    { key: "traffic", label: "流量分析", resource: "traffic" },
-    { key: "sales", label: "销量分析", resource: "sales" },
+    { key: "summary", label: "总览", hint: "今日概览与待办；具体原因去下面三个专题页。" },
+    { key: "store", label: "店铺首页", resource: "store", hint: "待发货、在售商品与近 30 日销量，先看整体水位。" },
+    { key: "traffic", label: "流量分析", resource: "traffic", hint: "曝光、点击、访客与渠道构成，判断流量从哪来。" },
+    { key: "sales", label: "销量分析", resource: "sales", hint: "销量、售罄与库存健康，判断货卖得动不动。" },
   ],
-  orders: [],
+  orders: [
+    { key: "orders", label: "订单明细", hint: "按状态和月份查看每一单的钱从哪来、成本花在哪。" },
+    { key: "hot", label: "爆品统计", hint: "选月份看卖得最好的商品链接与 SKU。" },
+  ],
   funds: [
-    { key: "finance", label: "对账流水", resource: "finance" },
-    { key: "settlement", label: "结算回款", resource: "settlement" },
+    { key: "finance", label: "对账流水", resource: "finance", hint: "推广服务费、罚款与结算的逐笔流水。" },
+    { key: "settlement", label: "结算回款", resource: "settlement", hint: "按 PO 单查看销售与运费回款、冲回。" },
   ],
   capture: [],
   records: [],
@@ -84,11 +116,13 @@ export function OrderProfitPage({
   view = "overview",
   onOpenCapture,
   onOpenAccounts,
+  onOpenOrders,
 }: {
   isActive?: boolean;
   view?: OrderProfitView;
   onOpenCapture?: () => void;
   onOpenAccounts?: () => void;
+  onOpenOrders?: () => void;
 }) {
   const { board, sub } = resolveView(view);
   const [dataVersion, setDataVersion] = useState(0);
@@ -101,7 +135,17 @@ export function OrderProfitPage({
   const [subView, setSubView] = useState(sub || SUB_TABS[board][0]?.key || "");
   const meta = VIEW_META[board] || VIEW_META.overview;
   const tabs = SUB_TABS[board];
-  const resource = tabs.find((tab) => tab.key === subView)?.resource;
+  const activeTab = tabs.find((tab) => tab.key === subView) || tabs[0];
+  const resource = activeTab?.resource;
+  // 二级页签下把子页名字带上，用户始终知道自己在哪一层。
+  const heroTitle = tabs.length > 1 && activeTab && subView !== "summary"
+    ? `${meta.title} · ${activeTab.label}`
+    : meta.title;
+  const heroDesc = tabs.length > 1 && activeTab && subView !== "summary"
+    ? activeTab.hint || meta.hint
+    : meta.hint;
+  // 二级专题页用自己的插画，避免“流量/销量”还挂着经营总览的图。
+  const heroArt = board === "overview" && (subView === "traffic" || subView === "sales") ? subView : board;
 
   // 从侧栏切到另一个板块时，默认子页签跟着变化。
   useEffect(() => {
@@ -199,28 +243,45 @@ export function OrderProfitPage({
 
   return (
     <div className="order-profit-page">
-      <header className={`op-head has-art is-${board}`}>
-        <span className="op-head-art" aria-hidden="true" />
-        <div className="op-head-copy">
-          <h1>{meta.title}</h1>
-          <p>{meta.hint}</p>
+      <PageHero
+        eyebrow={`店铺数据 · ${meta.eyebrow}`}
+        title={heroTitle}
+        desc={heroDesc}
+        art={heroArt}
+        aside={
+          <>
+            <span className="op-chip">{shops.length ? `${shops.length} 家店铺` : "尚未绑定店铺"}</span>
+            <span className="op-chip">{shopScope === "all" ? "全部店铺" : shopScope || "跟随工作台"}</span>
+          </>
+        }
+      />
+
+      <div className="op-commandbar">
+        <div className="op-commandbar-main">
+          {board === "accounts" ? (
+            <span className="op-commandbar-label">账号与权限按工作台账号维度管理</span>
+          ) : (
+            <label className="op-shop-switch">
+              <span>当前店铺</span>
+              <select
+                value={shopScope}
+                onChange={(event) => void handleShopScopeChange(event.target.value)}
+                aria-label="切换店铺"
+              >
+                <option value="all">总览（全部店铺）</option>
+                {shops.map((shop) => (
+                  <option key={shop.id || shop.name} value={shop.name}>
+                    {shop.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {board === "overview" || board === "orders" || board === "funds" ? (
+            <span className="op-commandbar-label">切换店铺会同步影响各数据页与采集写入目标</span>
+          ) : null}
         </div>
-        <div className="op-head-actions">
-          <label className="op-shop-switch">
-            <span>店铺</span>
-            <select
-              value={shopScope}
-              onChange={(event) => void handleShopScopeChange(event.target.value)}
-              aria-label="切换店铺"
-            >
-              <option value="all">总览（全部店铺）</option>
-              {shops.map((shop) => (
-                <option key={shop.id || shop.name} value={shop.name}>
-                  {shop.name}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="op-commandbar-actions">
           {resource ? (
             updating ? (
               <button type="button" className="op-btn" onClick={() => void stopCurrent()}>
@@ -238,21 +299,24 @@ export function OrderProfitPage({
             </button>
           ) : null}
         </div>
-      </header>
+      </div>
 
       {tabs.length > 1 ? (
-        <div className="op-tabs">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={`op-tab ${subView === tab.key ? "is-active" : ""}`}
-              onClick={() => setSubView(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        <nav className="op-subnav" aria-label="页面分区">
+          <div className="op-tabs">
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                className={`op-tab ${subView === tab.key ? "is-active" : ""}`}
+                onClick={() => setSubView(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {activeTab?.hint ? <span className="op-subnav-hint">{activeTab.hint}</span> : null}
+        </nav>
       ) : null}
 
       {updating ? (
@@ -271,9 +335,36 @@ export function OrderProfitPage({
         </div>
       ) : null}
 
+      <ActiveCaptureBanner
+        enabled={isActive && board !== "capture"}
+        onOpenCapture={onOpenCapture}
+        onFinished={handleCaptured}
+      />
+
       <main className="op-main">
+        {board === "overview" && subView === "summary" ? (
+          <OrderProfitOverviewTab
+            isActive={isActive}
+            refreshToken={dataVersion}
+            shop={shopScope}
+            onNavigate={(target) => {
+              if (target === "orders") {
+                onOpenOrders?.();
+                return;
+              }
+              setSubView(target === "home" ? "store" : target);
+            }}
+            onOpenOrders={onOpenOrders}
+            onOpenCapture={onOpenCapture}
+          />
+        ) : null}
         {board === "overview" && subView === "store" ? (
-          <OrderProfitStoreDataTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
+          <OrderProfitStoreDataTab
+            isActive={isActive}
+            refreshToken={dataVersion}
+            shop={shopScope}
+            onOpenCapture={onOpenCapture}
+          />
         ) : null}
         {board === "overview" && subView === "traffic" ? (
           <OrderProfitTrafficTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
@@ -281,8 +372,20 @@ export function OrderProfitPage({
         {board === "overview" && subView === "sales" ? (
           <OrderProfitSalesTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
         ) : null}
-        {board === "orders" ? (
-          <OrderProfitOrdersTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
+        {board === "orders" && subView === "orders" ? (
+          <OrderProfitOrdersTab
+            isActive={isActive}
+            refreshToken={dataVersion}
+            shop={shopScope}
+            onOpenCapture={onOpenCapture}
+          />
+        ) : null}
+        {board === "orders" && subView === "hot" ? (
+          <OrderProfitHotProductsTab
+            isActive={isActive}
+            refreshToken={dataVersion}
+            shop={shopScope}
+          />
         ) : null}
         {board === "funds" && subView === "finance" ? (
           <OrderProfitFinanceTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
@@ -291,7 +394,7 @@ export function OrderProfitPage({
           <OrderProfitSettlementTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
         ) : null}
         {board === "accounts" ? (
-          <OrderProfitAccountsTab isActive={isActive} />
+          <OrderProfitAccountsTab isActive={isActive} onOpenCapture={onOpenCapture} />
         ) : null}
         {board === "records" ? (
           <OrderProfitRecordsTab isActive={isActive} refreshToken={dataVersion} />
@@ -302,7 +405,6 @@ export function OrderProfitPage({
             onCaptured={handleCaptured}
             onOpenAccounts={onOpenAccounts}
             refreshToken={dataVersion}
-            onShopChanged={(name) => setShopScope(name)}
           />
         ) : null}
       </main>

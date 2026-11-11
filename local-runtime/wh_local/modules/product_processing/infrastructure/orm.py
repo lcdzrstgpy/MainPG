@@ -42,6 +42,8 @@ class ProductDraftRow(Base):
     # 草稿池「SKU 规格图可用性判断」结论（JSON）。空串表示从未判定，与
     # 「已判定为不可用」必须区分：导出取图的 auto 策略据此外推。
     sku_availability_json: Mapped[str] = mapped_column(Text, default="")
+    # 用户手动标注的精小品模式：空串=自动识别，precision=强制精小品，standard=强制普通。
+    precision_annotation: Mapped[str] = mapped_column(String(32), default="")
     created_at: Mapped[str] = mapped_column(String(64), default=utc_now)
     updated_at: Mapped[str] = mapped_column(String(64), default=utc_now, onupdate=utc_now)
 

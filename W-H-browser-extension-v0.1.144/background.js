@@ -17848,6 +17848,11 @@ async function captureTemuStoreMetricsFromActiveTab(sourceTab) {
           sales_30d: numberAfter("近30日销量"),
           refund_pending: numberAfter("退货退款待处理"),
           cancel_pending: numberAfter("取消订单待处理"),
+          // 首页「商品上新状态」四块：价格申报/未发布/已发布/已下架。
+          listing_price_pending: numberAfter("价格申报中"),
+          listing_not_published: numberAfter("未发布到站点"),
+          listing_published: numberAfter("已发布到站点"),
+          listing_delisted: numberAfter("已下架/终止"),
           ship_timeliness: percentAfter("店铺发货及时率"),
           delivery_timeliness: percentAfter("店铺到货及时率")
         };

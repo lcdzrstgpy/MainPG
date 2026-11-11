@@ -31,6 +31,29 @@
   min-width: 0;
 }
 
+/* 工作台导语：给纯数据看板一个开场，右侧线稿插画表达「数据在增长」，
+   与每日选品入口区的插画保持同一套线稿语言。 */
+.dash-brief {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4, 16px);
+  overflow: hidden;
+  padding: 12px 20px;
+  border: 1px solid var(--dash-border);
+  border-radius: var(--radius-lg, 16px);
+  background:
+    radial-gradient(ellipse 52% 130% at 92% 0%, color-mix(in srgb, var(--theme-accent, #0aa6cc) 12%, transparent), transparent 70%),
+    linear-gradient(112deg, color-mix(in srgb, var(--theme-module-surface, #ffffff) 94%, transparent), color-mix(in srgb, var(--theme-module-surface-soft, #f4fafd) 82%, transparent));
+  box-shadow: var(--shadow-sm, 0 2px 8px rgba(16, 42, 67, .06));
+}
+.dash-brief-copy { display: grid; gap: 3px; min-width: 0; }
+.dash-brief-eyebrow { color: var(--theme-text-muted, #8295aa); font-size: .58rem; font-weight: var(--weight-bold, 700); letter-spacing: .14em; text-transform: uppercase; }
+.dash-brief-copy strong { color: var(--theme-text-primary, #13233a); font-size: .95rem; font-weight: var(--weight-bold, 700); letter-spacing: .01em; }
+.dash-brief-copy small { color: var(--theme-text-muted, #8295aa); font-size: .74rem; line-height: 1.5; }
+.dash-brief-art { flex: none; width: 148px; height: 62px; opacity: .92; }
+
 /* ---------------------------------------------------------------- KPI 指标卡 */
 
 .dash-kpi-grid {
@@ -48,6 +71,7 @@
   min-height: 92px;
   padding: var(--space-4, 16px);
   overflow: hidden;
+  isolation: isolate;
   border: 1px solid var(--dash-border);
   border-radius: var(--radius-lg, 16px);
   background: var(--dash-surface);
@@ -79,6 +103,20 @@
 .dash-kpi.is-green { --dash-tone: var(--dash-c-green); }
 .dash-kpi.is-amber { --dash-tone: var(--dash-c-amber); }
 .dash-kpi.is-rose { --dash-tone: var(--dash-c-rose); }
+
+/* 卡片右下角一枚同色系的柔光，替代纯色底的单调感；放在内容下层，不抢文字。 */
+.dash-kpi::after {
+  content: "";
+  position: absolute;
+  right: -22px;
+  bottom: -32px;
+  z-index: -1;
+  width: 94px;
+  height: 94px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--dash-tone, var(--theme-primary, #0877d3)) 20%, transparent), transparent 70%);
+  pointer-events: none;
+}
 
 .dash-kpi-icon {
   display: grid;
@@ -155,8 +193,19 @@
   display: grid;
   grid-template-columns: minmax(0, 1.6fr) minmax(268px, .82fr);
   gap: var(--space-4, 16px);
-  align-items: start;
+  /* 两列等高：右列拆成两张卡后，底边与趋势卡对齐，页面下缘不再参差。 */
+  align-items: stretch;
 }
+
+/* 右列两张卡平分趋势卡高度，标题与卡片边缘保持一致的 20px 内边距 */
+.dash-side {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: var(--space-4, 16px);
+  min-width: 0;
+}
+.dash-panel--dist,
+.dash-panel--sites { align-content: start; }
 
 .dash-panel {
   display: grid;
@@ -174,12 +223,6 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3, 12px);
-}
-
-.dash-panel-head.is-sub {
-  margin-top: var(--space-1, 4px);
-  padding-top: var(--space-4, 16px);
-  border-top: 1px dashed color-mix(in srgb, var(--theme-module-border, #d8e9f3) 92%, transparent);
 }
 
 .dash-panel-title {
@@ -282,7 +325,10 @@
 }
 
 .dash-range button.is-active {
-  background: transparent;
+  /* 选中态原来只靠 .dash-range-thumb（默认 opacity:0，要 JS 量完宽度才显形）。
+     thumb 没 ready 的那一帧里，文字是 on-primary（浅色主题=白）压在 surface-soft 上，
+     浅色主题都看不清，深色主题直接 1.2:1。这里给按钮自己一个同色底兜住。 */
+  background: var(--theme-primary-button-gradient, linear-gradient(105deg, #087bf5, #14c8c0));
   color: var(--theme-on-primary, #ffffff);
   box-shadow: none;
 }
@@ -577,14 +623,19 @@
 /* ------------------------------------------------------------------- 空态 */
 
 .dash-empty {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
   margin: 0;
-  padding: var(--space-6, 24px);
+  padding: 18px 16px 14px;
   border: 1px dashed color-mix(in srgb, var(--theme-module-border, #d8e9f3) 94%, transparent);
   border-radius: var(--radius-md, 10px);
   color: var(--theme-text-muted, #8295aa);
   font-size: var(--text-sm, .8125rem);
   text-align: center;
 }
+.dash-empty-art { width: 118px; height: 70px; opacity: .9; }
+.dash-empty p { margin: 0; font-size: var(--text-sm, .8125rem); line-height: 1.5; }
 
 /* ----------------------------------------------------------- 功能导航 */
 
@@ -712,6 +763,12 @@
   .dash-panels {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  /* 单列时右列不再需要平分高度，按内容自然排布 */
+  .dash-side {
+    grid-template-rows: none;
+    grid-auto-rows: auto;
+  }
 }
 
 @media (max-width: 820px) {
@@ -735,6 +792,12 @@
   .dash-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .dash-brief {
+    padding: 10px 14px;
+  }
+
+  .dash-brief-art { display: none; }
 
   .dash-kpi {
     padding: var(--space-3, 12px);

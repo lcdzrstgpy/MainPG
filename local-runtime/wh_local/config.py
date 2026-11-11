@@ -8,6 +8,7 @@ import secrets
 import shutil
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,7 +18,7 @@ logger = logging.getLogger("wh_local.config")
 
 
 # Release automation updates this single value when producing a desktop build.
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.8"
 # Replace this host only when the official MainPG release origin moves. Keep the
 # manifest and installer allowlist bound to the same release-owned host.
 UPDATE_RELEASE_HOST = "workbench.haocoming.top"
@@ -34,6 +35,11 @@ UPDATE_MANIFEST_ALLOWED_HOSTS = frozenset({UPDATE_RELEASE_HOST})
 # 2026-08-29 internal-test key rotation. The matching private key is held only
 # by the independent release server and is never distributed with MainPG.
 UPDATE_ED25519_PUBLIC_KEY_B64 = "qsK3rFMm732q6oZFG8m938ewHkFGj3EoxjRGq3YmHo0="
+
+# 成本桥接（测试期）：客户端向采集服务器拉数/回传成本。
+# 共享密钥可用 WH_LOCAL_BRIDGE_KEY 覆盖；正式上线前应改为用户授权体系。
+BRIDGE_BASE_URL = "https://workbench.haocoming.top/bridge-api"
+BRIDGE_TEST_KEY = "ee669bf2024459b4355b59947d603267e3186c9dabec0c64"
 
 # 安装器（Inno Setup）把用户选择的"数据存储位置"写到这里，运行时读回以避免
 # 用户数据全堆在 C 盘。用注册表而不是配置文件：Inno 的 RegWriteStringValue
@@ -58,6 +64,10 @@ class LocalRuntimeConfig:
     onebound_1688_base_url: str
     onebound_1688_enabled: bool
     billing_contract_version: str = "v1"
+    bridge_base_url: str = ""
+    bridge_key: str = ""
+    bridge_client_id: str = ""
+    bridge_client_label: str = ""
 
 
 def billing_contract_version() -> str:
@@ -78,6 +88,18 @@ def _default_dev_admin_token() -> str:
     if getattr(sys, "frozen", False):
         return secrets.token_urlsafe(24)
     return "dev-admin-token"
+
+
+def _default_bridge_label() -> str:
+    """本机认领显示名：Windows 用户名@计算机名，便于在服务端认领记录里识别设备。"""
+    user = (
+        os.environ.get("USERNAME")
+        or os.environ.get("USER")
+        or os.environ.get("LOGNAME")
+        or "本机"
+    )
+    host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "PC"
+    return f"{user}@{host}"
 
 
 def default_data_dir(runtime_root: Path) -> Path:
@@ -240,6 +262,16 @@ def default_config(workspace: Path | None = None) -> LocalRuntimeConfig:
             "DAILY_SELECTION_ONEBOUND_ENABLED", str(local_secrets.get("enabled", True))
         ).strip().lower() in {"1", "true", "yes"},
         billing_contract_version=billing_contract_version(),
+        bridge_base_url=os.environ.get(
+            "WH_LOCAL_BRIDGE_BASE_URL", BRIDGE_BASE_URL
+        ).rstrip("/"),
+        bridge_key=os.environ.get("WH_LOCAL_BRIDGE_KEY", BRIDGE_TEST_KEY).strip(),
+        bridge_client_id=os.environ.get(
+            "WH_LOCAL_BRIDGE_CLIENT_ID", f"wh-{uuid.getnode():012x}"
+        ).strip(),
+        bridge_client_label=os.environ.get(
+            "WH_LOCAL_BRIDGE_CLIENT_LABEL", _default_bridge_label()
+        ).strip(),
     )
 
 

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query, status
+from fastapi import APIRouter, Body, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from .service import OrderProfitService, StaffNoRequiredError
+from .settlement_file import parse_settlement_file
 
 
 
@@ -48,6 +50,11 @@ class SessionRequest(BaseModel):
 
     session_id: str | int
     incremental: bool = False
+    # 采集前由插件核对浏览器当前登录店铺，避免把数据写到别的店。
+    shop_name: str = ""
+    # 订单采集的月份范围（YYYY-MM）与区域（美国/欧区）；留空表示全部。
+    months: list[str] = []
+    regions: list[str] = []
 
 
 class ResourceRequest(BaseModel):
@@ -74,6 +81,8 @@ class CaptureRequest(BaseModel):
 
     session_id: str
     mode: str = "list"
+    months: list[str] = []
+    regions: list[str] = []
 
 
 class ShopRequest(BaseModel):
@@ -124,6 +133,14 @@ class SettingsRequest(BaseModel):
     usd_cny_rate: float = Field(default=7.2, ge=0)
     commission_rate: float = Field(default=0.05, ge=0, le=1)
     head_unit_price_cny: float = Field(default=0, ge=0)
+
+
+class AutoCaptureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    interval_minutes: int = Field(default=120, ge=15, le=1440)
+    auto_open_browser: bool = True
 
 
 def create_order_profit_router(
@@ -178,6 +195,9 @@ def create_order_profit_router(
                 workspace_id(workspace),
                 session_id=str(request.session_id),
                 incremental=bool(request.incremental),
+                shop_name=request.shop_name,
+                months=request.months,
+                regions=request.regions,
             )
         except BaseException as error:
             raise _error(error) from error
@@ -231,6 +251,8 @@ def create_order_profit_router(
                 workspace_id(workspace),
                 session_id=request.session_id,
                 mode=request.mode,
+                months=request.months,
+                regions=request.regions,
             )
         except BaseException as error:
             raise _error(error) from error
@@ -241,6 +263,17 @@ def create_order_profit_router(
     ) -> dict[str, Any]:
         try:
             return service.latest_capture(workspace_id(workspace))
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/captures/recent")
+    def recent_captures(
+        limit: int = Query(default=10, ge=1, le=30),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """采集中心：最近的全量/增量/单步补采记录。"""
+        try:
+            return service.recent_captures(workspace_id(workspace), limit=limit)
         except BaseException as error:
             raise _error(error) from error
 
@@ -315,6 +348,29 @@ def create_order_profit_router(
     ) -> dict[str, Any]:
         try:
             return service.order_months(workspace_id(workspace), shop=shop)
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/orders/ranking")
+    def orders_ranking(
+        months: str = Query(default="", description="逗号分隔的月份，如 2026-08,2026-09"),
+        month: str = Query(default=""),
+        shop: str = Query(default="", description="店铺名；留空取当前绑定店铺，all 表示全部"),
+        group_by: str = Query(default="link", description="link=按商品链接（SKC）合并，sku=按 SKU"),
+        metric: str = Query(default="quantity", description="quantity=按销量件数，payback=按销售回款"),
+        limit: int = Query(default=50, ge=1, le=200),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.orders_ranking(
+                workspace_id(workspace),
+                month=month,
+                months=[part.strip() for part in months.split(",") if part.strip()],
+                shop=shop,
+                group_by=group_by,
+                metric=metric,
+                limit=limit,
+            )
         except BaseException as error:
             raise _error(error) from error
 
@@ -518,6 +574,38 @@ def create_order_profit_router(
             return service.import_settlement(workspace_id(workspace), payload)
         except BaseException as error:
             raise _error(error) from error
+
+    @router.post("/settlement/import-file")
+    async def settlement_import_file(
+        file: UploadFile = File(...),
+        status_filter: str = Form(default="pending", alias="status"),
+        shop: str = Form(default=""),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        """导入结算中心按月导出的账单文件（CSV / XLSX），补齐回款与申报价。"""
+        if status_filter not in {"pending", "settled"}:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "status 只能是 pending 或 settled")
+        try:
+            content = await file.read()
+            rows, header = parse_settlement_file(content, file.filename or "")
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+        payload = {
+            "rows": rows,
+            "status": status_filter,
+            "shop_name": shop,
+            "capturedAt": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            result = service.import_settlement(workspace_id(workspace), payload)
+        except BaseException as error:
+            raise _error(error) from error
+        return {
+            **result,
+            "file": file.filename or "",
+            "parsed": len(rows),
+            "headers": header,
+        }
 
     @router.get("/settlement/summary")
     def settlement_summary(
@@ -790,6 +878,41 @@ def create_order_profit_router(
         except BaseException as error:
             raise _error(error) from error
 
+
+    # ---------- 自动同步（定时采集） ----------
+
+    @router.get("/auto-capture")
+    def auto_capture_state(
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.auto_capture_state(workspace_id(workspace))
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.put("/auto-capture")
+    def save_auto_capture(
+        request: AutoCaptureRequest,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.save_auto_capture_settings(
+                workspace_id(workspace),
+                enabled=request.enabled,
+                interval_minutes=request.interval_minutes,
+                auto_open_browser=request.auto_open_browser,
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.post("/auto-capture/run")
+    def run_auto_capture(
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.auto_capture_sweep(workspace_id(workspace), force=True)
+        except BaseException as error:
+            raise _error(error) from error
 
     # ---------- 店铺账号（自动登录采集） ----------
 

@@ -1999,13 +1999,6 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   return (
     <div className="verify-page verify-precheck-page">
-      {/* 已有数据时重新加载（保存后/轮询）也要有明确遮罩，避免整页看起来“点不动”。 */}
-      {loading && (
-        <div className="app-loading-mask verify-precheck-loading-mask" role="status" aria-live="polite">
-          <i className="app-spinner" aria-hidden="true" />
-          <span>正在刷新预检数据…</span>
-        </div>
-      )}
       <header className="verify-commandbar">
         <div className="verify-command-title">
           <h1>预检与最终发布</h1>
@@ -2309,9 +2302,9 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                   onClick={() => void downloadRun(run, false)}
                 >
                   {downloading
-                    ? <><i className="app-spinner is-sm" aria-hidden="true" />重新下载</>
+                    ? <><i className="app-spinner is-sm" aria-hidden="true" />下载中…</>
                     : run.workbook_ready
-                      ? `重新下载（${EXPORT_FORMAT_LABELS[run.workbook_format] ?? run.workbook_format}）`
+                      ? `下载${EXPORT_FORMAT_LABELS[run.workbook_format] ?? run.workbook_format}表格`
                       : '暂无表格'}
                 </button>
                 {/* 妙手模板按这一条历史导出现场生成：它是结果卡片的兜底入口——从「历史记录」进入
@@ -2332,7 +2325,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                     >
                       {msExporting === kind
                         ? <><i className="app-spinner is-sm" aria-hidden="true" />正在处理…</>
-                        : `妙手·${kindLabel}（${generated ? '重新下载' : '生成'}）`}
+                        : `下载妙手·${kindLabel}表格`}
                     </button>
                   );
                 })}

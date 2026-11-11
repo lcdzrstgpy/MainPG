@@ -92,11 +92,17 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
     autoRepull: false,
     // 尺寸图自动烧制默认关闭：烧制会额外占用 AI/本地渲染时间，交给用户按品类显式开启。
     dimensionCard: false,
-    // 场景风格默认智能混合：按批次在极简/生活/花哨之间轮换，避免四格背景趋同。
-    sceneStyle: 'smart',
+    // 场景风格默认花哨：花艺/礼赠/丝绒/镜面背景出片更有质感，需要克制时再切极简或生活。
+    sceneStyle: 'ornate',
+    // 麻将专业模式默认关闭：只对麻将/牌类商品生效。
+    mahjongMode: false,
+    // 麻将出图方式默认 AI；切 3D 需要本机装有 Blender。
+    mahjongRender: 'ai',
   });
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // 正在保存「精小品」手动标注的草稿 id：避免重复点击重复 PATCH。
+  const [precisionBusyIds, setPrecisionBusyIds] = useState<Set<number>>(new Set());
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // SKU 管理抽屉：当前正在管理的草稿 id（null 表示关闭）
   const [skuDrawerDraftId, setSkuDrawerDraftId] = useState<number | null>(null);
@@ -343,6 +349,30 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
   // 本页是否已全选：单按钮切换「全选本页 / 取消全选」
   const allPageSelected = pageDrafts.length > 0 && pageDrafts.every((d) => selectedIds.has(d.id));
   const toggleSelectAllPage = () => { if (allPageSelected) clearSelection(); else selectAll(); };
+
+  // 草稿池手动标注：勾选后强制走精小品模式，主体识别不再自动判断。
+  const togglePrecisionAnnotation = async (draft: DraftSummary) => {
+    if (precisionBusyIds.has(draft.id)) return;
+    const next = draft.precision_annotation === 'precision' ? '' : 'precision';
+    setPrecisionBusyIds((prev) => new Set(prev).add(draft.id));
+    setDrafts((prev) => prev.map((d) => (d.id === draft.id ? { ...d, precision_annotation: next } : d)));
+    try {
+      const saved = await ppRequest<{ draft: DraftSummary }>(ctx, `${API_BASE}/drafts/${draft.id}`, {
+        method: 'PATCH',
+        body: { precision_annotation: next },
+      });
+      setDrafts((prev) => prev.map((d) => (d.id === draft.id ? { ...d, ...saved.draft } : d)));
+    } catch (err) {
+      setDrafts((prev) => prev.map((d) => (d.id === draft.id ? { ...d, precision_annotation: draft.precision_annotation } : d)));
+      setError(err instanceof Error ? err.message : '精小品标注保存失败');
+    } finally {
+      setPrecisionBusyIds((prev) => {
+        const nextSet = new Set(prev);
+        nextSet.delete(draft.id);
+        return nextSet;
+      });
+    }
+  };
 
   const beginEdit = (draft: DraftSummary) => {
     const raw = draft.raw_payload || {};
@@ -804,11 +834,11 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
           </div>
         )}
         <div className="verify-draft-list">
-          {/* 切换批次/刷新时列表非空，也要给出明确的加载遮罩；否则看起来像点不动。 */}
+          {/* 刷新时不再压暗整页：只在列表顶部给一个小状态，列表保持可读。 */}
           {listLoading && !isPoolEmpty && !listError && (
-            <div className="app-loading-mask" role="status" aria-live="polite">
-              <i className="app-spinner" aria-hidden="true" />
-              <span>正在加载草稿…</span>
+            <div className="verify-draft-refreshing" role="status" aria-live="polite">
+              <i className="app-spinner is-sm" aria-hidden="true" />
+              <span>刷新中…</span>
             </div>
           )}
           {pageDrafts.map((draft) => {
@@ -853,6 +883,15 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
                     </div>
                     <div className="pool-meta">
                       <span className="tag">{platform}</span>
+                      <label className="pool-precision" title="勾选后该草稿强制走精小品模式，主体识别不再自动判断">
+                        <input
+                          type="checkbox"
+                          checked={draft.precision_annotation === 'precision'}
+                          disabled={precisionBusyIds.has(draft.id)}
+                          onChange={() => void togglePrecisionAnnotation(draft)}
+                        />
+                        精小品
+                      </label>
                       <span className="pool-source-link">
                         <span className="pool-link-label"><i className="iconfont icon-link" aria-hidden="true" />链接</span>
                         {sourceUrl ? (

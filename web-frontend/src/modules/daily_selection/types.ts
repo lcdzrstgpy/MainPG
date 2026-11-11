@@ -38,6 +38,11 @@ export type SourceVariantRecord = {
   sales: number | null;
 };
 
+export type SourceTierPrice = {
+  min_order_quantity: number;
+  price_cny: number | string;
+};
+
 export type DailySelectionCandidate = {
   candidate_id: string;
   offer_id: string;
@@ -52,8 +57,15 @@ export type DailySelectionCandidate = {
   source_detail_image_urls: string[];
   source_variant_records: SourceVariantRecord[];
   source_attributes: Record<string, unknown>;
+  category_path?: string | null;
   price_cny: number | string | null;
+  original_price_cny?: number | string | null;
   min_order_quantity: number | null;
+  stock_quantity?: number | null;
+  unit?: string | null;
+  brand?: string | null;
+  video_url?: string | null;
+  tiered_prices?: SourceTierPrice[];
   selection_score: number | string;
   selection_reasons: string[];
   risk_tags: string[];
@@ -76,6 +88,7 @@ export type DailySelectionRunSummary = {
   candidate_count: number;
   created_at: string;
   updated_at: string;
+  display_name?: string;
 };
 
 export type DailySelectionRunMetadata = Record<string, unknown>;

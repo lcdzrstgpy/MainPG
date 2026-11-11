@@ -1,16 +1,16 @@
 export type OrderProfitSummary = {
   order_count: number;
-  sales_payback: number;
-  settled_total: number;
-  sales_reversal: number;
-  purchase_cost: number;
-  head_freight: number;
-  tail_freight: number;
+  sales_payback: number | null;
+  settled_total: number | null;
+  sales_reversal: number | null;
+  purchase_cost: number | null;
+  head_freight: number | null;
+  tail_freight: number | null;
   penalty: number;
   ad_cost: number;
-  gmv_total: number;
-  declared_total: number;
-  profit: number;
+  gmv_total: number | null;
+  declared_total: number | null;
+  profit: number | null;
   profit_rate: number | null;
   missing_purchase_sku: number;
   missing_weight_sku: number;
@@ -82,19 +82,19 @@ export type OrderProfitRow = {
   sub_order_count: number;
   item_count: number;
   sku_count: number;
-  gmv_total: number;
-  declared_total: number;
-  sales_payback: number;
-  sales_reversal: number;
-  freight_payback: number;
-  freight_reversal: number;
-  settled_total: number;
-  purchase_cost: number;
-  head_freight: number;
-  tail_freight: number;
+  gmv_total: number | null;
+  declared_total: number | null;
+  sales_payback: number | null;
+  sales_reversal: number | null;
+  freight_payback: number | null;
+  freight_reversal: number | null;
+  settled_total: number | null;
+  purchase_cost: number | null;
+  head_freight: number | null;
+  tail_freight: number | null;
   penalty: number;
   ad_cost: number;
-  profit: number;
+  profit: number | null;
   profit_rate: number | null;
   items: OrderProfitItem[];
 };
@@ -104,6 +104,32 @@ export type OrderProfitOrdersResponse = {
   orders: OrderProfitRow[];
   total: number;
   items_total?: number;
+};
+
+/** 爆品榜一行：按链接（SKC）或 SKU 聚合后的销量与金额。 */
+export type OrderProfitRankingRow = {
+  key: string;
+  goods_name: string;
+  image_url: string;
+  skc_id: string;
+  sku_id: string;
+  skc_code: string;
+  quantity: number;
+  order_count: number;
+  item_count: number;
+  gmv: number | null;
+  payback: number | null;
+  profit: number | null;
+};
+
+export type OrderProfitRankingResponse = {
+  shop_name: string;
+  group_by: "link" | "sku";
+  metric: "quantity" | "payback";
+  months: string[];
+  rows: OrderProfitRankingRow[];
+  total_quantity: number;
+  total_payback: number | null;
 };
 
 export type OrderTrendPoint = {
@@ -372,6 +398,33 @@ export type CaptureBatch = {
   created_at: string;
 };
 
+export type CaptureRunStep = {
+  key: string;
+  label: string;
+  state: string;
+  detail?: string;
+};
+
+export type CaptureRunSummary = {
+  command_id: number;
+  command_type: string;
+  status: string;
+  ok: boolean;
+  status_text: string;
+  error: string;
+  help: string;
+  shop_name: string;
+  incremental: boolean;
+  resource: string;
+  results: CaptureRunStep[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type CaptureRunList = {
+  items: CaptureRunSummary[];
+};
+
 export type CaptureBatches = {
   batches: CaptureBatch[];
   latest: CaptureBatch | null;
@@ -409,6 +462,12 @@ export type SettlementRow = {
   parent_order_sn: string;
   status: "pending" | "settled";
   currency: string;
+  settlement_amount: number | null;
+  penalty_amount: number | null;
+  batch_no: string;
+  flow_id: string;
+  doc_no: string;
+  arrive_time: string;
   sales_payback: number | null;
   sales_reversal: number | null;
   freight_payback: number | null;
@@ -423,6 +482,8 @@ export type SettlementRow = {
 
 export type SettlementTotals = {
   po_count: number;
+  settlement_amount: number;
+  penalty_amount: number;
   sales_payback: number;
   sales_reversal: number;
   freight_payback: number;
@@ -449,6 +510,11 @@ export type StoreMetrics = {
   cancel_pending: number;
   ship_timeliness: number | null;
   delivery_timeliness: number | null;
+  /** 首页「商品上新状态」：价格申报中 / 未发布到站点 / 已发布到站点 / 已下架。 */
+  listing_price_pending?: number;
+  listing_not_published?: number;
+  listing_published?: number;
+  listing_delisted?: number;
   captured_at: string;
   updated_at?: string;
 };
@@ -531,6 +597,36 @@ export type StoreAccount = {
   last_command_id: number;
   created_at?: string;
   updated_at?: string;
+};
+
+export type AutoCaptureItem = {
+  account_id: string;
+  shop_name: string;
+  alias?: string;
+  action: string;
+  reason?: string;
+};
+
+export type AutoCaptureRunResult = {
+  ran: boolean;
+  reason?: string;
+  ran_at?: string;
+  queued?: number;
+  opened?: number;
+  waiting?: number;
+  total?: number;
+  pending?: boolean;
+  next_in_seconds?: number;
+  items?: AutoCaptureItem[];
+};
+
+export type AutoCaptureSettings = {
+  enabled: boolean;
+  interval_minutes: number;
+  auto_open_browser: boolean;
+  last_run_at: string;
+  last_result: AutoCaptureRunResult;
+  updated_at: string;
 };
 
 export type ShopsResponse = {

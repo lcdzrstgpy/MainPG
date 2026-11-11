@@ -105,6 +105,7 @@ def test_recognize_subject_sends_fixed_model_image_and_prompt(monkeypatch) -> No
     assert "UNTRUSTED ORIGINAL 1688 TITLE" in prompt
     assert SOURCE_TITLE in prompt
     assert "If the image and title materially conflict" in prompt
+    assert "precision_profile" in prompt
     assert request["headers"]["Authorization"] == f"Bearer {ARK_KEY}"
     assert request["allow_redirects"] is False
     assert response.closed is True
@@ -347,3 +348,65 @@ def test_usage_scene_is_parsed_and_passed_through(monkeypatch) -> None:
     assert result.as_dict()["usage_scene"]["action"] == "clipping the charm onto the loop"
     combined = doubao_vision.append_subject_analysis("PROMPT", result)
     assert "jeans belt loop" in combined
+
+
+def test_precision_profile_is_parsed_and_passed_through(monkeypatch) -> None:
+    payload = {
+        **VALID_ANALYSIS,
+        "precision_profile": {
+            "is_small_or_intricate": True,
+            "has_legible_text": True,
+            "is_flat": False,
+            "part_count": 120,
+            "dominant_shape": "wide",
+            "reason": "dense keycap grid with printed legends",
+        },
+    }
+    session = _Session([_success_response(payload)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_vision.DoubaoVisionClient().recognize_subject(
+        "data:image/jpeg;base64,dGVzdA==",
+        SOURCE_TITLE,
+    )
+
+    assert result.precision_profile == payload["precision_profile"]
+    assert result.as_dict()["precision_profile"] == payload["precision_profile"]
+
+
+def test_invalid_precision_profile_degrades_to_empty(monkeypatch) -> None:
+    payload = {
+        **VALID_ANALYSIS,
+        "precision_profile": {
+            "part_count": "many",
+            "dominant_shape": "round",
+            "is_small_or_intricate": "yes",
+        },
+    }
+    session = _Session([_success_response(payload)])
+    monkeypatch.setattr(doubao_ark, "_HTTP_SESSION", session)
+
+    result = doubao_vision.DoubaoVisionClient().recognize_subject(
+        "data:image/jpeg;base64,dGVzdA==",
+        SOURCE_TITLE,
+    )
+
+    assert result.precision_profile == {}
+    assert "precision_profile" not in result.as_dict()
+
+
+def test_precision_profile_is_not_appended_to_the_image_prompt() -> None:
+    analysis = doubao_vision.SubjectAnalysis(
+        sellable_subject=VALID_ANALYSIS["sellable_subject"],
+        subject_explanation=VALID_ANALYSIS["subject_explanation"],
+        visible_attributes=tuple(VALID_ANALYSIS["visible_attributes"]),
+        excluded_elements=tuple(VALID_ANALYSIS["excluded_elements"]),
+        confidence="high",
+        uncertainty_reason="",
+        precision_profile={"is_small_or_intricate": True, "part_count": 120},
+    )
+
+    combined = doubao_vision.append_subject_analysis("IMAGE PROMPT", analysis)
+
+    assert "precision_profile" not in combined
+    assert '"part_count"' not in combined

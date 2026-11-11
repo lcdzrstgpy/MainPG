@@ -209,8 +209,25 @@
   font-size: 13px;
 }
 
-.ledger-keyword input {
-  min-width: 220px;
+.ledger-keyword {
+  flex: 1 1 260px;
+}
+
+.ledger-keyword textarea {
+  width: 100%;
+  min-width: 240px;
+  max-width: 420px;
+  min-height: 34px;
+  max-height: 120px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-primary, #18334d);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: vertical;
 }
 
 .ledger-batch-filter select {
@@ -782,8 +799,8 @@
 }
 
 .ledger-price-table {
-  max-height: 280px;
-  overflow-y: auto;
+  /* 不再做内部滚动：SKU 全部展开，交给抽屉整体滚动 */
+  overflow: visible;
   border: 1px solid var(--theme-module-border, #e6eef4);
   border-radius: 12px;
 }
@@ -809,11 +826,93 @@
   color: var(--theme-text-secondary, #526a82);
 }
 
-.ledger-price-table td:nth-child(2) {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* SKU 属性是核价的关键信息：不截断，允许换行显示完整内容 */
+.ledger-price-table td.ledger-price-attr {
+  min-width: 160px;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.ledger-price-table th:not(:first-child),
+.ledger-price-table td:not(:first-child) {
   white-space: nowrap;
+}
+
+/* 申报价区块头部：标题 + 价格来源（可恢复默认最低价）。
+   这一整组样式随「选价 / 手动填价 / 删除申报价」一起，在整页重写时丢过一次。 */
+.ledger-price-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ledger-price-head h3 {
+  margin: 0;
+}
+
+.ledger-price-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ledger-price-head-actions small {
+  font-size: 11px;
+  color: var(--theme-text-muted, #7b8fa4);
+}
+
+.ledger-price-actions {
+  white-space: nowrap;
+}
+
+.ledger-price-actions .ledger-link + .ledger-link {
+  margin-left: 10px;
+}
+
+.ledger-price-chosen {
+  color: var(--theme-primary, #0a8fca);
+  font-weight: 600;
+}
+
+.ledger-price-table tr.is-selected {
+  background: color-mix(in srgb, var(--theme-module-surface-tint, #f2f9fd) 70%, transparent);
+}
+
+/* 手动填写申报价：采集不到时直接按 Temu 可上架价格核算 */
+.ledger-manual-price {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--theme-text-secondary, #526a82);
+}
+
+.ledger-manual-price input {
+  width: 110px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-primary, #18334d);
+  font-size: 12px;
+}
+
+.ledger-manual-price .ledger-btn {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.ledger-manual-price small {
+  font-size: 11px;
+  color: var(--theme-text-muted, #7b8fa4);
 }
 
 .ledger-drawer-foot {

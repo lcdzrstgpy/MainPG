@@ -74,3 +74,22 @@ def test_revoked_device_token_is_rejected(tmp_path: Path) -> None:
     assert not queue.revoke_device(
         device_id=paired2["device_id"], actor_id="acc-b", workspace_id="default"
     )
+
+
+def test_startup_survives_missing_migrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """打包漏带 migrations 目录时只能缺表，不能让整个后端启动失败。"""
+    from wh_local.data_collection import plugin_queue as plugin_queue_module
+
+    # 把模块位置挪到临时目录，migrations 目录随之不存在（模拟 1.6.x 正式版事故）。
+    monkeypatch.setattr(plugin_queue_module, "__file__", str(tmp_path / "plugin_queue.py"))
+    queue = DataCollectionPluginQueue(tmp_path / "queue.sqlite3")
+    with queue._connect() as conn:  # noqa: SLF001 - 直接断言落库结果
+        tables = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert "data_collection_plugin_devices" not in tables
