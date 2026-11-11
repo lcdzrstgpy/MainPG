@@ -25,7 +25,6 @@ import type { AttrPickMap } from "../data/attributeModel";
 import type {
   TemuAttributes,
   TemuCategory,
-  TemuCategoryPath,
   TemuDraftEdit,
   TemuDraftEntry,
   TemuDraftLibrary,
@@ -357,6 +356,29 @@ const BATCH_HEARTBEAT_TIMEOUT = 120_000;
 /** 自动开跑的倒计时秒数：给用户一个能反悔的窗口（接口非幂等，发错收不回来） */
 const AUTO_START_SECONDS = 3;
 
+/**
+ * 一批活：同一个产品模板（= 同一个 Temu 末级类目）下的若干条草稿。
+ *
+ * 为什么必须分组：勾选的一批草稿经常横跨好几个类目（一个店铺一天几十款，
+ * 托特包/化妆包/桌布混在一起勾）。拿第一条标题匹配出来的类目套给整批，
+ * 属性对不上的会失败，属性对得上的就被**发成错类目**——后者比失败更难收拾。
+ */
+type BatchGroup = {
+  template: ProductTemplate;
+  /** 这类草稿的 Temu 类目路径文案（末级类目一致才在一组） */
+  categoryName: string;
+  entries: TemuDraftEntry[];
+};
+
+/** 一次发布的活儿：条目 + 它该用的模板（取自所属分组） */
+type BatchTask = {
+  entry: TemuDraftEntry;
+  template: ProductTemplate;
+  categoryLabel: string;
+  /** 第几批（0 基），多批时进度文案要显示 */
+  groupIndex: number;
+};
+
 function readBatchStore(key: string): string {
   try {
     return window.localStorage.getItem(key) ?? "";
@@ -561,18 +583,17 @@ export function TemuDraftLibraryPage({
   /**
    * 自动开跑倒计时。
    *
-   * 用户没手选模板时，先按标题匹配 Temu 类目、再找类目对得上的产品模板；
-   * 匹配上就 3 秒后自动开跑（可取消）。对齐店小秘那种「点一下就全上架」，
-   * 但保留一个能反悔的窗口 —— 接口非幂等，发错了收不回来。
+   * 用户没手选模板时：按每条草稿自己的类目分组 → 每组配一个模板 → 3 秒后按组依次开跑（可取消）。
+   * 对齐店小秘那种「点一下就全上架」，但保留一个能反悔的窗口 —— 接口非幂等，发错了收不回来。
    */
   const [autoStart, setAutoStart] = useState<
     null | {
-      template: ProductTemplate;
-      categoryName: string;
+      groups: BatchGroup[];
       count: number;
-      title: string;
-      /** 用这个模板预检后能发的条数（倒计时文案要显示真实数字） */
+      /** 按各组模板预检后能发的总条数（倒计时文案要显示真实数字） */
       runnable: number;
+      /** 被排除的条目说明（没模板 / 没类目），没有就空串 */
+      note: string;
     }
   >(null);
   const autoStartTimerRef = useRef<number | null>(null);
@@ -1024,45 +1045,78 @@ export function TemuDraftLibraryPage({
     : batchTargets;
 
   /**
-   * 按标题匹配 Temu 类目，再找末级 catId 对得上的产品模板。
+   * 给还没记过类目的草稿补一次「标题 → Temu 类目」，写成 memo（`auto: true`）。
    *
-   * 为什么用标题：草稿里的 category_path 是**源平台**类目（1688 的「手机配件」），
-   * 映射不到 Temu；标题匹配接口才是拿 Temu 类目的正路（发布页单件发也用这条）。
+   * memo 是草稿库里显示的那一列类目，分组直接读它——所见即所发。
+   * 只补缺的：已经匹配过的不再打网关；单条失败就按「没类目」排除，
+   * 不让一条 API 抖动把整批拖成弹窗（用户还能单独手动发）。
    */
-  const autoMatchTemplate = async (
-    title: string,
-  ): Promise<{ template: ProductTemplate; categoryName: string } | null> => {
-    const queries = categorySearchTexts(title);
-    if (!queries.length) return null;
-    let paths: TemuCategoryPath[] = [];
-    for (const text of queries.slice(0, 2)) {
-      try {
-        const response = await temuPublishApi.matchCategory(text, 100);
-        paths = response?.categoryPathDTOS ?? [];
-      } catch {
-        // 匹配接口抖动：当作没匹配到，退回弹窗让用户自己选，绝不拿错类目硬发
-        paths = [];
+  const ensureDraftCategories = async (entries: TemuDraftEntry[]) => {
+    const memo = localStore.draftCategories();
+    const queue = entries.filter((entry) => !(memo[entry.id]?.path?.length));
+    if (!queue.length) return;
+    const pending = [...queue];
+    const worker = async () => {
+      for (;;) {
+        const entry = pending.shift();
+        if (!entry) return;
+        const text = categorySearchTexts(entry.title || entry.subtitle || "")[0];
+        if (!text) continue;
+        try {
+          const response = await temuPublishApi.matchCategory(text, 100);
+          const path = (response?.categoryPathDTOS ?? [])
+            .map((dto) => categoryPathFromDto(dto))
+            .find((item) => item.length > 0 && item[item.length - 1].isLeaf);
+          if (path?.length) localStore.rememberDraftCategory(entry.id, path, { auto: true });
+        } catch {
+          // 匹配接口抖动：这条按「没类目」排除，绝不拿猜的类目硬发
+        }
       }
-      if (paths.length) break;
-    }
-    for (const dto of paths) {
-      const path = categoryPathFromDto(dto);
+    };
+    await Promise.all(Array.from({ length: AUTO_CONCURRENCY }, () => worker()));
+    setCategoryMemo(localStore.draftCategories());
+  };
+
+  /**
+   * 把勾选的草稿按**自己匹配到的末级类目**分组，每组找一个末级 catId 对得上的产品模板。
+   *
+   * 严格按 catId 相等，不按名字碰：中间层同名类目很多（好几个「桌布」），
+   * 按名字配会把货发到隔壁类目去。
+   */
+  const planBatchGroups = (entries: TemuDraftEntry[]) => {
+    const memo = localStore.draftCategories();
+    const byLeaf = new Map<string, { categoryName: string; entries: TemuDraftEntry[] }>();
+    let noCategory = 0;
+    for (const entry of entries) {
+      const path = memo[entry.id]?.path ?? [];
       const leaf = path[path.length - 1];
-      if (!leaf) continue;
-      // 严格匹配末级 catId：中间层同名类目很多，按名字碰会发错
+      if (!leaf) {
+        noCategory += 1;
+        continue;
+      }
+      const key = String(leaf.catId);
+      const bucket = byLeaf.get(key);
+      if (bucket) bucket.entries.push(entry);
+      else
+        byLeaf.set(key, {
+          categoryName: path.map((item) => categoryName(item)).filter(Boolean).join(" > "),
+          entries: [entry],
+        });
+    }
+    const groups: BatchGroup[] = [];
+    const withoutTemplate: { categoryName: string; count: number }[] = [];
+    for (const [leafCatId, bucket] of byLeaf) {
       const template = productTemplates.find((item) => {
         const templatePath = item.categoryPath ?? [];
         const templateLeaf = templatePath[templatePath.length - 1];
-        return templateLeaf && String(templateLeaf.catId) === String(leaf.catId);
+        return templateLeaf && String(templateLeaf.catId) === leafCatId;
       });
-      if (template) {
-        return {
-          template,
-          categoryName: path.map((item) => categoryName(item)).filter(Boolean).join(" > "),
-        };
-      }
+      if (template) groups.push({ template, categoryName: bucket.categoryName, entries: bucket.entries });
+      else withoutTemplate.push({ categoryName: bucket.categoryName, count: bucket.entries.length });
     }
-    return null;
+    // 条数多的组先发：先把大头传上去，用户在倒计时里一眼能看出主次
+    groups.sort((a, b) => b.entries.length - a.entries.length);
+    return { groups, withoutTemplate, noCategory };
   };
 
   /** 收掉自动开跑的倒计时（手动取消 / 组件卸载都要调，否则定时器会打到已卸载的组件上） */
@@ -1115,30 +1169,45 @@ export function TemuDraftLibraryPage({
     setAutoMatching(true);
     setBatchState({ running: false, text: "正在按标题匹配类目…" });
     try {
-      const matched = await autoMatchTemplate(first.title || first.subtitle || "");
-      if (!matched) {
-        setBatchState({ running: false, text: "标题没匹配到可用的产品模板，请手动选" });
+      // 每条草稿按自己的标题补类目（已有 memo 的不再打网关）
+      await ensureDraftCategories(batchTargets);
+      const plan = planBatchGroups(batchTargets);
+      const notes: string[] = [];
+      const templateMiss = plan.withoutTemplate.reduce((sum, item) => sum + item.count, 0);
+      if (templateMiss) notes.push(`${templateMiss} 条所属类目还没存模板`);
+      if (plan.noCategory) notes.push(`${plan.noCategory} 条没匹配到类目`);
+      if (!plan.groups.length) {
+        setBatchState({ running: false, text: "勾选的草稿都没匹配到可用的产品模板，请手动选" });
         setBatchOpen(true);
         return;
       }
       setBatchState({ running: false, text: "" });
-      const title = first.title || first.subtitle || "";
-      // 用匹配到的模板算一遍预检：能发 0 条就说明这批有硬伤，别自动跑，直接开弹窗看预检
+      // 每组用**自己**的模板预检（模板不同，属性/仓库要求也不同）：能发 0 条就先看预检
       const variantForCheck = variantTemplates.find((item) => item.name === variantTpl) ?? null;
-      const runnable = batchTargets.filter(
-        (entry) =>
-          precheckBatchItem(
-            entryPrefill(entry, categoryMemo, attrPrefills),
-            matched.template,
-            variantForCheck,
-          ).blocked.length === 0,
-      ).length;
+      const runnable = plan.groups.reduce(
+        (sum, group) =>
+          sum +
+          group.entries.filter(
+            (entry) =>
+              precheckBatchItem(
+                entryPrefill(entry, categoryMemo, attrPrefills),
+                group.template,
+                variantForCheck,
+              ).blocked.length === 0,
+          ).length,
+        0,
+      );
       if (!runnable) {
         setBatchState({ running: false, text: "这批都有阻塞问题，先看下面的预检" });
         setBatchOpen(true);
         return;
       }
-      setAutoStart({ ...matched, count: AUTO_START_SECONDS, title, runnable });
+      setAutoStart({
+        groups: plan.groups,
+        count: AUTO_START_SECONDS,
+        runnable,
+        note: notes.join("，"),
+      });
       clearAutoStart();
       let remaining = AUTO_START_SECONDS;
       autoStartTimerRef.current = window.setInterval(() => {
@@ -1146,7 +1215,7 @@ export function TemuDraftLibraryPage({
         if (remaining <= 0) {
           clearAutoStart();
           setAutoStart(null);
-          void runBatchPublish(matched.template);
+          void runBatchPublish(undefined, plan.groups);
           return;
         }
         setAutoStart((current) => (current ? { ...current, count: remaining } : null));
@@ -1156,8 +1225,14 @@ export function TemuDraftLibraryPage({
     }
   };
 
-  /** 批量发布：勾选的草稿逐条套「产品模板 + 变种模板」→ 组装 → 提交，失败的进失败列表。 */
-  const runBatchPublish = async (overrideTemplate?: ProductTemplate) => {
+  /**
+   * 批量发布：勾选的草稿逐条套「产品模板 + 变种模板」→ 组装 → 提交，失败的进失败列表。
+   *
+   * 两种入口：
+   * - 弹窗里手选模板 / 现场配置 → 整批共用一套（用户明确选过，尊重选择）；
+   * - 自动匹配 → 传 `plan`，每组用**自己类目**的模板（混类目批次不会被套错类目）。
+   */
+  const runBatchPublish = async (overrideTemplate?: ProductTemplate, plan?: BatchGroup[]) => {
     // 上一批还在跑（接口非幂等）：不允许再开一批并行提交。
     // 本实例未必看得见那批（切页会卸载组件、state 归零），所以还要查跨实例的运行标记。
     if (batchState.running) return;
@@ -1173,29 +1248,52 @@ export function TemuDraftLibraryPage({
       overrideTemplate ??
       productTemplates.find((item) => item.name === productTpl) ??
       manualTemplate;
-    if (!template) {
+    const groups: BatchGroup[] = plan?.length
+      ? plan
+      : template
+        ? [
+            {
+              template,
+              categoryName: (template.categoryPath ?? [])
+                .map((item) => item.catName)
+                .filter(Boolean)
+                .join(" > "),
+              entries: batchTargets,
+            },
+          ]
+        : [];
+    if (!groups.length) {
       setError("先选一个产品模板，或在下面「现场配置」里把类目/属性/运费模板/仓库填完");
       return;
     }
-    // 预检要用「这次真正要用的模板」重算。
+    // 预检要用「这条真正要用的模板」重算。
     // 自动匹配那条路不经过 state，state 里的 runnableTargets 是按「还没选模板」算的，
     // 会把这批全判成阻塞 —— 直接复用就会变成「一条都发不出去」。
     const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
-    const targets = skipBroken
-      ? batchTargets.filter(
-          (entry) =>
-            precheckBatchItem(
-              entryPrefill(entry, categoryMemo, attrPrefills),
-              template,
-              variant,
-            ).blocked.length === 0,
-        )
-      : batchTargets;
-    const blockedCount = batchTargets.length - targets.length;
-    if (!targets.length) {
+    const tasks: BatchTask[] = groups.flatMap((group, groupIndex) =>
+      (skipBroken
+        ? group.entries.filter(
+            (entry) =>
+              precheckBatchItem(
+                entryPrefill(entry, categoryMemo, attrPrefills),
+                group.template,
+                variant,
+              ).blocked.length === 0,
+          )
+        : group.entries
+      ).map((entry) => ({
+        entry,
+        template: group.template,
+        categoryLabel: group.categoryName,
+        groupIndex,
+      })),
+    );
+    const selectedCount = new Set(groups.flatMap((group) => group.entries.map((item) => item.id))).size;
+    const blockedCount = selectedCount - tasks.length;
+    if (!tasks.length) {
       setError(
-        batchTargets.length
-          ? `勾选的 ${batchTargets.length} 条都有阻塞问题（见上面的预检），先按原因改掉或关掉「跳过发不出去的」`
+        selectedCount
+          ? `勾选的 ${selectedCount} 条都有阻塞问题（见上面的预检），先按原因改掉或关掉「跳过发不出去的」`
           : "先勾选要发布的产品",
       );
       return;
@@ -1205,7 +1303,7 @@ export function TemuDraftLibraryPage({
     batchAbortRef.current = false;
     writeBatchStore(BATCH_STOP_KEY, "");
     writeBatchStore(BATCH_RUN_KEY, String(Date.now()));
-    setBatchState({ running: true, text: `0/${targets.length}` });
+    setBatchState({ running: true, text: `0/${tasks.length}` });
     setBatchSkipped([]);
     let ok = 0;
     let fail = 0;
@@ -1220,7 +1318,8 @@ export function TemuDraftLibraryPage({
     let aborted = false;
     let crashed = "";
     try {
-      for (const [index, entry] of targets.entries()) {
+      for (const [index, task] of tasks.entries()) {
+        const { entry, template: itemTemplate } = task;
         // 用户点了「停止」：当前这条发完就收工，把已完成的数字如实报出去
         if (batchAbortRef.current || batchStopRequested()) {
           aborted = true;
@@ -1230,12 +1329,18 @@ export function TemuDraftLibraryPage({
         writeBatchStore(BATCH_RUN_KEY, String(Date.now()));
         // 标题可能压根没有（草稿只存了 subtitle）：直接 .slice 会把整批炸在循环外
         const label = (entry.title || entry.sku || "（无标题）").slice(0, 16);
+        // 多批时要把「第几批」显示出来：混类目批次一条条换模板，不然数字跳得很莫名
+        const groupText = groups.length > 1 ? ` · 第 ${task.groupIndex + 1}/${groups.length} 批` : "";
         setBatchState({
           running: true,
-          text: `${index + 1}/${targets.length} · ${label}`,
+          text: `${index + 1}/${tasks.length}${groupText} · ${label}`,
         });
         try {
-          const draft = await buildDraftForPublish(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
+          const draft = await buildDraftForPublish(
+            entryPrefill(entry, categoryMemo, attrPrefills),
+            itemTemplate,
+            variant,
+          );
           const result = await temuPublishApi.publish(draft);
           const goodsId = pickGoodsId(result.result);
           if (goodsId) publishedIds.push(goodsId);
@@ -1245,8 +1350,8 @@ export function TemuDraftLibraryPage({
               if (warnSamples.length < 2 && !warnSamples.includes(text)) warnSamples.push(text);
             }
           }
-          // 批量发布用的是产品模板的类目：记到这条草稿上，列表里就能看到类目路径
-          localStore.rememberDraftCategory(entry.id, template.categoryPath);
+          // 批量发布用的是这一条所属模板的类目：记到这条草稿上，列表里就能看到类目路径
+          localStore.rememberDraftCategory(entry.id, itemTemplate.categoryPath);
           handledIds.push(entry.id);
           ok += 1;
         } catch (cause) {
@@ -1266,7 +1371,7 @@ export function TemuDraftLibraryPage({
             draftTitle: entry.title,
             image: entry.main_image,
             siteLabel: "美国站",
-            categoryLabel: template.categoryPath.map((item) => item.catName).join(" > "),
+            categoryLabel: itemTemplate.categoryPath.map((item) => item.catName).join(" > "),
             skuLabel: entry.sku || "",
             priceLabel: price ? `CNY ${price}` : "",
             at: new Date().toLocaleString("zh-CN"),
@@ -1275,7 +1380,7 @@ export function TemuDraftLibraryPage({
             // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
             prefill: {
               ...entryPrefill(entry, categoryMemo, attrPrefills),
-              categoryPath: categoryMemo?.[entry.id]?.path ?? template.categoryPath,
+              categoryPath: categoryMemo?.[entry.id]?.path ?? itemTemplate.categoryPath,
             },
           });
         }
@@ -1297,14 +1402,15 @@ export function TemuDraftLibraryPage({
         : "";
       // 中止 / 预检跳过 / 中途炸掉都要说清「还有多少条没发」：
       // 不然用户只看到"完成"，以为整批都处理过了
-      const restCount = targets.length - ok - fail - skipped;
+      const restCount = tasks.length - ok - fail - skipped;
       const restText = restCount > 0 ? `，还剩 ${restCount} 条未发` : "";
       const blockedText = blockedCount ? `，预检跳过 ${blockedCount} 条` : "";
+      const groupText = groups.length > 1 ? `，分 ${groups.length} 批（按类目）` : "";
       setBatchState({
         running: false,
         text: crashed
           ? `中断：${crashed}（已成功 ${ok} 条，失败 ${fail} 条${restText}）`
-          : `${aborted ? "已停止" : "完成"}：成功 ${ok} 条${idText}${skippedText}，失败 ${fail} 条${blockedText}${warnText}${aborted ? restText : ""}（失败原因见发布页列表）`,
+          : `${aborted ? "已停止" : "完成"}：成功 ${ok} 条${idText}${skippedText}，失败 ${fail} 条${groupText}${blockedText}${warnText}${aborted ? restText : ""}（失败原因见发布页列表）`,
       });
       if (aborted || crashed) {
         // 中止 / 中断时只摘掉「已经处理掉的」，没发的保留勾选：用户点一下就能接着发
@@ -1600,17 +1706,28 @@ export function TemuDraftLibraryPage({
           )}
 
           {/*
-            自动开跑的倒计时：按标题匹配到类目和模板，给 3 秒反悔窗口。
+            自动开跑的倒计时：按每条草稿自己的类目分组、每组配一个模板，给 3 秒反悔窗口。
             接口非幂等，发出去收不回来 —— 这个窗口比"再点一次弹窗确认"轻，
             但不会让人来不及取消。
           */}
           {autoStart ? (
             <div className="temu-batch-autostart">
               <div className="temu-batch-autostart-text">
-                <strong>按标题匹配到「{autoStart.categoryName}」</strong>
+                <strong>
+                  {autoStart.groups.length > 1
+                    ? `按类目分 ${autoStart.groups.length} 批：${autoStart.groups
+                        .map((group) => {
+                          const leafName = group.categoryName.split(" > ").pop() || group.categoryName;
+                          return `${leafName} ${group.entries.length} 条`;
+                        })
+                        .join("、")}`
+                    : `按标题匹配到「${autoStart.groups[0].categoryName}」`}
+                </strong>
                 <span>
-                  将用模板「{autoStart.template.name}」发 {autoStart.runnable} 条 ·{" "}
-                  <b>{autoStart.count}</b> 秒后开始
+                  {autoStart.groups.length > 1
+                    ? `每批用各自类目的模板，共发 ${autoStart.runnable} 条`
+                    : `将用模板「${autoStart.groups[0].template.name}」发 ${autoStart.runnable} 条`}
+                  {autoStart.note ? `；跳过 ${autoStart.note}` : ""} · <b>{autoStart.count}</b> 秒后开始
                 </span>
               </div>
               <div className="temu-batch-autostart-actions">
@@ -1618,10 +1735,10 @@ export function TemuDraftLibraryPage({
                   type="button"
                   className="temu-batch-autostart-go"
                   onClick={() => {
-                    const template = autoStart.template;
+                    const groups = autoStart.groups;
                     clearAutoStart();
                     setAutoStart(null);
-                    void runBatchPublish(template);
+                    void runBatchPublish(undefined, groups);
                   }}
                 >
                   立即开始

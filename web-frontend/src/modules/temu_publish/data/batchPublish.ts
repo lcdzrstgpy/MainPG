@@ -24,15 +24,40 @@ const DETAIL_WIDTH = 800;
 const IMAGE_UPLOAD_CONCURRENCY = 3;
 
 /**
- * 货号清洗：和发布页变种表同一套规则。
+ * 自建规格值的跨条目缓存（只收 createSpec 建出来的）。
  *
- * Temu 对 extCode 的字符集很窄，「手机壳（透明）+12」这种会直接被拒，
- * 所以括号、加号、斜杠、空格一律去掉。
+ * `ensure()` 里那份缓存只活一次 buildDraftForPublish：批量 30 条里「黑色」会反复出现，
+ * 每条都 createSpec 就会在店铺规格库里堆出几十个同名「黑色」。
+ * 这份缓存活在页面会话里，同一批复用同一个 spec_id。
+ */
+const createdSpecCache = new Map<
+  string,
+  { parent_spec_id: number; parent_spec_name: string; spec_id: number; spec_name: string }
+>();
+
+/**
+ * 货号清洗：只留 A-Za-z0-9-_，和发布页 `cleanExtCode` 同一口径。
+ *
+ * Temu 对货号的字符集很窄（「请使用字母、数字和标点符号维护货号」，1000002），
+ * 中文规格名（黑茶色-性价比版）拼进去会被整条拒掉。以前这里只删符号不删中文，
+ * 批量发中文颜色的草稿必然失败 —— 同一个草稿在发布页发却能过，就是因为那边洗得更严。
+ * 清洗后变空的片段由调用方用序号兜底，否则多个颜色会撞成同一个货号（ext_code 重复）。
  */
 function safeCode(value: string | undefined | null): string {
-  return String(value || "")
-    .replace(/[+()（）[\]{}<>《》「」,，.。;；:：/\\|*?"'`~!@#$%^&=\s]+/g, "")
-    .trim();
+  const cleaned = String(value || "").replace(/[^A-Za-z0-9_-]+/g, "").trim();
+  // 只剩标点残渣也算没拼出来：「黑茶色-性价比版」洗完只剩一个 "-"，
+  // 当成有效片段会让四个颜色全撞成同一个「PP-000199--」（ext_code 重复），
+  // 也会让中文货号变成一串减号。这里要求至少含一个字母/数字。
+  return /[A-Za-z0-9]/.test(cleaned) ? cleaned : "";
+}
+
+/**
+ * 货号片段：清洗后为空（中文规格名）就退化成 `C1` / `S2` 这样的序号，
+ * 保证每个变种的货号不同 —— 直接留空会让四个颜色全撞成「PP-000199」。
+ */
+function codePart(value: string | undefined | null, index: number, prefix: string): string {
+  const raw = String(value ?? "");
+  return safeCode(raw) || (raw.trim() ? `${prefix}${index + 1}` : "");
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -272,6 +297,12 @@ export async function buildDraftForPublish(
         `「${name}」不是「${parentName}」的合法值：Temu 只认类目预设值`,
       );
     }
+    // 跨条目复用：同一批里「黑色」会出现在几十条草稿上，不复用就在规格库里堆一堆同名值
+    const shared = createdSpecCache.get(cacheKey);
+    if (shared) {
+      specCache.set(cacheKey, shared);
+      return shared;
+    }
     const created = await temuPublishApi.createSpec(parentId, name);
     if (!created.specId) throw new Error(`规格「${name}」创建失败`);
     const resolved = {
@@ -281,6 +312,7 @@ export async function buildDraftForPublish(
       spec_name: name,
     };
     specCache.set(cacheKey, resolved);
+    createdSpecCache.set(cacheKey, resolved);
     return resolved;
   };
 
@@ -375,14 +407,36 @@ export async function buildDraftForPublish(
    * 以前不分轴，一律 colors × sizes，缺的那一列还会 createSpec 出一个「均码」，
    * 结果 Temu 判「不合法的规格属性」—— 单列类目在批量发布里必然全失败。
    * 发布页支持 0/1/2 列，后端 payload 也支持，这里对齐。
+   *
+   * ⚠️ 「类目支不支持规格」不能只看 isSale（那是发布页 2026-11-04 修过的同一个坑）：
+   * 化妆包 / 桌布 / 箱包的属性表里一个 isSale 都没有，但 inputMaxSpecNum=2，允许自定义规格。
+   * 按 isSale 判会把整批压成单 SKU —— 11 个颜色的包只发出 1 个变种，商品是错的还不报错。
+   * 没有预设值时由 ensure() 走 createSpec 自建，和发布页勾了「按规格发」是同一条路。
    */
-  const colorAxis = colors.length > 0 && !!colorParent && saleIndex.has(colorParent);
-  const sizeAxis = sizes.length > 0 && !!sizeParent && saleIndex.has(sizeParent);
+  const specDimLimit = Number(attrs?.inputMaxSpecNum ?? 0);
+  /** 没有预设销售属性、但类目允许自定义规格（值由 createSpec 建） */
+  const canCustomSpecs = specDimLimit > 0;
+  const colorAxis = colors.length > 0 && !!colorParent && (saleIndex.has(colorParent) || canCustomSpecs);
+  const sizeAxis = sizes.length > 0 && !!sizeParent && (saleIndex.has(sizeParent) || canCustomSpecs);
 
-  // 类目没有销售属性（桌布/亚麻布这类）：Temu 不给颜色/尺码变种，只能建单 SKU 商品。
-  if (!colorAxis && !sizeAxis && saleIndex.size === 0) {
+  if (!colorAxis && !sizeAxis) {
+    // 草稿有变种值、却发不出变种：要么模板缺父规格、要么类目不支持规格。
+    // 两种都不能静默吞成单 SKU —— 商品会建出来但变种没了，比报错难发现得多。
+    if (colors.length > 0 || sizes.length > 0) {
+      throw new Error(
+        canCustomSpecs
+          ? "产品模板缺少颜色/尺码父规格：补上再发，否则这些变种会被吞成单个 SKU"
+          : `这个类目不支持颜色/尺码规格（最多 ${specDimLimit} 个规格维度），草稿里的变种值发不出去：换个类目，或清掉变种值按单 SKU 发`,
+      );
+    }
+    if (saleIndex.size > 0) {
+      throw new Error(
+        "草稿的规格值和类目预设值对不上（或产品模板缺少颜色/尺码父规格）：选一个变种模板再发",
+      );
+    }
+    // 一个变种值都没有：本来就是单 SKU 商品（桌布/亚麻布这类）
     const singleCode =
-      [safeCode(prefill.sku) || "SKU", safeCode(colors[0]), safeCode(sizes[0])]
+      [safeCode(prefill.sku) || "SKU", codePart(colors[0], 0, "C"), codePart(sizes[0], 0, "S")]
         .filter(Boolean)
         .join("-")
         .slice(0, 120) || "SKU-1";
@@ -396,29 +450,24 @@ export async function buildDraftForPublish(
     return finishDraft();
   }
 
-  // 类目有销售属性、却一个轴都没对上：说明草稿规格值和类目预设值对不上，或模板缺父规格。
-  // 这时**不能**静默降级成单 SKU —— 商品会建出来但一个变种都没有，比报错更难发现。
-  if (!colorAxis && !sizeAxis) {
-    throw new Error(
-      "草稿的规格值和类目预设值对不上（或产品模板缺少颜色/尺码父规格）：选一个变种模板再发",
-    );
-  }
-
   const colorList = colorAxis ? colors : [""];
   const sizeList = sizeAxis ? sizes : [""];
+  // 货号片段先算好：中文规格名清洗后为空的用序号兜底，避免 SKC/SKU 货号撞号
+  const colorCodes = colorList.map((value, index) => codePart(value, index, "C"));
+  const sizeCodes = sizeList.map((value, index) => codePart(value, index, "S"));
 
-  for (const color of colorList) {
+  for (const [colorIndex, color] of colorList.entries()) {
     const colorSpec = colorAxis
       ? await ensure(colorParent, productTemplate.colorParentName || "颜色", color)
       : null;
     const skus: TemuSkuDraft[] = [];
-    for (const size of sizeList) {
+    for (const [sizeIndex, size] of sizeList.entries()) {
       const sizeSpec = sizeAxis
         ? await ensure(sizeParent, productTemplate.sizeParentName || "尺码", size)
         : null;
       skus.push(
         skuFields(
-          [safeCode(prefill.sku) || "SKU", safeCode(color), safeCode(size)]
+          [safeCode(prefill.sku) || "SKU", colorCodes[colorIndex], sizeCodes[sizeIndex]]
             .filter(Boolean)
             .join("-")
             .slice(0, 120) || `SKU-${skus.length + 1}`,
@@ -428,7 +477,7 @@ export async function buildDraftForPublish(
     }
     skcs.push({
       ext_code:
-        [safeCode(prefill.sku) || "SKC", safeCode(color)].filter(Boolean).join("-").slice(0, 120) ||
+        [safeCode(prefill.sku) || "SKC", colorCodes[colorIndex]].filter(Boolean).join("-").slice(0, 120) ||
         `SKC-${skcs.length + 1}`,
       preview_image_urls: [carousel[0]],
       color_image_url: carousel[0],

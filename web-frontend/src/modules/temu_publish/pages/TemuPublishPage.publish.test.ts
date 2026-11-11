@@ -386,16 +386,16 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(bar, /onPickTemplate: \(kind: "product" \| "variant"\) => void;/);
 
   // 批量发布：弹窗里确认（非幂等），逐条 try/catch，失败只跳过不中断
-  assert.match(library, /const variant = variantTemplates\.find\(\(item\) => item\.name === variantTpl\) \?\? null;\n    const targets = skipBroken/);
+  assert.match(library, /const variant = variantTemplates\.find\(\(item\) => item\.name === variantTpl\) \?\? null;\n    const tasks: BatchTask\[\] = groups\.flatMap/);
   assert.match(library, /接口非幂等：重复提交会在店铺里多出商品/);
-  assert.match(library, /for \(const \[index, entry\] of targets\.entries\(\)\)/);
+  assert.match(library, /for \(const \[index, task\] of tasks\.entries\(\)\)/);
   assert.match(library, /await temuPublishApi\.publish\(draft\);/);
   assert.match(library, /localStore\.addFailure\(\{/);
 
   // 组装：一个颜色一个 SKC，价格/尺寸取模板批量值优先
   assert.match(batch, /export async function buildDraftForPublish\(/);
-  assert.match(batch, /for \(const color of colorList\) \{/);
-  assert.match(batch, /for \(const size of sizeList\) \{/);
+  assert.match(batch, /for \(const \[colorIndex, color\] of colorList\.entries\(\)\) \{/);
+  assert.match(batch, /for \(const \[sizeIndex, size\] of sizeList\.entries\(\)\) \{/);
   assert.match(batch, /currency_type: "CNY"/);
   assert.match(batch, /personalization: productTemplate\.isCustom/);
 });
@@ -473,8 +473,8 @@ test("草稿库站点列显示类目路径：选过的优先、其次草稿自�
   assert.match(page, /localStore\.rememberDraftCategory\(prefillDraftId\.current, path\);/);
   assert.match(page, /void applyCategory\(prefill\.categoryPath\);/);
 
-  // 批量发布用的是产品模板类目，也要记到草稿上
-  assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, template\.categoryPath\);/);
+  // 批量发布用的是「这一条所属模板」的类目，也要记到草稿上
+  assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
 });
 
 test("草稿库：编辑在上/用于发布在下，用于发布要先确认基础信息", () => {
@@ -887,9 +887,15 @@ test("发布成功要直接显示商品 id（不用去翻原始 JSON）", () => 
 test("批量发布与单条发布同一套规矩（货号清洗/详情图尺寸/预设规格值）", () => {
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
 
-  // 货号里的括号、加号、斜杠会让 Temu 直接拒，批量路径也要清洗
+  // 货号只留 A-Za-z0-9-_：括号、加号、斜杠、**中文规格名**都会让 Temu 直接拒（1000002）。
+  // 和发布页 cleanExtCode 同一口径；清洗后为空的片段用序号兜底，别让多个颜色撞成同一个货号。
   assert.match(batch, /function safeCode\(value: string \| undefined \| null\): string \{/);
-  assert.match(batch, /\[safeCode\(prefill\.sku\) \|\| "SKU", safeCode\(color\), safeCode\(size\)\]/);
+  assert.match(batch, /\.replace\(\/\[\^A-Za-z0-9_-\]\+\/g, ""\)/);
+  // 只剩标点残渣不算货号片段：「黑茶色-性价比版」洗完只剩 "-"，多个颜色会全撞成同一个货号
+  assert.match(batch, /return \/\[A-Za-z0-9\]\/\.test\(cleaned\) \? cleaned : "";/);
+  assert.match(batch, /function codePart\(value: string \| undefined \| null, index: number, prefix: string\): string \{/);
+  assert.match(batch, /const colorCodes = colorList\.map\(\(value, index\) => codePart\(value, index, "C"\)\);/);
+  assert.match(batch, /\[safeCode\(prefill\.sku\) \|\| "SKU", colorCodes\[colorIndex\], sizeCodes\[sizeIndex\]\]/);
 
   // 详情图必须统一宽度并带真实尺寸，否则 2000306「详情图宽度不正确」
   assert.match(batch, /const DETAIL_WIDTH = 800;/);
@@ -958,9 +964,18 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
 
   // 规格轴：类目给哪一列就用哪一列；两列都没有（或无一对上）→ 单 SKU。
   // 以前不分轴，缺的那一列还会 createSpec 出一个「均码」，Temu 判不合法。
-  assert.match(batch, /const colorAxis = colors\.length > 0 && !!colorParent && saleIndex\.has\(colorParent\);/);
-  assert.match(batch, /const sizeAxis = sizes\.length > 0 && !!sizeParent && saleIndex\.has\(sizeParent\);/);
+  // 类目支不支持规格看 inputMaxSpecNum，不能只看 isSale：化妆包/桌布/箱包一个 isSale
+  // 都没有但 inputMaxSpecNum=2，按 isSale 判会把 11 个颜色的包压成 1 个变种（2026-11-11 实测）。
+  assert.match(batch, /const specDimLimit = Number\(attrs\?\.inputMaxSpecNum \?\? 0\);/);
+  assert.match(batch, /const canCustomSpecs = specDimLimit > 0;/);
+  assert.match(
+    batch,
+    /const colorAxis = colors\.length > 0 && !!colorParent && \(saleIndex\.has\(colorParent\) \|\| canCustomSpecs\);/,
+  );
   assert.match(batch, /if \(!colorAxis && !sizeAxis\) \{/);
+  // 变种值发不出去必须报错，不许静默吞成单 SKU
+  assert.match(batch, /这些变种会被吞成单个 SKU/);
+  assert.match(batch, /这个类目不支持颜色\/尺码规格/);
   assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\]\)\],/);
   assert.ok(
     batch.indexOf("if (!colorAxis && !sizeAxis) {") < batch.indexOf("const colorSpec = colorAxis"),
@@ -969,6 +984,11 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
   // 只有颜色或只有尺码时，另一轴不能进 specs
   assert.match(batch, /\[colorSpec, sizeSpec\]\.filter\(Boolean\) as TemuSkuDraft\["specs"\]/);
   assert.match(batch, /main_specs: colorSpec \? \[colorSpec\] : \[\],/);
+  // 有预设值的类目仍然不许自建：匹不上预设直接报错，别拿错值硬发
+  assert.match(batch, /Temu 只认类目预设值/);
+  // 自建出来的规格值跨条目复用，别在店铺规格库里堆几十个同名「黑色」
+  assert.match(batch, /const createdSpecCache = new Map</);
+  assert.match(batch, /const shared = createdSpecCache\.get\(cacheKey\);/);
 });
 
 test("属性输入支持「下拉 + 数值」并存（成分比例这类）", () => {
@@ -2842,8 +2862,9 @@ test("批量发布：先预检再提交，发不出去的默认跳过", () => {
   assert.match(library, /className="temu-batch-precheck"/);
   assert.match(library, /跳过发不出去的 \{blockedPrecheck\.length\} 条/);
   assert.match(library, /可发 \{batchTargets\.length - blockedPrecheck\.length\} 条 · 预计失败/);
-  // 提交的也是 runnableTargets，不是全部勾选
-  assert.match(library, /const targets = skipBroken/);
+  // 提交的也是按预检过滤后的 tasks（每条还带着自己那组的模板），不是全部勾选
+  assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
+  assert.match(library, /\).map\(\(entry\) => \(\{\s*\n\s*entry,\s*\n\s*template: group\.template,/);
 });
 
 test("批量发布：跑批途中能停，停下后说清还剩多少条", () => {
@@ -2985,27 +3006,36 @@ test("Temu 硬性限制本地先拦：标题 ≤500 字符、重量 2~1000000g",
   assert.match(precheck, /超出 Temu 允许范围/);
 });
 
-test("批量发布：没选模板时按标题自动匹配类目，匹配上倒计时自动开跑", () => {
+test("批量发布：没选模板时按每条草稿自己的类目分组，匹配上倒计时自动开跑", () => {
   // 用户诉求：「店小秘点一下就全上架，为什么我们不能」。
   // 店小秘的类目藏在「导入任务」里；我们做到更前一步：标题匹配 Temu 类目 → 找对应模板 → 自动跑。
+  // 但必须**按条分组**：勾选的一批常横跨好几个类目，拿第一条的类目套整批 = 把化妆包发成托特包。
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
-  // 匹配：标题 → matchCategory → 路径 → 末级 catId 严格对上模板
-  assert.match(library, /const autoMatchTemplate = async \(\s*\n\s*title: string,/);
-  assert.match(library, /const queries = categorySearchTexts\(title\);/);
+  // 补类目：只补没有 memo 的，按标题 → matchCategory → 首个叶子路径 → 写 memo
+  assert.match(library, /const ensureDraftCategories = async \(entries: TemuDraftEntry\[\]\) => \{/);
+  assert.match(library, /const text = categorySearchTexts\(entry\.title \|\| entry\.subtitle \|\| ""\)\[0\];/);
   assert.match(library, /await temuPublishApi\.matchCategory\(text, 100\)/);
-  assert.match(library, /String\(templateLeaf\.catId\) === String\(leaf\.catId\)/);
-  // 匹配接口抖动不硬发：退回弹窗
-  assert.match(library, /匹配接口抖动：当作没匹配到/);
+  assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, path, \{ auto: true \}\)/);
+  // 匹配接口抖动不硬发：这条按「没类目」排除，绝不拿猜的类目发
+  assert.match(library, /这条按「没类目」排除，绝不拿猜的类目硬发/);
+
+  // 分组：按每条自己的末级 catId 归组，每组找末级 catId 严格相等的模板
+  assert.match(library, /const planBatchGroups = \(entries: TemuDraftEntry\[\]\) => \{/);
+  assert.match(library, /return templateLeaf && String\(templateLeaf\.catId\) === leafCatId;/);
+  assert.match(library, /withoutTemplate\.push\(\{ categoryName: bucket\.categoryName, count: bucket\.entries\.length \}\)/);
+  // 没模板 / 没类目的条数要说出来（别让用户以为整批都发了）
+  assert.match(library, /条所属类目还没存模板/);
+  assert.match(library, /条没匹配到类目/);
 
   // 触发条件：没手选模板 / 有模板可套 / 有勾选
   assert.match(library, /if \(productTpl \|\| manualTemplate\) \{\s*\n\s*setBatchOpen\(true\);\s*\n\s*return;/);
   assert.match(library, /if \(!first \|\| !productTemplates\.length\) \{/);
 
-  // 倒计时：3 秒、可取消、可立即开始
+  // 倒计时：3 秒、可取消、可立即开始、按组传计划
   assert.match(library, /const AUTO_START_SECONDS = 3;/);
-  assert.match(library, /setAutoStart\(\{ \.\.\.matched, count: AUTO_START_SECONDS, title, runnable \}\);/);
+  assert.match(library, /setAutoStart\(\{\s*\n\s*groups: plan\.groups,/);
   assert.match(library, /const cancelAutoStart = \(openDialog = false\) => \{/);
   assert.match(library, /className="temu-batch-autostart"/);
   assert.match(library, /立即开始/);
@@ -3014,14 +3044,16 @@ test("批量发布：没选模板时按标题自动匹配类目，匹配上倒�
   assert.match(library, /window\.clearInterval\(autoStartTimerRef\.current\)/);
   assert.match(css, /\.temu-batch-autostart \{/);
 
-  // 自动跑要把模板直接传进去（state 里没有它），且预检必须按这个模板重算，
-  // 否则 state 里那份「还没选模板」的预检会把这批全判成阻塞
-  assert.match(library, /const runBatchPublish = async \(overrideTemplate\?: ProductTemplate\) => \{/);
-  assert.match(library, /overrideTemplate \?\?/);
-  assert.match(library, /const targets = skipBroken\s*\n\s*\? batchTargets\.filter\(/);
+  // 自动跑把「分组计划」直接传进去（state 里没有它），每组用自己的模板组装 + 预检
+  assert.match(library, /const runBatchPublish = async \(overrideTemplate\?: ProductTemplate, plan\?: BatchGroup\[\]\) => \{/);
+  assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
+  assert.match(library, /template: group\.template,/);
+  assert.match(library, /const \{ entry, template: itemTemplate \} = task;/);
+  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills\),\s*\n\s*itemTemplate,/);
+  assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
   assert.ok(
-    library.includes("void runBatchPublish(matched.template);"),
-    "倒计时结束要带着匹配到的模板开跑",
+    library.includes("void runBatchPublish(undefined, plan.groups);"),
+    "倒计时结束要带着分组计划开跑",
   );
   // 能发 0 条不自动跑（这批有硬伤，先看预检）
   assert.match(library, /if \(!runnable\) \{\s*\n\s*setBatchState\(\{ running: false, text: "这批都有阻塞问题，先看下面的预检" \}\);/);
