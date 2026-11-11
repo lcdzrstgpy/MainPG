@@ -7989,3 +7989,37 @@ textarea.temu-input {
   border-color: rgba(47, 125, 82, 0.16);
   background: rgba(243, 249, 243, 0.72);
 }
+
+/* ---- 失败原因说人话：人话 + 修法 + 原文（原文弱化） ---- */
+.temu-history-reason-human {
+  margin: 0 0 2px;
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.temu-history-reason-fix {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 4px;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.temu-history-reason-fix > span {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 12%, transparent);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.8;
+}
+
+/* 有翻译时原文退成小字：贴给客服时仍然复制得到 */
+.temu-history-reason.is-raw {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}

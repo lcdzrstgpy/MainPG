@@ -2933,3 +2933,32 @@ test("批量发布：切页/刷新前发起的那批还在跑，不许再开一�
   assert.match(library, /另一处发起的批量发布还在提交…/);
   assert.match(library, /上一次批量发布已结束（在别的页签 \/ 切页前跑完的）/);
 });
+
+test("失败原因说人话：黑话翻译 + 修法 + 原文留着复制", () => {
+  // Temu 回的是「bg.glo.goods.add: 货品类目属性更新，请刷新页面后重新创建货品」——
+  // 用户看这句不知道该干嘛（刷新哪？）。31 条失败里 18 条都是这一句。
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const explain = readFileSync(new URL("../data/errorExplain.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 翻译表：具体规则在前（属性[X] 不能被「属性」吃掉），不认识的返回 null 不瞎猜
+  assert.match(explain, /export function explainPublishError/);
+  assert.match(explain, /const RULES: Rule\[\] = \[/);
+  assert.ok(explain.includes("属性\\["), "要有属性[X] 的规则");
+  assert.ok(explain.includes("不是有效值|校验错误"));
+  assert.match(explain, /if \(!hit\) continue;/);
+  assert.match(explain, /return null;/);
+  assert.match(explain, /export function shortReasonLabel/);
+  assert.ok(explain.includes("shortReasonLabel"));
+
+  // 失败卡片：人话 + 修法在上，原文退成小字
+  assert.match(history, /const explained = isSuccess \? null : explainPublishError\(item\.error \|\| reason\);/);
+  assert.match(history, /className="temu-history-reason-human"/);
+  assert.match(history, /className="temu-history-reason-fix"/);
+  assert.match(history, /\{explained \? "原始提示：" : ""\}/);
+  assert.match(history, /className=\{`temu-history-reason\$\{explained \? " is-raw" : ""\}/);
+  // 归堆 chips 也说人话（筛选仍用原文当 key）
+  assert.match(history, /const label = shortReasonLabel\(group\.reason\);/);
+  assert.match(css, /\.temu-history-reason-human \{/);
+  assert.match(css, /\.temu-history-reason-fix \{/);
+});

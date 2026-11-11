@@ -4,6 +4,7 @@ import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
 import type { TemuPublishHistoryItem } from "../types";
 import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
+import { explainPublishError, shortReasonLabel } from "../data/errorExplain";
 import {
   copyText,
   dayLabelOf,
@@ -345,7 +346,11 @@ export function TemuPublishHistoryPage({
               title={group.reason}
               onClick={() => setReasonFilter(reasonFilter === group.reason ? "" : group.reason)}
             >
-              {group.reason.length > 24 ? `${group.reason.slice(0, 24)}…` : group.reason}
+              {(() => {
+                // 显示人话（Temu 原文太工程化），筛选仍用原文当 key 才筛得准
+                const label = shortReasonLabel(group.reason);
+                return label.length > 24 ? `${label.slice(0, 24)}…` : label;
+              })()}
               <em>×{group.count}</em>
             </button>
           ))}
@@ -378,6 +383,9 @@ export function TemuPublishHistoryPage({
           const price = formatPriceRange(item.price_min, item.price_max);
           const source = sourceLabelOf(item.draft_id);
           const reason = reasonTextOf(item);
+          // Temu 回的是工程话（「货品类目属性更新，请刷新页面后重新创建货品」），
+          // 用户看这句不知道该干嘛。能翻译就先说人话 + 修法，原文留着复制/展开。
+          const explained = isSuccess ? null : explainPublishError(item.error || reason);
           const isLong = reason.length > 72;
           const isOpen = Boolean(expanded[item.id]);
           const day = dayLabelOf(item.created_ts, now);
@@ -451,7 +459,19 @@ export function TemuPublishHistoryPage({
                         </span>
                         {code ? <span className="temu-history-code">错误码 {code}</span> : null}
                       </div>
-                      <p className={`temu-history-reason${isLong && !isOpen ? " is-clamped" : ""}`}>
+                      {explained ? (
+                        <>
+                          <p className="temu-history-reason-human">{explained.human}</p>
+                          <p className="temu-history-reason-fix">
+                            <span>怎么修</span>
+                            {explained.fix}
+                          </p>
+                        </>
+                      ) : null}
+                      <p
+                        className={`temu-history-reason${explained ? " is-raw" : ""}${isLong && !isOpen ? " is-clamped" : ""}`}
+                      >
+                        {explained ? "原始提示：" : ""}
                         {reason}
                       </p>
                       <div className="temu-history-row-foot">
