@@ -386,7 +386,7 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(bar, /onPickTemplate: \(kind: "product" \| "variant"\) => void;/);
 
   // 批量发布：弹窗里确认（非幂等），逐条 try/catch，失败只跳过不中断
-  assert.match(library, /setBatchOpen\(false\);\n\n    const variant/);
+  assert.match(library, /const variant = variantTemplates\.find\(\(item\) => item\.name === variantTpl\) \?\? null;\n    const targets = skipBroken/);
   assert.match(library, /接口非幂等：重复提交会在店铺里多出商品/);
   assert.match(library, /for \(const \[index, entry\] of targets\.entries\(\)\)/);
   assert.match(library, /await temuPublishApi\.publish\(draft\);/);
@@ -2843,7 +2843,7 @@ test("批量发布：先预检再提交，发不出去的默认跳过", () => {
   assert.match(library, /跳过发不出去的 \{blockedPrecheck\.length\} 条/);
   assert.match(library, /可发 \{batchTargets\.length - blockedPrecheck\.length\} 条 · 预计失败/);
   // 提交的也是 runnableTargets，不是全部勾选
-  assert.match(library, /const targets = runnableTargets;/);
+  assert.match(library, /const targets = skipBroken/);
 });
 
 test("批量发布：跑批途中能停，停下后说清还剩多少条", () => {
@@ -2918,7 +2918,7 @@ test("批量发布：切页/刷新前发起的那批还在跑，不许再开一�
   assert.match(library, /return at > 0 && Date\.now\(\) - at < BATCH_HEARTBEAT_TIMEOUT;/);
 
   // 开批前查跨实例标记（本实例的 state 可能根本不知道那批）：点按钮就拦，别等填完模板
-  assert.match(library, /const openBatchDialog = \(\) => \{[\s\S]{0,400}batchRunningElsewhere\(\)/);
+  assert.match(library, /const openBatchDialog = async \(\) => \{[\s\S]{0,400}batchRunningElsewhere\(\)/);
   assert.match(library, /if \(batchRunningElsewhere\(\)\) \{/);
   assert.match(library, /并行提交会把同一批草稿重复上架/);
 
@@ -2983,4 +2983,46 @@ test("Temu 硬性限制本地先拦：标题 ≤500 字符、重量 2~1000000g",
   const precheck = readFileSync(new URL("../data/batchPrecheck.ts", import.meta.url), "utf8");
   assert.match(precheck, /超过 Temu 上限/);
   assert.match(precheck, /超出 Temu 允许范围/);
+});
+
+test("批量发布：没选模板时按标题自动匹配类目，匹配上倒计时自动开跑", () => {
+  // 用户诉求：「店小秘点一下就全上架，为什么我们不能」。
+  // 店小秘的类目藏在「导入任务」里；我们做到更前一步：标题匹配 Temu 类目 → 找对应模板 → 自动跑。
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 匹配：标题 → matchCategory → 路径 → 末级 catId 严格对上模板
+  assert.match(library, /const autoMatchTemplate = async \(\s*\n\s*title: string,/);
+  assert.match(library, /const queries = categorySearchTexts\(title\);/);
+  assert.match(library, /await temuPublishApi\.matchCategory\(text, 100\)/);
+  assert.match(library, /String\(templateLeaf\.catId\) === String\(leaf\.catId\)/);
+  // 匹配接口抖动不硬发：退回弹窗
+  assert.match(library, /匹配接口抖动：当作没匹配到/);
+
+  // 触发条件：没手选模板 / 有模板可套 / 有勾选
+  assert.match(library, /if \(productTpl \|\| manualTemplate\) \{\s*\n\s*setBatchOpen\(true\);\s*\n\s*return;/);
+  assert.match(library, /if \(!first \|\| !productTemplates\.length\) \{/);
+
+  // 倒计时：3 秒、可取消、可立即开始
+  assert.match(library, /const AUTO_START_SECONDS = 3;/);
+  assert.match(library, /setAutoStart\(\{ \.\.\.matched, count: AUTO_START_SECONDS, title, runnable \}\);/);
+  assert.match(library, /const cancelAutoStart = \(openDialog = false\) => \{/);
+  assert.match(library, /className="temu-batch-autostart"/);
+  assert.match(library, /立即开始/);
+  assert.match(library, /取消，手动配/);
+  // 卸载要收掉定时器
+  assert.match(library, /window\.clearInterval\(autoStartTimerRef\.current\)/);
+  assert.match(css, /\.temu-batch-autostart \{/);
+
+  // 自动跑要把模板直接传进去（state 里没有它），且预检必须按这个模板重算，
+  // 否则 state 里那份「还没选模板」的预检会把这批全判成阻塞
+  assert.match(library, /const runBatchPublish = async \(overrideTemplate\?: ProductTemplate\) => \{/);
+  assert.match(library, /overrideTemplate \?\?/);
+  assert.match(library, /const targets = skipBroken\s*\n\s*\? batchTargets\.filter\(/);
+  assert.ok(
+    library.includes("void runBatchPublish(matched.template);"),
+    "倒计时结束要带着匹配到的模板开跑",
+  );
+  // 能发 0 条不自动跑（这批有硬伤，先看预检）
+  assert.match(library, /if \(!runnable\) \{\s*\n\s*setBatchState\(\{ running: false, text: "这批都有阻塞问题，先看下面的预检" \}\);/);
 });

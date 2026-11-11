@@ -8023,3 +8023,79 @@ textarea.temu-input {
   color: var(--theme-text-muted, #7c8fa3);
   font-size: 11.5px;
 }
+
+/* ---- 批量发布：按标题自动匹配后的 3 秒倒计时（可取消） ---- */
+.temu-batch-autostart {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 30%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 7%, transparent);
+}
+
+.temu-batch-autostart-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.temu-batch-autostart-text strong {
+  overflow: hidden;
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-batch-autostart-text span {
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+}
+
+.temu-batch-autostart-text b {
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-batch-autostart-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.temu-batch-autostart-go {
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--theme-module-primary-strong, #087bf5);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-batch-autostart-go:hover {
+  filter: brightness(1.06);
+}
+
+.temu-batch-autostart-cancel {
+  padding: 5px 12px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-secondary, #4a6478);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.temu-batch-autostart-cancel:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-module-primary-strong, #087bf5);
+}

@@ -8,7 +8,7 @@ import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
 import { categorySearchTexts } from "../utils/categoryMatch";
-import { categoryPathFromDto } from "../utils/categoryPath";
+import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
 import { precheckBatchItem } from "../data/batchPrecheck";
 import { autoFillSourceTexts } from "../data/attrAutofill";
@@ -25,6 +25,7 @@ import type { AttrPickMap } from "../data/attributeModel";
 import type {
   TemuAttributes,
   TemuCategory,
+  TemuCategoryPath,
   TemuDraftEdit,
   TemuDraftEntry,
   TemuDraftLibrary,
@@ -353,6 +354,8 @@ function leafCatIdOf(path?: TemuCategory[]): number {
 const BATCH_RUN_KEY = "temu_publish_batch_running_at";
 const BATCH_STOP_KEY = "temu_publish_batch_stop";
 const BATCH_HEARTBEAT_TIMEOUT = 120_000;
+/** 自动开跑的倒计时秒数：给用户一个能反悔的窗口（接口非幂等，发错收不回来） */
+const AUTO_START_SECONDS = 3;
 
 function readBatchStore(key: string): string {
   try {
@@ -555,6 +558,26 @@ export function TemuDraftLibraryPage({
   const batchAbortRef = useRef(false);
   /** 预检里有问题的条目：默认跳过（发出去也是白跑一趟），用户可改成照发 */
   const [skipBroken, setSkipBroken] = useState(true);
+  /**
+   * 自动开跑倒计时。
+   *
+   * 用户没手选模板时，先按标题匹配 Temu 类目、再找类目对得上的产品模板；
+   * 匹配上就 3 秒后自动开跑（可取消）。对齐店小秘那种「点一下就全上架」，
+   * 但保留一个能反悔的窗口 —— 接口非幂等，发错了收不回来。
+   */
+  const [autoStart, setAutoStart] = useState<
+    null | {
+      template: ProductTemplate;
+      categoryName: string;
+      count: number;
+      title: string;
+      /** 用这个模板预检后能发的条数（倒计时文案要显示真实数字） */
+      runnable: number;
+    }
+  >(null);
+  const autoStartTimerRef = useRef<number | null>(null);
+  /** 正在按标题匹配类目（按钮要显示「匹配中…」并防重复点） */
+  const [autoMatching, setAutoMatching] = useState(false);
 
   const [editing, setEditing] = useState<TemuDraftEntry | null>(null);
   const [editForm, setEditForm] = useState<TemuDraftEdit>({});
@@ -947,6 +970,17 @@ export function TemuDraftLibraryPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 卸载时收掉自动开跑的倒计时，别让定时器打到已卸载的组件上 */
+  useEffect(
+    () => () => {
+      if (autoStartTimerRef.current != null) {
+        window.clearInterval(autoStartTimerRef.current);
+        autoStartTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
   /**
    * 发布前预检：把「这条注定发不出去」的原因先算出来，别等一条条跑完才失败。
    * 纯本地计算（不传图、不打网关），所以可以跟着模板切换实时刷新。
@@ -989,8 +1023,71 @@ export function TemuDraftLibraryPage({
     ? batchTargets.filter((entry) => !blockedPrecheck.some((item) => item.id === entry.id))
     : batchTargets;
 
-  /** 打开「批量发布」弹窗：勾选的草稿按所选模板逐条提交。 */
-  const openBatchDialog = () => {
+  /**
+   * 按标题匹配 Temu 类目，再找末级 catId 对得上的产品模板。
+   *
+   * 为什么用标题：草稿里的 category_path 是**源平台**类目（1688 的「手机配件」），
+   * 映射不到 Temu；标题匹配接口才是拿 Temu 类目的正路（发布页单件发也用这条）。
+   */
+  const autoMatchTemplate = async (
+    title: string,
+  ): Promise<{ template: ProductTemplate; categoryName: string } | null> => {
+    const queries = categorySearchTexts(title);
+    if (!queries.length) return null;
+    let paths: TemuCategoryPath[] = [];
+    for (const text of queries.slice(0, 2)) {
+      try {
+        const response = await temuPublishApi.matchCategory(text, 100);
+        paths = response?.categoryPathDTOS ?? [];
+      } catch {
+        // 匹配接口抖动：当作没匹配到，退回弹窗让用户自己选，绝不拿错类目硬发
+        paths = [];
+      }
+      if (paths.length) break;
+    }
+    for (const dto of paths) {
+      const path = categoryPathFromDto(dto);
+      const leaf = path[path.length - 1];
+      if (!leaf) continue;
+      // 严格匹配末级 catId：中间层同名类目很多，按名字碰会发错
+      const template = productTemplates.find((item) => {
+        const templatePath = item.categoryPath ?? [];
+        const templateLeaf = templatePath[templatePath.length - 1];
+        return templateLeaf && String(templateLeaf.catId) === String(leaf.catId);
+      });
+      if (template) {
+        return {
+          template,
+          categoryName: path.map((item) => categoryName(item)).filter(Boolean).join(" > "),
+        };
+      }
+    }
+    return null;
+  };
+
+  /** 收掉自动开跑的倒计时（手动取消 / 组件卸载都要调，否则定时器会打到已卸载的组件上） */
+  const clearAutoStart = () => {
+    if (autoStartTimerRef.current != null) {
+      window.clearInterval(autoStartTimerRef.current);
+      autoStartTimerRef.current = null;
+    }
+  };
+
+  /** 取消自动开跑；openDialog=true 时顺手打开弹窗让用户手动配 */
+  const cancelAutoStart = (openDialog = false) => {
+    clearAutoStart();
+    setAutoStart(null);
+    if (openDialog) setBatchOpen(true);
+  };
+
+  /**
+   * 打开「批量发布」。
+   *
+   * 没手选模板时：按标题自动匹配类目 → 找对应模板 → 3 秒倒计时后自动开跑；
+   * 匹配不到 / 没有对应模板才弹窗。对齐店小秘那种「点一下就全上架」，
+   * 但留 3 秒反悔窗口（接口非幂等，发出去收不回来）。
+   */
+  const openBatchDialog = async () => {
     if (batchState.running) return;
     // 切页前发起的那批可能还在跑（本实例的 state 不知道）：点按钮就拦，别等填完模板才说
     if (batchRunningElsewhere()) {
@@ -1003,15 +1100,64 @@ export function TemuDraftLibraryPage({
       setError("先勾选要发布的产品");
       return;
     }
-    // 只有一个模板就直接选中，省一次点击；有多个则让用户自己挑
-    if (!productTpl && productTemplates.length) setProductTpl(productTemplates[0].name);
-    // 每次打开都重配：上一批的类目/属性留着，换一批货时很容易发错类目
-    setManualTemplate(null);
-    setBatchOpen(true);
+    setError("");
+    // 已经手选过模板 / 现场配置过：尊重用户选择，直接开弹窗，不再自动匹配
+    if (productTpl || manualTemplate) {
+      setBatchOpen(true);
+      return;
+    }
+    const first = batchTargets[0];
+    // 一个模板都没存过：只能弹窗让用户现场配
+    if (!first || !productTemplates.length) {
+      setBatchOpen(true);
+      return;
+    }
+    setAutoMatching(true);
+    setBatchState({ running: false, text: "正在按标题匹配类目…" });
+    try {
+      const matched = await autoMatchTemplate(first.title || first.subtitle || "");
+      if (!matched) {
+        setBatchState({ running: false, text: "标题没匹配到可用的产品模板，请手动选" });
+        setBatchOpen(true);
+        return;
+      }
+      setBatchState({ running: false, text: "" });
+      const title = first.title || first.subtitle || "";
+      // 用匹配到的模板算一遍预检：能发 0 条就说明这批有硬伤，别自动跑，直接开弹窗看预检
+      const variantForCheck = variantTemplates.find((item) => item.name === variantTpl) ?? null;
+      const runnable = batchTargets.filter(
+        (entry) =>
+          precheckBatchItem(
+            entryPrefill(entry, categoryMemo, attrPrefills),
+            matched.template,
+            variantForCheck,
+          ).blocked.length === 0,
+      ).length;
+      if (!runnable) {
+        setBatchState({ running: false, text: "这批都有阻塞问题，先看下面的预检" });
+        setBatchOpen(true);
+        return;
+      }
+      setAutoStart({ ...matched, count: AUTO_START_SECONDS, title, runnable });
+      clearAutoStart();
+      let remaining = AUTO_START_SECONDS;
+      autoStartTimerRef.current = window.setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearAutoStart();
+          setAutoStart(null);
+          void runBatchPublish(matched.template);
+          return;
+        }
+        setAutoStart((current) => (current ? { ...current, count: remaining } : null));
+      }, 1000);
+    } finally {
+      setAutoMatching(false);
+    }
   };
 
   /** 批量发布：勾选的草稿逐条套「产品模板 + 变种模板」→ 组装 → 提交，失败的进失败列表。 */
-  const runBatchPublish = async () => {
+  const runBatchPublish = async (overrideTemplate?: ProductTemplate) => {
     // 上一批还在跑（接口非幂等）：不允许再开一批并行提交。
     // 本实例未必看得见那批（切页会卸载组件、state 归零），所以还要查跨实例的运行标记。
     if (batchState.running) return;
@@ -1021,15 +1167,31 @@ export function TemuDraftLibraryPage({
       );
       return;
     }
-    // 产品模板和「现场配置」二选一：现场配置出来的等价于一份临时模板
-    const template = productTemplates.find((item) => item.name === productTpl) ?? manualTemplate;
+    // 产品模板和「现场配置」二选一：现场配置出来的等价于一份临时模板。
+    // override 来自「按标题自动匹配」：那条路不经过 state，模板是直接传进来的
+    const template =
+      overrideTemplate ??
+      productTemplates.find((item) => item.name === productTpl) ??
+      manualTemplate;
     if (!template) {
       setError("先选一个产品模板，或在下面「现场配置」里把类目/属性/运费模板/仓库填完");
       return;
     }
-    // 预检挡下的条目默认不跑：发出去也是白等一次失败（图都传完了才被拒）
-    const targets = runnableTargets;
-    const blockedCount = skipBroken ? batchTargets.length - targets.length : 0;
+    // 预检要用「这次真正要用的模板」重算。
+    // 自动匹配那条路不经过 state，state 里的 runnableTargets 是按「还没选模板」算的，
+    // 会把这批全判成阻塞 —— 直接复用就会变成「一条都发不出去」。
+    const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
+    const targets = skipBroken
+      ? batchTargets.filter(
+          (entry) =>
+            precheckBatchItem(
+              entryPrefill(entry, categoryMemo, attrPrefills),
+              template,
+              variant,
+            ).blocked.length === 0,
+        )
+      : batchTargets;
+    const blockedCount = batchTargets.length - targets.length;
     if (!targets.length) {
       setError(
         batchTargets.length
@@ -1040,7 +1202,6 @@ export function TemuDraftLibraryPage({
     }
     setBatchOpen(false);
 
-    const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
     batchAbortRef.current = false;
     writeBatchStore(BATCH_STOP_KEY, "");
     writeBatchStore(BATCH_RUN_KEY, String(Date.now()));
@@ -1437,6 +1598,44 @@ export function TemuDraftLibraryPage({
               ) : null}
             </p>
           )}
+
+          {/*
+            自动开跑的倒计时：按标题匹配到类目和模板，给 3 秒反悔窗口。
+            接口非幂等，发出去收不回来 —— 这个窗口比"再点一次弹窗确认"轻，
+            但不会让人来不及取消。
+          */}
+          {autoStart ? (
+            <div className="temu-batch-autostart">
+              <div className="temu-batch-autostart-text">
+                <strong>按标题匹配到「{autoStart.categoryName}」</strong>
+                <span>
+                  将用模板「{autoStart.template.name}」发 {autoStart.runnable} 条 ·{" "}
+                  <b>{autoStart.count}</b> 秒后开始
+                </span>
+              </div>
+              <div className="temu-batch-autostart-actions">
+                <button
+                  type="button"
+                  className="temu-batch-autostart-go"
+                  onClick={() => {
+                    const template = autoStart.template;
+                    clearAutoStart();
+                    setAutoStart(null);
+                    void runBatchPublish(template);
+                  }}
+                >
+                  立即开始
+                </button>
+                <button
+                  type="button"
+                  className="temu-batch-autostart-cancel"
+                  onClick={() => cancelAutoStart(true)}
+                >
+                  取消，手动配
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {batchSkipped.length > 0 && (
             <p className="temu-muted">
