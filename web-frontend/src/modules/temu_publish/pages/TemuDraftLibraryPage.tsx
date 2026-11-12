@@ -7,6 +7,7 @@ import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
+import { TemuBatchEditPage } from "../components/TemuBatchEditPage";
 import { DEFAULT_SHIPMENT_DAYS } from "../components/ShipmentDaysPicker";
 import { categorySearchTexts } from "../utils/categoryMatch";
 import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
@@ -578,6 +579,8 @@ export function TemuDraftLibraryPage({
   });
   // 批量发布弹窗：勾完直接发，模板在弹窗里选（不再要求先去菜单里「引用产品模板」）
   const [batchOpen, setBatchOpen] = useState(false);
+  /** 整页批量编辑（勾选 → 独立页面逐行改，和 Temu 后台同一套交互） */
+  const [batchEditOpen, setBatchEditOpen] = useState(false);
   // 批量发布「现场配置」出来的临时产品模板（不落盘）：没选产品模板时用它
   const [manualTemplate, setManualTemplate] = useState<ProductTemplate | null>(null);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
@@ -1770,6 +1773,7 @@ export function TemuDraftLibraryPage({
             hiddenCount={hidden.length}
             categories={categories}
             onApplyField={applyBulkField}
+            onBatchEdit={() => setBatchEditOpen(true)}
             onRemark={bulkRemark}
             onDelete={bulkDelete}
             onMoveCategory={moveCategory}
@@ -2303,6 +2307,19 @@ export function TemuDraftLibraryPage({
         )}
       </section>
 
+
+      {batchEditOpen && (
+        <TemuBatchEditPage
+          entries={entries.filter((entry) => selected.has(entry.id))}
+          edits={edits}
+          onSave={(next) => {
+            setEdits(next);
+            saveMap(scoped(DRAFT_EDITS_KEY), next);
+            setBatchEditOpen(false);
+          }}
+          onClose={() => setBatchEditOpen(false)}
+        />
+      )}
 
       {batchOpen &&
         createPortal(

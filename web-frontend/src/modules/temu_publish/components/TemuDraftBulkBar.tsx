@@ -59,6 +59,8 @@ type Props = {
   hiddenCount: number;
   categories: string[];
   onApplyField: (field: BulkField, value: string) => void;
+  /** 打开整页批量编辑（勾选的会带过去逐行改） */
+  onBatchEdit: () => void;
   onRemark: () => void;
   onDelete: () => void;
   onMoveCategory: (category: string) => void;
@@ -90,6 +92,7 @@ export function TemuDraftBulkBar({
   hiddenCount,
   categories,
   onApplyField,
+  onBatchEdit,
   onRemark,
   onDelete,
   onMoveCategory,
@@ -185,8 +188,13 @@ export function TemuDraftBulkBar({
             >
               {batchRunning ? "发布中…" : "批量发布"}
             </button>
-            <button type="button" className="temu-bulk-action" onClick={() => openPanel("fields")}>
-              改字段
+            <button
+              type="button"
+              className="temu-bulk-action"
+              title="打开整页批量编辑：勾上要改的字段，逐行改完保存"
+              onClick={onBatchEdit}
+            >
+              批量编辑
             </button>
             <button type="button" className="temu-bulk-action" onClick={() => openPanel("category")}>
               移分类

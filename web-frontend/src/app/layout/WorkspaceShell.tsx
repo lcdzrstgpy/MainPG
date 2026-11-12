@@ -389,6 +389,25 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0];
   const activeModuleId = activeTab?.moduleId ?? "dashboard";
 
+  /**
+   * 切页签时收掉上一个页签留下的浮层。
+   *
+   * 页签面板是 `hidden` 而不是卸载（切回来要保住表单状态），可弹窗都 `createPortal`
+   * 挂到 `document.body` 上：不清的话，在发布页开着「从成品库挑图」切回成品库，
+   * 那个弹窗会直接浮在新页面上面，看着像页面坏了。
+   *
+   * 约定：`.temu-edit-backdrop` 这类「点遮罩就关」的浮层直接点掉；
+   * 其他自绘整页浮层监听 `mainpg:tab-switch`（detail = 新的 moduleId）自行关闭。
+   */
+  useEffect(() => {
+    document
+      .querySelectorAll<HTMLElement>(".temu-edit-backdrop")
+      .forEach((node) => node.click());
+    window.dispatchEvent(
+      new CustomEvent("mainpg:tab-switch", { detail: { moduleId: activeModuleId } }),
+    );
+  }, [activeTabKey, activeModuleId]);
+
   // POD 使用协议：登录时置位「待阅读」，首次进入任一个 POD 模块时弹出；
   // 用户点「已阅读」后清除，本次登录内不再打扰。未同意就刷新/重新进入会再次弹出。
   // 弹窗只覆盖右侧工作区，左侧栏始终可点：切到非 POD 模块时先收起，回来再弹。

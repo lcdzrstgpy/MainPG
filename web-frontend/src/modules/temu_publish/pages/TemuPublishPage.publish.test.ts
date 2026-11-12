@@ -3087,3 +3087,25 @@ test("批量发布：属性按每条草稿自己的估值，不整组共用第�
   // 类目对不上就必须退回模板（pid 是类目维度的，套错类目会全废）
   assert.match(batch, /: productTemplate\.attrs \?\? \{\};/);
 });
+
+test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存改过的）", () => {
+  const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 入口：批量条上直接开整页（对齐 Temu 后台 / 店小秘），不再弹小面板
+  assert.match(bar, /onBatchEdit: \(\) => void;/);
+  assert.match(bar, /onClick=\{onBatchEdit\}/);
+  assert.doesNotMatch(bar, /openPanel\("fields"\)/);
+
+  // 整页该有的东西：字段勾选、一键填充、移除只影响本页、清空=取消覆盖
+  assert.match(page, /选择批量编辑的信息/);
+  assert.match(page, /一键填充/);
+  assert.match(page, /只是从这张表里去掉，草稿本身不动/);
+  assert.match(page, /if \(value === ""\) delete merged\[key\];/);
+
+  // 接线：勾选的行带过去，保存写回本机编辑
+  assert.match(library, /<TemuBatchEditPage/);
+  assert.match(library, /entries=\{entries\.filter\(\(entry\) => selected\.has\(entry\.id\)\)\}/);
+  assert.match(library, /saveMap\(scoped\(DRAFT_EDITS_KEY\), next\);/);
+});
