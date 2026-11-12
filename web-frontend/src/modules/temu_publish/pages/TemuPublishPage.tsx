@@ -807,6 +807,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const prefillRef = useRef<TemuPublishPrefill | null>(null);
   // 当前表单来自哪条草稿：选完类目回写给草稿库，下次不用重选
   const prefillDraftId = useRef("");
+  /** 最近一次带入的草稿：切店铺重取规格表后要按它重新对一次父规格 */
+  const lastPrefillRef = useRef<TemuPublishPrefill | null>(null);
 
   const warehouses = useMemo(
     () =>
@@ -1115,6 +1117,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 第二次就拿到 null，草稿的尺码/价格全部落不到变种行上。
         const prefill = prefillRef.current;
         prefillRef.current = null;
+        // 草稿只有颜色时别默认占着「尺码」父规格（否则每行都判缺尺码）
+        if (prefill) alignSpecParents(prefill);
         const seedRows = prefill ? buildRowsFromPrefill(prefill, whId) : null;
         setRows((current) => {
           // 带草稿进来：整表按这条草稿重建，别把上一条的颜色/价格/尺寸留在后面几行。
@@ -1143,6 +1147,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   function applyPrefillMeta(prefill: TemuPublishPrefill) {
     prefillDraftId.current = prefill.draftId || "";
+    lastPrefillRef.current = prefill;
     // 草稿自带颜色/尺码 → 说明这条是多规格商品，直接按多规格发。
     // 不然「默认单 SKU」会把草稿里的颜色吞掉（用户看到填了，发出去却没有），
     // 那才是真正的卡点。占位值「默认」不算（那是单 SKU 的占位符）。
@@ -1259,11 +1264,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     });
   }
 
+  /**
+   * 父规格按草稿**实际带的维度**来选。
+   *
+   * `pickSpecPair` 无条件给出「颜色 + 尺码」，可草稿经常只有颜色（单维商品）。
+   * 尺码槽位空着也照样算「缺尺码」：每个变种行都被判没填全，顶部一直「还差 1 项」，
+   * 用户只能自己去把「变种属性二」改成「不选」—— 明明草稿里就没有尺码这回事。
+   */
+  function alignSpecParents(prefill: TemuPublishPrefill) {
+    const hasColors = (prefill.specValues1?.length ?? 0) > 0 || !!prefill.specValue1?.trim();
+    const hasSizes = (prefill.specValues2?.length ?? 0) > 0 || !!prefill.specValue2?.trim();
+    if (!hasColors) setColorParentId(0);
+    if (!hasSizes) setSizeParentId(0);
+  }
+
   /** 把草稿库带入的数据直接铺到表单（用于「页签已打开」的情况）。 */
   const applyPrefillNow = (prefill: TemuPublishPrefill) => {
     // 同一条草稿再点一次（改了价格回来）→ 保留手改；换了一条 → 整表重建
     const sameDraft = !!prefill.draftId && prefill.draftId === prefillDraftId.current;
     applyPrefillMeta(prefill);
+    alignSpecParents(prefill);
     setForm((current) => ({ ...current, ...prefillToForm(current, prefill) }));
     setRows((current) => {
       if (!current.length) {
@@ -1759,6 +1779,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const pair = pickSpecPair(specItems);
       setColorParentId(pair.color);
       setSizeParentId(pair.size);
+      // 切店铺会重取规格表：还按当前草稿的维度对一次，别把「尺码」又占回去
+      if (lastPrefillRef.current) alignSpecParents(lastPrefillRef.current);
     }
     // 旧店的值一律丢掉，换成新店的默认值（没有就让用户自己选，别带着旧 id 发出去）
     const nextFreight = templates[0]?.freightTemplateId ?? "";
