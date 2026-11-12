@@ -3040,16 +3040,18 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.doesNotMatch(library, /if \(!first \|\| !productTemplates\.length\) \{/);
   assert.match(library, /const ready = plan\.groups\.filter\(\(group\) => group\.template\);/);
 
-  // 倒计时：3 秒、可取消、可立即开始、按组传计划
-  assert.match(library, /const AUTO_START_SECONDS = 3;/);
-  assert.match(library, /setAutoStart\(\{\s*\n\s*groups: ready,/);
-  assert.match(library, /const cancelAutoStart = \(openDialog = false\) => \{/);
-  assert.match(library, /className="temu-batch-autostart"/);
-  assert.match(library, /立即开始/);
-  assert.match(library, /取消，手动配/);
-  // 卸载要收掉定时器
-  assert.match(library, /window\.clearInterval\(autoStartTimerRef\.current\)/);
-  assert.match(css, /\.temu-batch-autostart \{/);
+  // 确认单：**必须手点才发**，不再有倒计时自动开跑（点错就上架过，2026-11-12 改掉）
+  assert.match(library, /const \[publishConfirm, setPublishConfirm\] = useState</);
+  assert.match(library, /const cancelPublishConfirm = \(openDialog = false\) => \{/);
+  assert.match(library, /setPublishConfirm\(\{\s*\n\s*groups: ready,/);
+  assert.doesNotMatch(library, /AUTO_START_SECONDS/, "不能再有倒计时自动开跑的常量");
+  assert.doesNotMatch(library, /temu-batch-autostart/, "倒计时条的 DOM/样式要清干净");
+  assert.match(library, /className="temu-edit-dialog temu-batch-confirm"/);
+  // 确认单上要写清发到哪家店、共几条、每组什么模板
+  assert.match(library, /将提交到「\{publishConfirm\.shopName \|\| "当前店铺"\}」/);
+  assert.match(library, /确认发布（\{publishConfirm\.runnable\} 条）/);
+  assert.match(library, /模板「\{group\.template\?\.name \?\? "自动"\}」/);
+  assert.match(css, /\.temu-batch-confirm \{/);
 
   // 自动跑把「分组计划」直接传进去（state 里没有它），每组用自己的模板组装 + 预检
   assert.match(library, /const runBatchPublish = async \(overrideTemplate\?: ProductTemplate, plan\?: BatchGroup\[\]\) => \{/);
@@ -3059,9 +3061,9 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills\),\s*\n\s*itemTemplate,/);
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
   assert.ok(
-    library.includes("void runBatchPublish(undefined, plan.groups);"),
-    "倒计时结束要带着分组计划开跑",
+    library.includes("void runBatchPublish(undefined, groups);"),
+    "点「确认发布」要带着分组计划开跑",
   );
-  // 能发 0 条不自动跑（这批有硬伤，先看预检）
+  // 能发 0 条不出确认单（这批有硬伤，先看预检）
   assert.match(library, /if \(!runnable\) \{\s*\n\s*setBatchState\(\{ running: false, text: "这批都有阻塞问题，先看下面的预检" \}\);/);
 });

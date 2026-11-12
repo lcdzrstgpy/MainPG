@@ -359,8 +359,6 @@ function leafCatIdOf(path?: TemuCategory[]): number {
 const BATCH_RUN_KEY = "temu_publish_batch_running_at";
 const BATCH_STOP_KEY = "temu_publish_batch_stop";
 const BATCH_HEARTBEAT_TIMEOUT = 120_000;
-/** 自动开跑的倒计时秒数：给用户一个能反悔的窗口（接口非幂等，发错收不回来） */
-const AUTO_START_SECONDS = 3;
 
 /**
  * 一批活：同一个产品模板（= 同一个 Temu 末级类目）下的若干条草稿。
@@ -593,24 +591,27 @@ export function TemuDraftLibraryPage({
   /** 预检里有问题的条目：默认跳过（发出去也是白跑一趟），用户可改成照发 */
   const [skipBroken, setSkipBroken] = useState(true);
   /**
-   * 自动开跑倒计时。
+   * 发布确认单。
    *
-   * 用户没手选模板时：按每条草稿自己的类目分组 → 每组配一个模板 → 3 秒后按组依次开跑（可取消）。
-   * 对齐店小秘那种「点一下就全上架」，但保留一个能反悔的窗口 —— 接口非幂等，发错了收不回来。
+   * 用户没手选模板时：按每条草稿自己的类目分组 → 每组配一个模板 → 弹这张单子，
+   * **必须手点「确认发布」才真的提交**。以前是 3 秒倒计时自动开跑，
+   * 手一抖点错就真上架了（接口非幂等，发出去收不回来），所以改成显式确认。
    */
-  const [autoStart, setAutoStart] = useState<
+  const [publishConfirm, setPublishConfirm] = useState<
     null | {
       groups: BatchGroup[];
-      count: number;
-      /** 按各组模板预检后能发的总条数（倒计时文案要显示真实数字） */
+      /** 按各组模板预检后能发的总条数（确认单上要显示真实数字） */
       runnable: number;
       /** 被排除的条目说明（没模板 / 没类目），没有就空串 */
       note: string;
       /** 用了「按草稿临时拼的模板」时的说明（属性是估的，要让人知道） */
       autoNote: string;
+      /** 会发到哪家店：认错店是这行最贵的错误，必须写在确认单上 */
+      shopName: string;
     }
   >(null);
-  const autoStartTimerRef = useRef<number | null>(null);
+  /** 当前店铺名（确认单上要显示；只取一次，切店铺由 settings 那边负责刷新） */
+  const shopNameRef = useRef("");
   /** 正在按标题匹配类目（按钮要显示「匹配中…」并防重复点） */
   const [autoMatching, setAutoMatching] = useState(false);
 
@@ -1005,17 +1006,6 @@ export function TemuDraftLibraryPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 卸载时收掉自动开跑的倒计时，别让定时器打到已卸载的组件上 */
-  useEffect(
-    () => () => {
-      if (autoStartTimerRef.current != null) {
-        window.clearInterval(autoStartTimerRef.current);
-        autoStartTimerRef.current = null;
-      }
-    },
-    [],
-  );
-
   /**
    * 发布前预检：把「这条注定发不出去」的原因先算出来，别等一条条跑完才失败。
    * 纯本地计算（不传图、不打网关），所以可以跟着模板切换实时刷新。
@@ -1232,18 +1222,9 @@ export function TemuDraftLibraryPage({
     }
   };
 
-  /** 收掉自动开跑的倒计时（手动取消 / 组件卸载都要调，否则定时器会打到已卸载的组件上） */
-  const clearAutoStart = () => {
-    if (autoStartTimerRef.current != null) {
-      window.clearInterval(autoStartTimerRef.current);
-      autoStartTimerRef.current = null;
-    }
-  };
-
-  /** 取消自动开跑；openDialog=true 时顺手打开弹窗让用户手动配 */
-  const cancelAutoStart = (openDialog = false) => {
-    clearAutoStart();
-    setAutoStart(null);
+  /** 收起确认单；openDialog=true 时顺手打开手动配置弹窗 */
+  const cancelPublishConfirm = (openDialog = false) => {
+    setPublishConfirm(null);
     if (openDialog) setBatchOpen(true);
   };
 
@@ -1328,28 +1309,22 @@ export function TemuDraftLibraryPage({
         setBatchOpen(true);
         return;
       }
-      setAutoStart({
+      // 认错店是这行最贵的错误：确认单上必须写清发到哪家
+      if (!shopNameRef.current) {
+        const status = await temuPublishApi.settings().catch(() => null);
+        shopNameRef.current =
+          status?.shops?.find((item) => item.active)?.mall_name ?? status?.shops?.[0]?.mall_name ?? "";
+      }
+      setPublishConfirm({
         groups: ready,
-        count: AUTO_START_SECONDS,
         runnable,
         note: notes.join("，"),
         // 有类目是「临时拼的模板」时必须说明：属性是估的，不是人核过的
         autoNote: autoEntries
           ? `${autoEntries} 条没存模板，已按草稿的类目/属性自动填（属性是估的）`
           : "",
+        shopName: shopNameRef.current,
       });
-      clearAutoStart();
-      let remaining = AUTO_START_SECONDS;
-      autoStartTimerRef.current = window.setInterval(() => {
-        remaining -= 1;
-        if (remaining <= 0) {
-          clearAutoStart();
-          setAutoStart(null);
-          void runBatchPublish(undefined, plan.groups);
-          return;
-        }
-        setAutoStart((current) => (current ? { ...current, count: remaining } : null));
-      }, 1000);
     } finally {
       setAutoMatching(false);
     }
@@ -1843,54 +1818,98 @@ export function TemuDraftLibraryPage({
           )}
 
           {/*
-            自动开跑的倒计时：按每条草稿自己的类目分组、每组配一个模板，给 3 秒反悔窗口。
-            接口非幂等，发出去收不回来 —— 这个窗口比"再点一次弹窗确认"轻，
-            但不会让人来不及取消。
+            发布确认单：按每条草稿自己的类目分组、每组配一个模板，**手点「确认发布」才跑**。
+            接口非幂等，以前的 3 秒倒计时手一抖就真上架了，这里改成显式确认。
           */}
-          {autoStart ? (
-            <div className="temu-batch-autostart">
-              <div className="temu-batch-autostart-text">
-                <strong>
-                  {autoStart.groups.length > 1
-                    ? `按类目分 ${autoStart.groups.length} 批：${autoStart.groups
-                        .map((group) => {
-                          const leafName = group.categoryName.split(" > ").pop() || group.categoryName;
-                          return `${leafName} ${group.entries.length} 条`;
-                        })
-                        .join("、")}`
-                    : `按标题匹配到「${autoStart.groups[0].categoryName}」`}
-                </strong>
-                <span>
-                  {autoStart.autoNote ? `${autoStart.autoNote} · ` : ""}
-                  {autoStart.groups.length > 1
-                    ? `每批用各自类目的模板，共发 ${autoStart.runnable} 条`
-                    : `将用模板「${autoStart.groups[0].template?.name ?? "自动"}」发 ${autoStart.runnable} 条`}
-                  {autoStart.note ? `；跳过 ${autoStart.note}` : ""} · <b>{autoStart.count}</b> 秒后开始
-                </span>
-              </div>
-              <div className="temu-batch-autostart-actions">
-                <button
-                  type="button"
-                  className="temu-batch-autostart-go"
-                  onClick={() => {
-                    const groups = autoStart.groups;
-                    clearAutoStart();
-                    setAutoStart(null);
-                    void runBatchPublish(undefined, groups);
-                  }}
+          {publishConfirm &&
+            createPortal(
+              <div className="temu-edit-backdrop" onClick={() => cancelPublishConfirm(false)}>
+                <div
+                  className="temu-edit-dialog temu-batch-confirm"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="确认发布"
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  立即开始
-                </button>
-                <button
-                  type="button"
-                  className="temu-batch-autostart-cancel"
-                  onClick={() => cancelAutoStart(true)}
-                >
-                  取消，手动配
-                </button>
-              </div>
-            </div>
-          ) : null}
+                  <header className="temu-edit-head">
+                    <div>
+                      <strong>确认发布</strong>
+                      <span>
+                        将提交到「{publishConfirm.shopName || "当前店铺"}」，发出去收不回来
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => cancelPublishConfirm(false)}
+                      aria-label="关闭"
+                    >
+                      ×
+                    </button>
+                  </header>
+
+                  <div className="temu-batch-body">
+                    <ul className="temu-batch-confirm-list">
+                      {publishConfirm.groups.map((group) => {
+                        const leafName = group.categoryName.split(" > ").pop() || group.categoryName;
+                        return (
+                          <li key={group.categoryName}>
+                            <b>{leafName}</b>
+                            <span>{group.entries.length} 条</span>
+                            <em>模板「{group.template?.name ?? "自动"}」</em>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <p className="temu-batch-confirm-total">
+                      共发 <b>{publishConfirm.runnable}</b> 条
+                      {publishConfirm.groups.length > 1
+                        ? `，按类目分 ${publishConfirm.groups.length} 批依次提交`
+                        : ""}
+                    </p>
+                    {publishConfirm.autoNote ? (
+                      <p className="temu-confirm-warn">{publishConfirm.autoNote}</p>
+                    ) : null}
+                    {publishConfirm.note ? (
+                      <p className="temu-muted">已跳过：{publishConfirm.note}</p>
+                    ) : null}
+                    <p className="temu-muted">
+                      逐条提交，中途某条失败只跳过它、原因进「发布历史」；同一条草稿 24 小时内重复提交会被拦一次。
+                    </p>
+                  </div>
+
+                  <footer className="temu-edit-foot">
+                    <button
+                      type="button"
+                      className="temu-btn"
+                      onClick={() => cancelPublishConfirm(false)}
+                    >
+                      取消
+                    </button>
+                    <div>
+                      <button
+                        type="button"
+                        className="temu-btn"
+                        onClick={() => cancelPublishConfirm(true)}
+                      >
+                        手动配
+                      </button>
+                      <button
+                        type="button"
+                        className="temu-btn temu-btn-primary"
+                        onClick={() => {
+                          const groups = publishConfirm.groups;
+                          setPublishConfirm(null);
+                          void runBatchPublish(undefined, groups);
+                        }}
+                      >
+                        确认发布（{publishConfirm.runnable} 条）
+                      </button>
+                    </div>
+                  </footer>
+                </div>
+              </div>,
+              document.body,
+            )}
 
           {batchSkipped.length > 0 && (
             <p className="temu-muted">
