@@ -1,0 +1,597 @@
+{
+  "scenes": {
+    "home_kitchen": {
+      "main": "warm oak countertop, warm gray plaster wall, shallow depth",
+      "alt": "linen-draped shelf, soft white wall, mid depth"
+    },
+    "apparel_accessories": {
+      "main": "pale oak bench, warm white wall, shallow depth",
+      "alt": "stone ledge, soft gray backdrop, shallow depth"
+    },
+    "pet_supplies": {
+      "main": "low wool rug on light wood floor, soft white wall, low camera",
+      "alt": "entryway tile, warm gray wall, low camera"
+    },
+    "office_stationery": {
+      "main": "light oak desk, warm gray paper backdrop, strict top-down",
+      "alt": "white laminate desk, pale gray wall, slight top-down"
+    },
+    "sports_outdoor": {
+      "main": "pale oak deck, muted greenery backdrop, mid depth",
+      "alt": "concrete floor, overcast gray backdrop, low angle"
+    },
+    "auto_accessories": {
+      "main": "charcoal trunk carpet, dark gray trim, tight crop",
+      "alt": "garage concrete, graphite wall, tight crop"
+    },
+    "hand_tools": {
+      "main": "oiled workbench, gray pegboard wall, mid depth",
+      "alt": "concrete floor, plaster wall point, low angle"
+    },
+    "passive_tech": {
+      "main": "matte white desk, charcoal backdrop, shallow depth",
+      "alt": "charcoal felt surface, light gray backdrop, top-down"
+    },
+    "beauty_tools": {
+      "main": "white marble vanity, pale pink-gray wall, shallow depth",
+      "alt": "acrylic shelf, clean white backdrop, top-down"
+    },
+    "adult_games": {
+      "main": "walnut table, deep green felt inlay, warm dark backdrop",
+      "alt": "dark leather side table, charcoal wall, top-down"
+    },
+    "garden_tools": {
+      "main": "weathered potting bench, mossy stone backdrop, mid depth",
+      "alt": "dark soil bed edge, painted railing backdrop, low angle"
+    },
+    "general": {
+      "main": "neutral plaster corner, pale gray paper backdrop, soft floor transition, shallow depth",
+      "alt": "neutral seamless sweep, soft gray gradient backdrop, top-down"
+    }
+  },
+  "pools": {
+    "home_kitchen": [
+      "walnut cutting board",
+      "white ceramic dish",
+      "eucalyptus sprig",
+      "warm gray stone slab",
+      "kraft paper sheet",
+      "rattan storage box"
+    ],
+    "apparel_accessories": [
+      "oak hanger",
+      "washed linen cloth",
+      "brass clip",
+      "warm gray stone slab",
+      "kraft paper sheet",
+      "frosted glass cup"
+    ],
+    "pet_supplies": [
+      "woven floor mat",
+      "white ceramic dish",
+      "eucalyptus sprig",
+      "light oak block",
+      "warm gray stone slab",
+      "rattan storage box"
+    ],
+    "office_stationery": [
+      "warm gray paper stack",
+      "light oak block",
+      "brass clip",
+      "white ceramic dish",
+      "cork coaster",
+      "frosted glass cup"
+    ],
+    "sports_outdoor": [
+      "rolled yoga mat",
+      "washed linen cloth",
+      "warm gray stone slab",
+      "light oak block",
+      "brass clip",
+      "kraft paper sheet"
+    ],
+    "auto_accessories": [
+      "microfiber towel",
+      "warm gray stone slab",
+      "brass clip",
+      "light oak block",
+      "kraft paper sheet",
+      "dark leather tray"
+    ],
+    "hand_tools": [
+      "pegboard square",
+      "light oak block",
+      "warm gray stone slab",
+      "concrete cube",
+      "kraft paper sheet",
+      "washed linen cloth"
+    ],
+    "passive_tech": [
+      "felt sleeve",
+      "light oak block",
+      "brass clip",
+      "warm gray stone slab",
+      "kraft paper sheet",
+      "frosted glass cup"
+    ],
+    "beauty_tools": [
+      "acrylic tray",
+      "washed linen cloth",
+      "frosted glass cup",
+      "white ceramic dish",
+      "cork coaster",
+      "pale marble coaster"
+    ],
+    "adult_games": [
+      "green felt mat",
+      "light oak block",
+      "brass clip",
+      "warm gray stone slab",
+      "kraft paper sheet",
+      "matte black ceramic cup"
+    ],
+    "garden_tools": [
+      "terracotta pot",
+      "kraft paper sheet",
+      "eucalyptus sprig",
+      "warm gray stone slab",
+      "light oak block",
+      "rattan storage box"
+    ],
+    "general": [
+      "light oak block",
+      "washed linen cloth",
+      "warm gray stone slab",
+      "white ceramic dish",
+      "brass clip",
+      "kraft paper sheet"
+    ]
+  },
+  "presets": {
+    "home_kitchen": [
+      "walnut cutting board",
+      "white ceramic dish",
+      "eucalyptus sprig"
+    ],
+    "apparel_accessories": [
+      "oak hanger",
+      "washed linen cloth",
+      "brass clip"
+    ],
+    "pet_supplies": [
+      "woven floor mat",
+      "white ceramic dish",
+      "eucalyptus sprig"
+    ],
+    "office_stationery": [
+      "warm gray paper stack",
+      "light oak block",
+      "brass clip"
+    ],
+    "sports_outdoor": [
+      "rolled yoga mat",
+      "washed linen cloth",
+      "warm gray stone slab"
+    ],
+    "auto_accessories": [
+      "microfiber towel",
+      "warm gray stone slab",
+      "brass clip"
+    ],
+    "hand_tools": [
+      "pegboard square",
+      "light oak block",
+      "warm gray stone slab"
+    ],
+    "passive_tech": [
+      "felt sleeve",
+      "light oak block",
+      "brass clip"
+    ],
+    "beauty_tools": [
+      "acrylic tray",
+      "washed linen cloth",
+      "frosted glass cup"
+    ],
+    "adult_games": [
+      "green felt mat",
+      "light oak block",
+      "brass clip"
+    ],
+    "garden_tools": [
+      "terracotta pot",
+      "kraft paper sheet",
+      "eucalyptus sprig"
+    ],
+    "general": [
+      "light oak block",
+      "washed linen cloth",
+      "warm gray stone slab"
+    ]
+  },
+  "material_family": {
+    "light oak block": "wood",
+    "walnut cutting board": "wood",
+    "oak hanger": "wood",
+    "white ceramic dish": "ceramic",
+    "terracotta pot": "ceramic",
+    "matte black ceramic cup": "ceramic",
+    "acrylic tray": "acrylic",
+    "warm gray stone slab": "stone",
+    "pale marble coaster": "stone",
+    "washed linen cloth": "fabric",
+    "woven floor mat": "fabric",
+    "green felt mat": "fabric",
+    "felt sleeve": "fabric",
+    "microfiber towel": "fabric",
+    "kraft paper sheet": "paper",
+    "warm gray paper stack": "paper",
+    "brass clip": "metal",
+    "pegboard square": "metal",
+    "eucalyptus sprig": "plant",
+    "frosted glass cup": "glass",
+    "rolled yoga mat": "foam",
+    "cork coaster": "cork",
+    "concrete cube": "concrete",
+    "dark leather tray": "leather",
+    "rattan storage box": "rattan"
+  },
+  "color_family": {
+    "light oak block": "wood",
+    "walnut cutting board": "wood",
+    "oak hanger": "wood",
+    "white ceramic dish": "white",
+    "acrylic tray": "clear",
+    "frosted glass cup": "clear",
+    "warm gray stone slab": "gray",
+    "pale marble coaster": "gray",
+    "microfiber towel": "gray",
+    "pegboard square": "gray",
+    "concrete cube": "gray",
+    "washed linen cloth": "ivory",
+    "woven floor mat": "sand",
+    "green felt mat": "green",
+    "felt sleeve": "charcoal",
+    "rolled yoga mat": "charcoal",
+    "matte black ceramic cup": "charcoal",
+    "dark leather tray": "charcoal",
+    "kraft paper sheet": "kraft",
+    "warm gray paper stack": "kraft",
+    "brass clip": "brass",
+    "eucalyptus sprig": "green",
+    "terracotta pot": "terracotta",
+    "cork coaster": "sand",
+    "rattan storage box": "sand"
+  },
+  "replacements": {
+    "light oak block": [
+      "warm gray stone slab",
+      "kraft paper sheet"
+    ],
+    "walnut cutting board": [
+      "warm gray stone slab",
+      "kraft paper sheet"
+    ],
+    "oak hanger": [
+      "warm gray stone slab",
+      "kraft paper sheet"
+    ],
+    "white ceramic dish": [
+      "warm gray stone slab",
+      "brass clip"
+    ],
+    "acrylic tray": [
+      "warm gray stone slab",
+      "brass clip"
+    ],
+    "eucalyptus sprig": [
+      "kraft paper sheet"
+    ],
+    "washed linen cloth": [
+      "warm gray stone slab"
+    ],
+    "terracotta pot": [
+      "warm gray stone slab",
+      "kraft paper sheet"
+    ],
+    "matte black ceramic cup": [
+      "warm gray stone slab",
+      "brass clip"
+    ],
+    "rattan storage box": [
+      "kraft paper sheet"
+    ],
+    "dark leather tray": [
+      "kraft paper sheet"
+    ],
+    "concrete cube": [
+      "warm gray stone slab"
+    ],
+    "cork coaster": [
+      "kraft paper sheet"
+    ],
+    "pale marble coaster": [
+      "brass clip"
+    ]
+  },
+  "subject_keywords": {
+    "rolled yoga mat": [
+      "瑜伽垫",
+      "yoga mat"
+    ],
+    "terracotta pot": [
+      "花盆",
+      "花器",
+      "planter",
+      "flower pot"
+    ],
+    "green felt mat": [
+      "桌垫",
+      "鼠标垫",
+      "felt mat",
+      "play mat"
+    ],
+    "woven floor mat": [
+      "地垫",
+      "地毯",
+      "floor mat",
+      "rug"
+    ],
+    "warm gray paper stack": [
+      "打印纸",
+      "纸张",
+      "paper stack",
+      "notebook",
+      "笔记本"
+    ],
+    "light oak block": [
+      "木块",
+      "wood block",
+      "摆件",
+      "wooden block"
+    ],
+    "white ceramic dish": [
+      "碗",
+      "盘",
+      "碟",
+      "bowl",
+      "dish",
+      "plate"
+    ],
+    "felt sleeve": [
+      "内胆包",
+      "收纳袋",
+      "sleeve",
+      "pouch"
+    ],
+    "microfiber towel": [
+      "毛巾",
+      "抹布",
+      "towel"
+    ],
+    "oak hanger": [
+      "衣架",
+      "hanger"
+    ],
+    "pegboard square": [
+      "洞洞板",
+      "pegboard"
+    ],
+    "acrylic tray": [
+      "托盘",
+      "tray"
+    ],
+    "brass clip": [
+      "夹子",
+      "clip"
+    ],
+    "frosted glass cup": [
+      "水杯",
+      "杯子",
+      "cup",
+      "mug"
+    ],
+    "eucalyptus sprig": [
+      "尤加利",
+      "eucalyptus"
+    ],
+    "walnut cutting board": [
+      "砧板",
+      "菜板",
+      "cutting board"
+    ],
+    "kraft paper sheet": [
+      "牛皮纸",
+      "kraft paper"
+    ],
+    "warm gray stone slab": [
+      "石板",
+      "stone slab"
+    ],
+    "pale marble coaster": [
+      "杯垫",
+      "coaster",
+      "大理石杯垫"
+    ],
+    "cork coaster": [
+      "杯垫",
+      "coaster",
+      "软木"
+    ],
+    "matte black ceramic cup": [
+      "水杯",
+      "杯子",
+      "cup",
+      "mug"
+    ],
+    "concrete cube": [
+      "水泥块",
+      "水泥摆件",
+      "concrete"
+    ],
+    "dark leather tray": [
+      "皮革托盘",
+      "leather tray"
+    ],
+    "rattan storage box": [
+      "藤编",
+      "收纳筐",
+      "收纳篮",
+      "rattan"
+    ]
+  },
+  "subject_material_triggers": {
+    "wood": [
+      "木",
+      "木质",
+      "实木",
+      "竹",
+      "wood",
+      "oak",
+      "walnut",
+      "bamboo"
+    ],
+    "ceramic": [
+      "陶瓷",
+      "瓷",
+      "陶",
+      "ceramic",
+      "porcelain",
+      "stoneware"
+    ],
+    "plant": [
+      "植物",
+      "绿植",
+      "盆栽",
+      "花艺",
+      "plant",
+      "flower",
+      "leaf",
+      "greenery"
+    ],
+    "fabric": [
+      "布",
+      "棉",
+      "麻",
+      "毛",
+      "丝",
+      "纺织",
+      "fabric",
+      "cotton",
+      "linen",
+      "wool",
+      "silk",
+      "textile"
+    ],
+    "stone": [
+      "石",
+      "大理石",
+      "花岗岩",
+      "stone",
+      "marble",
+      "granite"
+    ],
+    "glass": [
+      "玻璃",
+      "glass"
+    ],
+    "leather": [
+      "皮革",
+      "leather",
+      "pu 皮",
+      "pu皮"
+    ]
+  },
+  "subject_color_triggers": {
+    "white": [
+      "白",
+      "米白",
+      "奶白",
+      "纯白",
+      "white",
+      "ivory",
+      "cream"
+    ],
+    "gray": [
+      "灰",
+      "烟灰",
+      "浅灰",
+      "灰白",
+      "gray",
+      "grey"
+    ],
+    "charcoal": [
+      "黑",
+      "炭黑",
+      "深灰",
+      "black",
+      "charcoal"
+    ],
+    "green": [
+      "绿",
+      "墨绿",
+      "军绿",
+      "green",
+      "olive"
+    ],
+    "wood": [
+      "木色",
+      "原木",
+      "原木色",
+      "胡桃",
+      "橡木",
+      "wood",
+      "oak",
+      "walnut"
+    ],
+    "sand": [
+      "米色",
+      "沙色",
+      "杏色",
+      "驼色",
+      "beige",
+      "sand",
+      "tan"
+    ],
+    "brass": [
+      "金",
+      "黄铜",
+      "香槟金",
+      "gold",
+      "brass"
+    ],
+    "terracotta": [
+      "陶土",
+      "红陶",
+      "砖红",
+      "terracotta"
+    ],
+    "clear": [
+      "透明",
+      "玻璃",
+      "clear",
+      "transparent"
+    ],
+    "kraft": [
+      "牛皮纸",
+      "卡其",
+      "kraft"
+    ]
+  },
+  "faux_material_hints": [
+    "仿",
+    "假",
+    "贴皮",
+    "faux",
+    "imitation",
+    "looks like"
+  ],
+  "placements": [
+    "upper-left",
+    "lower-right",
+    "upper-right",
+    "along-left",
+    "along-right",
+    "upper-center"
+  ]
+}
