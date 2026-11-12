@@ -3026,14 +3026,19 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /return templateLeaf && String\(templateLeaf\.catId\) === leafCatId;/);
   assert.match(library, /template,\s*\n\s*categoryPath: bucket\.path,/);
   // 没存模板的类目：用草稿自己的类目 + 估好的属性 + 店铺默认运费/仓库临时拼一份模板
-  assert.match(library, /const buildAutoTemplate = async \(group: BatchGroup\): Promise<ProductTemplate \| null> => \{/);
+  assert.match(
+    library,
+    /const buildAutoTemplate = async \(\s*\n\s*group: BatchGroup,\s*\n\s*\): Promise<\{ template: ProductTemplate \| null; reason: string \}> => \{/,
+  );
   assert.match(library, /const missing = missingRequiredNames\(visibleProperties\(attributes, picks\), picks\);/);
-  assert.match(library, /if \(missing\.length\) return null;/);
+  // 拼不出来的原因要能说清（缺属性 / 没运费模板 / 没有可用仓库），别只回一个 null
+  assert.match(library, /必填属性没估全（缺 \$\{missing\.slice\(0, 3\)\.join\("、"\)\}）/);
+  assert.match(library, /这个店没有可用于批量发布的仓库（都被标成类型 3）/);
   assert.match(library, /const auto = await buildAutoTemplate\(group\);/);
   assert.match(library, /已按草稿的类目\/属性自动填（属性是估的）/);
   // 拼不出模板的条目数要说出来（别让用户以为整批都发了）
   assert.match(library, /条没匹配到类目/);
-  assert.match(library, /条的类目必填属性没估全，需手动配/);
+  assert.match(library, /需手动配/);
 
   // 触发条件：没手选模板 / 有勾选；**没有存过模板也照样走自动**（以前直接弹窗，用户被逼着手配）
   assert.match(library, /if \(productTpl \|\| manualTemplate\) \{\s*\n\s*setBatchOpen\(true\);\s*\n\s*return;/);
@@ -3066,4 +3071,19 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   );
   // 能发 0 条不出确认单（这批有硬伤，先看预检）
   assert.match(library, /if \(!runnable\) \{\s*\n\s*setBatchState\(\{ running: false, text: "这批都有阻塞问题，先看下面的预检" \}\);/);
+});
+
+test("批量发布：属性按每条草稿自己的估值，不整组共用第一条", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 自动拼的组模板只是「第一条的快照」；同组十几条材料/风格常常不一样，
+  // 整组共用一套会发成错属性或被判「属性不合法」
+  assert.match(batch, /const carriedPicks =/);
+  assert.match(
+    batch,
+    /prefill\.attrPicks && Number\(prefill\.attrPicksCatId \?\? 0\) === Number\(leaf\)/,
+  );
+  assert.match(batch, /carriedPicks && Object\.keys\(carriedPicks\)\.length/);
+  // 类目对不上就必须退回模板（pid 是类目维度的，套错类目会全废）
+  assert.match(batch, /: productTemplate\.attrs \?\? \{\};/);
 });

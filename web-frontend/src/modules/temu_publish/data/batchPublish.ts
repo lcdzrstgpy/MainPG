@@ -156,10 +156,26 @@ export async function buildDraftForPublish(
   // 直接用会在 `Object.keys(undefined)` / `.replace` 上抛 TypeError，
   // 整批每一条都变成「Cannot read properties of undefined」，看不出真实原因。
   const templatePath = productTemplate.categoryPath ?? [];
-  const templateAttrs = productTemplate.attrs ?? {};
   const categoryIds = templatePath.map((item) => item.catId);
   if (!categoryIds.length) throw new Error("产品模板里没有类目");
   const leaf = categoryIds[categoryIds.length - 1];
+
+  /**
+   * 属性值：**这条草稿自己估的那套**优先，模板里的只兜底。
+   *
+   * 自动拼的组模板是按「第一条草稿」的估值生成的一份快照（一次批量里同组十几条
+   * 桌布的材料/风格常常不一样）。整组共用一套 → 后面几条要么被判「属性不合法」，
+   * 要么发出去属性是错的。所以每条都用自己的估值，pid 对不上类目时（pid 是类目维度的）
+   * 一律不铺，退回模板。
+   */
+  const carriedPicks =
+    prefill.attrPicks && Number(prefill.attrPicksCatId ?? 0) === Number(leaf)
+      ? prefill.attrPicks
+      : null;
+  const templateAttrs: Record<string, { vid: number; text: string }> =
+    carriedPicks && Object.keys(carriedPicks).length
+      ? (carriedPicks as Record<string, { vid: number; text: string }>)
+      : productTemplate.attrs ?? {};
 
   const carouselSource = splitList(prefill.images.join("\n"));
   // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」）。提前拦，

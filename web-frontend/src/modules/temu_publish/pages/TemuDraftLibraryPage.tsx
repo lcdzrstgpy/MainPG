@@ -1154,11 +1154,9 @@ export function TemuDraftLibraryPage({
     const warehouses = (whR?.warehouseDTOList ?? []).flatMap((group: TemuWarehouseGroup) =>
       (group.validWarehouseList ?? []).filter((item) => !item.warehouseDisable),
     );
-    // 仓库：避开 managementType=3（实测发部分商品会被拒），没有别的才退回第一个
-    const warehouse =
-      warehouses.find((item) => item.managementType && item.managementType !== "3") ??
-      warehouses[0] ??
-      null;
+    // 仓库：只认 managementType≠3 的（实测类型 3 的仓发部分商品会被拒）。
+    // 全都标成 3 时**不退回第一个**：退回等于明知会拒还硬发，整批白跑一趟。
+    const warehouse = warehouses.find((item) => item.managementType && item.managementType !== "3") ?? null;
     const colorSpec = specs.find((item) => item.parentSpecName.includes("颜色")) ?? specs[0];
     const sizeSpec = specs.find((item) => item.parentSpecName.includes("尺码")) ?? specs[1];
     batchDefaultsRef.current = {
@@ -1180,9 +1178,11 @@ export function TemuDraftLibraryPage({
    * 拼不出来的唯一情况是「必填属性没估全」——那就返回 null，交给弹窗让人配，
    * 绝不带着缺属性的模板硬发（每条都会等网关报错，白跑一趟）。
    */
-  const buildAutoTemplate = async (group: BatchGroup): Promise<ProductTemplate | null> => {
+  const buildAutoTemplate = async (
+    group: BatchGroup,
+  ): Promise<{ template: ProductTemplate | null; reason: string }> => {
     const leaf = group.categoryPath[group.categoryPath.length - 1];
-    if (!leaf) return null;
+    if (!leaf) return { template: null, reason: "没有匹配到叶子类目" };
     const first = group.entries[0];
     const prefill = first ? attrPrefills[first.id] : undefined;
     // 估的属性必须是对着这个类目估的；类目变了这份就作废
@@ -1192,33 +1192,41 @@ export function TemuDraftLibraryPage({
         temuPublishApi.attributes(leaf.catId),
         ensureBatchDefaults(),
       ]);
-      if (!defaults.freightId || !defaults.warehouseId) return null;
+      if (!defaults.freightId) return { template: null, reason: "这个店还没有运费模板" };
+      if (!defaults.warehouseId) {
+        return { template: null, reason: "这个店没有可用于批量发布的仓库（都被标成类型 3）" };
+      }
       const missing = missingRequiredNames(visibleProperties(attributes, picks), picks);
-      if (missing.length) return null;
+      if (missing.length) {
+        return { template: null, reason: `必填属性没估全（缺 ${missing.slice(0, 3).join("、")}）` };
+      }
       const attrs: Record<string, { vid: number; text: string }> = {};
       Object.entries(picks).forEach(([pid, pick]) => {
         if (pick && (pick.vid > 0 || pick.text.trim())) attrs[pid] = { vid: pick.vid, text: pick.text };
       });
       return {
-        name: `自动：${categoryName(leaf) || leaf.catName || leaf.catId}`,
-        categoryPath: group.categoryPath,
-        attrs,
-        freightId: defaults.freightId,
-        warehouseId: defaults.warehouseId,
-        shipmentDays: DEFAULT_SHIPMENT_DAYS,
-        origin: "CN",
-        sizeTemplates: "",
-        isCustom: false,
-        isSensitive: false,
-        colorParentId: defaults.colorParentId,
-        colorParentName: defaults.colorParentName,
-        sizeParentId: defaults.sizeParentId,
-        sizeParentName: defaults.sizeParentName,
-        savedAt: new Date().toLocaleString("zh-CN"),
+        template: {
+          name: `自动：${categoryName(leaf) || leaf.catName || leaf.catId}`,
+          categoryPath: group.categoryPath,
+          attrs,
+          freightId: defaults.freightId,
+          warehouseId: defaults.warehouseId,
+          shipmentDays: DEFAULT_SHIPMENT_DAYS,
+          origin: "CN",
+          sizeTemplates: "",
+          isCustom: false,
+          isSensitive: false,
+          colorParentId: defaults.colorParentId,
+          colorParentName: defaults.colorParentName,
+          sizeParentId: defaults.sizeParentId,
+          sizeParentName: defaults.sizeParentName,
+          savedAt: new Date().toLocaleString("zh-CN"),
+        },
+        reason: "",
       };
     } catch {
-      // 属性表拉不到 / 运费仓库没配：这一组不自动跑，交回弹窗
-      return null;
+      // 属性表拉不到：这一组不自动跑，交回弹窗让人配
+      return { template: null, reason: "类目属性表取不到" };
     }
   };
 
@@ -1265,18 +1273,24 @@ export function TemuDraftLibraryPage({
       // 临时拼一份。这样第一次用、或者遇到新类目也能一键跑，不用每类目先手工建模板。
       let autoEntries = 0;
       let autoFailedEntries = 0;
+      const autoReasons = new Set<string>();
       for (const group of plan.groups) {
         if (group.template) continue;
         const auto = await buildAutoTemplate(group);
-        if (auto) {
-          group.template = auto;
+        if (auto.template) {
+          group.template = auto.template;
           autoEntries += group.entries.length;
         } else {
           autoFailedEntries += group.entries.length;
+          if (auto.reason) autoReasons.add(auto.reason);
         }
       }
       const ready = plan.groups.filter((group) => group.template);
-      if (autoFailedEntries) notes.push(`${autoFailedEntries} 条的类目必填属性没估全，需手动配`);
+      if (autoFailedEntries) {
+        notes.push(
+          `${autoFailedEntries} 条的类目${autoReasons.size ? `（${Array.from(autoReasons).join("；")}）` : ""}需手动配`,
+        );
+      }
       if (plan.noCategory) notes.push(`${plan.noCategory} 条没匹配到类目`);
       if (!ready.length) {
         setBatchState({
