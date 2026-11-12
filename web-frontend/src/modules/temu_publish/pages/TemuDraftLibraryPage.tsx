@@ -8,10 +8,12 @@ import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
 import { TemuBatchEditPage } from "../components/TemuBatchEditPage";
+import { TemuBatchImagePage } from "../components/TemuBatchImagePage";
 import { DEFAULT_SHIPMENT_DAYS } from "../components/ShipmentDaysPicker";
 import { categorySearchTexts } from "../utils/categoryMatch";
 import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
+import { DRAFT_IMAGES_KEY, resolveEntryImages } from "../data/draftImages";
 import { precheckBatchItem } from "../data/batchPrecheck";
 import { autoFillSourceTexts } from "../data/attrAutofill";
 import { estimateAttributePicks } from "../data/attrEstimate";
@@ -100,6 +102,17 @@ function loadDraftEdits(): Record<string, TemuDraftEdit> {
     const raw = window.localStorage.getItem(scoped(DRAFT_EDITS_KEY));
     const parsed = raw ? JSON.parse(raw) : {};
     return parsed && typeof parsed === "object" ? (parsed as Record<string, TemuDraftEdit>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 「批量编辑产品图片」的结果：entry.id → 轮播图列表（只存改过的行） */
+function loadDraftImages(): Record<string, string[]> {
+  try {
+    const raw = window.localStorage.getItem(scoped(DRAFT_IMAGES_KEY));
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string[]>) : {};
   } catch {
     return {};
   }
@@ -464,6 +477,8 @@ function entryPrefill(
   entry: TemuDraftEntry,
   memo?: Record<string, DraftCategoryMemo>,
   attrPrefills?: Record<string, DraftAttrPrefill>,
+  /** 「批量编辑产品图片」改过的图；不传就用草稿自带的轮播图 */
+  imageOverrides?: Record<string, string[]>,
 ): TemuPublishPrefill {
   const weightG = numericText(entry.weight_g);
   const length = numericText(entry.length_cm);
@@ -471,7 +486,7 @@ function entryPrefill(
   const height = numericText(entry.height_cm);
   return {
     title: entry.title || entry.subtitle,
-    images: entry.carousel_images?.length ? entry.carousel_images : entry.images.slice(0, 1),
+    images: resolveEntryImages(entry, imageOverrides),
     detailImages: entry.detail_images ?? [],
     sku: entry.sku || "",
     weightKg: weightG ? (Number(weightG) / 1000).toFixed(3) : "",
@@ -528,6 +543,13 @@ export function TemuDraftLibraryPage({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null);
   const [edits, setEdits] = useState<Record<string, TemuDraftEdit>>(loadDraftEdits);
+  /**
+   * 「批量编辑产品图片」改过的图（entry.id → 轮播图列表）。
+   *
+   * 单独一份存储而不是塞进 TemuDraftEdit：那边的字段全是字符串，
+   * save 时统一 String()，数组进去会被拍成 "[object Object]"。
+   */
+  const [imageEdits, setImageEdits] = useState<Record<string, string[]>>(loadDraftImages);
   const [categories, setCategories] = useState<string[]>(() =>
     loadMap<string[]>(scoped(DRAFT_CATS_KEY), []),
   );
@@ -581,6 +603,8 @@ export function TemuDraftLibraryPage({
   const [batchOpen, setBatchOpen] = useState(false);
   /** 整页批量编辑（勾选 → 独立页面逐行改，和 Temu 后台同一套交互） */
   const [batchEditOpen, setBatchEditOpen] = useState(false);
+  /** 整页批量编辑产品图片（对齐店小秘：选类型/方式 → 执行 → 更新） */
+  const [batchImageOpen, setBatchImageOpen] = useState(false);
   // 批量发布「现场配置」出来的临时产品模板（不落盘）：没选产品模板时用它
   const [manualTemplate, setManualTemplate] = useState<ProductTemplate | null>(null);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
@@ -757,7 +781,7 @@ export function TemuDraftLibraryPage({
       // 清不掉也无所谓：标记只消费一次
     }
     const target = entries.find((entry) => entry.id === focusId);
-    if (target) onUseDraft(entryPrefill(target, categoryMemo, attrPrefills));
+    if (target) onUseDraft(entryPrefill(target, categoryMemo, attrPrefills, imageEdits));
   }, [entries, categoryMemo, attrPrefills, onUseDraft]);
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
@@ -978,7 +1002,7 @@ export function TemuDraftLibraryPage({
   /** 「用于发布」二次确认：确认后才把这条草稿带进发布页。 */
   const confirmUseDraft = () => {
     if (!confirmEntry) return;
-    onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills));
+    onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills, imageEdits));
     setConfirmEntry(null);
   };
 
@@ -1025,7 +1049,7 @@ export function TemuDraftLibraryPage({
       }));
     }
     return batchTargets.map((entry) => {
-      const precheck = precheckBatchItem(entryPrefill(entry, categoryMemo, attrPrefills), template, variant);
+      const precheck = precheckBatchItem(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits), template, variant);
       return {
         id: entry.id,
         title: entry.title || entry.sku || "（无标题）",
@@ -1314,7 +1338,7 @@ export function TemuDraftLibraryPage({
           group.entries.filter(
             (entry) =>
               precheckBatchItem(
-                entryPrefill(entry, categoryMemo, attrPrefills),
+                entryPrefill(entry, categoryMemo, attrPrefills, imageEdits),
                 group.template as ProductTemplate,
                 variantForCheck,
               ).blocked.length === 0,
@@ -1404,7 +1428,7 @@ export function TemuDraftLibraryPage({
           ? group.entries.filter(
               (entry) =>
                 precheckBatchItem(
-                  entryPrefill(entry, categoryMemo, attrPrefills),
+                  entryPrefill(entry, categoryMemo, attrPrefills, imageEdits),
                   groupTemplate,
                   variant,
                 ).blocked.length === 0,
@@ -1466,7 +1490,7 @@ export function TemuDraftLibraryPage({
         });
         try {
           const draft = await buildDraftForPublish(
-            entryPrefill(entry, categoryMemo, attrPrefills),
+            entryPrefill(entry, categoryMemo, attrPrefills, imageEdits),
             itemTemplate,
             variant,
           );
@@ -1508,7 +1532,7 @@ export function TemuDraftLibraryPage({
             traceId: parsed.traceId,
             // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
             prefill: {
-              ...entryPrefill(entry, categoryMemo, attrPrefills),
+              ...entryPrefill(entry, categoryMemo, attrPrefills, imageEdits),
               categoryPath: categoryMemo?.[entry.id]?.path ?? itemTemplate.categoryPath,
             },
           });
@@ -1774,6 +1798,7 @@ export function TemuDraftLibraryPage({
             categories={categories}
             onApplyField={applyBulkField}
             onBatchEdit={() => setBatchEditOpen(true)}
+            onBatchImages={() => setBatchImageOpen(true)}
             onRemark={bulkRemark}
             onDelete={bulkDelete}
             onMoveCategory={moveCategory}
@@ -2225,7 +2250,7 @@ export function TemuDraftLibraryPage({
                         type="button"
                         className="temu-btn"
                         title="带这条草稿进发布页，改完所有信息后再提交"
-                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills))}
+                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits))}
                       >
                         编辑
                       </button>
@@ -2318,6 +2343,19 @@ export function TemuDraftLibraryPage({
             setBatchEditOpen(false);
           }}
           onClose={() => setBatchEditOpen(false)}
+        />
+      )}
+
+      {batchImageOpen && (
+        <TemuBatchImagePage
+          entries={entries.filter((entry) => selected.has(entry.id))}
+          imageEdits={imageEdits}
+          onSave={(next) => {
+            setImageEdits(next);
+            saveMap(scoped(DRAFT_IMAGES_KEY), next);
+            setBatchImageOpen(false);
+          }}
+          onClose={() => setBatchImageOpen(false)}
         />
       )}
 

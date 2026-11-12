@@ -490,7 +490,7 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
 
   // 「编辑」直接带这条草稿进发布页（草稿库小弹窗改不了类目/属性/图片）
   assert.match(library, /title="带这条草稿进发布页，改完所有信息后再提交"/);
-  assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills\)\)\}/);
+  assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits\)\)\}/);
 
   // 点「用于发布」不再直接带入：先弹确认
   assert.match(library, /onClick=\{\(\) => setConfirmEntry\(entry\)\}/);
@@ -501,7 +501,7 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
   assert.match(library, /申报价格/);
   assert.match(library, /库存/);
   assert.match(library, /const confirmUseDraft = \(\) => \{/);
-  assert.match(library, /onUseDraft\(entryPrefill\(confirmEntry, categoryMemo, attrPrefills\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(confirmEntry, categoryMemo, attrPrefills, imageEdits\)\);/);
   assert.match(library, /确定发布/);
   // 库存不可用时要明确提醒（半托管 ≥1）
   assert.match(library, /库存没有可用值：Temu 半托管要求 ≥1/);
@@ -2837,7 +2837,7 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_FOCUS_KEY, item\.draft_id\);/);
   assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
   assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_FOCUS_KEY\)/);
-  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills, imageEdits\)\);/);
 });
 
 test("批量发布：先预检再提交，发不出去的默认跳过", () => {
@@ -3063,7 +3063,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
   assert.match(library, /template: groupTemplate,/);
   assert.match(library, /const \{ entry, template: itemTemplate \} = task;/);
-  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills\),\s*\n\s*itemTemplate,/);
+  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits\),\s*\n\s*itemTemplate,/);
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
   assert.ok(
     library.includes("void runBatchPublish(undefined, groups);"),
@@ -3168,4 +3168,44 @@ test("批量编辑：字段默认全勾、可勾选行、批量改只动勾选�
   assert.match(css, /border: 1px solid color-mix\(in srgb, var\(--theme-module-primary-strong, #087bf5\) 42%, transparent\);/);
   assert.match(css, /\.temu-batch-edit-table \.col-pick \{/);
   assert.match(css, /\.temu-batch-edit-table tbody tr\.is-unpicked td \{/);
+});
+
+test("批量编辑产品图片：整页抄店小秘，改完真的进发布链路", () => {
+  const page = readFileSync(new URL("../components/TemuBatchImagePage.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const share = readFileSync(new URL("../data/draftImages.ts", import.meta.url), "utf8");
+
+  // 入口：批量条上的「编辑图片」
+  assert.match(bar, /onBatchImages: \(\) => void;/);
+  assert.match(bar, />\s*编辑图片\s*</);
+  assert.match(library, /onBatchImages=\{\(\) => setBatchImageOpen\(true\)\}/);
+  assert.match(library, /<TemuBatchImagePage/);
+
+  // 页面要素（对齐截图）：四种图片类型、四种修改方式、执行、更新
+  assert.match(page, /产品轮播图/);
+  assert.match(page, /产品SKC图/);
+  assert.match(page, /产品素材图/);
+  assert.match(page, /变种预览图/);
+  assert.match(page, /删除图片/);
+  assert.match(page, /切换首图/);
+  assert.match(page, /添加图片/);
+  assert.match(page, /超出移除/);
+  assert.match(page, /执行/);
+  assert.match(page, /更新\{changedCount/);
+
+  // 逐张：× 删单张、+ 补图
+  assert.match(page, /title="删除这张"/);
+  assert.match(page, /\+ 添加图片/);
+
+  // 覆盖语义：删光（[]）也必须生效，不能回落到源图
+  assert.match(share, /if \(override !== undefined\) return override;/);
+  // 存储独立，不能混进 TemuDraftEdit（那边 save 会 String() 掉数组）
+  assert.match(share, /export const DRAFT_IMAGES_KEY = "temu_draft_images_v1";/);
+  assert.match(library, /const \[imageEdits, setImageEdits\] = useState<Record<string, string\[\]>>\(loadDraftImages\)/);
+  assert.match(library, /saveMap\(scoped\(DRAFT_IMAGES_KEY\), next\);/);
+
+  // 三条链路共用同一个取图函数（用于发布 / 批量发布 / 本页）
+  assert.match(library, /images: resolveEntryImages\(entry, imageOverrides\)/);
+  assert.match(page, /resolveEntryImages\(entry, imageEdits\)/);
 });

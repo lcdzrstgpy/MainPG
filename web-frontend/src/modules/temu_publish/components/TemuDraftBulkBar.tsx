@@ -61,6 +61,8 @@ type Props = {
   onApplyField: (field: BulkField, value: string) => void;
   /** 打开整页批量编辑（勾选的会带过去逐行改） */
   onBatchEdit: () => void;
+  /** 打开整页批量编辑产品图片（对齐店小秘：删图/换首图/加图/超量移除） */
+  onBatchImages: () => void;
   onRemark: () => void;
   onDelete: () => void;
   onMoveCategory: (category: string) => void;
@@ -93,6 +95,7 @@ export function TemuDraftBulkBar({
   categories,
   onApplyField,
   onBatchEdit,
+  onBatchImages,
   onRemark,
   onDelete,
   onMoveCategory,
@@ -195,6 +198,14 @@ export function TemuDraftBulkBar({
               onClick={onBatchEdit}
             >
               批量编辑
+            </button>
+            <button
+              type="button"
+              className="temu-bulk-action"
+              title="批量编辑产品图片：删图 / 换首图 / 加图 / 超量移除"
+              onClick={onBatchImages}
+            >
+              编辑图片
             </button>
             <button type="button" className="temu-bulk-action" onClick={() => openPanel("category")}>
               移分类
