@@ -8828,3 +8828,122 @@ textarea.temu-input {
   gap: 2px;
   min-width: 0;
 }
+
+/* ---- 发布页：产品模板 / 变种模板的保存·载入按钮与弹窗 ---- */
+
+/* 小号按钮：类目行、变种标题行右侧，和「更换类目」同一行但不能压过它 */
+.temu-btn.is-mini {
+  min-height: 28px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.temu-cat-selected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.temu-variant-tpl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-template-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.temu-template-dialog .temu-field {
+  margin: 10px 2px 4px;
+}
+
+.temu-template-warn {
+  margin: 6px 2px 0;
+  color: #c2410c;
+  font-size: 12px;
+}
+
+.temu-template-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  margin: 12px 0 4px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.temu-template-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-template-pick {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f4f9fd);
+  color: var(--theme-text-primary, #1f2d3d);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-template-pick:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 7%, transparent);
+}
+
+.temu-template-pick strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-template-pick span {
+  flex: 0 0 auto;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}
+
+.temu-template-del {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 50%;
+  background: transparent;
+  color: #c2410c;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.temu-template-del:hover {
+  border-color: #c2410c;
+  background: #fff1e8;
+}
+
+.temu-template-empty {
+  margin: 16px 2px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}

@@ -15,6 +15,7 @@ import { DraftImagePicker } from "../components/DraftImagePicker";
 import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
+import { TemplateLoadDialog, TemplateSaveDialog } from "../components/TemplateDialogs";
 import {
   APPAREL_CAROUSEL_HEIGHT,
   APPAREL_CAROUSEL_SHAPE,
@@ -772,7 +773,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [variantTemplates, setVariantTemplates] = useState<VariantTemplate[]>(() =>
     localStore.variantTemplates(),
   );
-  const [templateName, setTemplateName] = useState("");
+  /**
+   * 模板弹窗：保存/载入各自独立，产品模板和变种模板也分开。
+   *
+   * 以前两块折叠里各有一个输入框共用同一个 templateName，保存和载入混在一行，
+   * 分不清点的是哪一个。
+   */
+  const [templateDialog, setTemplateDialog] = useState<
+    null | { kind: "product" | "variant"; mode: "save" | "load" }
+  >(null);
 
   const [result, setResult] = useState<TemuBuildPayloadResult | null>(null);
   const [copied, setCopied] = useState(false);
@@ -1622,7 +1631,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   /** 存成产品模板：分类 + 属性 + 运费/仓库/时效/产地/尺码表/开关，都是「每款一样」的东西。 */
-  const saveProductTemplate = () => {
+  const saveProductTemplate = (name: string) => {
     if (!categoryPath.length) {
       setError("先选好类目，再存产品模板");
       return;
@@ -1632,7 +1641,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (pick && (pick.vid > 0 || pick.text.trim())) attrs[pid] = { vid: pick.vid, text: pick.text };
     });
     localStore.saveProductTemplate({
-      name: templateName.trim() || categoryName(categoryPath[categoryPath.length - 1]),
+      name: name.trim() || categoryName(categoryPath[categoryPath.length - 1]),
       categoryPath,
       attrs,
       freightId: form.freightId,
@@ -1649,7 +1658,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       savedAt: new Date().toLocaleString("zh-CN"),
     });
     setProductTemplates(localStore.productTemplates());
-    setTemplateName("");
   };
 
   /** 套用产品模板：只补空字段，已经填过的不动。 */
@@ -1689,10 +1697,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   /** 存成变种模板：颜色×尺码 + 第一行的批量值。 */
-  const saveVariantTemplate = () => {
+  const saveVariantTemplate = (name: string) => {
     const base = rows[0];
     localStore.saveVariantTemplate({
-      name: templateName.trim() || `${form.colorsText || "颜色"} × ${form.sizesText || "尺码"}`,
+      name: name.trim() || `${form.colorsText || "颜色"} × ${form.sizesText || "尺码"}`,
       colorsText: form.colorsText,
       sizesText: form.sizesText,
       batch: {
@@ -1707,7 +1715,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       savedAt: new Date().toLocaleString("zh-CN"),
     });
     setVariantTemplates(localStore.variantTemplates());
-    setTemplateName("");
   };
 
   /** 套用变种模板：填颜色/尺码列表，并把批量值铺到现有行。 */
@@ -3618,14 +3625,32 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       <strong>{categoryPath.map(categoryName).join(" / ")}</strong>
                       <span className="temu-cat-selected-id">id {leaf.catId}</span>
                     </div>
-                    <button
-                      type="button"
-                      className="temu-btn"
-                      onClick={() => resetToLevel(-1)}
-                      disabled={busy !== ""}
-                    >
-                      更换类目
-                    </button>
+                    <div className="temu-cat-selected-actions">
+                      <button
+                        type="button"
+                        className="temu-btn is-mini"
+                        title="载入已保存的产品模板（分类 + 属性 + 物流）"
+                        onClick={() => setTemplateDialog({ kind: "product", mode: "load" })}
+                      >
+                        载入模板
+                      </button>
+                      <button
+                        type="button"
+                        className="temu-btn is-mini"
+                        title="把当前分类 + 属性 + 物流存成产品模板"
+                        onClick={() => setTemplateDialog({ kind: "product", mode: "save" })}
+                      >
+                        保存模板
+                      </button>
+                      <button
+                        type="button"
+                        className="temu-btn"
+                        onClick={() => resetToLevel(-1)}
+                        disabled={busy !== ""}
+                      >
+                        更换类目
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <>
@@ -3762,41 +3787,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </details>
               </div>
             </div>
-
-            {/* 产品模板是「同类商品重复发」才用得上，收到折叠里，首屏不占位 */}
-            <details className="temu-more">
-              <summary>载入 / 保存产品模板</summary>
-              <div className="temu-template-row">
-                <input
-                  className="temu-input"
-                  value={templateName}
-                  onChange={(event) => setTemplateName(event.target.value)}
-                  placeholder="模板名（记分类+属性+物流+开关，批量发布用）"
-                  title="产品模板比预设多记了已填属性、尺码表、定制/敏感开关，草稿库批量发布时要套它"
-                />
-                <button
-                  type="button"
-                  className="temu-btn"
-                  onClick={saveProductTemplate}
-                  disabled={!categoryPath.length}
-                >
-                  存为产品模板
-                </button>
-                <select
-                  className="temu-input"
-                  value=""
-                  onChange={(event) => applyProductTemplate(event.target.value)}
-                  disabled={!productTemplates.length}
-                >
-                  <option value="">{productTemplates.length ? "引用产品模板…" : "还没有产品模板"}</option>
-                  {productTemplates.map((item) => (
-                    <option key={item.name} value={item.name}>
-                      {item.name}（{item.savedAt}）
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </details>
 
             {/* 属性是「填完类目之后」的第二步，和上面的类目选择不是同一件事。
                 加一条分隔线 + 把说明挪到标题下面单独一行，
@@ -4176,30 +4166,28 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               }}
               active={activeSectionId === "sec-variant"}
               index={2}
-              extra={<span className="temu-muted">{rows.length} 个变种</span>}
+              extra={
+                <div className="temu-variant-tpl-actions">
+                  <span className="temu-muted">{rows.length} 个变种</span>
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="载入已保存的变种模板（规格轴 + 价格 + 尺寸重量）"
+                    onClick={() => setTemplateDialog({ kind: "variant", mode: "load" })}
+                  >
+                    载入变种模板
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="把当前颜色/尺码 + 第一行价格尺寸存成变种模板"
+                    onClick={() => setTemplateDialog({ kind: "variant", mode: "save" })}
+                  >
+                    保存变种模板
+                  </button>
+                </div>
+              }
             />
-            {/* 变种模板同样是重复发同款时才用，收起来 */}
-            <details className="temu-more">
-              <summary>载入 / 保存变种模板</summary>
-              <div className="temu-template-row">
-                <button type="button" className="temu-btn" onClick={saveVariantTemplate}>
-                  存为变种模板
-                </button>
-                <select
-                  className="temu-input"
-                  value=""
-                  onChange={(event) => applyVariantTemplate(event.target.value)}
-                  disabled={!variantTemplates.length}
-                >
-                  <option value="">{variantTemplates.length ? "引用变种模板…" : "还没有变种模板"}</option>
-                  {variantTemplates.map((item) => (
-                    <option key={item.name} value={item.name}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </details>
             {activeSpecMismatch.length > 0 && (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
@@ -4905,6 +4893,64 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </div>,
           document.body,
         )}
+
+      {templateDialog?.mode === "save" ? (
+        <TemplateSaveDialog
+          title={templateDialog.kind === "product" ? "保存产品模板" : "保存变种模板"}
+          hint={
+            templateDialog.kind === "product"
+              ? "记分类 + 属性 + 运费仓库 + 时效产地 + 开关；批量发布套它"
+              : "记颜色/尺码列表 + 第一行的价格、库存、尺寸重量"
+          }
+          defaultName={
+            templateDialog.kind === "product"
+              ? categoryName(categoryPath[categoryPath.length - 1]) || ""
+              : `${form.colorsText || "颜色"} × ${form.sizesText || "尺码"}`
+          }
+          existing={
+            templateDialog.kind === "product"
+              ? productTemplates.map((item) => item.name)
+              : variantTemplates.map((item) => item.name)
+          }
+          onSave={(name) => {
+            if (templateDialog.kind === "product") saveProductTemplate(name);
+            else saveVariantTemplate(name);
+            setTemplateDialog(null);
+          }}
+          onClose={() => setTemplateDialog(null)}
+        />
+      ) : null}
+
+      {templateDialog?.mode === "load" ? (
+        <TemplateLoadDialog
+          title={templateDialog.kind === "product" ? "载入产品模板" : "载入变种模板"}
+          items={
+            templateDialog.kind === "product"
+              ? productTemplates.map((item) => ({ name: item.name, savedAt: item.savedAt }))
+              : variantTemplates.map((item) => ({ name: item.name, savedAt: item.savedAt }))
+          }
+          emptyHint={
+            templateDialog.kind === "product"
+              ? "还没有产品模板：先在「已选类目」右边点「保存模板」。"
+              : "还没有变种模板：先在变种信息右上角点「保存变种模板」。"
+          }
+          onPick={(name) => {
+            if (templateDialog.kind === "product") void applyProductTemplate(name);
+            else applyVariantTemplate(name);
+            setTemplateDialog(null);
+          }}
+          onRemove={(name) => {
+            if (templateDialog.kind === "product") {
+              localStore.removeProductTemplate(name);
+              setProductTemplates(localStore.productTemplates());
+            } else {
+              localStore.removeVariantTemplate(name);
+              setVariantTemplates(localStore.variantTemplates());
+            }
+          }}
+          onClose={() => setTemplateDialog(null)}
+        />
+      ) : null}
 
       {pickerSlot ? (
         <DraftImagePicker

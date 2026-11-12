@@ -1863,16 +1863,25 @@ test("首屏只留必填：低频字段都收进「更多选项」折叠", () =>
     page.match(/onClick=\{(?:\(\) => void )?checkMandatory(?:\(\))?\}/g) ?? [];
   assert.equal(mandatoryButtons.length, 2, "顶栏不该再有第三个「检查必填」");
 
-  // 四处折叠必须在，且内部字段仍被渲染
+  // 折叠必须在，且内部字段仍被渲染
   for (const [summary, keep] of [
     ["更多选项（英文标题、货号、产地、外链）", "站外产品链接"],
-    ["载入 / 保存产品模板", "saveProductTemplate"],
-    ["载入 / 保存变种模板", "saveVariantTemplate"],
     ["每件装数量（多件装才改，默认 1）", "piecesPerPack"],
   ] as const) {
     assert.ok(page.includes(summary), `缺少折叠：${summary}`);
     assert.ok(page.includes(keep), `折叠里把字段弄丢了：${keep}`);
   }
+
+  // 产品模板 / 变种模板不再是「载入 / 保存 XXX 模板」折叠块：
+  // 保存和载入拆成两个按钮，产品在类目行、变种在变种标题行，各弹各的窗
+  assert.ok(!page.includes("载入 / 保存产品模板"), "模板折叠块应改成两个独立按钮");
+  assert.ok(!page.includes("载入 / 保存变种模板"), "变种模板折叠块应改成两个独立按钮");
+  assert.match(page, /载入模板/);
+  assert.match(page, /保存模板/);
+  assert.match(page, /载入变种模板/);
+  assert.match(page, /保存变种模板/);
+  assert.match(page, /<TemplateSaveDialog/);
+  assert.match(page, /<TemplateLoadDialog/);
 
   // 敏感货 / 定制产品是合规项：原来藏在「校验发布」的原始返回折叠里（几乎没人点开），
   // 填错直接被 Temu 拒或判违规，所以挪到产品信息段平铺成两张卡片
@@ -1991,21 +2000,24 @@ test("草稿库改版：批量入口收敛成一个，选中后直接出快捷�
   assert.match(library, /onOpenHistory/);
   assert.match(library, /创建产品\s*<\/button>/);
 
-  // 三个并列下拉（批量操作 / 全属性修改 / 移动分类）合成一个入口：
-  // 它们以前互相嵌套，用户不知道该点哪个
+  // 三个并列下拉（批量操作 / 全属性修改 / 移动分类）合成一个入口，
+  // 后来「更多 ▾」也去掉：引用模板 / 批量改字段全部平铺到条上，不再有两层菜单
   assert.doesNotMatch(bar, /temu-bulk-menu-wrap/);
-  assert.match(bar, /view === "actions"/);
+  assert.doesNotMatch(bar, /更多 ▾/);
+  assert.doesNotMatch(bar, /view === "actions"/);
   assert.match(bar, /view === "fields"/);
   assert.match(bar, /view === "category"/);
 
   // 选中后直接一排动作，常用操作不用再进菜单翻
   assert.match(bar, /has-selection/);
   assert.match(bar, /批量发布/);
-  assert.match(bar, /改字段/);
+  assert.match(bar, /批量改字段/);
+  assert.match(bar, /引用产品模板/);
+  assert.match(bar, /引用变种模板/);
   assert.match(bar, /移分类/);
   assert.match(bar, /取消选择/);
-  // 没勾选时面板要解释为什么按钮是灰的
-  assert.match(bar, /先勾选左侧复选框，下面的批量项才会亮/);
+  // 没勾选时要说清为什么按钮不出现
+  assert.match(bar, /勾选左侧复选框后，可批量发布/);
 });
 
 test("生成变种是「补齐组合」，不是重建表格", () => {
@@ -3096,7 +3108,9 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
   // 入口：批量条上直接开整页（对齐 Temu 后台 / 店小秘），不再弹小面板
   assert.match(bar, /onBatchEdit: \(\) => void;/);
   assert.match(bar, /onClick=\{onBatchEdit\}/);
-  assert.doesNotMatch(bar, /openPanel\("fields"\)/);
+  // 「批量编辑」开整页；「批量改字段」是另一个入口（从「更多」摊到条上后仍用它的小面板）
+  assert.match(bar, /openPanel\("fields"\)/);
+  assert.match(bar, /批量改字段/);
 
   // 整页该有的东西：字段勾选、列头「批量改」、移除只影响本页、清空=取消覆盖
   assert.match(page, /选择批量编辑的信息/);
