@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { TemuDraftEdit, TemuDraftEntry } from "../types";
@@ -49,7 +49,8 @@ const COLUMNS: Column[] = [
   { key: "weight_g", label: "重量(g)", group: "变种信息", width: 95, kind: "number", decimals: 0 },
 ];
 
-const DEFAULT_FIELDS: BatchEditField[] = ["title", "sku", "declared_price", "weight_g"];
+/** 默认全部勾上：进来先看到全表，不要的再取消（默认藏着字段反而让人找不到） */
+const DEFAULT_FIELDS: BatchEditField[] = COLUMNS.map((column) => column.key);
 
 type Props = {
   /** 勾选的草稿（已合并过本机编辑） */
@@ -75,6 +76,13 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
   const [fields, setFields] = useState<BatchEditField[]>(DEFAULT_FIELDS);
   /** 被「移除」暂时不看的行（只是从这张表里去掉，不动草稿本身） */
   const [removed, setRemoved] = useState<string[]>([]);
+  /**
+   * 勾选的行（默认全勾）。
+   *
+   * 「改这一列」不该强迫改全部：几十条里通常只想动其中几条。
+   * 默认全勾 = 行为和不加勾选时完全一致，先取消几条再改才是常用路径。
+   */
+  const [picked, setPicked] = useState<string[]>(() => entries.map((entry) => entry.id));
   /** 正在批量改哪一列（null = 没开弹窗） */
   const [activeColumn, setActiveColumn] = useState<Column | null>(null);
   /** 上一次批量改动改前的值：填错了能整批回退 */
@@ -90,6 +98,24 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     () => COLUMNS.filter((column) => fields.includes(column.key)),
     [fields],
   );
+  /** 勾选的行：批量改只动这些（单个格子照旧想改哪行改哪行） */
+  const pickedRows = useMemo(
+    () => rows.filter((entry) => picked.includes(entry.id)),
+    [rows, picked],
+  );
+  const allPicked = rows.length > 0 && rows.every((entry) => picked.includes(entry.id));
+  /** 只勾了一部分时，表头那个全选框要显示成「半选」，否则看不出状态 */
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = !allPicked && pickedRows.length > 0;
+    }
+  }, [allPicked, pickedRows.length]);
+
+  const togglePick = (id: string) =>
+    setPicked((current) =>
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+    );
 
   const valueOf = (entry: TemuDraftEntry, key: BatchEditField) =>
     draft[entry.id]?.[key] !== undefined
@@ -107,7 +133,7 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
   const applyColumnValues = (key: BatchEditField, values: string[]) => {
     const previous: Record<string, string | undefined> = {};
     const next = { ...draft };
-    rows.forEach((entry, index) => {
+    pickedRows.forEach((entry, index) => {
       previous[entry.id] = draft[entry.id]?.[key];
       next[entry.id] = { ...(next[entry.id] ?? {}), [key]: values[index] ?? "" };
     });
@@ -244,8 +270,9 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
 
       <section className="temu-batch-edit-tools">
         <p className="temu-batch-edit-tip">
-          格子直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；
-          整列改点列头上的「批量改」。输入框留空 = 取消这条的覆盖，回到源数据。
+          格子直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）。
+          列头「批量改」只动<b>勾选的行</b>（{pickedRows.length}/{rows.length} 条）；
+          输入框留空 = 取消这条的覆盖，回到源数据。
         </p>
         {lastFill ? (
           <button type="button" className="temu-link" onClick={undoFill}>
@@ -258,6 +285,17 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
         <table className="temu-batch-edit-table">
           <thead>
             <tr>
+              <th className="col-pick">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allPicked}
+                  onChange={(event) =>
+                    setPicked(event.target.checked ? rows.map((entry) => entry.id) : [])
+                  }
+                  title={allPicked ? "取消全选" : "全选"}
+                />
+              </th>
               <th className="col-thumb">产品图片</th>
               {visibleColumns.map((column) => (
                 <th key={column.key} style={{ width: column.width }}>
@@ -265,13 +303,16 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
                   <button
                     type="button"
                     className="temu-batch-edit-th-batch"
+                    disabled={!pickedRows.length}
                     onClick={() => setActiveColumn(column)}
                     title={
-                      column.kind === "sku"
-                        ? "按规则批量生成货号（前缀/起始值/位数/后缀）"
-                        : column.kind === "number"
-                          ? "批量改这一列：直接改 / 按现有值加减乘"
-                          : "批量把这一列改成同一段文字"
+                      !pickedRows.length
+                        ? "先勾选要改的行"
+                        : column.kind === "sku"
+                          ? `按规则批量生成货号（勾选的 ${pickedRows.length} 行）`
+                          : column.kind === "number"
+                            ? `批量改这一列：直接改 / 按现有值加减乘（勾选的 ${pickedRows.length} 行）`
+                            : `批量把这一列改成同一段文字（勾选的 ${pickedRows.length} 行）`
                     }
                   >
                     批量改
@@ -284,7 +325,15 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
           </thead>
           <tbody>
             {rows.map((entry) => (
-              <tr key={entry.id}>
+              <tr key={entry.id} className={picked.includes(entry.id) ? "" : "is-unpicked"}>
+                <td className="col-pick">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(entry.id)}
+                    onChange={() => togglePick(entry.id)}
+                    title="勾上的行才会被「批量改」改到"
+                  />
+                </td>
                 <td className="col-thumb">
                   {entry.main_image || entry.images?.[0] ? (
                     <img src={entry.main_image || entry.images[0]} alt="" />
@@ -342,7 +391,7 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
             ))}
             {!rows.length ? (
               <tr>
-                <td className="temu-muted" colSpan={visibleColumns.length + 3}>
+                <td className="temu-muted" colSpan={visibleColumns.length + 4}>
                   没有要编辑的行（可能都被移除了）
                 </td>
               </tr>
@@ -356,7 +405,7 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
           label={activeColumn.label}
           kind={activeColumn.kind}
           decimals={activeColumn.decimals ?? 0}
-          rows={rows.map((entry) => ({
+          rows={pickedRows.map((entry) => ({
             value: valueOf(entry, activeColumn.key),
             color: entry.spec_value_1 || entry.variants?.[0]?.color,
             size: entry.spec_value_2 || entry.variants?.[0]?.size,

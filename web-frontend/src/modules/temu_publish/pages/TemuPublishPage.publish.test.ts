@@ -3143,3 +3143,29 @@ test("批量编辑：SKU 按规则生成、申报价按规则改（对齐店小�
   assert.match(dialogs, /保留 \{decimals\} 位小数/);
   assert.match(dialogs, /const round = \(n: number\) => \{/);
 });
+
+test("批量编辑：字段默认全勾、可勾选行、批量改只动勾选行且是按钮", () => {
+  const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 字段默认全勾（默认只勾 4 个时，用户以为字段就这么多）
+  assert.match(page, /const DEFAULT_FIELDS: BatchEditField\[\] = COLUMNS\.map\(\(column\) => column\.key\);/);
+
+  // 行勾选：默认全勾，批量改只作用于勾选行
+  assert.match(page, /const \[picked, setPicked\] = useState<string\[\]>\(\(\) => entries\.map\(\(entry\) => entry\.id\)\);/);
+  assert.match(page, /const pickedRows = useMemo\(\s*\n\s*\(\) => rows\.filter\(\(entry\) => picked\.includes\(entry\.id\)\),/);
+  assert.match(page, /pickedRows\.forEach\(\(entry, index\) => \{/);
+  assert.match(page, /rows=\{pickedRows\.map\(\(entry\) => \(\{/);
+  // 表头全选 + 半选状态 + 每行勾选框
+  assert.match(page, /selectAllRef\.current\.indeterminate = !allPicked && pickedRows\.length > 0;/);
+  assert.match(page, /className="col-pick"/);
+  assert.match(page, /className=\{picked\.includes\(entry\.id\) \? "" : "is-unpicked"\}/);
+  // 一条没勾时批量改禁用，别点了没反应
+  assert.match(page, /disabled=\{!pickedRows\.length\}/);
+
+  // 「批量改」要有按钮外观（之前是纯文字，用户以为只是表头文字）
+  assert.match(css, /\.temu-batch-edit-th-batch \{\s*\n\s*display: inline-flex;/);
+  assert.match(css, /border: 1px solid color-mix\(in srgb, var\(--theme-module-primary-strong, #087bf5\) 42%, transparent\);/);
+  assert.match(css, /\.temu-batch-edit-table \.col-pick \{/);
+  assert.match(css, /\.temu-batch-edit-table tbody tr\.is-unpicked td \{/);
+});
