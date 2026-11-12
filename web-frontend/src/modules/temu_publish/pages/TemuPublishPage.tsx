@@ -3343,8 +3343,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <span>
               新增店铺：粘贴 access_token
               <em className="temu-muted">
-                Temu 后台：系统管理 → 授权管理 → 获取授权，复制 access_token 后面的整串。
-                保存前会先打一次网关校验，通过才存进列表
+                Temu 后台：系统管理 → 授权管理 → 获取授权（对接系统选「启邦国际跨境分销运营管理系统」），
+                复制 access_token 后面的整串。保存前会先打一次网关校验，通过才存进列表
               </em>
             </span>
             <textarea
@@ -4854,22 +4854,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <section className="temu-help-step">
                 <div className="temu-help-step-head">
                   <i>2</i>
-                  <strong>点「获取授权」→ 选对接系统 → 确认</strong>
+                  <strong>点「获取授权」→ 选「启邦国际跨境分销运营管理系统」→ 确认</strong>
                 </div>
                 <p>
-                  点页面里的「获取授权」。弹窗第一步写着「如需使用自研系统对接，请联系对接运营进行对接」：
-                  下拉里显示「无可选系统」时点旁边的「向运营申请」，让对接运营把系统开出来；
-                  开通后在下拉里选上系统，点「确认」。
+                  点页面里的「获取授权」。弹窗里「请选择对接系统」的下拉<strong>可以直接打字</strong>：
+                  输入<strong>「启邦国际跨境分销运营管理系统」</strong>并选中它（我们的对接系统，别选成别的），
+                  再点「确认」。下拉里如果是「无可选系统」，先点右边的「申请开通」让对接运营把系统开出来，再回来选。
                 </p>
                 <img
                   className="temu-help-shot"
                   src="/help/temu-auth-grant.png"
-                  alt="获取授权弹窗：联系对接运营 → 选择对接系统"
+                  alt="获取授权弹窗：在下拉里输入并选中「启邦国际跨境分销运营管理系统」，再点确认"
                   title="点击看大图"
                   onClick={() =>
                     setImagePreview({
                       src: "/help/temu-auth-grant.png",
-                      alt: "获取授权弹窗：联系对接运营 → 选择对接系统",
+                      alt: "获取授权弹窗：在下拉里输入并选中「启邦国际跨境分销运营管理系统」，再点确认",
                     })
                   }
                 />
