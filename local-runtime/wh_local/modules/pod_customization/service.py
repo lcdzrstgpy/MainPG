@@ -2806,7 +2806,11 @@ class PodCustomizationService:
 
     @staticmethod
     def _reject_column_rerun(batch: dict[str, Any]) -> None:
-        """列式批次 v1 不提供用户侧重跑：已有入口要求 4 行一起重置，会冲掉已完成图。"""
+        """列式批次 v1 不提供图片重跑：已有入口要求 4 行一起重置，会冲掉已完成图。
+
+        标题重试不受影响：它只重置标题行（见 ``repository.claim_batch_retry``），
+        所以调用方只在真正要重跑图片时才走到这里。
+        """
         if str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN:
             raise PodRepositoryError(
                 "列式生成批次暂不支持单款重生成或批量重试，请重新建批", 409
@@ -2890,7 +2894,9 @@ class PodCustomizationService:
         title_style_indices: tuple[int, ...],
     ) -> None:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        self._reject_column_rerun(batch)
+        # 列式批次只允许标题重试；图片重试仍拒绝（会重置 4 行、冲掉已完成图）。
+        if image_style_indices:
+            self._reject_column_rerun(batch)
         self._require_replica_retry_supported(batch)
         if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)

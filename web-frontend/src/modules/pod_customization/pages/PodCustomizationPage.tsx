@@ -27,6 +27,7 @@ import {
   businessFieldsForApi,
   canDeletePodBatch,
   isPristineCreativeEdit,
+  isPodColumnBatch,
   isPodColumnBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -304,6 +305,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
   const failedRetryCandidates = activeBatch ? batchRetryCandidates(groupPodStyleRows(activeBatch)) : { image: [], title: [] };
+  // 列式批次（全款直出）不支持图片重跑：弹窗只展示标题失败项，避免勾选后被后端 409。
+  const activeBatchColumn = activeBatch ? isPodColumnBatch(activeBatch) : false;
   const resolvedPrompt = resolveCreativePrompt(currentBatchEdit ?? "");
   const activeItemStatuses = activeBatch?.items.map((item) => item.status).join("|") ?? "";
   const activeTitleStatuses = activeBatch?.style_titles?.map((title) => title.status).join("|") ?? "";
@@ -1288,7 +1291,7 @@ export function PodCustomizationPage({ isActive = true }: Props) {
 
       <PodFailedRetryDialog
         open={failedRetryOpen}
-        imageCandidates={failedRetryCandidates.image}
+        imageCandidates={activeBatchColumn ? [] : failedRetryCandidates.image}
         titleCandidates={failedRetryCandidates.title}
         busy={busyAction === "retry-failed"}
         onClose={() => setFailedRetryOpen(false)}

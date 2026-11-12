@@ -2673,6 +2673,62 @@ def test_column_batch_rejects_user_side_rerun(tmp_path: Path) -> None:
     runtime.close()
 
 
+def test_column_batch_allows_title_only_retry(tmp_path: Path) -> None:
+    """列式批次的标题重试必须放行：只重置标题行，已完成的四张图不受影响。"""
+    runtime = ListingOnlyRuntime([])
+    titles = _RecordingTitleRuntime()
+    service = _service(tmp_path, runtime, title_runtime=titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    with service.repository._connect() as connection:
+        rows = connection.execute(
+            "SELECT result_id, variant_index FROM pod_customization_style_grid_results "
+            "WHERE batch_id = ? AND style_index = 1 ORDER BY variant_index",
+            (batch["id"],),
+        ).fetchall()
+        for (result_id, _variant) in rows:
+            connection.execute(
+                "UPDATE pod_customization_style_grid_results SET status = 'completed' WHERE result_id = ?",
+                (result_id,),
+            )
+            connection.execute(
+                "INSERT INTO pod_customization_style_grid_publications "
+                "(result_id, role, public_url, updated_at) VALUES (?, 'hero', ?, 'now')",
+                (result_id, f"https://images.example.com/{result_id}.png"),
+            )
+        connection.execute(
+            "UPDATE pod_customization_style_titles "
+            "SET status = 'failed', style_task_id = 'style-task-1', error_message = 'bad title' "
+            "WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        )
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'completed' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+
+    claimed = service.retry_failed(
+        actor,
+        batch["id"],
+        image_style_indices=[],
+        title_style_indices=[1],
+        enqueue=False,
+    )
+    stored = service.get_batch(actor, batch["id"])
+
+    assert claimed["title_style_indices"] == [1]
+    assert stored["style_titles"][0]["status"] == "generating"
+    assert stored["status"] == "generating_titles"
+    # 图片已全部完成并发布，标题重试不应把它们重新排队。
+    style_one = [item for item in stored["items"] if item["style_index"] == 1]
+    assert len(style_one) == 4
+    assert all(item["status"] == "completed" for item in style_one)
+    service.close()
+    runtime.close()
+
+
 class _RecordingTitleRuntime:
     """只记录提交、不真正跑标题：用于校验 claim 时写进了非空 task id。"""
 
