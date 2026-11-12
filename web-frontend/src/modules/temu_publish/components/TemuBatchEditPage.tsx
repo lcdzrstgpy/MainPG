@@ -74,6 +74,10 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
   const [removed, setRemoved] = useState<string[]>([]);
   const [fillKey, setFillKey] = useState<BatchEditField | "">("");
   const [fillValue, setFillValue] = useState("");
+  /** 上一次填充改前的值：填错了能一键撤回（填充是一大片改动，没有撤销很危险） */
+  const [lastFill, setLastFill] = useState<
+    null | { key: BatchEditField; previous: Record<string, string | undefined> }
+  >(null);
   const fillInputRef = useRef<HTMLInputElement | null>(null);
 
   const rows = useMemo(
@@ -115,14 +119,31 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
 
   const applyFill = () => {
     if (!fillKey) return;
-    const next = { ...draft };
+    const key = fillKey;
     const value = fillValue.trim();
+    const previous: Record<string, string | undefined> = {};
+    const next = { ...draft };
     rows.forEach((entry) => {
-      next[entry.id] = { ...(next[entry.id] ?? {}), [fillKey]: value };
+      previous[entry.id] = draft[entry.id]?.[key];
+      next[entry.id] = { ...(next[entry.id] ?? {}), [key]: value };
     });
     setDraft(next);
+    setLastFill({ key, previous });
     setFillKey("");
     setFillValue("");
+  };
+
+  const undoFill = () => {
+    if (!lastFill) return;
+    const next = { ...draft };
+    Object.entries(lastFill.previous).forEach(([id, value]) => {
+      const row = { ...(next[id] ?? {}) };
+      if (value === undefined) delete row[lastFill.key];
+      else row[lastFill.key] = value;
+      next[id] = row;
+    });
+    setDraft(next);
+    setLastFill(null);
   };
 
   // Esc 关闭：整页覆盖时必须留一条键盘退路
@@ -229,7 +250,7 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
 
       <section className="temu-batch-edit-tools">
         <p className="temu-batch-edit-tip">
-          表格里的内容可以直接改；输入框留空 = 取消这条的覆盖，回到源数据。
+          表格里的内容可以直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；输入框留空 = 取消这条的覆盖，回到源数据。
         </p>
         <div className="temu-batch-edit-fill">
           <select
@@ -250,20 +271,33 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
           </select>
           {fillKey ? (
             <>
+              <span className="temu-batch-edit-fill-label">
+                把「{COLUMNS.find((column) => column.key === fillKey)?.label}」都改成
+              </span>
               <input
                 ref={fillInputRef}
                 className="temu-input"
                 value={fillValue}
-                placeholder="填给本页所有行"
+                placeholder="填一个值"
                 onChange={(event) => setFillValue(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") applyFill();
+                  if (event.key === "Enter" && fillValue.trim()) applyFill();
                 }}
               />
-              <button type="button" className="temu-btn" onClick={applyFill}>
-                应用到 {rows.length} 行
+              <button
+                type="button"
+                className="temu-btn"
+                disabled={!fillValue.trim()}
+                onClick={applyFill}
+              >
+                填进 {rows.length} 行
               </button>
             </>
+          ) : null}
+          {lastFill ? (
+            <button type="button" className="temu-link" onClick={undoFill}>
+              撤销上次填充
+            </button>
           ) : null}
         </div>
       </section>
@@ -295,7 +329,9 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
                 {visibleColumns.map((column) => (
                   <td key={column.key}>
                     <input
-                      className="temu-batch-edit-input"
+                      className={`temu-batch-edit-input${
+                        draft[entry.id]?.[column.key] !== undefined ? " is-dirty" : ""
+                      }`}
                       value={valueOf(entry, column.key)}
                       placeholder="—"
                       onChange={(event) => setCell(entry, column.key, event.target.value)}

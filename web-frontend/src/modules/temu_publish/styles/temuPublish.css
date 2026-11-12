@@ -8212,6 +8212,16 @@ textarea.temu-input {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 「撤销上次填充」这类文字按钮不许折行：折成两行会把工具条撑高 */
+  white-space: nowrap;
+}
+
+.temu-batch-edit-fill > * {
+  flex: 0 0 auto;
+}
+
+.temu-batch-edit-fill .temu-link {
+  white-space: nowrap;
 }
 
 .temu-batch-edit-fill .temu-input {
@@ -8302,4 +8312,29 @@ textarea.temu-input {
   border-color: var(--theme-module-primary-strong, #087bf5);
   background: var(--theme-card-bg-solid, #fff);
   outline: none;
+}
+
+/* 改过的格子标黄：整页编辑里最怕「不知道哪格动过」 */
+.temu-batch-edit-input.is-dirty {
+  border-color: color-mix(in srgb, #f0a020 55%, transparent);
+  background: color-mix(in srgb, #f0a020 12%, transparent);
+}
+
+.temu-batch-edit-dirty-legend {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #f0a020 18%, transparent);
+  color: #8a5a00;
+  font-weight: 600;
+}
+
+.temu-batch-edit-fill-label {
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.temu-batch-edit-fill .temu-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
