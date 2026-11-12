@@ -982,7 +982,6 @@ textarea.temu-input {
   font-size: 0.66rem;
 }
 
-
 /* 缩略图：悬停放大一圈看清，点击开大图 */
 .temu-draft-thumb-button {
   display: inline-block;
@@ -3427,7 +3426,6 @@ textarea.temu-input {
   background: #fff8e8;
 }
 
-
 /* ---------- 草稿库：完整度 / 缺项 / 搜索（结构重排后新增） ---------- */
 
 .temu-draft-search {
@@ -3595,7 +3593,6 @@ textarea.temu-input {
   line-height: 1.45;
   word-break: break-word;
 }
-
 
 /* ================================================================
    发布商品页：视觉与结构打磨（2026-10-29）
@@ -3769,7 +3766,6 @@ textarea.temu-input {
     justify-content: flex-start;
   }
 }
-
 
 /* ================================================================
    按钮体系（2026-10-29）
@@ -5223,7 +5219,6 @@ textarea.temu-input {
 .is-console .temu-field.is-required-empty .temu-input {
   border-color: #d93025;
 }
-
 
 /* ---- 12. 区块标题更醒目 ----
    五个标题（基本信息/产品信息/变种信息/包装信息/校验发布）是这页的主骨架，
@@ -8213,52 +8208,36 @@ textarea.temu-input {
 }
 
 .temu-batch-edit-fill {
-  position: relative;
   display: flex;
   align-items: center;
+  gap: 10px;
   flex: 0 0 auto;
-}
-
-/* 「一键填充」点开的小面板：字段 + 值 + 填进 N 行 */
-.temu-batch-edit-fill-pop {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 6;
-  display: grid;
-  gap: 9px;
-  width: 316px;
-  padding: 12px;
-  border: 1px solid var(--theme-module-border, #d5e2ea);
-  border-radius: 10px;
-  background: var(--theme-card-bg-solid, #fff);
-  box-shadow: 0 12px 30px rgba(20, 40, 60, 0.16);
-}
-
-.temu-batch-edit-fill-row {
-  display: grid;
-  grid-template-columns: 34px 1fr;
-  align-items: center;
-  gap: 8px;
-  color: var(--theme-text-secondary, #4a6478);
-  font-size: 12px;
-}
-
-.temu-batch-edit-fill-row .temu-input {
-  width: 100%;
-  min-width: 0;
-  height: 30px;
-}
-
-.temu-batch-edit-fill-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 .temu-batch-edit-fill .temu-link {
   white-space: nowrap;
+}
+
+/* 一键填充：列头就地输入，不弹浮层 */
+.temu-batch-edit-th-label {
+  display: block;
+}
+
+.temu-batch-edit-head-fill {
+  width: 100%;
+  margin-top: 5px;
+  padding: 3px 6px;
+  border: 1px dashed var(--theme-module-primary-strong, #087bf5);
+  border-radius: 5px;
+  background: var(--theme-card-bg-solid, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+.temu-batch-edit-head-fill::placeholder {
+  color: var(--theme-text-muted, #9aa9b8);
 }
 
 .temu-batch-edit-table-wrap {

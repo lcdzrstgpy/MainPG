@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { TemuDraftEdit, TemuDraftEntry } from "../types";
@@ -72,15 +72,19 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
   const [fields, setFields] = useState<BatchEditField[]>(DEFAULT_FIELDS);
   /** 被「移除」暂时不看的行（只是从这张表里去掉，不动草稿本身） */
   const [removed, setRemoved] = useState<string[]>([]);
-  const [fillKey, setFillKey] = useState<BatchEditField | "">("");
-  const [fillValue, setFillValue] = useState("");
+  /**
+   * 一键填充：不弹面板，直接在**列头**出输入框。
+   *
+   * 弹层再怎么放都会盖住表格右上角（用户连着两次指出这个问题），
+   * 而「填哪一列」本来就是列的事：点「一键填充」→ 每个列头出现输入框 →
+   * 在哪个列头输入，回车就把这一列全填成这个值。
+   */
+  const [fillMode, setFillMode] = useState(false);
+  const [headerFill, setHeaderFill] = useState<Partial<Record<BatchEditField, string>>>({});
   /** 上一次填充改前的值：填错了能一键撤回（填充是一大片改动，没有撤销很危险） */
   const [lastFill, setLastFill] = useState<
     null | { key: BatchEditField; previous: Record<string, string | undefined> }
   >(null);
-  const fillInputRef = useRef<HTMLInputElement | null>(null);
-  /** 「一键填充」是表格栏右侧的一个按钮，点开才展开字段/值（常驻会把条撑得很难看） */
-  const [fillOpen, setFillOpen] = useState(false);
 
   const rows = useMemo(
     () => entries.filter((entry) => !removed.includes(entry.id)),
@@ -119,10 +123,8 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
   const groupAllOn = (group: Column["group"]) =>
     groupFields(group).every((key) => fields.includes(key));
 
-  const applyFill = () => {
-    if (!fillKey) return;
-    const key = fillKey;
-    const value = fillValue.trim();
+  const applyColumn = (key: BatchEditField, raw: string) => {
+    const value = raw.trim();
     const previous: Record<string, string | undefined> = {};
     const next = { ...draft };
     rows.forEach((entry) => {
@@ -131,10 +133,7 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     });
     setDraft(next);
     setLastFill({ key, previous });
-    setFillKey("");
-    setFillValue("");
-    // 填完自动收起：弹层盖着表格右上角，留着看不到结果
-    setFillOpen(false);
+    setHeaderFill((current) => ({ ...current, [key]: "" }));
   };
 
   const undoFill = () => {
@@ -158,18 +157,6 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  // 点面板外面收起「一键填充」（弹层不挡操作，点哪都能继续干活）
-  useEffect(() => {
-    if (!fillOpen) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.closest(".temu-batch-edit-fill")) return;
-      setFillOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [fillOpen]);
 
   // 切页签时自己收掉：整页浮层是 portal 到 body 的，页签只是 hidden，
   // 不收的话会把别的页签盖住（WorkspaceShell 会发这个事件）
@@ -266,72 +253,33 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
 
       <section className="temu-batch-edit-tools">
         <p className="temu-batch-edit-tip">
-          表格里的内容可以直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；输入框留空 = 取消这条的覆盖，回到源数据。
+          {fillMode ? (
+            <>
+              在哪一列的列头输入，<b>回车</b>就把这一列全填成这个值；再点一次「退出填充」取消。
+            </>
+          ) : (
+            <>
+              表格里的内容可以直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；输入框留空 = 取消这条的覆盖，回到源数据。
+            </>
+          )}
         </p>
         <div className="temu-batch-edit-fill">
-          <button
-            type="button"
-            className="temu-btn"
-            aria-expanded={fillOpen}
-            onClick={() => setFillOpen((open) => !open)}
-          >
-            一键填充 ▾
-          </button>
-          {fillOpen ? (
-            <div className="temu-batch-edit-fill-pop">
-              <label className="temu-batch-edit-fill-row">
-                <span>字段</span>
-                <select
-                  className="temu-input"
-                  value={fillKey}
-                  onChange={(event) => {
-                    setFillKey(event.target.value as BatchEditField | "");
-                    setFillValue("");
-                    window.setTimeout(() => fillInputRef.current?.focus(), 0);
-                  }}
-                >
-                  <option value="">选一个字段…</option>
-                  {visibleColumns.map((column) => (
-                    <option key={column.key} value={column.key}>
-                      {column.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="temu-batch-edit-fill-row">
-                <span>填成</span>
-                <input
-                  ref={fillInputRef}
-                  className="temu-input"
-                  value={fillValue}
-                  disabled={!fillKey}
-                  placeholder={fillKey ? "填一个值" : "先选字段"}
-                  onChange={(event) => setFillValue(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && fillKey && fillValue.trim()) applyFill();
-                  }}
-                />
-              </label>
-              <div className="temu-batch-edit-fill-actions">
-                <button
-                  type="button"
-                  className="temu-btn temu-btn-primary"
-                  disabled={!fillKey || !fillValue.trim()}
-                  onClick={applyFill}
-                >
-                  填进 {rows.length} 行
-                </button>
-                <button type="button" className="temu-link" onClick={() => setFillOpen(false)}>
-                  关闭
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {lastFill && !fillOpen ? (
+          {lastFill && !fillMode ? (
             <button type="button" className="temu-link temu-batch-edit-undo" onClick={undoFill}>
               撤销上次填充（{COLUMNS.find((column) => column.key === lastFill.key)?.label}）
             </button>
           ) : null}
+          <button
+            type="button"
+            className={`temu-btn${fillMode ? " temu-btn-primary" : ""}`}
+            aria-pressed={fillMode}
+            onClick={() => {
+              setFillMode((mode) => !mode);
+              setHeaderFill({});
+            }}
+          >
+            {fillMode ? "退出填充" : "一键填充"}
+          </button>
         </div>
       </section>
 
@@ -342,7 +290,22 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
               <th className="col-thumb">产品图片</th>
               {visibleColumns.map((column) => (
                 <th key={column.key} style={{ width: column.width }}>
-                  {column.label}
+                  <span className="temu-batch-edit-th-label">{column.label}</span>
+                  {fillMode ? (
+                    <input
+                      className="temu-batch-edit-head-fill"
+                      value={headerFill[column.key] ?? ""}
+                      placeholder="填整列…"
+                      onChange={(event) =>
+                        setHeaderFill((current) => ({ ...current, [column.key]: event.target.value }))
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        const value = String(headerFill[column.key] ?? "").trim();
+                        if (value) applyColumn(column.key, value);
+                      }}
+                    />
+                  ) : null}
                 </th>
               ))}
               <th className="col-variants">变种</th>
