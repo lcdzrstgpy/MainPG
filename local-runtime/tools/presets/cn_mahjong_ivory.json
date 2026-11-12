@@ -1,0 +1,30 @@
+{
+  "id": "cn_mahjong_ivory",
+  "label": "中式麻将（象牙白单层牌体）",
+  "note": "中式手搓/亚克力牌的通用参数：整块同色、无分层、牌面只留倒角。",
+  "size_mm": [30.0, 42.0, 19.0],
+  "bevel_mm": 1.6,
+  "layers": [
+    {
+      "name": "face",
+      "thickness_ratio": 0.0,
+      "color": "#EDE8DA",
+      "finish": "gloss"
+    },
+    {
+      "name": "body",
+      "thickness_ratio": 1.0,
+      "color": "#EDE8DA",
+      "finish": "gloss"
+    }
+  ],
+  "face": {
+    "cover": 0.80,
+    "index_box": null
+  },
+  "ink": ["#B0362C", "#1A6A3E", "#1C2C4C"],
+  "art": {
+    "source": "program",
+    "set": "cn_mahjong_v1"
+  }
+}

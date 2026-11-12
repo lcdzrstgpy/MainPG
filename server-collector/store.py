@@ -85,6 +85,61 @@ CREATE TABLE IF NOT EXISTS item_costs (
     PRIMARY KEY (account_id, skc_id)
 );
 CREATE INDEX IF NOT EXISTS idx_item_costs_account ON item_costs(account_id);
+
+CREATE TABLE IF NOT EXISTS dxm_accounts (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL,
+    password_enc  TEXT NOT NULL DEFAULT '',
+    label         TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'idle',
+    last_error    TEXT NOT NULL DEFAULT '',
+    last_login_at TEXT NOT NULL DEFAULT '',
+    last_align_at TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dxm_accounts_username ON dxm_accounts(username);
+
+CREATE TABLE IF NOT EXISTS dxm_pairs (
+    po         TEXT NOT NULL,
+    xm         TEXT NOT NULL,
+    account_id TEXT NOT NULL DEFAULT '',
+    shop       TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT '',
+    logistics  TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (po, xm)
+);
+CREATE INDEX IF NOT EXISTS idx_dxm_pairs_account ON dxm_pairs(account_id);
+
+CREATE TABLE IF NOT EXISTS freight_accounts (
+    platform      TEXT PRIMARY KEY,
+    username      TEXT NOT NULL DEFAULT '',
+    password_enc  TEXT NOT NULL DEFAULT '',
+    label         TEXT NOT NULL DEFAULT '',
+    site_url      TEXT NOT NULL DEFAULT '',
+    adapter       TEXT NOT NULL DEFAULT 'wujie',
+    status        TEXT NOT NULL DEFAULT 'idle',
+    last_error    TEXT NOT NULL DEFAULT '',
+    last_login_at TEXT NOT NULL DEFAULT '',
+    last_query_at TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS freight_quotes (
+    platform   TEXT NOT NULL,
+    xm         TEXT NOT NULL,
+    order_no   TEXT NOT NULL DEFAULT '',
+    weight     REAL,
+    amount     REAL,
+    currency   TEXT NOT NULL DEFAULT '',
+    status     TEXT NOT NULL DEFAULT '',
+    account    TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (platform, xm)
+);
+CREATE INDEX IF NOT EXISTS idx_freight_quotes_platform ON freight_quotes(platform);
 """
 
 
@@ -130,6 +185,28 @@ class CollectorStore:
             if "claimed_by" not in columns:
                 conn.execute(
                     "ALTER TABLE bridge_bindings ADD COLUMN claimed_by TEXT NOT NULL DEFAULT ''"
+                )
+            # 发货平台账号补列：站点地址与适配器（wujie / hy / rtb）。
+            freight_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(freight_accounts)").fetchall()
+            }
+            if "site_url" not in freight_columns:
+                conn.execute(
+                    "ALTER TABLE freight_accounts ADD COLUMN site_url TEXT NOT NULL DEFAULT ''"
+                )
+            if "adapter" not in freight_columns:
+                conn.execute(
+                    "ALTER TABLE freight_accounts ADD COLUMN adapter TEXT NOT NULL DEFAULT 'wujie'"
+                )
+            # 店小秘配对补列：物流方式（下单时选的渠道，如「浩远快递-TEMU平台面单(美西)标准」）。
+            pair_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(dxm_pairs)").fetchall()
+            }
+            if "logistics" not in pair_columns:
+                conn.execute(
+                    "ALTER TABLE dxm_pairs ADD COLUMN logistics TEXT NOT NULL DEFAULT ''"
                 )
 
     # ---------- 账号 ----------
@@ -341,8 +418,23 @@ class CollectorStore:
                     (str(parent), json.dumps(payload, ensure_ascii=False), now),
                 )
 
-    # ---------- 设置 ----------
+    def order_status_map(self) -> dict[str, str]:
+        """订单详情缓存里的 PO → 订单状态，作为列表快照的补充来源。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT parent_order_sn, "
+                "COALESCE(NULLIF(json_extract(payload, '$.order_status'), ''), "
+                "json_extract(payload, '$.order_status_code')) AS status "
+                "FROM order_details ORDER BY updated_at ASC"
+            ).fetchall()
+        result: dict[str, str] = {}
+        for row in rows:
+            status = str(row["status"] or "").strip()
+            if status and row["parent_order_sn"]:
+                result[str(row["parent_order_sn"])] = status
+        return result
 
+    # ---------- 设置 ----------
     def settings(self) -> dict[str, Any]:
         with self._connect() as conn:
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
@@ -531,6 +623,386 @@ class CollectorStore:
             "updated_at": now,
         }
 
+    # ---------- 店小秘账号 / 单号配对 ----------
+
+    def list_dxm_accounts(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM dxm_accounts ORDER BY created_at ASC"
+            ).fetchall()
+        return [self._dxm_account(row) for row in rows]
+
+    def get_dxm_account(self, account_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM dxm_accounts WHERE id = ?", (account_id,)
+            ).fetchone()
+        return self._dxm_account(row) if row else None
+
+    def get_dxm_credentials(self, account_id: str) -> dict[str, str] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT username, password_enc, label FROM dxm_accounts WHERE id = ?",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            password = self._fernet.decrypt(row["password_enc"].encode()).decode()
+        except (InvalidToken, ValueError, AttributeError):
+            password = ""
+        return {
+            "username": str(row["username"] or ""),
+            "password": password,
+            "label": str(row["label"] or ""),
+        }
+
+    def ensure_dxm_default(
+        self, username: str, password: str, label: str = "店小秘南京"
+    ) -> None:
+        """首次启动时把默认店小秘账号写入，登录页可直接自动填入。"""
+        if not str(username or "").strip():
+            return
+        with self._connect() as conn:
+            row = conn.execute("SELECT 1 FROM dxm_accounts LIMIT 1").fetchone()
+        if row is not None:
+            return
+        self.save_dxm_account(username=username, password=password, label=label)
+
+    def save_dxm_account(
+        self,
+        *,
+        username: str,
+        password: str = "",
+        label: str = "",
+        account_id: str = "",
+    ) -> dict[str, Any]:
+        name = str(username or "").strip()
+        if not name:
+            raise ValueError("店小秘账号不能为空")
+        encrypted = self._fernet.encrypt(password.encode()).decode() if password else ""
+        now = now_iso()
+        with self._connect() as conn:
+            if account_id:
+                row = conn.execute(
+                    "SELECT * FROM dxm_accounts WHERE id = ?", (account_id,)
+                ).fetchone()
+                if row is None:
+                    raise LookupError("账号不存在")
+                conn.execute(
+                    "UPDATE dxm_accounts SET username = ?, label = ?, "
+                    "password_enc = CASE WHEN ? <> '' THEN ? ELSE password_enc END, "
+                    "updated_at = ? WHERE id = ?",
+                    (name, label, encrypted, encrypted, now, account_id),
+                )
+            else:
+                existing = conn.execute(
+                    "SELECT id FROM dxm_accounts WHERE username = ?", (name,)
+                ).fetchone()
+                if existing:
+                    account_id = str(existing["id"])
+                    conn.execute(
+                        "UPDATE dxm_accounts SET label = ?, "
+                        "password_enc = CASE WHEN ? <> '' THEN ? ELSE password_enc END, "
+                        "updated_at = ? WHERE id = ?",
+                        (label, encrypted, encrypted, now, account_id),
+                    )
+                else:
+                    account_id = uuid.uuid4().hex
+                    conn.execute(
+                        "INSERT INTO dxm_accounts (id, username, password_enc, label, "
+                        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (account_id, name, encrypted, label, now, now),
+                    )
+        return self.get_dxm_account(account_id) or {}
+
+    def update_dxm_account(self, account_id: str, **fields: Any) -> None:
+        allowed = {"label", "status", "last_error", "last_login_at", "last_align_at"}
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE dxm_accounts SET {assignments}, updated_at = ? WHERE id = ?",
+                (*updates.values(), now_iso(), account_id),
+            )
+
+    def delete_dxm_account(self, account_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM dxm_accounts WHERE id = ?", (account_id,))
+        return cursor.rowcount > 0
+
+    def save_dxm_pairs(
+        self,
+        po: str,
+        xms: list[str],
+        account_id: str = "",
+        shop: str = "",
+        source: str = "",
+        logistics: dict[str, str] | None = None,
+    ) -> None:
+        """一个 PO 的配对结果整体替换；空结果说明店小秘里查不到，清掉旧值。"""
+        code = str(po or "").strip()
+        if not code:
+            return
+        now = now_iso()
+        unique = [str(xm).strip() for xm in xms if str(xm).strip()]
+        channels = logistics or {}
+        with self._connect() as conn:
+            conn.execute("DELETE FROM dxm_pairs WHERE po = ?", (code,))
+            for xm in dict.fromkeys(unique):
+                conn.execute(
+                    "INSERT INTO dxm_pairs (po, xm, account_id, shop, source, logistics, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        code,
+                        xm,
+                        account_id,
+                        shop,
+                        source,
+                        str(channels.get(xm) or ""),
+                        now,
+                    ),
+                )
+
+    def list_dxm_pairs(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT po, xm, account_id, shop, logistics, updated_at FROM dxm_pairs "
+                "ORDER BY updated_at DESC"
+            ).fetchall()
+        return [
+            {
+                "po": str(row["po"]),
+                "xm": str(row["xm"]),
+                "account_id": str(row["account_id"] or ""),
+                "shop": str(row["shop"] or ""),
+                "logistics": str(row["logistics"] or ""),
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+    def count_dxm_pairs(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM dxm_pairs").fetchone()
+        return int(row["n"] if row else 0)
+
+    # ---------- 头程平台账号 / 报价 ----------
+
+    def ensure_freight_default(
+        self,
+        platform: str,
+        username: str,
+        password: str,
+        label: str = "",
+        site_url: str = "",
+        adapter: str = "",
+    ) -> None:
+        """首次启动时写入默认发货平台账号，登录页可直接自动填入。"""
+        if not str(username or "").strip():
+            return
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM freight_accounts WHERE platform = ?", (platform,)
+            ).fetchone()
+        if row is not None:
+            return
+        self.save_freight_account(
+            platform=platform,
+            username=username,
+            password=password,
+            label=label,
+            site_url=site_url,
+            adapter=adapter,
+        )
+
+    def save_freight_account(
+        self,
+        *,
+        platform: str,
+        username: str,
+        password: str = "",
+        label: str = "",
+        site_url: str = "",
+        adapter: str = "",
+    ) -> dict[str, Any]:
+        code = str(platform or "").strip()
+        name = str(username or "").strip()
+        if not code or not name:
+            raise ValueError("平台和账号不能为空")
+        encrypted = self._fernet.encrypt(password.encode()).decode() if password else ""
+        site = str(site_url or "").strip()
+        kind = str(adapter or "").strip()
+        now = now_iso()
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM freight_accounts WHERE platform = ?", (code,)
+            ).fetchone()
+            if exists:
+                conn.execute(
+                    "UPDATE freight_accounts SET username = ?, label = ?, "
+                    "site_url = CASE WHEN ? <> '' THEN ? ELSE site_url END, "
+                    "adapter = CASE WHEN ? <> '' THEN ? ELSE adapter END, "
+                    "password_enc = CASE WHEN ? <> '' THEN ? ELSE password_enc END, "
+                    "updated_at = ? WHERE platform = ?",
+                    (name, label, site, site, kind, kind, encrypted, encrypted, now, code),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO freight_accounts (platform, username, password_enc, label, "
+                    "site_url, adapter, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (code, name, encrypted, label, site, kind or "wujie", now, now),
+                )
+        return self.get_freight_account(code) or {}
+
+    def list_freight_accounts(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM freight_accounts ORDER BY created_at ASC, platform ASC"
+            ).fetchall()
+        return [
+            {
+                "platform": str(row["platform"]),
+                "username": str(row["username"] or ""),
+                "label": str(row["label"] or ""),
+                "site_url": str(row["site_url"] or ""),
+                "adapter": str(row["adapter"] or "wujie"),
+                "has_password": bool(str(row["password_enc"] or "")),
+                "status": str(row["status"] or "idle"),
+                "last_error": str(row["last_error"] or ""),
+                "last_login_at": str(row["last_login_at"] or ""),
+                "last_query_at": str(row["last_query_at"] or ""),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+            }
+            for row in rows
+        ]
+
+    def delete_freight_account(self, platform: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM freight_accounts WHERE platform = ?", (platform,))
+            conn.execute("DELETE FROM freight_quotes WHERE platform = ?", (platform,))
+
+    def get_freight_account(self, platform: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM freight_accounts WHERE platform = ?", (platform,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "platform": str(row["platform"]),
+            "username": str(row["username"] or ""),
+            "label": str(row["label"] or ""),
+            "site_url": str(row["site_url"] or ""),
+            "adapter": str(row["adapter"] or "wujie"),
+            "has_password": bool(str(row["password_enc"] or "")),
+            "status": str(row["status"] or "idle"),
+            "last_error": str(row["last_error"] or ""),
+            "last_login_at": str(row["last_login_at"] or ""),
+            "last_query_at": str(row["last_query_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def get_freight_credentials(self, platform: str) -> dict[str, str] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT username, password_enc, label, site_url, adapter "
+                "FROM freight_accounts WHERE platform = ?",
+                (platform,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            password = self._fernet.decrypt(row["password_enc"].encode()).decode()
+        except (InvalidToken, ValueError, AttributeError):
+            password = ""
+        return {
+            "username": str(row["username"] or ""),
+            "password": password,
+            "label": str(row["label"] or ""),
+            "site_url": str(row["site_url"] or ""),
+            "adapter": str(row["adapter"] or "wujie"),
+        }
+
+    def update_freight_account(self, platform: str, **fields: Any) -> None:
+        allowed = {
+            "status",
+            "last_error",
+            "last_login_at",
+            "last_query_at",
+            "label",
+            "site_url",
+            "adapter",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE freight_accounts SET {assignments}, updated_at = ? WHERE platform = ?",
+                (*updates.values(), now_iso(), platform),
+            )
+
+    def save_freight_quotes(self, platform: str, quotes: list[dict[str, Any]]) -> None:
+        """按 XM 覆盖写入头程金额；查不到的保留旧值，由界面区分。"""
+        now = now_iso()
+        with self._connect() as conn:
+            for item in quotes:
+                xm = str(item.get("xm") or "").strip()
+                if not xm:
+                    continue
+                conn.execute(
+                    "INSERT INTO freight_quotes (platform, xm, order_no, weight, amount, "
+                    "currency, status, account, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(platform, xm) DO UPDATE SET order_no = excluded.order_no, "
+                    "weight = excluded.weight, amount = excluded.amount, "
+                    "currency = excluded.currency, status = excluded.status, "
+                    "account = excluded.account, updated_at = excluded.updated_at",
+                    (
+                        platform,
+                        xm,
+                        str(item.get("order_no") or ""),
+                        item.get("weight"),
+                        item.get("amount"),
+                        str(item.get("currency") or ""),
+                        str(item.get("status") or ""),
+                        str(item.get("account") or ""),
+                        now,
+                    ),
+                )
+
+    def list_freight_quotes(self, platform: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT xm, order_no, weight, amount, currency, status, account, updated_at "
+                "FROM freight_quotes WHERE platform = ? ORDER BY updated_at DESC",
+                (platform,),
+            ).fetchall()
+        return [
+            {
+                "xm": str(row["xm"]),
+                "order_no": str(row["order_no"] or ""),
+                "weight": row["weight"],
+                "amount": row["amount"],
+                "currency": str(row["currency"] or ""),
+                "status": str(row["status"] or ""),
+                "account": str(row["account"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+            }
+            for row in rows
+        ]
+
+    def count_freight_quotes(self, platform: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM freight_quotes WHERE platform = ?", (platform,)
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
     # ---------- 行转换 ----------
 
     @staticmethod
@@ -549,6 +1021,21 @@ class CollectorStore:
             "last_login_at": str(row["last_login_at"] or ""),
             "last_capture_at": str(row["last_capture_at"] or ""),
             "order_count": int(row["order_count"] or 0),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    @staticmethod
+    def _dxm_account(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "username": str(row["username"] or ""),
+            "label": str(row["label"] or ""),
+            "has_password": bool(str(row["password_enc"] or "")),
+            "status": str(row["status"] or "idle"),
+            "last_error": str(row["last_error"] or ""),
+            "last_login_at": str(row["last_login_at"] or ""),
+            "last_align_at": str(row["last_align_at"] or ""),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
         }

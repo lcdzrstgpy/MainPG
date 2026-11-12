@@ -1,0 +1,2655 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TEMU 采集器</title>
+<style>
+  :root {
+    --bg: #f3f6fa;
+    --card: #ffffff;
+    --line: #dfe6ef;
+    --line-soft: #edf1f6;
+    --text: #172033;
+    --muted: #667085;
+    --dim: #98a2b3;
+    --primary: #365fd8;
+    --primary-weak: #eef2ff;
+    --ok: #0f8f68;
+    --warn: #b7791f;
+    --danger: #d14343;
+    --sidebar: #fbfcfe;
+    --shadow-sm: 0 2px 8px rgba(28, 43, 70, .04);
+    --shadow-md: 0 10px 28px rgba(28, 43, 70, .08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex;
+    min-height: 100vh;
+  }
+  a { color: inherit; }
+  /* ---------- 侧边栏 ---------- */
+  .sidebar {
+    width: 236px;
+    flex: 0 0 236px;
+    background: var(--sidebar);
+    border-right: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    z-index: 30;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 18px 18px 14px; }
+  .brand .logo {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: linear-gradient(135deg, #4f8cff, #2f6fed);
+    color: #fff; font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .brand b { display: block; font-size: 14px; line-height: 1.3; }
+  .brand small { color: var(--dim); font-size: 11px; }
+  .nav { flex: 1; overflow: auto; padding: 4px 10px 20px; }
+  .nav-title {
+    font-size: 11px; color: var(--dim); letter-spacing: .08em;
+    padding: 14px 10px 6px;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 10px; margin: 1px 0;
+    border-radius: 8px; color: var(--muted);
+    text-decoration: none; font-size: 13px;
+  }
+  .nav-item:hover { background: #f3f6fb; color: var(--text); }
+  .nav-item.on { background: var(--primary-weak); color: var(--primary); font-weight: 600; }
+  .nav-item .ic { width: 16px; text-align: center; font-size: 13px; opacity: .85; }
+  .nav-sub .nav-item { padding-left: 34px; font-size: 12.5px; }
+  .nav-soon {
+    margin-left: auto; font-size: 10px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+  }
+  .sidebar-foot {
+    border-top: 1px solid var(--line);
+    padding: 10px 18px; font-size: 11.5px; color: var(--dim);
+  }
+  /* ---------- 主区域 ---------- */
+  .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px 24px;
+    background: rgba(255, 255, 255, .94);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .crumb { color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .shop-picker {
+    margin-left: auto; display: flex; align-items: center; gap: 6px;
+    flex-wrap: wrap; justify-content: flex-end; max-width: 58%;
+  }
+  .shop-picker .label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .shop-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; color: var(--muted); background: #fff;
+    cursor: pointer; user-select: none;
+  }
+  .shop-chip input { width: 13px; height: 13px; margin: 0; accent-color: var(--primary); }
+  .shop-chip.on { border-color: var(--primary); color: var(--primary); background: var(--primary-weak); }
+  .content { padding: 20px 24px 48px; }
+  .page { display: none; }
+  .page.on { display: block; }
+  .page-head { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .page-head h2 { margin: 0; font-size: 15px; }
+  .page-head .desc { color: var(--muted); font-size: 12.5px; flex: 1; min-width: 220px; }
+  .page-head .ops { display: flex; align-items: center; gap: 8px; }
+  /* ---------- 通用组件 ---------- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .card + .card { margin-top: 16px; }
+  .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .card-head h3 { margin: 0; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+  @media (max-width: 1180px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 1180px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .kpi .k { font-size: 12px; color: var(--muted); }
+  .kpi .v { margin-top: 4px; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .v.neg { color: var(--danger); }
+  .kpi .sub { margin-top: 2px; font-size: 11.5px; color: var(--dim); }
+  label { display: block; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+  input, select {
+    width: 100%; margin-top: 4px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 6px;
+    font: inherit; color: var(--text); background: #fff;
+  }
+  input:focus, select:focus { outline: 2px solid #cfe0ff; border-color: var(--primary); }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button {
+    font: inherit; border-radius: 6px; border: 1px solid var(--line);
+    background: #fff; color: var(--text); padding: 7px 12px; cursor: pointer;
+  }
+  button:hover { border-color: #c7d4e6; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  button.ghost { background: transparent; }
+  button.danger { color: var(--danger); border-color: #f3c9c9; }
+  .btn-link {
+    display: inline-flex; align-items: center; padding: 7px 12px;
+    border-radius: 6px; border: 1px solid var(--line); background: #fff;
+    color: var(--text); text-decoration: none; font-size: 14px;
+  }
+  .btn-link:hover { border-color: #c7d4e6; }
+  .accounts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 1180px) { .accounts { grid-template-columns: 1fr; } }
+  .account {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; background: #fff; display: flex; flex-direction: column;
+  }
+  .account-head { display: flex; align-items: center; gap: 10px; }
+  .account-name { font-weight: 600; font-size: 14px; }
+  .account-meta { color: var(--dim); font-size: 12px; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: #f8fafc;
+  }
+  .badge.ok { color: var(--ok); border-color: #bfe6d6; background: #f2fbf7; }
+  .badge.warn { color: var(--warn); border-color: #f2dcbb; background: #fffaf0; }
+  .badge.err { color: var(--danger); border-color: #f3c9c9; background: #fdf3f3; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 12px; }
+  .progress { height: 4px; border-radius: 999px; background: #eef2f7; overflow: hidden; margin-top: 10px; }
+  .progress > i { display: block; height: 100%; background: var(--primary); transition: width .3s ease; }
+  .job-line { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .shot { width: 100%; border: 1px solid var(--line); border-radius: 8px; margin-top: 10px; }
+  .code-box { display: flex; gap: 8px; margin-top: 10px; }
+  .empty { color: var(--dim); font-size: 13px; padding: 12px 0; }
+  .switch { position: relative; display: inline-flex; width: 40px; height: 22px; cursor: pointer; }
+  .switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  .switch span { position: absolute; inset: 0; border-radius: 999px; background: #d7dfea; transition: background .15s ease; }
+  .switch span::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(15,23,42,.2);
+    transition: transform .15s ease;
+  }
+  .switch input:checked + span { background: var(--primary); }
+  .switch input:checked + span::after { transform: translateX(18px); }
+  .check-inline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .check-inline input { width: auto; margin: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 5px 12px; font-size: 12px; color: var(--muted); background: #fff; }
+  .seg button.on { background: var(--primary); color: #fff; }
+  .freight-tag {
+    margin-left: 6px; font-size: 11px; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 999px; padding: 0 5px; background: #f8fafc;
+  }
+  .freight-tag.unpaid { color: var(--warn); border-color: #f2dcbb; background: #fffaf0; }
+  /* ---------- 结算卡片 ---------- */
+  .settle-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 1180px) { .settle-grid { grid-template-columns: 1fr; } }
+  .rail-card {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 13px; cursor: pointer; background: #fff;
+    transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .rail-card:hover { border-color: #c7d4e6; box-shadow: 0 4px 14px rgba(15,23,42,.06); }
+  .rail-card.busy { cursor: progress; border-color: #cfe0ff; }
+  .rail-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .rail-card-head b { font-size: 13.5px; }
+  .rail-nums { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+  .rail-num { flex: 1 1 62px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .rail-num .k { font-size: 11px; color: var(--muted); }
+  .rail-num .v { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rail-num .v.neg { color: var(--danger); }
+  .rail-msg { margin-top: 8px; font-size: 12px; color: var(--muted); word-break: break-all; }
+  .rail-msg.err { color: var(--danger); }
+  .rail-entries { margin-top: 8px; font-size: 12.5px; padding: 5px 10px; }
+  .rail-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .rail-actions button { font-size: 12px; padding: 5px 10px; }
+  /* ---------- 表格 ---------- */
+  .table-wrap { overflow: auto; max-height: 560px; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #eef2f7; text-align: left; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #f8fafc; color: var(--muted); font-weight: 600; z-index: 1; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num.neg { color: var(--danger); }
+  tbody tr:hover { background: #fafcff; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+  .chips b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .chips b.neg { color: var(--danger); }
+  .foot { display: flex; align-items: center; gap: 10px; padding-top: 10px; font-size: 12px; color: var(--muted); }
+  .foot .grow { flex: 1; }
+  .pages { display: inline-flex; align-items: center; gap: 6px; }
+  .pages button { padding: 4px 10px; }
+  .pages button:disabled { opacity: .45; cursor: default; }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; font-size: 12.5px; }
+  .filters .group { display: flex; align-items: center; gap: 6px; }
+  .filters .group input, .filters .group select { width: auto; margin: 0; padding: 5px 8px; }
+  .filters input[type="search"] { width: 240px; }
+  /* 列筛选（类似 Excel 表头的下拉筛选） */
+  .th-filter {
+    margin-left: 4px; padding: 0 4px; border: 0; background: transparent;
+    color: var(--dim); font-size: 11px; line-height: 1; cursor: pointer;
+  }
+  .th-filter:hover { color: var(--text); }
+  .th-filter.on { color: var(--primary); font-weight: 700; }
+  .col-filter-pop {
+    position: fixed; z-index: 80; min-width: 180px; max-height: 300px; overflow: auto;
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, .14); padding: 8px; font-size: 12.5px;
+  }
+  .col-filter-pop .cf-head {
+    display: flex; justify-content: space-between; gap: 8px;
+    padding: 2px 4px 8px; border-bottom: 1px solid #eef2f7; margin-bottom: 6px;
+  }
+  .col-filter-pop .cf-head button {
+    border: 0; background: transparent; color: var(--primary); padding: 0; font-size: 12px;
+  }
+  .col-filter-pop label {
+    display: flex; align-items: center; gap: 7px; margin: 0; padding: 4px;
+    border-radius: 6px; color: var(--text); cursor: pointer;
+  }
+  .col-filter-pop label:hover { background: #f5f8ff; }
+  .col-filter-pop label input { width: auto; margin: 0; }
+  .col-filter-pop .cf-count { margin-left: auto; color: var(--dim); font-size: 11px; }
+  /* ---------- 排行 ---------- */
+  .rank-row {
+    display: grid; grid-template-columns: 22px 40px minmax(0, 1fr) auto;
+    gap: 10px; align-items: center; padding: 9px 0;
+    border-bottom: 1px dashed #eef2f7; font-size: 12.5px;
+  }
+  .rank-row:last-child { border-bottom: 0; }
+  .rank-row .idx { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+  .rank-row .thumb { width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: #f2f5f9; border: 1px solid #eef2f7; }
+  .rank-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank-row .name .zh { display: block; color: var(--muted); font-size: 11.5px; }
+  .rank-row .name small { color: var(--dim); font-size: 11px; margin-left: 6px; }
+  .rank-row .num { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rank-bar { height: 3px; background: #eef2f7; border-radius: 999px; margin-top: 4px; }
+  .rank-bar > i { display: block; height: 100%; background: var(--primary); border-radius: 999px; }
+  /* ---------- 占位 ---------- */
+  .placeholder {
+    border: 1px dashed #d6dfec; border-radius: 12px;
+    padding: 48px 24px; text-align: center; color: var(--dim);
+    background: linear-gradient(180deg, #fbfcfe, #f7f9fc);
+  }
+  .placeholder b { display: block; color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+  /* ---------- 浮层 ---------- */
+  .live-panel {
+    position: fixed; right: 18px; bottom: 18px; width: min(620px, 92vw);
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(15, 23, 42, .18); overflow: hidden; z-index: 50;
+  }
+  .live-panel header {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600;
+  }
+  .live-panel header span { font-weight: 400; color: var(--muted); font-size: 12px; }
+  .live-panel iframe { display: block; width: 100%; height: min(430px, 56vh); border: 0; background: #111; }
+  .toast {
+    position: fixed; right: 20px; bottom: 20px; background: #1f2937; color: #fff;
+    padding: 10px 14px; border-radius: 8px; font-size: 13px;
+    opacity: 0; transform: translateY(8px); transition: all .2s ease; pointer-events: none; z-index: 60;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">
+    <span class="logo">T</span>
+    <div><b>TEMU 采集器</b><small>服务器常驻 · profile 复用</small></div>
+  </div>
+  <nav class="nav" id="nav">
+    <a class="nav-item" href="#/dashboard" data-page="dashboard"><span class="ic">▦</span>看板</a>
+    <div class="nav-title">结算数据采集</div>
+    <div class="nav-sub">
+      <a class="nav-item" href="#/collect/orders" data-page="orders"><span class="ic">↓</span>订单采集</a>
+      <a class="nav-item" href="#/collect/orders/info" data-page="orders-info"><span class="ic">≡</span>订单信息</a>
+      <a class="nav-item" href="#/collect/bill" data-page="bill"><span class="ic">↓</span>对账中心采集</a>
+      <a class="nav-item" href="#/collect/bill/info" data-page="bill-info"><span class="ic">≡</span>对账信息</a>
+      <a class="nav-item" href="#/collect/ads" data-page="ads"><span class="ic">○</span>广告推广费采集<span class="nav-soon">待开发</span></a>
+    </div>
+    <div class="nav-title">运营</div>
+    <a class="nav-item" href="#/ranking" data-page="ranking"><span class="ic">↗</span>商品销量排行</a>
+    <a class="nav-item" href="#/align" data-page="align"><span class="ic">⇄</span>店小秘单号对齐</a>
+    <div class="nav-title">账号绑定</div>
+    <div class="nav-sub">
+      <a class="nav-item" href="#/bind/temu" data-page="bind-temu"><span class="ic">◎</span>Temu 店铺账号</a>
+      <a class="nav-item" href="#/bind/dianxiaomi" data-page="bind-dxm"><span class="ic">◎</span>店小秘账号</a>
+      <a class="nav-item" href="#/bind/freight" data-page="bind-freight"><span class="ic">◎</span>发货平台绑定</a>
+    </div>
+  </nav>
+  <div class="sidebar-foot">自动轮换：<span id="sideRot">—</span></div>
+</aside>
+
+<div class="workspace">
+  <header class="topbar">
+    <div>
+      <h1 id="pageTitle">看板</h1>
+      <div class="crumb" id="pageCrumb">全局概览</div>
+    </div>
+    <div class="shop-picker" id="shopPicker"><span class="label">店铺</span></div>
+  </header>
+
+  <main class="content">
+    <!-- 看板 -->
+    <section class="page" id="page-dashboard">
+      <div class="kpi-grid" id="dashKpis"></div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3>采集状态</h3><span class="account-meta" id="dashRot">—</span></div>
+          <div id="dashShops"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>结算概览</h3><span class="account-meta" id="dashSettleAt">—</span></div>
+          <div class="chips" id="dashSettle"></div>
+          <div class="empty" id="dashSettleEmpty">还没有结算数据，去「对账中心采集」抓一次</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 订单采集 -->
+    <section class="page" id="page-orders">
+      <div class="page-head">
+        <div>
+          <h2>订单采集</h2>
+          <div class="desc">登录店铺后台抓取订单列表与详情，同一时间只跑一个任务。</div>
+        </div>
+        <div class="ops">
+          <button type="button" class="primary" onclick="openLive()">实时画面</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>自动轮换</h3>
+          <label class="check-inline"><input type="checkbox" id="rotEnabled" /> 开启</label>
+        </div>
+        <div class="row">
+          <label>轮换间隔（分钟，1440 = 一天）<input type="number" id="rotInterval" min="5" max="1440" step="5" /></label>
+          <label>账号间隔最小（秒）<input type="number" id="rotGapMin" min="5" max="600" step="5" /></label>
+          <label>账号间隔最大（秒）<input type="number" id="rotGapMax" min="5" max="1800" step="5" /></label>
+        </div>
+        <div class="row" style="margin-top:4px">
+          <button class="primary" type="button" id="rotSave">保存设置</button>
+          <button type="button" id="rotRun">立即执行一轮</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label class="check-inline"><input type="checkbox" id="rotWindow" /> 每天时间窗（北京时间）</label>
+          <label>开始（点）<input type="number" id="rotWindowStart" min="0" max="23" step="1" /></label>
+          <label>结束（点）<input type="number" id="rotWindowEnd" min="1" max="24" step="1" /></label>
+        </div>
+        <div class="account-meta" style="margin-top:6px">
+          开启时间窗后每天会在窗口内随机挑一个时刻跑一轮，同时忽略「轮换间隔」；手动「立即执行一轮」不受限制。
+        </div>
+        <label class="check-inline" style="margin-top:10px">
+          <input type="checkbox" id="rotRelogin" /> 登录态失效时自动重新登录（验证码需要有人在）
+        </label>
+        <div id="rotState" class="job-line"></div>
+        <div id="rotResults" class="job-line"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>店铺</h3><span class="account-meta">点「采集订单」抓取；验证码可在实时画面里手动完成</span></div>
+        <div class="accounts" id="accounts"><div class="empty">还没有店铺账号</div></div>
+      </div>
+    </section>
+
+    <!-- 订单信息 -->
+    <section class="page" id="page-orders-info">
+      <div class="page-head">
+        <div>
+          <h2>订单信息</h2>
+          <div class="desc">按店铺汇总已采集订单的件数、申报价与各项回款。右上角可勾选店铺。</div>
+        </div>
+        <div class="ops" id="ordersInfoLinks"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>汇总</h3></div>
+        <div class="chips" id="sumGrid"></div>
+        <div id="sumStores"></div>
+      </div>
+    </section>
+
+    <!-- 对账中心采集 -->
+    <section class="page" id="page-bill">
+      <div class="page-head">
+        <div>
+          <h2>对账中心采集</h2>
+          <div class="desc">在对账中心「导出历史」下载财务明细，解析 PO 级结算金额与违规扣款。点店铺卡片开始抓取。</div>
+        </div>
+        <div class="ops">
+          <label class="check-inline">时间范围
+            <select id="settleDays">
+              <option value="7">近 7 天</option>
+              <option value="30" selected>近 30 天</option>
+              <option value="90">近 90 天</option>
+            </select>
+          </label>
+          <button type="button" class="primary" onclick="openLive()">实时画面</button>
+        </div>
+      </div>
+      <div class="settle-grid" id="settleCards"><div class="empty">还没有店铺</div></div>
+    </section>
+
+    <!-- 对账信息 -->
+    <section class="page" id="page-bill-info">
+      <div class="page-head">
+        <div>
+          <h2>对账信息</h2>
+          <div class="desc">按 PO 单号汇总结算明细，含销售回款、运费回款、罚款与到账时间。</div>
+        </div>
+        <div class="ops" id="billInfoLink"></div>
+      </div>
+      <div class="card">
+        <div class="filters">
+          <div class="group">
+            <span class="account-meta">到账日期</span>
+            <input type="date" id="billFrom" />
+            <span class="account-meta">至</span>
+            <input type="date" id="billTo" />
+            <button type="button" id="billClear">清除</button>
+          </div>
+          <div class="group">
+            <input type="search" id="billSearch" placeholder="搜索 PO / SKU / 商品名" />
+          </div>
+        </div>
+        <div class="chips" id="billTotals"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>店铺</th>
+                <th>PO 单号</th>
+                <th>商品</th>
+                <th class="num">件数</th>
+                <th class="num">销售回款</th>
+                <th class="num">运费回款</th>
+                <th class="num">结算金额</th>
+                <th class="num">罚款</th>
+                <th class="num">笔数</th>
+                <th>到账时间</th>
+                <th>SKU</th>
+                <th class="num">销售冲回</th>
+                <th class="num">运费冲回</th>
+              </tr>
+            </thead>
+            <tbody id="billRows"></tbody>
+          </table>
+          <div class="empty" id="billEmpty" hidden>没有结算数据</div>
+        </div>
+        <div class="foot">
+          <span id="billPageInfo"></span>
+          <span class="grow"></span>
+          <div class="pages">
+            <button type="button" id="billPrev">上一页</button>
+            <span id="billPageNums"></span>
+            <button type="button" id="billNext">下一页</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 广告推广费 -->
+    <section class="page" id="page-ads">
+      <div class="placeholder"><b>广告推广费采集</b>功能开发中，后续用于拉取店铺广告消耗与投产数据。</div>
+    </section>
+
+    <!-- 商品销量排行 -->
+    <section class="page" id="page-ranking">
+      <div class="page-head">
+        <div>
+          <h2>商品销量排行</h2>
+          <div class="desc">按已采集订单统计销量，右上角可勾选店铺范围。</div>
+        </div>
+        <div class="ops">
+          <div class="seg" id="rankSwitch">
+            <button type="button" data-by="skc" class="on">按链接</button>
+            <button type="button" data-by="sku">按 SKU</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="rank-list" id="rankList"><div class="empty">还没有销量数据</div></div>
+      </div>
+    </section>
+
+    <!-- 店小秘单号对齐 -->
+    <section class="page" id="page-align">
+      <div class="page-head">
+        <div>
+          <h2>店小秘单号对齐</h2>
+          <div class="desc">用对账中心拿到的 PO 单号，去店小秘「全部订单」里抓对应的 XM 单号；再用 XM 到无界 ERP 查头程总金额。</div>
+        </div>
+        <div class="ops">
+          <button type="button" class="primary" id="alignMissing">对齐未对齐（<span id="alignPending">0</span>）</button>
+          <button type="button" id="alignAll">全部重新对齐</button>
+          <button type="button" id="alignCache">刷新服务器缓存</button>
+          <button type="button" id="alignFreight">真实抓取缺失头程</button>
+          <button type="button" id="freightLogin">发货平台登录</button>
+          <button type="button" id="alignCopy">复制结果</button>
+          <button type="button" id="alignExport">导出 CSV</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="filters">
+          <div class="group"><input type="search" id="alignSearch" placeholder="搜索 PO / XM / 商品" /></div>
+          <div class="group" id="alignAccountPick"></div>
+          <label>查询时间段<select id="alignRange"><option value="3">近三个月</option><option value="1">近一个月</option><option value="7d">近七天</option><option value="custom">自定义</option></select></label>
+          <label>开始日期<input type="date" id="alignFrom" /></label>
+          <label>结束日期<input type="date" id="alignTo" /></label>
+        </div>
+        <div class="account-meta" id="alignCacheInfo" role="status">普通刷新只读取服务器缓存；日期用于平台抓取，不按对齐时间过滤订单。</div>
+        <div class="chips" id="alignTotals"></div>
+        <div id="alignJob" class="job-line"></div>
+        <div id="freightJob" class="job-line"></div>
+        <div class="table-wrap" style="max-height:640px">
+          <table>
+            <thead>
+              <tr>
+                <th>店铺<button class="th-filter" data-filter="shop" title="筛选店铺">▾</button></th>
+                <th>PO 单号</th>
+                <th>订单状态<button class="th-filter" data-filter="status" title="筛选订单状态">▾</button></th>
+                <th>商品</th>
+                <th>物流方式<button class="th-filter" data-filter="logistics" title="筛选物流方式">▾</button></th>
+                <th class="num">结算金额</th>
+                <th class="num">头程金额<button class="th-filter" data-filter="freight" title="筛选头程状态">▾</button></th>
+                <th>XM 单号</th>
+                <th>对齐时间</th>
+                <th>头程同步状态 / 次数 / 时间</th>
+              </tr>
+            </thead>
+            <tbody id="alignRows"></tbody>
+          </table>
+          <div class="empty" id="alignEmpty" hidden>还没有 PO 数据，先去「对账中心采集」抓一次</div>
+        </div>
+        <div class="foot"><span id="alignFoot"></span><div class="ops"><label>每页<select id="alignPageSize"><option>25</option><option selected>50</option><option>100</option></select></label><button type="button" id="alignPrev">上一页</button><span id="alignPageInfo"></span><button type="button" id="alignNext">下一页</button></div></div>
+      </div>
+    </section>
+
+    <!-- Temu 账号绑定 -->
+    <section class="page" id="page-bind-temu">
+      <div class="page-head">
+        <div>
+          <h2>Temu 店铺账号绑定</h2>
+          <div class="desc">账号密码只保存在服务器本机，用于登录店铺后台采集数据。</div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3 id="formTitle">添加店铺账号</h3></div>
+          <form id="form">
+            <input type="hidden" id="accountId" />
+            <label>别名（选填）<input id="alias" placeholder="例如 主店" /></label>
+            <label>手机号<input id="phone" placeholder="Temu 登录手机号" autocomplete="off" /></label>
+            <label>密码<input id="password" type="password" placeholder="留空表示不修改" autocomplete="new-password" /></label>
+            <label>站点
+              <select id="site">
+                <option value="us">美国</option>
+                <option value="eu">欧区</option>
+                <option value="global">全球</option>
+              </select>
+            </label>
+            <div class="row">
+              <button class="primary" type="submit">保存账号</button>
+              <button class="ghost" type="button" id="reset">清空</button>
+            </div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>已绑定店铺</h3><span class="account-meta" id="bindCount">—</span></div>
+          <div class="table-wrap" style="max-height:520px">
+            <table>
+              <thead><tr><th>店铺</th><th>尾号</th><th>站点</th><th>状态</th><th>最近更新</th><th>操作</th></tr></thead>
+              <tbody id="bindList"></tbody>
+            </table>
+            <div class="empty" id="bindEmpty" hidden>还没有店铺账号</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 店小秘账号绑定 -->
+    <section class="page" id="page-bind-dxm">
+      <div class="page-head">
+        <div>
+          <h2>店小秘账号绑定</h2>
+          <div class="desc">账号密码只保存在服务器本机。登录遇到图形验证码时，在「实时画面」里人工输入一次，之后复用登录态。</div>
+        </div>
+        <div class="ops">
+          <button type="button" class="primary" onclick="openLive()">实时画面</button>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3 id="dxmFormTitle">添加店小秘账号</h3></div>
+          <form id="dxmForm">
+            <input type="hidden" id="dxmId" />
+            <label>备注名<input id="dxmLabel" placeholder="例如 店小秘南京" /></label>
+            <label>登录账号<input id="dxmUsername" placeholder="店小秘登录账号" autocomplete="off" /></label>
+            <label>密码<input id="dxmPassword" type="password" placeholder="留空表示不修改" autocomplete="new-password" /></label>
+            <div class="row">
+              <button class="primary" type="submit">保存账号</button>
+              <button class="ghost" type="button" id="dxmReset">清空</button>
+            </div>
+          </form>
+          <div class="account-meta" style="margin-top:12px">
+            第一次登录：点「登录」后在实时画面里补图形验证码并提交；登录成功一次后，服务器会保留登录态，后续对齐直接复用。
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>已绑定店小秘</h3><span class="account-meta" id="dxmCount">—</span></div>
+          <div class="table-wrap" style="max-height:520px">
+            <table>
+              <thead><tr><th>备注</th><th>账号</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+              <tbody id="dxmList"></tbody>
+            </table>
+            <div class="empty" id="dxmEmpty" hidden>还没有店小秘账号</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 发货平台绑定 -->
+    <section class="page" id="page-bind-freight">
+      <div class="page-head">
+        <div>
+          <h2>发货平台绑定</h2>
+          <div class="desc">头程金额按平台账号查询：无界 ERP 每个子账号单独登录，浩远国际快递按运费明细匹配 XM，rtb56（顺丰 / 义乌煊烊等）按「运费明细 + 未付款」匹配参考单号，并标出结算状态。账号密码只保存在服务器本机，登录态由常驻标签页复用。</div>
+        </div>
+        <div class="ops">
+          <button type="button" class="primary" onclick="queryFreight()">查询头程金额</button>
+          <button type="button" onclick="loginWujie()">全部登录</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>新增 / 修改发货平台账号</h3></div>
+        <div class="grid-2">
+          <label>平台类型
+            <select id="freightAdapter">
+              <option value="rtb">全球物流查询系统（图形验证码）</option>
+              <option value="wujie">无界 ERP</option>
+              <option value="hy">浩远国际快递</option>
+            </select>
+          </label>
+          <label>备注名<input id="freightLabel" placeholder="如 顺丰 / 义乌煊烊 / 镇江煊烊" /></label>
+          <label>登录网址<input id="freightSite" placeholder="https://..." /></label>
+          <label>登录账号<input id="freightUser" autocomplete="off" placeholder="登录账号" /></label>
+          <label>登录密码<input id="freightPass" type="password" autocomplete="new-password" placeholder="新增必填；留空表示不修改" /></label>
+        </div>
+        <div class="actions">
+          <button type="button" class="primary" onclick="saveFreightAccount()">保存账号</button>
+        </div>
+        <div class="account-meta">同名账号（同一账号+平台类型）会直接更新网址或密码。</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>已绑定发货平台</h3><span class="account-meta" id="freightCount">—</span></div>
+        <div class="table-wrap" style="max-height:560px">
+          <table>
+            <thead><tr><th>平台 / 账号名</th><th>网址</th><th>登录账号</th><th>状态</th><th>已查头程</th><th>最近登录</th><th>最近查询</th><th>操作</th></tr></thead>
+            <tbody id="freightList"></tbody>
+          </table>
+          <div class="empty" id="freightEmpty" hidden>还没有发货平台账号</div>
+        </div>
+        <div class="account-meta" style="margin-top:12px">
+          无界 ERP 的登录态只存在浏览器内存里，所以服务器会为每个子账号常驻一个标签页；浩远和顺丰的登录态由 Cookie 保持。需要图形验证码的平台，点「登录」后把图片里的验证码填进下方输入框提交即可。
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="live-panel" id="livePanel" hidden>
+  <header>
+    <span>服务器实时画面 <span>可以直接点，和本机浏览器一样</span></span>
+    <button type="button" id="liveClose">关闭</button>
+  </header>
+  <iframe id="liveFrame" title="服务器浏览器实时画面" allow="clipboard-read; clipboard-write"></iframe>
+</div>
+
+<script>
+const API = new URL("api/", document.baseURI).pathname.replace(/\/$/, "");
+const SELECT_KEY = "collector.selectedShops";
+let state = { accounts: [] };
+let selectedShops = [];
+try {
+  const saved = JSON.parse(localStorage.getItem(SELECT_KEY) || "[]");
+  if (Array.isArray(saved)) selectedShops = saved.filter((id) => typeof id === "string");
+} catch (_) {
+  selectedShops = [];
+}
+let lastSummary = null;
+let billSignature = "";
+const billView = { from: "", to: "", keyword: "", page: 1, size: 100 };
+
+const PAGES = {
+  dashboard: { title: "看板", crumb: "全局概览" },
+  orders: { title: "订单采集", crumb: "结算数据采集 / 订单采集" },
+  "orders-info": { title: "订单信息", crumb: "结算数据采集 / 订单信息" },
+  bill: { title: "对账中心采集", crumb: "结算数据采集 / 对账中心采集" },
+  "bill-info": { title: "对账信息", crumb: "结算数据采集 / 对账信息" },
+  ads: { title: "广告推广费采集", crumb: "结算数据采集 / 广告推广费采集" },
+  ranking: { title: "商品销量排行", crumb: "运营 / 商品销量排行" },
+  align: { title: "店小秘单号对齐", crumb: "运营 / 店小秘单号对齐" },
+  "bind-temu": { title: "Temu 店铺账号绑定", crumb: "账号绑定 / Temu 店铺账号绑定" },
+  "bind-dxm": { title: "店小秘账号绑定", crumb: "账号绑定 / 店小秘账号绑定" },
+  "bind-freight": { title: "发货平台绑定", crumb: "账号绑定 / 发货平台绑定" },
+};
+const ROUTES = {
+  "#/dashboard": "dashboard",
+  "#/collect/orders": "orders",
+  "#/collect/orders/info": "orders-info",
+  "#/collect/bill": "bill",
+  "#/collect/bill/info": "bill-info",
+  "#/collect/ads": "ads",
+  "#/ranking": "ranking",
+  "#/align": "align",
+  "#/bind/temu": "bind-temu",
+  "#/bind/dianxiaomi": "bind-dxm",
+  "#/bind/freight": "bind-freight",
+};
+
+function toast(text) {
+  const el = document.getElementById("toast");
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(API + path, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+function escapeHtml(text) {
+  return String(text == null ? "" : text).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[ch]);
+}
+
+function formatTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : date.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
+}
+
+function money(value) {
+  return `¥${Number(value || 0).toFixed(2)}`;
+}
+
+function siteLabel(site) {
+  return { us: "美国", eu: "欧区", global: "全球" }[site] || site;
+}
+
+function shopName(account) {
+  return account.shop_name || account.alias || `尾号 ${account.phone_tail}`;
+}
+
+function visibleAccounts() {
+  const accounts = state.accounts || [];
+  if (!selectedShops.length) return accounts;
+  return accounts.filter((account) => selectedShops.includes(account.id));
+}
+
+/* ---------- 路由 ---------- */
+
+function currentPage() {
+  return ROUTES[location.hash] || "dashboard";
+}
+
+function route() {
+  const page = currentPage();
+  const meta = PAGES[page] || PAGES.dashboard;
+  document.getElementById("pageTitle").textContent = meta.title;
+  document.getElementById("pageCrumb").textContent = meta.crumb;
+  document.querySelectorAll(".page").forEach((section) => {
+    section.classList.toggle("on", section.id === `page-${page}`);
+  });
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.toggle("on", item.dataset.page === page);
+  });
+  if (page === "orders-info" || page === "dashboard") loadSummary();
+  if (page === "ranking" || page === "dashboard") loadRanking();
+  if (page === "bill-info") renderBillInfo(true);
+  if (page === "orders-info") renderOrdersInfoLinks();
+  if (page === "align") {
+    renderAlign();
+    loadDxmPairs(true);
+    loadOrderStatuses(true);
+    loadFreightQuotes(true);
+  }
+  if (page === "bind-dxm") renderDxmList();
+  if (page === "bind-freight") renderFreightList();
+}
+window.addEventListener("hashchange", route);
+
+/* ---------- 店铺选择 ---------- */
+
+function renderShopPicker(force = false) {
+  const box = document.getElementById("shopPicker");
+  if (!force && document.activeElement && box.contains(document.activeElement)) return;
+  const accounts = state.accounts || [];
+  const allOn = selectedShops.length === 0;
+  box.innerHTML = `<span class="label">店铺</span>` +
+    `<label class="shop-chip${allOn ? " on" : ""}"><input type="checkbox" data-all="1"${allOn ? " checked" : ""}>全部</label>` +
+    accounts.map((account) => {
+      const on = selectedShops.includes(account.id);
+      return `<label class="shop-chip${on ? " on" : ""}">` +
+        `<input type="checkbox" data-id="${escapeHtml(account.id)}"${on ? " checked" : ""}>` +
+        `${escapeHtml(shopName(account))}</label>`;
+    }).join("");
+  box.querySelectorAll("input[type=checkbox]").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.dataset.all) {
+        selectedShops = [];
+      } else {
+        const id = input.dataset.id;
+        const index = selectedShops.indexOf(id);
+        if (input.checked && index < 0) selectedShops.push(id);
+        if (!input.checked && index >= 0) selectedShops.splice(index, 1);
+      }
+      localStorage.setItem(SELECT_KEY, JSON.stringify(selectedShops));
+      renderShopPicker(true);
+      render();
+      loadSummary();
+      loadRanking();
+      renderBillInfo(true);
+      renderOrdersInfoLinks();
+      renderBillInfoLink();
+      loadOrderStatuses(true);
+    });
+  });
+}
+
+/* ---------- 状态渲染 ---------- */
+
+function statusBadge(account) {
+  const job = account.job;
+  if (job && job.status === "running") {
+    if (job.paused) return `<span class="badge warn">等待人工处理</span>`;
+    return `<span class="badge warn">${job.need_code ? "等待验证码" : "执行中"}</span>`;
+  }
+  if (account.status === "ready") return `<span class="badge ok">可用</span>`;
+  if (account.status === "expired") return `<span class="badge err">登录失效</span>`;
+  if (account.status === "error") return `<span class="badge err">需处理</span>`;
+  return `<span class="badge">未登录</span>`;
+}
+
+function settleBadge(account) {
+  const job = account.job;
+  if (job && job.status === "running") {
+    return job.action === "settlement"
+      ? `<span class="badge warn">结算抓取中</span>`
+      : `<span class="badge">任务占用</span>`;
+  }
+  const settle = account.last_settlement || {};
+  if (settle.ok) return `<span class="badge ok">已抓取</span>`;
+  if (settle.ok === false) return `<span class="badge err">抓取失败</span>`;
+  return `<span class="badge">未抓取</span>`;
+}
+
+function accountCard(account) {
+  const job = account.job;
+  const running = job && job.status === "running";
+  const name = shopName(account);
+  const summary = account.last_summary || {};
+  const orderText = account.order_count ? `${account.order_count} 条` : "—";
+  const shotUrl = `${API}/accounts/${account.id}/shot?t=${Date.now()}`;
+  return `
+    <div class="account">
+      <div class="account-head">
+        <span class="account-name">${escapeHtml(name)}</span>
+        ${statusBadge(account)}
+      </div>
+      <div class="account-meta">
+        ${escapeHtml(account.alias ? account.alias + " · " : "")}尾号 ${escapeHtml(account.phone_tail)} · 站点 ${siteLabel(account.site)}
+        · 订单 ${orderText}${summary.gmv_total ? ` · GMV ${summary.gmv_total}` : ""}
+      </div>
+      <div class="account-meta">最近更新 ${escapeHtml(formatTime(account.last_captured_at))}（北京时间）</div>
+      ${running ? `
+        <div class="progress"><i style="width:${job.progress || 5}%"></i></div>
+        <div class="job-line">${escapeHtml(job.step || "")} ${escapeHtml(job.message || "")}${job.page_label ? ` · 页面：${escapeHtml(job.page_label)}` : ""}</div>
+      ` : ""}
+      ${job && job.need_code ? `
+        <img class="shot" src="${shotUrl}" alt="登录页面截图" />
+        <div class="job-line">${job.paused
+          ? "自动化已暂停，浏览器让给你：处理完点「继续自动化」"
+          : (job.action === "settlement"
+            ? "登录被风控/失效挡住：点「实时画面」手动登录店铺，成功后会自动继续抓取"
+            : "点「实时画面」可以直接在服务器浏览器里操作，手动完成后这里会自动接上")}</div>
+        <div class="code-box">
+          <input id="code-${account.id}" placeholder="输入短信验证码（如需）" />
+          <button class="primary" onclick="sendCode('${account.id}')">提交验证码</button>
+        </div>
+      ` : ""}
+      ${!running && account.last_error ? `<div class="job-line" style="color:#dc2626">${escapeHtml(account.last_error)}</div>` : ""}
+      <div class="actions">
+        <button class="primary" onclick="openLive()">实时画面</button>
+        ${running ? `<button onclick="togglePause('${account.id}', ${job.paused ? "1" : "0"})">${job.paused ? "继续自动化" : "暂停接管"}</button>` : ""}
+        <button onclick="doLogin('${account.id}')" ${running ? "disabled" : ""}>登录</button>
+        <button class="ghost" onclick="doProbe('${account.id}')" ${running ? "disabled" : ""}>检查登录</button>
+        <button onclick="doCapture('${account.id}')" ${running ? "disabled" : ""}>采集订单</button>
+        ${account.order_count ? `<a class="btn-link" href="orders.html?account=${encodeURIComponent(account.id)}" target="_blank">订单明细</a>` : ""}
+      </div>
+    </div>`;
+}
+
+function focusedInput() {
+  const el = document.activeElement;
+  if (!el || !el.id) return null;
+  if (!["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return null;
+  return {
+    id: el.id,
+    start: typeof el.selectionStart === "number" ? el.selectionStart : null,
+    end: typeof el.selectionEnd === "number" ? el.selectionEnd : null,
+    value: el.value,
+  };
+}
+
+function restoreFocusedInput(snap) {
+  if (!snap) return;
+  const el = document.getElementById(snap.id);
+  if (!el) return;
+  // 重绘期间用户可能已经改了值：以用户当前输入为准。
+  if (el.value !== snap.value && document.activeElement !== el) el.value = snap.value;
+  try { el.focus({ preventScroll: true }); } catch (_) {}
+  if (snap.start !== null && el.setSelectionRange) {
+    try { el.setSelectionRange(snap.start, snap.end); } catch (_) {}
+  }
+}
+
+function render() {
+  const codeValues = {};
+  document.querySelectorAll("input[id^='code-']").forEach((el) => {
+    if (el.value) codeValues[el.id] = el.value;
+  });
+  const focus = focusedInput();
+  const box = document.getElementById("accounts");
+  if (!state.accounts.length) {
+    box.innerHTML = `<div class="empty">还没有店铺账号，去「账号绑定 / Temu 店铺账号」添加</div>`;
+  } else {
+    box.innerHTML = state.accounts.map(accountCard).join("");
+  }
+  Object.entries(codeValues).forEach(([id, value]) => {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+  });
+  renderDashboard();
+  renderSettleCards();
+  renderBindList();
+  renderOrdersInfoLinks();
+  if (currentPage() === "bind-dxm") renderDxmList();
+  if (currentPage() === "bind-freight") renderFreightList();
+  if (currentPage() === "align") renderAlign();
+  restoreFocusedInput(focus);
+}
+
+function renderDashboard() {
+  const accounts = visibleAccounts();
+  const totals = (lastSummary && lastSummary.totals) || {};
+  const income = Number(totals.estimated_income || 0);
+  const kpis = [
+    ["店铺", `${accounts.length} 家`, `已绑定 ${state.accounts.length} 家`],
+    ["订单", `${totals.order_count || 0} 单`, "已采集订单"],
+    ["件数", `${totals.quantity || 0} 件`, "销量合计"],
+    ["实际收入", money(income), "销售 + 运费回款 - 冲回"],
+  ];
+  document.getElementById("dashKpis").innerHTML = kpis.map(([label, value, sub]) =>
+    `<div class="kpi"><div class="k">${label}</div>` +
+    `<div class="v${String(value).startsWith("-") ? " neg" : ""}">${value}</div>` +
+    `<div class="sub">${sub}</div></div>`).join("");
+
+  document.getElementById("dashShops").innerHTML = accounts.length
+    ? accounts.map((account) => {
+        const settle = account.last_settlement || {};
+        const settleText = settle.ok ? `结算 ${money(settle.settlement_amount)} · ${settle.po_count || 0} PO` : "未抓取结算";
+        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed #eef2f7">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">${escapeHtml(shopName(account))}</div>
+            <div class="account-meta">订单 ${account.order_count || 0} 条 · ${escapeHtml(settleText)} · 更新 ${escapeHtml(formatTime(account.last_captured_at))}</div>
+          </div>
+          ${statusBadge(account)}
+          <a class="btn-link" href="settlement.html?account=${encodeURIComponent(account.id)}" target="_blank">结算明细</a>
+        </div>`;
+      }).join("")
+    : `<div class="empty">还没有店铺账号</div>`;
+
+  let amount = 0;
+  let penalty = 0;
+  let pos = 0;
+  let entries = 0;
+  let latest = "";
+  accounts.forEach((account) => {
+    const settle = account.last_settlement || {};
+    if (!settle.ok) return;
+    amount += Number(settle.settlement_amount || 0);
+    penalty += Number(settle.penalty_amount || 0);
+    pos += Number(settle.po_count || 0);
+    entries += Number(settle.entry_count || (settle.entries || []).length || 0);
+    if (account.settlement_at && account.settlement_at > latest) latest = account.settlement_at;
+  });
+  const hasSettle = pos > 0 || amount !== 0;
+  document.getElementById("dashSettle").innerHTML = hasSettle
+    ? `<span>结算金额 <b>${money(amount)}</b></span>` +
+      `<span>罚款 <b class="${penalty < 0 ? "neg" : ""}">${money(penalty)}</b></span>` +
+      `<span>PO 数 <b>${pos}</b></span>` +
+      `<span>笔数 <b>${entries}</b></span>`
+    : "";
+  document.getElementById("dashSettleEmpty").hidden = hasSettle;
+  document.getElementById("dashSettleAt").textContent = latest ? `最近抓取 ${formatTime(latest)}` : "—";
+}
+
+function renderBindList() {
+  const rows = state.accounts || [];
+  document.getElementById("bindCount").textContent = `${rows.length} 家`;
+  document.getElementById("bindEmpty").hidden = rows.length > 0;
+  document.getElementById("bindList").innerHTML = rows.map((account) => `
+    <tr>
+      <td>${escapeHtml(shopName(account))}</td>
+      <td class="mono">${escapeHtml(account.phone_tail || "")}</td>
+      <td>${siteLabel(account.site)}</td>
+      <td>${statusBadge(account)}</td>
+      <td>${escapeHtml(formatTime(account.last_captured_at))}</td>
+      <td>
+        <button class="ghost" onclick="editAccount('${account.id}')">编辑</button>
+        <button class="danger ghost" onclick="removeAccount('${account.id}')">删除</button>
+      </td>
+    </tr>`).join("");
+}
+
+function renderOrdersInfoLinks() {
+  const accounts = visibleAccounts();
+  const box = document.getElementById("ordersInfoLinks");
+  if (!accounts.length) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = accounts.map((account) =>
+    `<a class="btn-link" href="orders.html?account=${encodeURIComponent(account.id)}" target="_blank">${escapeHtml(shopName(account))} 订单明细</a>`).join("");
+}
+
+/* ---------- 结算卡片 ---------- */
+
+function renderSettleCards() {
+  const box = document.getElementById("settleCards");
+  const accounts = visibleAccounts();
+  if (!accounts.length) {
+    box.innerHTML = `<div class="empty">还没有店铺</div>`;
+    return;
+  }
+  box.innerHTML = accounts.map((account) => {
+    const name = shopName(account);
+    const job = account.job || {};
+    const busy = job.status === "running";
+    const settle = account.last_settlement || {};
+    const entries = Array.isArray(settle.entries) ? settle.entries : [];
+    const numbers = settle.ok
+      ? `<div class="rail-nums">
+           <div class="rail-num"><div class="k">结算金额</div><div class="v">${money(settle.settlement_amount)}</div></div>
+           <div class="rail-num"><div class="k">罚款</div><div class="v${Number(settle.penalty_amount) < 0 ? " neg" : ""}">${money(settle.penalty_amount)}</div></div>
+           <div class="rail-num"><div class="k">PO 数</div><div class="v">${settle.po_count || 0}</div></div>
+           <div class="rail-num"><div class="k">笔数</div><div class="v">${settle.entry_count || entries.length || 0}</div></div>
+         </div>`
+      : "";
+    const link = settle.ok
+      ? `<a class="btn-link rail-entries" href="settlement.html?account=${encodeURIComponent(account.id)}" target="_blank">结算明细（${settle.po_count || 0} 个 PO · ${entries.length} 笔）</a>`
+      : "";
+    const waiting = Boolean(job.need_code);
+    const paused = Boolean(job.paused);
+    let line;
+    if (busy) {
+      line = `<div class="progress"><i style="width:${job.progress || 8}%"></i></div>` +
+        `<div class="rail-msg">${escapeHtml(job.step || "抓取中")} ${escapeHtml(job.message || "")}${job.page_label ? ` · 页面：${escapeHtml(job.page_label)}` : ""}</div>`;
+    } else if (settle.ok) {
+      line = `<div class="rail-msg">对账中心 · ${escapeHtml(settle.file || "")} · 抓取于 ${escapeHtml(formatTime(account.settlement_at))}</div>`;
+    } else if (settle.ok === false) {
+      line = `<div class="rail-msg err">${escapeHtml(settle.error || "抓取失败")}</div>`;
+    } else {
+      line = `<div class="rail-msg">站点 ${siteLabel(account.site)} · 尾号 ${escapeHtml(account.phone_tail)} · 点击卡片开始抓取</div>`;
+    }
+    const waitBox = waiting
+      ? `<img class="shot" src="${API}/accounts/${account.id}/shot?t=${Date.now()}" alt="登录页面截图" />
+         <div class="rail-msg err">${paused ? "自动化已暂停：处理完点「继续自动化」" : "需要人工登录：登完自动继续"}</div>`
+      : "";
+    return `<div class="rail-card${busy ? " busy" : ""}" data-id="${account.id}" data-busy="${busy ? "1" : "0"}">
+      <div class="rail-card-head"><b>${escapeHtml(name)}</b>${settleBadge(account)}</div>
+      ${numbers}
+      ${line}
+      ${waitBox}
+      ${link}
+      <div class="rail-actions">
+        <button type="button" class="rail-live">实时画面</button>
+        ${busy ? `<button type="button" class="rail-pause">${paused ? "继续自动化" : "暂停接管"}</button>` : ""}
+        ${waiting && !paused ? `<button type="button" class="primary rail-live">打开实时画面登录</button>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".rail-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      if (card.dataset.busy === "1") {
+        toast("该店铺正在执行任务，等结束再试");
+        return;
+      }
+      runSettlement(card.dataset.id);
+    });
+  });
+  box.querySelectorAll(".rail-entries").forEach((link) => {
+    link.addEventListener("click", (event) => event.stopPropagation());
+  });
+  box.querySelectorAll(".rail-live").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openLive();
+    });
+  });
+  box.querySelectorAll(".rail-pause").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const card = button.closest(".rail-card");
+      const account = state.accounts.find((item) => item.id === (card && card.dataset.id));
+      const paused = Boolean(account && account.job && account.job.paused);
+      togglePause(card && card.dataset.id, paused ? 1 : 0);
+    });
+  });
+}
+
+async function runSettlement(id) {
+  const days = Number(document.getElementById("settleDays").value) || 30;
+  try {
+    await api(`/accounts/${id}/settlement`, { method: "POST", body: JSON.stringify({ days }) });
+    toast("已开始抓取结算资金");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function togglePause(id, paused) {
+  if (!id) return;
+  try {
+    await api(`/accounts/${id}/${paused ? "resume" : "pause"}`, { method: "POST" });
+    toast(paused ? "已恢复自动化" : "已暂停自动化，浏览器交给你（实时画面里操作）");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ---------- 对账信息 ---------- */
+
+function collectBillRows() {
+  const rows = [];
+  visibleAccounts().forEach((account) => {
+    const settle = account.last_settlement || {};
+    if (!settle.ok) return;
+    const counts = {};
+    (settle.entries || []).forEach((entry) => {
+      const po = entry.parent_order_sn || "";
+      if (po) counts[po] = (counts[po] || 0) + 1;
+    });
+    (settle.rows || []).forEach((row) => {
+      rows.push({ ...row, shop: shopName(account), extra: counts[row.parent_order_sn] || 0 });
+    });
+  });
+  return rows;
+}
+
+function billSignatureOf() {
+  return visibleAccounts()
+    .map((account) => `${account.id}:${account.settlement_at || ""}:${(account.last_settlement || {}).ok ? 1 : 0}`)
+    .join("|") + "#" + selectedShops.join(",");
+}
+
+function renderBillInfo(force = false) {
+  const signature = billSignatureOf();
+  if (!force && signature === billSignature) return;
+  billSignature = signature;
+  billView.page = 1;
+  paintBill();
+}
+
+function filteredBillRows() {
+  const keyword = billView.keyword.toLowerCase();
+  return collectBillRows().filter((row) => {
+    const date = String(row.arrive_time || "").slice(0, 10);
+    if (billView.from && (!date || date < billView.from)) return false;
+    if (billView.to && (!date || date > billView.to)) return false;
+    if (!keyword) return true;
+    return [row.parent_order_sn, row.sku_id, row.goods_name]
+      .some((value) => String(value || "").toLowerCase().includes(keyword));
+  });
+}
+
+function paintBill() {
+  const rows = filteredBillRows();
+  const total = rows.length;
+  const pages = Math.max(1, Math.ceil(total / billView.size));
+  if (billView.page > pages) billView.page = pages;
+  const start = (billView.page - 1) * billView.size;
+  const slice = rows.slice(start, start + billView.size);
+  const sum = (key) => rows.reduce((acc, row) => acc + Number(row[key] || 0), 0);
+  const penalty = sum("penalty_amount");
+  document.getElementById("billTotals").innerHTML =
+    `<span>结算金额 <b>${money(sum("settlement_amount"))}</b></span>` +
+    `<span>销售回款 <b>${money(sum("sales_payback"))}</b></span>` +
+    `<span>运费回款 <b>${money(sum("freight_payback"))}</b></span>` +
+    `<span>罚款 <b class="${penalty < 0 ? "neg" : ""}">${money(penalty)}</b></span>` +
+    `<span>PO 数 <b>${total}</b></span>`;
+  document.getElementById("billRows").innerHTML = slice.map((row) => {
+    const amount = Number(row.settlement_amount || 0);
+    const penaltyRow = Number(row.penalty_amount || 0);
+    const goods = String(row.goods_name || "");
+    const shortGoods = goods.length > 30 ? `${goods.slice(0, 30)}…` : goods;
+    return `<tr>
+      <td>${escapeHtml(row.shop || "")}</td>
+      <td class="mono">${escapeHtml(row.parent_order_sn || "-")}</td>
+      <td title="${escapeHtml(goods)}">${escapeHtml(shortGoods || "-")}</td>
+      <td class="num">${row.quantity ?? "-"}</td>
+      <td class="num">${money(row.sales_payback)}</td>
+      <td class="num">${money(row.freight_payback)}</td>
+      <td class="num${amount < 0 ? " neg" : ""}">${money(amount)}</td>
+      <td class="num${penaltyRow < 0 ? " neg" : ""}">${money(penaltyRow)}</td>
+      <td class="num">${row.extra || 0}</td>
+      <td>${escapeHtml(row.arrive_time || "-")}</td>
+      <td class="mono">${escapeHtml(row.sku_id || "-")}</td>
+      <td class="num${Number(row.sales_reversal || 0) < 0 ? " neg" : ""}">${money(row.sales_reversal)}</td>
+      <td class="num${Number(row.freight_reversal || 0) < 0 ? " neg" : ""}">${money(row.freight_reversal)}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("billEmpty").hidden = total > 0;
+  document.getElementById("billPageInfo").textContent = total ? `共 ${total} 个 PO · 第 ${billView.page}/${pages} 页` : "共 0 个 PO";
+  document.getElementById("billPageNums").textContent = `${billView.page} / ${pages}`;
+  document.getElementById("billPrev").disabled = billView.page <= 1;
+  document.getElementById("billNext").disabled = billView.page >= pages;
+}
+
+document.getElementById("billFrom").addEventListener("change", (event) => {
+  billView.from = event.target.value;
+  billView.page = 1;
+  paintBill();
+});
+document.getElementById("billTo").addEventListener("change", (event) => {
+  billView.to = event.target.value;
+  billView.page = 1;
+  paintBill();
+});
+document.getElementById("billSearch").addEventListener("input", (event) => {
+  billView.keyword = event.target.value.trim();
+  billView.page = 1;
+  paintBill();
+});
+document.getElementById("billClear").addEventListener("click", () => {
+  billView.from = "";
+  billView.to = "";
+  billView.keyword = "";
+  document.getElementById("billFrom").value = "";
+  document.getElementById("billTo").value = "";
+  document.getElementById("billSearch").value = "";
+  billView.page = 1;
+  paintBill();
+});
+document.getElementById("billPrev").addEventListener("click", () => { billView.page -= 1; paintBill(); });
+document.getElementById("billNext").addEventListener("click", () => { billView.page += 1; paintBill(); });
+
+function renderBillInfoLink() {
+  const accounts = visibleAccounts().filter((account) => (account.last_settlement || {}).ok);
+  const box = document.getElementById("billInfoLink");
+  box.innerHTML = accounts.length === 1
+    ? `<a class="btn-link" href="settlement.html?account=${encodeURIComponent(accounts[0].id)}" target="_blank">逐笔明细页</a>`
+    : "";
+}
+
+/* ---------- 店小秘账号 ---------- */
+
+let dxmPairs = [];
+let dxmPairsAt = 0;
+let dxmPairsLoading = false;
+let alignKeyword = "";
+let orderStatuses = {};
+let orderStatusOptions = [];
+let orderStatusAt = 0;
+let orderStatusLoading = false;
+let freightQuotes = {};
+let freightAt = 0;
+let freightLoading = false;
+let freightJobKey = "";
+let freightSync = {};
+let freightCapabilities = {};
+let alignPage = 1;
+let alignPageSize = 50;
+
+function setAlignRange() {
+  const preset = document.getElementById("alignRange").value;
+  if (preset === "custom") return;
+  const today = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" }));
+  const from = new Date(today);
+  if (preset === "7d") from.setDate(from.getDate() - 6);
+  else {
+    const day = from.getDate();
+    from.setDate(1);
+    from.setMonth(from.getMonth() - Number(preset));
+    const lastDay = new Date(from.getFullYear(), from.getMonth() + 1, 0).getDate();
+    from.setDate(Math.min(day, lastDay));
+  }
+  const dateValue = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  document.getElementById("alignFrom").value = dateValue(from);
+  document.getElementById("alignTo").value = dateValue(today);
+}
+
+function freightSyncLabel(xm) {
+  const record = freightSync[xm];
+  if (!record) return "同步记录未提供";
+  return ({ found: "已获取头程", all_not_found: "所有平台均无结果", not_shipped: "未发货，暂无头程", partial: "平台查询未完成", failed: "查询失败", never: "尚未同步" })[record.state] || "同步状态待确认";
+}
+
+function freightSyncText(row) {
+  return (row.xms || []).map((xm) => {
+    const record = freightSync[xm] || {};
+    const count = Number.isInteger(record.attempt_count) ? `${record.attempt_count} 次` : "次数未提供";
+    return `${xm} · ${freightSyncLabel(xm)} · ${count} · ${record.last_synced_at ? formatTime(record.last_synced_at) : "同步时间未提供"}`;
+  }).join("\n");
+}
+
+function freightAccounts() {
+  return state.freight_accounts || [];
+}
+
+function freightStatusBadge(account) {
+  const job = account.job;
+  if (job && job.status === "running") {
+    return `<span class="badge warn">${job.need_code ? "等待人工验证" : "执行中"}</span>`;
+  }
+  if (account.status === "ready") return `<span class="badge ok">已登录</span>`;
+  if (account.status === "expired") return `<span class="badge err">登录失效</span>`;
+  if (account.status === "error") return `<span class="badge err">需处理</span>`;
+  return `<span class="badge">未登录</span>`;
+}
+
+let freightListKey = "";
+
+function renderFreightList() {
+  const box = document.getElementById("freightList");
+  if (!box) return;
+  const accounts = freightAccounts();
+  const key = accounts
+    .map((account) => {
+      const job = account.job || {};
+      return [
+        account.platform,
+        account.username,
+        account.site_url,
+        account.status,
+        account.last_error,
+        account.quote_count,
+        account.last_login_at,
+        account.last_query_at,
+        job.status,
+        job.need_code ? "1" : "0",
+        job.updated_at,
+      ].join("|");
+    })
+    .join(";");
+  if (key === freightListKey && box.childElementCount && key) return;
+  freightListKey = key;
+  document.getElementById("freightCount").textContent = `${accounts.length} 个`;
+  document.getElementById("freightEmpty").hidden = accounts.length > 0;
+  box.innerHTML = accounts
+    .map((account) => {
+      const job = account.job || {};
+      const running = job.status === "running";
+      const platform = escapeHtml(account.platform);
+      const row = `<tr>
+      <td>${escapeHtml(account.name || "—")}<div class="account-meta">${escapeHtml(account.label || "")}</div></td>
+      <td class="mono" style="max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(account.site_url || "")}">${escapeHtml(account.site_url || "—")}</td>
+      <td class="mono">${escapeHtml(account.username || "")}</td>
+      <td>${freightStatusBadge(account)}${
+        running && job.step
+          ? `<div class="account-meta">${escapeHtml(job.step)}${job.message ? ` · ${escapeHtml(job.message)}` : ""}</div>`
+          : ""
+      }${
+        !running && account.last_error
+          ? `<div class="account-meta" style="color:#dc2626">${escapeHtml(account.last_error)}</div>`
+          : ""
+      }</td>
+      <td>${account.quote_count || 0}</td>
+      <td>${escapeHtml(formatTime(account.last_login_at))}</td>
+      <td>${escapeHtml(formatTime(account.last_query_at))}</td>
+      <td style="white-space:nowrap">
+        <button class="primary" onclick="doFreightLogin('${platform}')" ${running ? "disabled" : ""}>登录</button>
+        <button class="danger" onclick="deleteFreightAccount('${platform}', '${escapeHtml((account.label || account.name || "").replace(/'/g, ""))}')" ${running ? "disabled" : ""}>删除</button>
+      </td>
+    </tr>`;
+      if (!job.need_code) return row;
+      const codeRow = `<tr>
+      <td colspan="8">
+        <div class="code-box" style="align-items:center">
+          <img src="${API}/freight/${platform}/captcha?t=${Date.now()}" alt="验证码" style="height:40px;border:1px solid var(--line);border-radius:6px" />
+          <input id="freightCode-${platform}" placeholder="输入图片里的验证码" style="max-width:220px;margin:0" />
+          <button class="primary" onclick="submitFreightCode('${platform}')">提交验证码</button>
+          <a class="btn-link" href="${API}/freight/${platform}/shot?t=${Date.now()}" target="_blank">看登录截图</a>
+        </div>
+      </td>
+    </tr>`;
+      return row + codeRow;
+    })
+    .join("");
+}
+
+async function submitFreightCode(platform) {
+  const input = document.getElementById(`freightCode-${platform}`);
+  const code = ((input && input.value) || "").trim();
+  if (!code) return toast("请输入验证码");
+  try {
+    await api(`/freight/${platform}/code`, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    if (input) input.value = "";
+    toast("验证码已提交，等待登录结果");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function saveFreightAccount() {
+  const payload = {
+    adapter: document.getElementById("freightAdapter").value,
+    label: document.getElementById("freightLabel").value.trim(),
+    site_url: document.getElementById("freightSite").value.trim(),
+    username: document.getElementById("freightUser").value.trim(),
+    password: document.getElementById("freightPass").value,
+  };
+  if (!payload.site_url || !payload.username) return toast("请填写网址和登录账号");
+  try {
+    await api("/freight/accounts", { method: "POST", body: JSON.stringify(payload) });
+    ["freightLabel", "freightSite", "freightUser", "freightPass"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    freightListKey = "";
+    toast("发货平台账号已保存");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function deleteFreightAccount(platform, label) {
+  if (!window.confirm(`确定删除「${label || platform}」？登录态和已查头程会一起删除。`)) return;
+  try {
+    await api(`/freight/accounts/${platform}`, { method: "DELETE" });
+    freightListKey = "";
+    toast("已删除");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function doFreightLogin(platform) {
+  try {
+    await api(`/freight/${platform}/login`, { method: "POST", body: "{}" });
+    toast("正在登录，完成后状态会自动更新");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function loadFreightQuotes(force = false) {
+  if (freightLoading) return;
+  if (!force && Date.now() - freightAt < 15000) return;
+  freightLoading = true;
+  try {
+    // 不带 platform：后端把多个无界子账号的报价合并返回。
+    const data = await api("/freight/quotes");
+    const map = {};
+    (data.quotes || []).forEach((quote) => {
+      if (quote.xm) map[quote.xm] = quote;
+    });
+    freightQuotes = map;
+    freightSync = data.sync_records || {};
+    freightCapabilities = data.capabilities || {};
+    freightAt = Date.now();
+    document.getElementById("alignCacheInfo").textContent = `缓存读取时间：${formatTime(freightAt)}；服务器数据更新时间：${data.updated_at ? formatTime(data.updated_at) : "未提供"}。日期仅用于真实抓取；${freightCapabilities.date_range_query === true ? "服务端支持日期查询" : "日期查询待服务端接入"}。`;
+    renderAlign();
+  } catch (error) {
+    document.getElementById("alignCacheInfo").textContent = `缓存读取失败，保留上次数据：${error.message}`;
+  } finally {
+    freightLoading = false;
+  }
+}
+
+function freightCell(row) {
+  const xms = row.xms || [];
+  if (!xms.length) return `<span class="account-meta">—</span>`;
+  const found = xms
+    .map((xm) => ({ xm, quote: freightQuotes[xm] }))
+    .filter((item) => item.quote && item.quote.amount != null);
+  if (!found.length) return `<span class="account-meta">${escapeHtml([...new Set(xms.map(freightSyncLabel))].join(" / "))}</span>`;
+  return found
+    .map(({ xm, quote }) => {
+      const amount = Number(quote.amount).toFixed(2);
+      const weight = quote.weight != null ? `计费重 ${quote.weight}` : "";
+      const tip = `${xm} · ${quote.platform || ""} · ${quote.status || ""} · ${
+        quote.order_no || ""
+      } · ${weight}`;
+      const status = quote.status
+        ? `<span class="freight-tag ${quote.status === "未付款" ? "unpaid" : ""}">${escapeHtml(
+            quote.status === "未付款" ? "未付" : quote.status,
+          )}</span>`
+        : "";
+      return `<span class="mono" title="${escapeHtml(tip)}">${escapeHtml(amount)} ${escapeHtml(
+        quote.currency || "",
+      )}</span>${status}`;
+    })
+    .join("<br>");
+}
+
+async function queryFreight() {
+  const accounts = freightAccounts();
+  if (!accounts.length) return toast("还没有发货平台账号");
+  const dateFrom = document.getElementById("alignFrom").value;
+  const dateTo = document.getElementById("alignTo").value;
+  if (!dateFrom || !dateTo || dateFrom > dateTo) return toast("请设置有效的开始和结束日期");
+  if (freightCapabilities.date_range_query !== true) return toast("服务端尚未支持日期范围抓取，请先完成接口接入");
+  const all = [...new Set(alignVisibleRows().flatMap((row) => row.xms || []))];
+  if (!all.length) return toast("还没有已对齐的 XM 单号");
+  const xms = all.filter((xm) => !freightQuotes[xm] || freightQuotes[xm].amount == null);
+  if (!xms.length) return toast("当前筛选结果的 XM 均已有头程金额，无需补抓");
+  if (!confirm(`将真实访问 ${accounts.length} 个平台账号，补抓当前筛选下 ${xms.length} 个缺失 XM（${dateFrom} 至 ${dateTo}，北京时间）。继续？`)) return;
+  let started = 0;
+  for (const account of accounts) {
+    const job = account.job;
+    if (job && job.status === "running") continue;
+    try {
+      await api(`/freight/${account.platform}/query`, {
+        method: "POST",
+        body: JSON.stringify({ xms, date_from: dateFrom, date_to: dateTo, timezone: "Asia/Shanghai", missing_only: true }),
+      });
+      started += 1;
+    } catch (error) {
+      toast(`${account.label || account.name || account.platform}：${error.message}`);
+    }
+  }
+  if (!started) return toast("发货平台正在执行任务，请稍后再试");
+  toast(`已提交 ${xms.length} 个 XM 的头程补抓（${started}/${accounts.length} 个账号）；结果以服务端同步记录为准`);
+  refresh();
+}
+
+async function loginWujie() {
+  const accounts = freightAccounts().filter((account) => account.status !== "ready");
+  if (!accounts.length) return toast("所有发货平台账号都已登录");
+  let started = 0;
+  for (const account of accounts) {
+    const job = account.job;
+    if (job && job.status === "running") continue;
+    try {
+      await api(`/freight/${account.platform}/login`, { method: "POST" });
+      started += 1;
+    } catch (error) {
+      toast(`${account.label || account.name || account.platform}：${error.message}`);
+    }
+  }
+  if (!started) return toast("发货平台正在执行任务，请稍后再试");
+  toast(`正在登录发货平台（${started} 个账号）`);
+  refresh();
+}
+
+function renderFreightJob() {
+  const el = document.getElementById("freightJob");
+  if (!el) return;
+  const accounts = freightAccounts();
+  if (!accounts.length) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = accounts
+    .map((account) => {
+      const job = account.job;
+      const name = account.label || account.name || "无界 ERP";
+      if (job && job.status === "running") {
+        return (
+          `<div><div class="progress"><i style="width:${job.progress || 5}%"></i></div>` +
+          `<div>${escapeHtml(name)} · ${escapeHtml(job.step || "查询头程")} ${escapeHtml(job.message || "")}</div>` +
+          (job.need_code
+            ? `<img class="shot" style="max-width:520px" src="${API}/freight/${account.platform}/shot?t=${Date.now()}" alt="无界登录截图" />`
+            : "") +
+          `</div>`
+        );
+      }
+      const statusText = account.status === "ready"
+        ? "已登录"
+        : account.status === "expired"
+          ? "登录已失效"
+          : "未登录";
+      return `<div><span class="account-meta">${escapeHtml(name)}：${statusText} · 该账号已查头程 ${account.quote_count || 0} 个 XM</span>` +
+        (account.last_error ? ` <span style="color:#dc2626">${escapeHtml(account.last_error)}</span>` : "") +
+        `</div>`;
+    })
+    .join("");
+}
+
+function dxmAccounts() {
+  return state.dxm_accounts || [];
+}
+
+function dxmStatusBadge(account) {
+  const job = account.job;
+  if (job && job.status === "running") {
+    return `<span class="badge warn">${job.need_code ? "等待人工验证" : "执行中"}</span>`;
+  }
+  if (account.status === "ready") return `<span class="badge ok">可用</span>`;
+  if (account.status === "expired") return `<span class="badge err">登录失效</span>`;
+  if (account.status === "error") return `<span class="badge err">需处理</span>`;
+  return `<span class="badge">未登录</span>`;
+}
+
+function renderDxmList() {
+  const rows = dxmAccounts();
+  const count = document.getElementById("dxmCount");
+  if (!count) return;
+  count.textContent = `${rows.length} 个`;
+  document.getElementById("dxmEmpty").hidden = rows.length > 0;
+  document.getElementById("dxmList").innerHTML = rows.map((account) => {
+    const job = account.job || {};
+    const running = job.status === "running";
+    const waiting = Boolean(job.need_code);
+    const shot = waiting
+      ? `${API}/dxm/accounts/${account.id}/shot?t=${Date.now()}`
+      : "";
+    const waitRow = waiting
+      ? `<tr><td colspan="5" style="white-space:normal">
+          <div class="job-line">${escapeHtml(job.step || "")} ${escapeHtml(job.message || "")}</div>
+          <img class="shot" src="${shot}" alt="店小秘登录页面截图" />
+          <div class="row" style="margin-top:6px"><button type="button" class="primary" onclick="openLive()">打开实时画面，完成图形验证码</button></div>
+        </td></tr>`
+      : "";
+    return `<tr>
+      <td>${escapeHtml(account.label || "—")}</td>
+      <td class="mono">${escapeHtml(account.username || "")}</td>
+      <td>${dxmStatusBadge(account)}${
+        running ? `<div class="account-meta">${escapeHtml(job.step || "")}</div>` : ""
+      }${
+        !running && account.last_error ? `<div class="account-meta" style="color:#dc2626">${escapeHtml(account.last_error)}</div>` : ""
+      }</td>
+      <td>${escapeHtml(formatTime(account.last_login_at))}</td>
+      <td>
+        <button class="primary" onclick="doDxmLogin('${account.id}')" ${running ? "disabled" : ""}>登录</button>
+        <button onclick="doDxmProbe('${account.id}')" ${running ? "disabled" : ""}>检查</button>
+        <button onclick="doDxmDiscover('${account.id}')" ${running ? "disabled" : ""}>探查页面</button>
+        <button class="ghost" onclick="editDxm('${account.id}')">编辑</button>
+        <button class="danger ghost" onclick="removeDxm('${account.id}')">删除</button>
+      </td>
+    </tr>${waitRow}`;
+  }).join("");
+}
+
+function resetDxmForm() {
+  document.getElementById("dxmFormTitle").textContent = "添加店小秘账号";
+  document.getElementById("dxmId").value = "";
+  document.getElementById("dxmLabel").value = "";
+  document.getElementById("dxmUsername").value = "";
+  document.getElementById("dxmPassword").value = "";
+  document.getElementById("dxmUsername").disabled = false;
+}
+
+function editDxm(id) {
+  const account = dxmAccounts().find((item) => item.id === id);
+  if (!account) return;
+  location.hash = "#/bind/dianxiaomi";
+  document.getElementById("dxmFormTitle").textContent = "编辑店小秘账号";
+  document.getElementById("dxmId").value = account.id;
+  document.getElementById("dxmLabel").value = account.label || "";
+  document.getElementById("dxmUsername").value = account.username || "";
+  document.getElementById("dxmPassword").value = "";
+  document.getElementById("dxmUsername").disabled = true;
+}
+
+document.getElementById("dxmForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    id: document.getElementById("dxmId").value || undefined,
+    label: document.getElementById("dxmLabel").value.trim(),
+    username: document.getElementById("dxmUsername").value.trim(),
+    password: document.getElementById("dxmPassword").value,
+  };
+  if (!payload.username) return toast("请填写店小秘登录账号");
+  try {
+    await api("/dxm/accounts", { method: "POST", body: JSON.stringify(payload) });
+    toast("已保存");
+    resetDxmForm();
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+document.getElementById("dxmReset").addEventListener("click", resetDxmForm);
+
+async function doDxmLogin(id) {
+  try {
+    await api(`/dxm/accounts/${id}/login`, { method: "POST" });
+    toast("已打开店小秘登录，请在实时画面补充图形验证码");
+    openLive();
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function doDxmProbe(id) {
+  try {
+    await api(`/dxm/accounts/${id}/probe`, { method: "POST" });
+    toast("正在检查店小秘登录态…");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function doDxmDiscover(id) {
+  try {
+    await api(`/dxm/accounts/${id}/discover`, { method: "POST" });
+    toast("开始探查店小秘全部订单页");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function removeDxm(id) {
+  if (!confirm("删除该店小秘账号？已抓到的 XM 单号会保留。")) return;
+  try {
+    await api(`/dxm/accounts/${id}`, { method: "DELETE" });
+    toast("已删除");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ---------- 单号对齐 ---------- */
+
+async function loadDxmPairs(force = false) {
+  if (dxmPairsLoading) return;
+  if (!force && Date.now() - dxmPairsAt < 4000) return;
+  dxmPairsLoading = true;
+  try {
+    const data = await api("/dxm/pairs");
+    dxmPairs = data.pairs || [];
+    dxmPairsAt = Date.now();
+    renderAlign();
+  } catch (_) {
+    // 拉取失败保持上一次结果
+  } finally {
+    dxmPairsLoading = false;
+  }
+}
+
+async function loadOrderStatuses(force = false) {
+  if (orderStatusLoading) return;
+  if (!force && Date.now() - orderStatusAt < 15000) return;
+  orderStatusLoading = true;
+  try {
+    const ids = visibleAccounts().map((account) => account.id).join(",");
+    const data = await api(`/orders/status?accounts=${encodeURIComponent(ids)}`);
+    orderStatuses = data.statuses || {};
+    orderStatusOptions = data.options || [];
+    orderStatusAt = Date.now();
+    renderAlign();
+  } catch (_) {
+    // 状态拉取失败不影响 XM 对齐展示
+  } finally {
+    orderStatusLoading = false;
+  }
+}
+
+function statusBadgeClass(status) {
+  if (!status) return "";
+  if (status.includes("取消") || status.includes("关闭")) return "err";
+  if (status.includes("完成") || status.includes("签收") || status.includes("已发货")) return "ok";
+  if (status.includes("待")) return "warn";
+  return "";
+}
+
+function orderStatusCell(status) {
+  if (!status) return `<span class="account-meta">未采集</span>`;
+  return `<span class="badge ${statusBadgeClass(status)}">${escapeHtml(status)}</span>`;
+}
+
+function alignRowsData() {
+  const byPo = {};
+  dxmPairs.forEach((row) => {
+    const po = String(row.po || "");
+    if (!po) return;
+    if (!byPo[po]) byPo[po] = [];
+    byPo[po].push(row);
+  });
+  const rows = new Map();
+  collectBillRows().forEach((row) => {
+    const po = String(row.parent_order_sn || "").trim();
+    if (!po) return;
+    const key = `${row.shop || ""}|${po}`;
+    if (!rows.has(key)) rows.set(key, { ...row, po });
+  });
+  return [...rows.values()].map((row) => {
+    const hits = byPo[row.po] || [];
+    const last = hits.reduce((acc, item) => (item.updated_at > acc ? item.updated_at : acc), "");
+    const statusRow = orderStatuses[row.po];
+    return {
+      ...row,
+      xms: [...new Set(hits.map((item) => item.xm))],
+      logistics: [...new Set(hits.map((item) => String(item.logistics || "").trim()).filter(Boolean))],
+      updated_at: last,
+      status: statusRow ? String(statusRow.status || "") : "",
+    };
+  });
+}
+
+const alignFilters = {
+  shop: new Set(),
+  status: new Set(),
+  logistics: new Set(),
+  freight: new Set(),
+};
+const ALIGN_FILTER_TITLES = {
+  shop: "筛选店铺",
+  status: "筛选订单状态",
+  logistics: "筛选物流方式",
+  freight: "筛选头程状态",
+};
+let alignFilterPop = null;
+
+function freightStateOf(row) {
+  const quotes = (row.xms || [])
+    .map((xm) => freightQuotes[xm])
+    .filter((quote) => quote && quote.amount != null);
+  if (!quotes.length) return (row.xms || []).length ? [...new Set(row.xms.map(freightSyncLabel))].join(" / ") : "待对齐";
+  if (quotes.length < (row.xms || []).length) return "部分头程缺失";
+  return quotes.some((quote) => quote.status === "未付款") ? "未付款" : "已完成";
+}
+
+function alignFilterValues(row, key) {
+  if (key === "shop") return [row.shop || "—"];
+  if (key === "status") return [row.status || "未采集"];
+  if (key === "freight") return [freightStateOf(row)];
+  if (key === "logistics")
+    return row.logistics && row.logistics.length
+      ? [...new Set(row.logistics.map(logisticsChannel))]
+      : ["未采集"];
+  return [];
+}
+
+function alignVisibleRows() {
+  const keyword = alignKeyword;
+  return alignRowsData().filter((row) => {
+    for (const key of Object.keys(alignFilters)) {
+      const picked = alignFilters[key];
+      if (!picked.size) continue;
+      if (!alignFilterValues(row, key).some((value) => picked.has(value))) return false;
+    }
+    if (!keyword) return true;
+    return [row.po, row.goods_name, row.shop, ...(row.xms || []), ...(row.logistics || [])]
+      .some((value) => String(value || "").toLowerCase().includes(keyword));
+  });
+}
+
+function closeAlignFilter() {
+  if (!alignFilterPop) return;
+  alignFilterPop.remove();
+  alignFilterPop = null;
+}
+
+function openAlignFilter(key, anchor) {
+  closeAlignFilter();
+  const counts = new Map();
+  alignRowsData().forEach((row) => {
+    alignFilterValues(row, key).forEach((value) => {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    });
+  });
+  const values = [...counts.keys()].sort((a, b) => String(a).localeCompare(String(b), "zh-CN"));
+  if (!values.length) return toast("这一列还没有可筛选的数据");
+  const picked = alignFilters[key];
+  const pop = document.createElement("div");
+  pop.className = "col-filter-pop";
+  pop.innerHTML =
+    `<div class="cf-head"><b>${escapeHtml(ALIGN_FILTER_TITLES[key] || "筛选")}</b>` +
+    `<span><button type="button" data-act="all">全部</button></span></div>` +
+    values
+      .map(
+        (value) =>
+          `<label><input type="checkbox" value="${escapeHtml(value)}" ${
+            !picked.size || picked.has(value) ? "checked" : ""
+          }><span>${escapeHtml(value)}</span><span class="cf-count">${counts.get(value)}</span></label>`,
+      )
+      .join("");
+  document.body.appendChild(pop);
+  const rect = anchor.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, Math.min(rect.left - 8, window.innerWidth - 220))}px`;
+  pop.style.top = `${Math.min(rect.bottom + 6, window.innerHeight - 240)}px`;
+  alignFilterPop = pop;
+
+  pop.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-act]");
+    if (!action || action.dataset.act !== "all") return;
+    alignFilters[key] = new Set();
+    alignPage = 1;
+    pop.querySelectorAll("input[type=checkbox]").forEach((box) => {
+      box.checked = true;
+    });
+    renderAlign();
+  });
+  pop.addEventListener("change", () => {
+    const checked = [...pop.querySelectorAll("input[type=checkbox]")]
+      .filter((box) => box.checked)
+      .map((box) => box.value);
+    alignFilters[key] = checked.length === values.length ? new Set() : new Set(checked);
+    alignPage = 1;
+    renderAlign();
+  });
+}
+
+document.addEventListener("click", (event) => {
+  const anchor = event.target.closest(".th-filter");
+  if (anchor) {
+    event.preventDefault();
+    openAlignFilter(anchor.dataset.filter, anchor);
+    return;
+  }
+  if (alignFilterPop && !alignFilterPop.contains(event.target)) closeAlignFilter();
+});
+
+function currentDxmId() {
+  const pick = document.getElementById("alignDxmPick");
+  if (pick && pick.value) return pick.value;
+  const accounts = dxmAccounts();
+  const ready = accounts.find((account) => account.status === "ready");
+  return (ready || accounts[0] || {}).id || "";
+}
+
+function renderAlign() {
+  const all = alignRowsData();
+  const rows = alignVisibleRows();
+  const aligned = all.filter((row) => row.xms.length);
+  const pending = all.length - aligned.length;
+  const xmCount = all.reduce((acc, row) => acc + row.xms.length, 0);
+  const pendingEl = document.getElementById("alignPending");
+  if (pendingEl) pendingEl.textContent = pending;
+  const totals = document.getElementById("alignTotals");
+  if (totals) {
+    const uniqueXms = [...new Set(all.flatMap((row) => row.xms || []))];
+    let freightTotal = 0;
+    uniqueXms.forEach((xm) => {
+      const quote = freightQuotes[xm];
+      if (quote && quote.amount != null && String(quote.currency || "").toUpperCase() === "CNY") {
+        freightTotal += Number(quote.amount) || 0;
+      }
+    });
+    const freightCount = uniqueXms.filter((xm) => freightQuotes[xm] && freightQuotes[xm].amount != null).length;
+    totals.innerHTML =
+      `<span>PO 数 <b>${all.length}</b></span>` +
+      `<span>已对齐 <b>${aligned.length}</b></span>` +
+      `<span>待对齐 <b class="${pending ? "neg" : ""}">${pending}</b></span>` +
+      `<span>XM 数 <b>${xmCount}</b></span>` +
+      `<span>头程已查 <b>${freightCount}/${uniqueXms.length}</b></span>` +
+      `<span>头程合计 <b>${freightTotal.toFixed(2)} CNY</b></span>`;
+  }
+  const pick = document.getElementById("alignAccountPick");
+  const accounts = dxmAccounts();
+  if (pick) {
+    if (!accounts.length) {
+      pick.innerHTML = `<a class="btn-link" href="#/bind/dianxiaomi">去绑定店小秘账号</a>`;
+    } else if (accounts.length === 1) {
+      pick.innerHTML = `<span class="account-meta">店小秘账号：${escapeHtml(accounts[0].label || accounts[0].username)}</span>`;
+    } else {
+      pick.innerHTML = `<span class="account-meta">店小秘账号</span><select id="alignDxmPick">` +
+        accounts.map((account) =>
+          `<option value="${account.id}">${escapeHtml(account.label || account.username)}</option>`).join("") +
+        `</select>`;
+    }
+  }
+  const jobLine = document.getElementById("alignJob");
+  if (jobLine) {
+    const running = accounts.find((account) => account.job && account.job.status === "running");
+    if (running) {
+      const job = running.job;
+      jobLine.innerHTML =
+        `<div class="progress"><i style="width:${job.progress || 5}%"></i></div>` +
+        `<div>${escapeHtml(job.step || "对齐中")} ${escapeHtml(job.message || "")}</div>`;
+    } else if (!accounts.length) {
+      jobLine.innerHTML = `<span style="color:#dc2626">还没有店小秘账号，先完成绑定并登录一次</span>`;
+    } else if (!accounts.some((account) => account.status === "ready")) {
+      jobLine.innerHTML = `<span style="color:#dc2626">店小秘未登录：去「账号绑定 / 店小秘账号」点登录，在实时画面里过一次图形验证码</span>`;
+    } else {
+      jobLine.innerHTML = `<span class="account-meta">已登录店小秘，可开始对齐（抓 XM 单号 + 物流方式）</span>`;
+    }
+  }
+  renderFreightJob();
+  const body = document.getElementById("alignRows");
+  if (!body) return;
+  const pages = Math.max(1, Math.ceil(rows.length / alignPageSize));
+  alignPage = Math.max(1, Math.min(alignPage, pages));
+  document.getElementById("alignPageInfo").textContent = `${alignPage} / ${pages} 页`;
+  document.getElementById("alignPrev").disabled = alignPage <= 1;
+  document.getElementById("alignNext").disabled = alignPage >= pages;
+  body.innerHTML = rows.slice((alignPage - 1) * alignPageSize, alignPage * alignPageSize).map((row) => {
+    const goods = String(row.goods_name || "");
+    const shortGoods = goods.length > 26 ? `${goods.slice(0, 26)}…` : goods;
+    const xms = row.xms.length
+      ? row.xms.map((xm) =>
+          `<span class="mono" style="cursor:pointer;color:#2563eb" title="点击复制" onclick="copyText('${escapeHtml(xm)}')">${escapeHtml(xm)}</span>`).join(" ")
+      : `<span class="badge">待对齐</span>`;
+    return `<tr>
+      <td>${escapeHtml(row.shop || "")}</td>
+      <td class="mono">${escapeHtml(row.po)}</td>
+      <td>${orderStatusCell(row.status)}</td>
+      <td title="${escapeHtml(goods)}">${escapeHtml(shortGoods || "-")}</td>
+      <td>${logisticsCell(row)}</td>
+      <td class="num">${money(row.settlement_amount)}</td>
+      <td class="num">${freightCell(row)}</td>
+      <td>${xms}</td>
+      <td>${row.updated_at ? escapeHtml(formatTime(row.updated_at)) : "—"}</td>
+      <td>${freightSyncText(row).split("\n").map(escapeHtml).join("<br>") || "—"}</td>
+    </tr>`;
+  }).join("");
+  document.querySelectorAll(".th-filter").forEach((button) => {
+    const picked = alignFilters[button.dataset.filter];
+    button.classList.toggle("on", Boolean(picked && picked.size));
+  });
+  document.getElementById("alignEmpty").hidden = rows.length > 0;
+  document.getElementById("alignFoot").textContent = all.length
+    ? `共 ${all.length} 个 PO，显示 ${rows.length} 个${alignKeyword ? "（已按搜索筛选）" : ""}`
+    : "共 0 个 PO";
+}
+
+function logisticsChannel(value) {
+  // 店小秘的物流方式形如「渠道名 「跟踪号」」，筛选/展示只看渠道名。
+  const text = String(value || "").trim();
+  const cut = text.search(/[「【\[]/);
+  return (cut > 0 ? text.slice(0, cut) : text).trim();
+}
+
+function logisticsCell(row) {
+  const values = row.logistics || [];
+  if (!values.length) return `<span class="account-meta">未采集</span>`;
+  return values
+    .map((value) => {
+      const channel = logisticsChannel(value);
+      const short = channel.length > 18 ? `${channel.slice(0, 18)}…` : channel;
+      return `<span title="${escapeHtml(value)}">${escapeHtml(short)}</span>`;
+    })
+    .join("<br>");
+}
+
+function copyText(text) {
+  const value = String(text || "");
+  if (!value) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(() => toast("已复制"), () => toast("复制失败"));
+  } else {
+    toast(value);
+  }
+}
+
+async function startAlign(pos) {
+  const accountId = currentDxmId();
+  if (!accountId) {
+    toast("请先在「账号绑定 / 店小秘账号」绑定账号");
+    location.hash = "#/bind/dianxiaomi";
+    return;
+  }
+  if (!pos.length) return toast("没有需要对齐的 PO");
+  try {
+    await api(`/dxm/accounts/${accountId}/align`, {
+      method: "POST",
+      body: JSON.stringify({ pos }),
+    });
+    toast(`已开始对齐 ${pos.length} 个 PO`);
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+document.getElementById("alignMissing").addEventListener("click", () => {
+  const pos = [...new Set(alignRowsData().filter((row) => !row.xms.length).map((row) => row.po))];
+  startAlign(pos);
+});
+
+document.getElementById("alignAll").addEventListener("click", () => {
+  const pos = [...new Set(alignRowsData().map((row) => row.po))];
+  startAlign(pos);
+});
+
+setAlignRange();
+document.getElementById("alignRange").addEventListener("change", setAlignRange);
+["alignFrom", "alignTo"].forEach((id) => document.getElementById(id).addEventListener("change", () => {
+  document.getElementById("alignRange").value = "custom";
+}));
+document.getElementById("alignPrev").addEventListener("click", () => { alignPage -= 1; renderAlign(); });
+document.getElementById("alignNext").addEventListener("click", () => { alignPage += 1; renderAlign(); });
+document.getElementById("alignPageSize").addEventListener("change", (event) => {
+  alignPageSize = Number(event.target.value); alignPage = 1; renderAlign();
+});
+document.getElementById("alignCache").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try { await Promise.all([loadDxmPairs(true), loadOrderStatuses(true), loadFreightQuotes(true)]); }
+  finally { button.disabled = false; }
+});
+document.getElementById("alignFreight").addEventListener("click", queryFreight);
+document.getElementById("freightLogin").addEventListener("click", loginWujie);
+
+document.getElementById("alignSearch").addEventListener("input", (event) => {
+  alignKeyword = event.target.value.trim().toLowerCase();
+  alignPage = 1;
+  renderAlign();
+});
+
+function alignExportRows() {
+  return alignVisibleRows().map((row) => ({
+    shop: row.shop || "",
+    po: row.po,
+    status: row.status || "",
+    xms: (row.xms || []).join(" "),
+    goods: row.goods_name || "",
+    logistics: [...new Set((row.logistics || []).map(logisticsChannel))].join(" / "),
+    amount: row.settlement_amount,
+    freight: (row.xms || [])
+      .map((xm) => {
+        const quote = freightQuotes[xm];
+        return quote && quote.amount != null
+          ? `${xm}=${Number(quote.amount).toFixed(2)}${quote.currency || ""}`
+          : "";
+      })
+      .filter(Boolean)
+      .join(" "),
+    updated_at: row.updated_at || "",
+    sync: freightSyncText(row),
+  }));
+}
+
+document.getElementById("alignCopy").addEventListener("click", () => {
+  const rows = alignExportRows().filter((row) => row.xms);
+  if (!rows.length) return toast("还没有已对齐的 XM 单号");
+  const text = rows.map((row) => `${row.po}\t${row.xms}`).join("\n");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => toast(`已复制 ${rows.length} 行 PO↔XM`),
+      () => toast("复制失败"),
+    );
+  } else {
+    toast("当前浏览器不支持剪贴板");
+  }
+});
+
+document.getElementById("alignExport").addEventListener("click", () => {
+  const rows = alignExportRows();
+  if (!rows.length) return toast("没有可导出的数据");
+  const header = ["店铺", "PO 单号", "订单状态", "XM 单号", "商品", "物流方式", "结算金额", "头程金额", "对齐时间", "头程同步详情"];
+  const escape = (value) => `"${String(value == null ? "" : value).replace(/"/g, '""')}"`;
+  const lines = [header.map(escape).join(",")];
+  rows.forEach((row) => {
+    lines.push([row.shop, row.po, row.status, row.xms, row.goods, row.logistics, row.amount, row.freight, row.updated_at, row.sync].map(escape).join(","));
+  });
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `店小秘单号对齐-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+});
+
+/* ---------- 店铺汇总 ---------- */
+
+let summaryLoading = false;
+
+async function loadSummary() {
+  if (summaryLoading) return;
+  summaryLoading = true;
+  const ids = visibleAccounts().map((account) => account.id);
+  const query = selectedShops.length ? `?accounts=${encodeURIComponent(ids.join(","))}` : "";
+  try {
+    const data = await api(`/summary${query}`);
+    lastSummary = data;
+    const totals = data.totals || {};
+    const cards = [
+      ["店铺", `${totals.store_count || 0} 家`],
+      ["订单", `${totals.order_count || 0} 单`],
+      ["件数", `${totals.quantity || 0} 件`],
+      ["申报价", money(totals.declared_price)],
+      ["销售回款", money(totals.sales_payback)],
+      ["销售冲回", money(totals.sales_reversal)],
+      ["运费回款", money(totals.freight_payback)],
+      ["运费冲回", money(totals.freight_reversal)],
+      ["实际收入", money(totals.estimated_income)],
+    ];
+    document.getElementById("sumGrid").innerHTML = cards.map(([label, value]) =>
+      `<span>${label} <b class="${String(value).startsWith("-") ? "neg" : ""}">${value}</b></span>`).join("");
+    const stores = data.stores || [];
+    document.getElementById("sumStores").innerHTML = stores.length
+      ? stores.map((store) =>
+          `<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed #eef2f7;font-size:12.5px">
+            <span>${escapeHtml(store.shop_name || store.account_id)}</span>
+            <span class="account-meta">${store.order_count} 单 · 实际收入 ${money(store.estimated_income)}</span>
+          </div>`).join("")
+      : `<div class="empty">所选店铺还没有采集结果</div>`;
+    renderDashboard();
+  } catch (error) {
+    console.error(error);
+  } finally {
+    summaryLoading = false;
+  }
+}
+
+/* ---------- 销量排行 ---------- */
+
+let rankBy = "skc";
+let rankingLoading = false;
+const zhCache = new Map();
+const zhTried = new Set();
+let zhLoading = false;
+
+function thumbUrl(url) {
+  return `${API}/image?url=${encodeURIComponent(url)}`;
+}
+
+async function ensureZh(names) {
+  if (zhLoading) return;
+  const pending = names.filter(
+    (name) => name && !zhCache.has(name) && !zhTried.has(name) && !/[\u4e00-\u9fff]/.test(name),
+  );
+  if (!pending.length) return;
+  pending.forEach((name) => zhTried.add(name));
+  zhLoading = true;
+  try {
+    const data = await api("/translate", {
+      method: "POST",
+      body: JSON.stringify({ texts: pending.slice(0, 40) }),
+    });
+    Object.entries(data.items || {}).forEach(([src, dst]) => zhCache.set(src, dst));
+    loadRanking();
+  } catch (_) {
+    // 翻译失败就保持英文原标题
+  } finally {
+    zhLoading = false;
+  }
+}
+
+async function loadRanking() {
+  if (rankingLoading) return;
+  rankingLoading = true;
+  const params = new URLSearchParams({ by: rankBy, limit: "50" });
+  if (selectedShops.length) params.set("accounts", selectedShops.join(","));
+  try {
+    const data = await api(`/ranking?${params.toString()}`);
+    const items = data.items || [];
+    const max = items.reduce((acc, row) => Math.max(acc, row.quantity || 0), 1);
+    const box = document.getElementById("rankList");
+    if (!items.length) {
+      box.innerHTML = `<div class="empty">还没有销量数据</div>`;
+      return;
+    }
+    box.innerHTML = items.map((row, index) => {
+      const name = row.goods_name || row.key;
+      const zh = zhCache.get(name) || "";
+      const sub = rankBy === "sku" ? `SKU ${row.key}` : `链接 ${row.key}`;
+      const pct = Math.max(4, Math.round(((row.quantity || 0) / max) * 100));
+      const image = row.image_url
+        ? `<img class="thumb" loading="lazy" src="${thumbUrl(row.image_url)}" alt="">`
+        : `<span class="thumb"></span>`;
+      return `<div class="rank-row">
+        <span class="idx">${index + 1}</span>
+        ${image}
+        <div>
+          <div class="name" title="${escapeHtml(name)}">${escapeHtml(name)}<small>${escapeHtml(sub)}</small>${
+            zh ? `<span class="zh">${escapeHtml(zh)}</span>` : ""
+          }</div>
+          <div class="rank-bar"><i style="width:${pct}%"></i></div>
+        </div>
+        <span class="num">${row.quantity} 件 · ${row.order_count} 单</span>
+      </div>`;
+    }).join("");
+    ensureZh(items.map((row) => row.goods_name || ""));
+  } catch (error) {
+    console.error(error);
+  } finally {
+    rankingLoading = false;
+  }
+}
+
+document.getElementById("rankSwitch").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-by]");
+  if (!button) return;
+  rankBy = button.dataset.by;
+  document.querySelectorAll("#rankSwitch button").forEach((item) => item.classList.toggle("on", item === button));
+  loadRanking();
+});
+
+/* ---------- 自动轮换 ---------- */
+
+function rotationStatusText(status) {
+  return {
+    ok: "成功",
+    failed: "采集失败",
+    login_failed: "登录失败",
+    need_login: "需重新登录",
+    skipped: "跳过",
+    cooldown: "冷却中",
+  }[status] || status;
+}
+
+function renderRotation(rotation) {
+  if (!rotation) return;
+  const settings = rotation.settings || {};
+  const enabled = document.getElementById("rotEnabled");
+  if (document.activeElement !== enabled) enabled.checked = Boolean(settings.enabled);
+  const relogin = document.getElementById("rotRelogin");
+  if (relogin && document.activeElement !== relogin) relogin.checked = Boolean(settings.auto_relogin);
+  const windowOn = document.getElementById("rotWindow");
+  if (windowOn && document.activeElement !== windowOn) windowOn.checked = settings.window_enabled !== false;
+  const fields = [
+    ["rotInterval", settings.interval_minutes || 1440],
+    ["rotGapMin", settings.gap_min_seconds || 40],
+    ["rotGapMax", settings.gap_max_seconds || 90],
+    ["rotWindowStart", settings.window_start_hour ?? 4],
+    ["rotWindowEnd", settings.window_end_hour ?? 7],
+  ];
+  fields.forEach(([id, value]) => {
+    const input = document.getElementById(id);
+    if (input && document.activeElement !== input) input.value = value;
+  });
+
+  let text;
+  if (rotation.running) {
+    text = `运行中 · ${rotation.current_step || "处理中"}`;
+  } else if (settings.enabled) {
+    text = rotation.next_run_at ? `下一轮 ${formatTime(rotation.next_run_at)}（北京时间）` : "等待执行";
+  } else {
+    text = "未开启（可点「立即执行一轮」手动跑一次）";
+  }
+  document.getElementById("rotState").textContent = text;
+  document.getElementById("dashRot").textContent = text;
+  document.getElementById("sideRot").textContent = rotation.running ? "运行中" : (settings.enabled ? "已开启" : "未开启");
+
+  const results = (rotation.last_results || []).slice(-6).reverse();
+  document.getElementById("rotResults").innerHTML = results.map((row) =>
+    `<div>${escapeHtml(formatTime(row.at))} · ${escapeHtml(row.label || row.account_id)} · ${escapeHtml(
+      rotationStatusText(row.status),
+    )} · ${escapeHtml(row.message || "")}</div>`).join("");
+}
+
+async function saveRotation() {
+  const payload = {
+    enabled: document.getElementById("rotEnabled").checked,
+    interval_minutes: Number(document.getElementById("rotInterval").value) || 1440,
+    gap_min_seconds: Number(document.getElementById("rotGapMin").value) || 40,
+    gap_max_seconds: Number(document.getElementById("rotGapMax").value) || 90,
+    auto_relogin: document.getElementById("rotRelogin").checked,
+    window_enabled: document.getElementById("rotWindow").checked,
+    window_start_hour: Number(document.getElementById("rotWindowStart").value),
+    window_end_hour: Number(document.getElementById("rotWindowEnd").value),
+  };
+  try {
+    await api("/rotation", { method: "PUT", body: JSON.stringify(payload) });
+    toast(payload.enabled ? "自动轮换已开启" : "自动轮换已关闭");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function runRotationNow() {
+  try {
+    await api("/rotation/run", { method: "POST" });
+    toast("已触发一轮，稍后刷新查看进度");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+document.getElementById("rotEnabled").addEventListener("change", saveRotation);
+document.getElementById("rotSave").addEventListener("click", saveRotation);
+document.getElementById("rotRun").addEventListener("click", runRotationNow);
+
+/* ---------- 账号绑定 ---------- */
+
+document.getElementById("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = {
+    id: document.getElementById("accountId").value || undefined,
+    alias: document.getElementById("alias").value.trim(),
+    phone: document.getElementById("phone").value.trim(),
+    password: document.getElementById("password").value,
+    site: document.getElementById("site").value,
+  };
+  if (!payload.phone) return toast("请填写手机号");
+  try {
+    await api("/accounts", { method: "POST", body: JSON.stringify(payload) });
+    toast("已保存");
+    resetForm();
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+function resetForm() {
+  document.getElementById("formTitle").textContent = "添加店铺账号";
+  document.getElementById("accountId").value = "";
+  document.getElementById("alias").value = "";
+  document.getElementById("phone").value = "";
+  document.getElementById("password").value = "";
+  document.getElementById("phone").disabled = false;
+}
+
+document.getElementById("reset").addEventListener("click", resetForm);
+
+function editAccount(id) {
+  const account = state.accounts.find((item) => item.id === id);
+  if (!account) return;
+  location.hash = "#/bind/temu";
+  document.getElementById("formTitle").textContent = "编辑店铺账号";
+  document.getElementById("accountId").value = account.id;
+  document.getElementById("alias").value = account.alias || "";
+  document.getElementById("phone").value = account.phone || "";
+  document.getElementById("password").value = "";
+  document.getElementById("site").value = account.site || "us";
+  document.getElementById("phone").disabled = true;
+}
+
+/* ---------- 账号操作 ---------- */
+
+async function doLogin(id) {
+  try {
+    await api(`/accounts/${id}/login`, { method: "POST" });
+    toast("已开始登录");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function doCapture(id) {
+  try {
+    await api(`/accounts/${id}/capture`, { method: "POST" });
+    toast("已开始采集");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function doProbe(id) {
+  try {
+    await api(`/accounts/${id}/probe`, { method: "POST" });
+    toast("正在检查登录态…");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function sendCode(id) {
+  const input = document.getElementById(`code-${id}`);
+  const code = (input && input.value || "").trim();
+  if (!code) return toast("请输入验证码");
+  try {
+    await api(`/accounts/${id}/code`, { method: "POST", body: JSON.stringify({ code }) });
+    toast("已提交");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function removeAccount(id) {
+  if (!confirm("删除该店铺账号？采集结果也会一起删除。")) return;
+  try {
+    await api(`/accounts/${id}`, { method: "DELETE" });
+    toast("已删除");
+    refresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+/* ---------- 实时画面 ---------- */
+
+function liveUrl() {
+  const host = location.hostname;
+  const port = location.port || (location.protocol === "https:" ? "443" : "80");
+  const encrypt = location.protocol === "https:" ? 1 : 0;
+  return (
+    `/vnc/vnc.html?autoconnect=1&resize=scale&reconnect=1` +
+    `&host=${encodeURIComponent(host)}&port=${port}&encrypt=${encrypt}` +
+    `&path=vnc/websockify`
+  );
+}
+
+function openLive() {
+  const panel = document.getElementById("livePanel");
+  const frame = document.getElementById("liveFrame");
+  if (!frame.dataset.loaded) {
+    frame.src = liveUrl();
+    frame.dataset.loaded = "1";
+  }
+  panel.hidden = false;
+}
+
+document.getElementById("liveClose").addEventListener("click", () => {
+  document.getElementById("livePanel").hidden = true;
+});
+
+/* ---------- 轮询 ---------- */
+
+let lastStateSig = "";
+
+function stateSignature(value) {
+  // server_time 每次都变，不能参与比较，否则等于每轮都重绘。
+  const copy = { ...value };
+  delete copy.server_time;
+  return JSON.stringify(copy);
+}
+
+function anyJobRunning() {
+  const temujob = (state.accounts || []).some(
+    (account) => account.job && account.job.status === "running"
+  );
+  if (temujob) return true;
+  return (state.freight_accounts || []).some(
+    (account) => account.job && account.job.status === "running"
+  );
+}
+
+async function refresh() {
+  // 页面在后台时不打扰服务端，也不做无用的整页重绘。
+  if (document.hidden) return;
+  try {
+    const next = await api("/state");
+    const signature = stateSignature(next);
+    state = next;
+    // 状态没变化就不重绘：之前每 2 秒重刷一次 DOM，界面一直在闪。
+    if (signature === lastStateSig) return;
+    lastStateSig = signature;
+    renderShopPicker();
+    render();
+    renderRotation(state.rotation);
+    renderBillInfo();
+    renderBillInfoLink();
+    if (currentPage() === "orders-info" || currentPage() === "dashboard") loadSummary();
+    if (currentPage() === "ranking" || currentPage() === "dashboard") loadRanking();
+    if (currentPage() === "align") {
+      loadDxmPairs();
+      loadOrderStatuses();
+      const freightAccounts = freightAccounts();
+      const freightKey = freightAccounts
+        .map((account) => {
+          const job = account.job;
+          return `${account.platform}:${job ? `${job.status}:${job.updated_at}` : ""}`;
+        })
+        .join("|");
+      if (freightKey !== freightJobKey) {
+        freightJobKey = freightKey;
+        loadFreightQuotes(true);
+      } else {
+        loadFreightQuotes();
+      }
+    }
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function scheduleRefresh() {
+  const busy = anyJobRunning();
+  const delay = document.hidden ? 15000 : (busy ? 2000 : 8000);
+  setTimeout(async () => {
+    await refresh();
+    scheduleRefresh();
+  }, delay);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh();
+});
+
+route();
+refresh();
+scheduleRefresh();
+</script>
+</body>
+</html>
