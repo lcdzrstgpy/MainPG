@@ -79,6 +79,8 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     null | { key: BatchEditField; previous: Record<string, string | undefined> }
   >(null);
   const fillInputRef = useRef<HTMLInputElement | null>(null);
+  /** 「一键填充」是表格栏右侧的一个按钮，点开才展开字段/值（常驻会把条撑得很难看） */
+  const [fillOpen, setFillOpen] = useState(false);
 
   const rows = useMemo(
     () => entries.filter((entry) => !removed.includes(entry.id)),
@@ -131,6 +133,8 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     setLastFill({ key, previous });
     setFillKey("");
     setFillValue("");
+    // 填完自动收起：弹层盖着表格右上角，留着看不到结果
+    setFillOpen(false);
   };
 
   const undoFill = () => {
@@ -154,6 +158,18 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // 点面板外面收起「一键填充」（弹层不挡操作，点哪都能继续干活）
+  useEffect(() => {
+    if (!fillOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".temu-batch-edit-fill")) return;
+      setFillOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [fillOpen]);
 
   // 切页签时自己收掉：整页浮层是 portal 到 body 的，页签只是 hidden，
   // 不收的话会把别的页签盖住（WorkspaceShell 会发这个事件）
@@ -253,50 +269,67 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
           表格里的内容可以直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；输入框留空 = 取消这条的覆盖，回到源数据。
         </p>
         <div className="temu-batch-edit-fill">
-          <select
-            className="temu-input"
-            value={fillKey}
-            onChange={(event) => {
-              setFillKey(event.target.value as BatchEditField | "");
-              setFillValue("");
-              window.setTimeout(() => fillInputRef.current?.focus(), 0);
-            }}
+          <button
+            type="button"
+            className="temu-btn"
+            aria-expanded={fillOpen}
+            onClick={() => setFillOpen((open) => !open)}
           >
-            <option value="">一键填充…</option>
-            {visibleColumns.map((column) => (
-              <option key={column.key} value={column.key}>
-                {column.label}
-              </option>
-            ))}
-          </select>
-          {fillKey ? (
-            <>
-              <span className="temu-batch-edit-fill-label">
-                把「{COLUMNS.find((column) => column.key === fillKey)?.label}」都改成
-              </span>
-              <input
-                ref={fillInputRef}
-                className="temu-input"
-                value={fillValue}
-                placeholder="填一个值"
-                onChange={(event) => setFillValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && fillValue.trim()) applyFill();
-                }}
-              />
-              <button
-                type="button"
-                className="temu-btn"
-                disabled={!fillValue.trim()}
-                onClick={applyFill}
-              >
-                填进 {rows.length} 行
-              </button>
-            </>
+            一键填充 ▾
+          </button>
+          {fillOpen ? (
+            <div className="temu-batch-edit-fill-pop">
+              <label className="temu-batch-edit-fill-row">
+                <span>字段</span>
+                <select
+                  className="temu-input"
+                  value={fillKey}
+                  onChange={(event) => {
+                    setFillKey(event.target.value as BatchEditField | "");
+                    setFillValue("");
+                    window.setTimeout(() => fillInputRef.current?.focus(), 0);
+                  }}
+                >
+                  <option value="">选一个字段…</option>
+                  {visibleColumns.map((column) => (
+                    <option key={column.key} value={column.key}>
+                      {column.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="temu-batch-edit-fill-row">
+                <span>填成</span>
+                <input
+                  ref={fillInputRef}
+                  className="temu-input"
+                  value={fillValue}
+                  disabled={!fillKey}
+                  placeholder={fillKey ? "填一个值" : "先选字段"}
+                  onChange={(event) => setFillValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && fillKey && fillValue.trim()) applyFill();
+                  }}
+                />
+              </label>
+              <div className="temu-batch-edit-fill-actions">
+                <button
+                  type="button"
+                  className="temu-btn temu-btn-primary"
+                  disabled={!fillKey || !fillValue.trim()}
+                  onClick={applyFill}
+                >
+                  填进 {rows.length} 行
+                </button>
+                <button type="button" className="temu-link" onClick={() => setFillOpen(false)}>
+                  关闭
+                </button>
+              </div>
+            </div>
           ) : null}
-          {lastFill ? (
-            <button type="button" className="temu-link" onClick={undoFill}>
-              撤销上次填充
+          {lastFill && !fillOpen ? (
+            <button type="button" className="temu-link temu-batch-edit-undo" onClick={undoFill}>
+              撤销上次填充（{COLUMNS.find((column) => column.key === lastFill.key)?.label}）
             </button>
           ) : null}
         </div>
@@ -326,18 +359,34 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
                     <span className="temu-muted">无图</span>
                   )}
                 </td>
-                {visibleColumns.map((column) => (
-                  <td key={column.key}>
-                    <input
-                      className={`temu-batch-edit-input${
-                        draft[entry.id]?.[column.key] !== undefined ? " is-dirty" : ""
-                      }`}
-                      value={valueOf(entry, column.key)}
-                      placeholder="—"
-                      onChange={(event) => setCell(entry, column.key, event.target.value)}
-                    />
-                  </td>
-                ))}
+                {visibleColumns.map((column) => {
+                  const value = valueOf(entry, column.key);
+                  const dirty = draft[entry.id]?.[column.key] !== undefined;
+                  // 标题很长：单行输入只能看到半截，用会自动长高的多行框
+                  if (column.key === "title") {
+                    return (
+                      <td key={column.key}>
+                        <textarea
+                          className={`temu-batch-edit-input temu-batch-edit-text${dirty ? " is-dirty" : ""}`}
+                          value={value}
+                          rows={Math.min(5, Math.max(2, Math.ceil(value.length / 42)))}
+                          placeholder="—"
+                          onChange={(event) => setCell(entry, column.key, event.target.value)}
+                        />
+                      </td>
+                    );
+                  }
+                  return (
+                    <td key={column.key}>
+                      <input
+                        className={`temu-batch-edit-input${dirty ? " is-dirty" : ""}`}
+                        value={value}
+                        placeholder="—"
+                        onChange={(event) => setCell(entry, column.key, event.target.value)}
+                      />
+                    </td>
+                  );
+                })}
                 <td className="col-variants">
                   {entry.variants?.length
                     ? `${entry.variants.length} 个：${entry.variants

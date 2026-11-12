@@ -8213,40 +8213,52 @@ textarea.temu-input {
 }
 
 .temu-batch-edit-fill {
+  position: relative;
   display: flex;
-  flex-wrap: wrap; /* 窄屏就换行，绝不横向溢出把整页顶出去 */
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  max-width: 100%;
-  min-width: 0;
-  /* 「撤销上次填充」这类文字按钮不许折行：折成两行会把工具条撑高 */
-  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
-.temu-batch-edit-fill > * {
-  flex: 0 0 auto;
+/* 「一键填充」点开的小面板：字段 + 值 + 填进 N 行 */
+.temu-batch-edit-fill-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  display: grid;
+  gap: 9px;
+  width: 316px;
+  padding: 12px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 10px;
+  background: var(--theme-card-bg-solid, #fff);
+  box-shadow: 0 12px 30px rgba(20, 40, 60, 0.16);
+}
+
+.temu-batch-edit-fill-row {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+}
+
+.temu-batch-edit-fill-row .temu-input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+}
+
+.temu-batch-edit-fill-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .temu-batch-edit-fill .temu-link {
   white-space: nowrap;
-}
-
-/*
- * ⚠️ `.temu-input` 全局是 width:100%：放在 flex 里会撑成「容器有多宽它就多宽」，
- * 而容器又被内容撑宽 → 整页横向溢出、内容被顶出屏幕。
- * 这里必须给死宽度。
- */
-.temu-batch-edit-fill .temu-input {
-  height: 30px;
-  width: 150px;
-  min-width: 0;
-  flex: 0 0 150px;
-}
-
-.temu-batch-edit-fill select.temu-input {
-  width: 170px;
-  flex: 0 0 170px;
 }
 
 .temu-batch-edit-table-wrap {
@@ -8360,4 +8372,18 @@ textarea.temu-input {
 .temu-batch-edit-fill .temu-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 长标题用多行框：单行输入只能看到半截，用户以为字被截断了 */
+.temu-batch-edit-text {
+  resize: none;
+  padding: 6px 7px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+/* 撤销填充：放在弹层外面，填完也能随手点 */
+.temu-batch-edit-undo {
+  margin-right: 8px;
+  white-space: nowrap;
 }
