@@ -4859,7 +4859,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <p>
                   点页面里的「获取授权」。弹窗里「请选择对接系统」的下拉<strong>可以直接打字</strong>：
                   输入<strong>「启邦国际跨境分销运营管理系统」</strong>并选中它（我们的对接系统，别选成别的），
-                  再点「确认」。下拉里如果是「无可选系统」，先点右边的「申请开通」让对接运营把系统开出来，再回来选。
+                  再点「确认」。
                 </p>
                 <img
                   className="temu-help-shot"
@@ -4899,9 +4899,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </section>
 
               <p className="temu-help-note">
-                拿到 access_token 后整串粘到下面「新增店铺」，点「校验并保存为店铺」——注意别把
-                「服务商凭据」和它混了，那是服务器下发的，不用填。找不到 token 就直接问对接运营。
-                截图可以点开看大图。
+                拿到 access_token 后整串粘到下面「新增店铺」，点「校验并保存为店铺」。
               </p>
             </div>
           </div>,
