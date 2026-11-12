@@ -366,6 +366,13 @@ export type TemuDraftLibrary = {
 export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";
 
 /**
+ * 发布历史「去修这条」→ 草稿库自动打开指定草稿。
+ * 历史条目记了来源草稿 id（ai:任务:项 / pod:批次:款式），草稿库条目 id 同源，
+ * 切过去找到那条直接走「编辑」链路（整表预填进发布页），不用用户再翻。
+ */
+export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";
+
+/**
  * 草稿库「用于发布」的事件通道。
  * 为什么需要两条通道：openModule 会**复用已存在的页签**，发布页已打开时不会再挂载，
  * 只读 sessionStorage 的挂载逻辑就不会执行（点了没反应）。所以挂载走 storage，

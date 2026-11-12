@@ -444,13 +444,15 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
   const activePanel = panel;
 
   // 可用积分与积分构成的数字滚动动画（首次直接用缓存值，不闪）。
-  const animatedAvailablePoints = useAnimatedNumber(summary?.wallet.available_points);
+  // wallet / plan 都可能是缺的（后端部分字段没回、缓存结构旧版本）——
+  // 可选链一路加到底，缺字段时显示 0 而不是把整页炸白。
+  const animatedAvailablePoints = useAnimatedNumber(summary?.wallet?.available_points);
   // 积分构成：永久积分=充值池+额外池（充值积分、基础版每周领取、首签新人礼），
   // 限时积分=体验池（每日签到所得，每周一 00:00 过期作废）。
   const permanentPoints = summary
-    ? (summary.wallet.points_balance ?? 0) + (summary.wallet.plan.extra_balance ?? 0)
+    ? (summary.wallet?.points_balance ?? 0) + (summary.wallet?.plan?.extra_balance ?? 0)
     : null;
-  const limitedPoints = summary ? summary.wallet.plan.plan_balance ?? 0 : null;
+  const limitedPoints = summary ? summary.wallet?.plan?.plan_balance ?? 0 : null;
   const animatedPermanentPoints = useAnimatedNumber(permanentPoints);
   const animatedLimitedPoints = useAnimatedNumber(limitedPoints);
   const [usageEntries, setUsageEntries] = useState<BillingUsageEntry[]>(
@@ -1140,10 +1142,10 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               wallet: {
                 ...current.wallet,
                 available_points:
-                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                  (current.wallet?.available_points ?? 0) + result.claimed_points,
                 plan: {
-                  ...current.wallet.plan,
-                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  ...current.wallet?.plan,
+                  extra_balance: (current.wallet?.plan?.extra_balance ?? 0) + result.claimed_points,
                   basic_claim_count: result.claim_count,
                   basic_claimable: false,
                 },
@@ -1186,10 +1188,10 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               wallet: {
                 ...current.wallet,
                 available_points:
-                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                  (current.wallet?.available_points ?? 0) + result.claimed_points,
                 plan: {
-                  ...current.wallet.plan,
-                  extra_balance: (current.wallet.plan.extra_balance ?? 0) + result.claimed_points,
+                  ...current.wallet?.plan,
+                  extra_balance: (current.wallet?.plan?.extra_balance ?? 0) + result.claimed_points,
                   enterprise_claim_count: result.claim_count,
                   enterprise_claimable: false,
                 },
@@ -1264,20 +1266,20 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               wallet: {
                 ...current.wallet,
                 available_points:
-                  (current.wallet.available_points ?? 0) + result.claimed_points,
+                  (current.wallet?.available_points ?? 0) + result.claimed_points,
                 plan: {
-                  ...current.wallet.plan,
+                  ...current.wallet?.plan,
                   plan_balance: result.first_claim_bonus
-                    ? current.wallet.plan.plan_balance
-                    : (current.wallet.plan.plan_balance ?? 0) + result.claimed_points,
+                    ? current.wallet?.plan?.plan_balance
+                    : (current.wallet?.plan?.plan_balance ?? 0) + result.claimed_points,
                   extra_balance: result.first_claim_bonus
-                    ? (current.wallet.plan.extra_balance ?? 0) + result.claimed_points
-                    : current.wallet.plan.extra_balance,
+                    ? (current.wallet?.plan?.extra_balance ?? 0) + result.claimed_points
+                    : current.wallet?.plan?.extra_balance,
                   daily_claimable: false,
                   daily_claim_date: result.period,
                   daily_claim_points: 100,
                   daily_first_claim_bonus: 0,
-                  daily_week_count: (current.wallet.plan.daily_week_count ?? 0) + 1,
+                  daily_week_count: (current.wallet?.plan.daily_week_count ?? 0) + 1,
                   daily_next_claim_at: result.next_claim_at,
                 },
               },
@@ -1533,15 +1535,15 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
             <div className="personal-plan-card-head">
               <span className="personal-plan-card-label">
                 <span className="iconfont icon-gold" aria-hidden="true" />
-                {summary?.wallet.plan?.plan_label ?? "体验版"}
+                {summary?.wallet?.plan?.plan_label ?? "体验版"}
               </span>
               <button type="button" className="personal-plan-upgrade" onClick={() => setUpgradeOpen(true)}>
                 升级体验
               </button>
             </div>
-            {summary?.wallet.plan?.next_refresh_at && (
+            {summary?.wallet?.plan?.next_refresh_at && (
               <div className="personal-plan-card-refresh">
-                下周一 {formatUsageTime(summary.wallet.plan.next_refresh_at).slice(5, 16)} 刷新
+                下周一 {formatUsageTime(summary.wallet?.plan.next_refresh_at).slice(5, 16)} 刷新
               </div>
             )}
             <div className="personal-plan-block-head">
@@ -1549,7 +1551,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               <span>每周一 00:00 过期</span>
             </div>
             <div className="personal-plan-card-value">
-              <b>{summary?.wallet.plan?.plan_balance ?? "--"}</b>
+              <b>{summary?.wallet?.plan?.plan_balance ?? "--"}</b>
               <em>积分</em>
             </div>
             <div className="personal-plan-block-head">
@@ -1557,7 +1559,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               <span>永久有效</span>
             </div>
             <div className="personal-plan-card-value">
-              <b>{summary?.wallet.plan?.extra_balance ?? "--"}</b>
+              <b>{summary?.wallet?.plan?.extra_balance ?? "--"}</b>
               <em>积分</em>
             </div>
             <div className="personal-plan-claim">
@@ -1572,7 +1574,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                   </i>
                 </span>
                 <span className="personal-plan-claim-week">
-                  本周已签 {summary?.wallet.plan?.daily_week_count ?? 0}/{summary?.wallet.plan?.daily_week_max ?? 7} 天
+                  本周已签 {summary?.wallet?.plan?.daily_week_count ?? 0}/{summary?.wallet?.plan?.daily_week_max ?? 7} 天
                 </span>
               </div>
               <div
@@ -1580,17 +1582,17 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                 role="progressbar"
                 aria-label="本周签到进度"
                 aria-valuemin={0}
-                aria-valuemax={summary?.wallet.plan?.daily_week_max ?? 7}
-                aria-valuenow={summary?.wallet.plan?.daily_week_count ?? 0}
+                aria-valuemax={summary?.wallet?.plan?.daily_week_max ?? 7}
+                aria-valuenow={summary?.wallet?.plan?.daily_week_count ?? 0}
               >
                 <span
                   style={{
-                    width: `${Math.min(100, Math.max(0, ((summary?.wallet.plan?.daily_week_count ?? 0) / (summary?.wallet.plan?.daily_week_max || 7)) * 100))}%`,
+                    width: `${Math.min(100, Math.max(0, ((summary?.wallet?.plan?.daily_week_count ?? 0) / (summary?.wallet?.plan?.daily_week_max || 7)) * 100))}%`,
                   }}
                 />
               </div>
               <div className="personal-plan-claim-meta">
-                {summary?.wallet.plan?.daily_claimable ?? true ? (
+                {summary?.wallet?.plan?.daily_claimable ?? true ? (
                   <button
                     type="button"
                     className="personal-plan-claim-btn"
@@ -1599,9 +1601,9 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                   >
                     {dailyClaimBusy
                       ? "签到中…"
-                      : (summary?.wallet.plan?.daily_first_claim_bonus ?? 0) > 0
-                        ? `签到领 ${summary?.wallet.plan?.daily_first_claim_bonus} 新人礼`
-                        : `每日签到 +${summary?.wallet.plan?.daily_claim_points ?? 100} 积分`}
+                      : (summary?.wallet?.plan?.daily_first_claim_bonus ?? 0) > 0
+                        ? `签到领 ${summary?.wallet?.plan?.daily_first_claim_bonus} 新人礼`
+                        : `每日签到 +${summary?.wallet?.plan?.daily_claim_points ?? 100} 积分`}
                   </button>
                 ) : (
                   <span>今日已签到，明天 00:00 再来</span>
@@ -1609,24 +1611,24 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
               </div>
               {dailyClaimNotice && <p className="personal-plan-claim-notice">{dailyClaimNotice}</p>}
               {/* 基础版专属：28 天内每周另可领 1000（永久），与每日签到叠加 */}
-              {summary?.wallet.plan?.plan_type === "basic" && (
+              {summary?.wallet?.plan?.plan_type === "basic" && (
                 <div className="personal-plan-claim-basic">
                   <div
                     className="personal-plan-claim-meter"
                     role="progressbar"
                     aria-label="基础版每周领取进度"
                     aria-valuemin={0}
-                    aria-valuemax={summary.wallet.plan.basic_claim_max}
-                    aria-valuenow={summary.wallet.plan.basic_claim_count}
+                    aria-valuemax={summary.wallet?.plan.basic_claim_max}
+                    aria-valuenow={summary.wallet?.plan.basic_claim_count}
                   >
                     <span
                       style={{
-                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.basic_claim_count / (summary.wallet.plan.basic_claim_max || 4)) * 100))}%`,
+                        width: `${Math.min(100, Math.max(0, (summary.wallet?.plan.basic_claim_count / (summary.wallet?.plan.basic_claim_max || 4)) * 100))}%`,
                       }}
                     />
                   </div>
                   <div className="personal-plan-claim-meta">
-                    {summary.wallet.plan.basic_claimable ? (
+                    {summary.wallet?.plan.basic_claimable ? (
                       <button
                         type="button"
                         className="personal-plan-claim-btn is-secondary"
@@ -1635,7 +1637,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                       >
                         {claimBusy ? "领取中…" : "领取基础版 1000 积分（永久）"}
                       </button>
-                    ) : summary.wallet.plan.basic_claim_count >= summary.wallet.plan.basic_claim_max ? (
+                    ) : summary.wallet?.plan.basic_claim_count >= summary.wallet?.plan.basic_claim_max ? (
                       <span>基础版四周领取已用完</span>
                     ) : (
                       <span>基础版本周已领，下周一再来</span>
@@ -1645,24 +1647,24 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                 </div>
               )}
               {/* 企业版专属：28 天内每周另可领 1000（永久），与每日签到叠加 */}
-              {summary?.wallet.plan?.plan_type === "enterprise" && (
+              {summary?.wallet?.plan?.plan_type === "enterprise" && (
                 <div className="personal-plan-claim-basic">
                   <div
                     className="personal-plan-claim-meter"
                     role="progressbar"
                     aria-label="企业版每周领取进度"
                     aria-valuemin={0}
-                    aria-valuemax={summary.wallet.plan.enterprise_claim_max}
-                    aria-valuenow={summary.wallet.plan.enterprise_claim_count}
+                    aria-valuemax={summary.wallet?.plan.enterprise_claim_max}
+                    aria-valuenow={summary.wallet?.plan.enterprise_claim_count}
                   >
                     <span
                       style={{
-                        width: `${Math.min(100, Math.max(0, (summary.wallet.plan.enterprise_claim_count / (summary.wallet.plan.enterprise_claim_max || 4)) * 100))}%`,
+                        width: `${Math.min(100, Math.max(0, (summary.wallet?.plan.enterprise_claim_count / (summary.wallet?.plan.enterprise_claim_max || 4)) * 100))}%`,
                       }}
                     />
                   </div>
                   <div className="personal-plan-claim-meta">
-                    {summary.wallet.plan.enterprise_claimable ? (
+                    {summary.wallet?.plan.enterprise_claimable ? (
                       <button
                         type="button"
                         className="personal-plan-claim-btn is-secondary"
@@ -1671,7 +1673,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                       >
                         {enterpriseClaimBusy ? "领取中…" : "领取企业版 1000 积分（永久）"}
                       </button>
-                    ) : summary.wallet.plan.enterprise_claim_count >= summary.wallet.plan.enterprise_claim_max ? (
+                    ) : summary.wallet?.plan.enterprise_claim_count >= summary.wallet?.plan.enterprise_claim_max ? (
                       <span>企业版四周领取已用完</span>
                     ) : (
                       <span>企业版本周已领，下周一再来</span>
@@ -1681,9 +1683,9 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
                 </div>
               )}
             </div>
-            {summary?.wallet.plan?.plan_expire_at && (
+            {summary?.wallet?.plan?.plan_expire_at && (
               <div className="personal-plan-expire">
-                有效期至 {formatUsageTime(summary.wallet.plan.plan_expire_at).slice(0, 16)}
+                有效期至 {formatUsageTime(summary.wallet?.plan.plan_expire_at).slice(0, 16)}
               </div>
             )}
           </div>
@@ -1768,7 +1770,7 @@ export function PersonalCenterPage({ feedbackPrefill = null, panel, onPanelChang
             </span>
             <div className="topup-hero-copy">
               <span className="topup-hero-kicker">充值积分 · 长期有效</span>
-              <b>{(summary?.wallet.points_balance ?? 0).toLocaleString()}<i>积分</i></b>
+              <b>{(summary?.wallet?.points_balance ?? 0).toLocaleString()}<i>积分</i></b>
             </div>
           </div>
           <div className="topup-station">

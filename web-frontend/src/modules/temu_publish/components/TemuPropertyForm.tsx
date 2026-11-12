@@ -44,6 +44,16 @@ export function TemuPropertyForm({
   const guessed = new Set(guessedPids ?? []);
   const visible = visibleProperties(attributes, picks);
   const groups = buildAttributeGroups(attributes, visible);
+  /**
+   * 还空着的必填项名字。
+   *
+   * 以前只有「提交被拦」或点「检查必填」才知道缺哪几个，属性区本身不吭声 ——
+   * 13 个下拉里找 5 个没填的，靠肉眼扫。这里实时列出来，填一个少一个。
+   */
+  const missingRequired = groups.required.filter((item) => {
+    const pick = picks[item.pid] ?? EMPTY_ATTR;
+    return !pick.vid && !pick.text.trim();
+  });
 
   const patchPick = (pid: number, patch: Partial<AttrPick>) => {
     const current = picks[pid] ?? EMPTY_ATTR;
@@ -73,6 +83,7 @@ export function TemuPropertyForm({
         <span>
           {label}
           {required && <em className="temu-required">*</em>}
+          {emptyRequired && <i className="temu-attr-req-dot" title="这个必填项还没填" />}
           {guessed.has(item.pid) && (
             <em className="temu-attr-guessed" title="这个值是按类目估的（没有依据时取第一个可用选项），发布前请核对">
               估
@@ -148,6 +159,14 @@ export function TemuPropertyForm({
           <div className="temu-attr-required-head">
             <strong>必填属性 {groups.required.length} 项</strong>
             <span>带 <em className="temu-required">*</em> 的都要选，缺一个 Temu 会直接拒</span>
+            {missingRequired.length > 0 ? (
+              <em className="temu-attr-missing">
+                还缺 {missingRequired.length} 个：
+                {missingRequired
+                  .map((item) => item.name || item.propertyName || `属性 ${item.pid}`)
+                  .join("、")}
+              </em>
+            ) : null}
           </div>
           <div className="temu-attr-grid">
             {groups.required.map((item) => attrGroup(item, true))}
