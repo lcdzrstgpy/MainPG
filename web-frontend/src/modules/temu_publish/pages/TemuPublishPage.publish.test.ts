@@ -218,7 +218,7 @@ test("属性数值录入：纯数值属性不带 numberInputValue，下拉+数�
   assert.match(apiSrc, /\(attrs\) => normalizeDuplicatePids\(attrs\) \?\? attrs,/);
 });
 
-test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 发布预设", () => {
+test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 模板按钮就地放", () => {
   // 分区名称与顺序完全按ERP Temu 刊登页
   for (const label of ["基本信息", "产品信息", "变种信息", "包装信息", "校验发布"]) {
     assert.ok(page.includes(`label: "${label}"`), `缺少分区 ${label}`);
@@ -232,10 +232,14 @@ test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 发布预�
   assert.match(page, /className="temu-console-rail"/);
   assert.match(page, /onClick=\{\(\) => jumpTo\(step\.id\)\}/);
 
-  // 发布预设：类目 + 运费模板 + 仓库，存本机
-  assert.match(page, /const PRESETS_KEY = "temu_publish_presets_v1";/);
-  assert.match(page, /const applyPreset = \(preset: PublishPreset\) =>/);
-  assert.match(page, /const savePreset = \(\) =>/);
+  // 模板按钮放「就地」：产品模板在产品属性行右侧、变种模板在变种标题行右侧，
+  // 保存与载入各一个按钮（不再有「载入 / 保存 XX 模板」折叠块，也不再有和模板重复的「预设」）
+  assert.match(page, /className="temu-field-head-actions"/);
+  assert.match(page, /载入模板/);
+  assert.match(page, /保存模板/);
+  assert.match(page, /temu-variant-tpl-actions/);
+  assert.doesNotMatch(page, /PRESETS_KEY/);
+  assert.doesNotMatch(page, /存为预设/);
 
   // 一级类目墙默认收起（原来 20 多个分类卡片占半屏）
   assert.match(page, /const \[showCategoryBrowser, setShowCategoryBrowser\] = useState\(false\);/);
@@ -333,17 +337,16 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /status\?\.owner\?\.personal/);
 });
 
-test("本机留档：表单/预设/最近分类按登录账号分开存，换账号不串数据", () => {
-  // 同一台电脑换账号登录时，不能把上一个人的草稿、预设、分类带出来。
+test("本机留档：表单/变种行/最近分类按登录账号分开存，换账号不串数据", () => {
+  // 同一台电脑换账号登录时，不能把上一个人的草稿、变种、分类带出来。
   // storageScope 已抽到 data/attrPicksStore.ts（草稿库也要用同一份账号作用域）
   const store = readFileSync(new URL("../data/attrPicksStore.ts", import.meta.url), "utf8");
   assert.match(store, /export function storageScope\(\): string \{/);
   assert.match(store, /return account\?\.user_id \|\| "local";/);
   assert.match(page, /storageScope,\n\} from "\.\.\/data\/attrPicksStore";/);
   assert.match(page, /const formKey = `\$\{FORM_KEY\}:\$\{storageSuffix\}`;/);
-  assert.match(page, /const presetsKey = `\$\{PRESETS_KEY\}:\$\{storageSuffix\}`;/);
+  assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
-  assert.match(page, /saveJsonLocal\(presetsKey, next\);/);
   // 表单里只保留会提交的字段；唯一留档的备注也是收起的、写清楚不提交
   assert.match(page, /备注（不提交，只留档）/);
   assert.doesNotMatch(page, /function LocalTag/);

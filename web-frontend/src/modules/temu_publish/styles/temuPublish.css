@@ -8947,3 +8947,64 @@ textarea.temu-input {
   font-size: 12.5px;
   line-height: 1.7;
 }
+
+/* ---- 产品属性标题行：label + 说明 + 产品模板按钮 ---- */
+/* label/说明包进 .temu-field-head 后，`.temu-field > span` 不再命中，这里补一份等价样式 */
+.temu-field-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.temu-field-head > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.temu-field-head > em {
+  font-style: normal;
+}
+
+.temu-field-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.is-console .temu-field-head > span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--temu-text);
+}
+
+.is-console .temu-sec .temu-field-head > span {
+  font-size: 0.78rem;
+}
+
+/* 模板弹窗头部：标题一行不换行，副标题是灰字说明（.temu-edit-head 的 span 是蓝色胶囊，
+   拿来放长句子会挤在标题旁边、把标题挤断行） */
+.temu-template-dialog .temu-edit-head > div {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.temu-template-dialog .temu-edit-head strong {
+  white-space: nowrap;
+}
+
+.temu-template-dialog .temu-edit-head span {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+}

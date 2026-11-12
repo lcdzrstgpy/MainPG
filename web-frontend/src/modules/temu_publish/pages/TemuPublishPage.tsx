@@ -185,7 +185,6 @@ type PublishForm = {
 };
 
 const FORM_KEY = "temu_publish_form_v2";
-const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
 // 变种模板存在 data/localStore.ts（VARIANT_KEY），key 必须保持一致
@@ -283,13 +282,6 @@ const EMPTY_FORM: PublishForm = {
   shipmentDays: DEFAULT_SHIPMENT_DAYS,
   piecesPerPack: "1",
   description: "",
-};
-
-type PublishPreset = {
-  name: string;
-  categoryPath: TemuCategory[];
-  freightId: string;
-  warehouseId: string;
 };
 
 function errorMessage(error: unknown): string {
@@ -647,7 +639,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const storageSuffix = useMemo(() => storageScope(), []);
   const formKey = `${FORM_KEY}:${storageSuffix}`;
-  const presetsKey = `${PRESETS_KEY}:${storageSuffix}`;
   const recentCategoryKey = `${RECENT_CATEGORY_KEY}:${storageSuffix}`;
   const rowsKey = `${ROWS_KEY}:${storageSuffix}`;
 
@@ -717,10 +708,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const [freightTemplates, setFreightTemplates] = useState<TemuFreightTemplate[]>([]);
   const [warehouseGroups, setWarehouseGroups] = useState<TemuWarehouseGroup[]>([]);
-  const [presets, setPresets] = useState<PublishPreset[]>(() =>
-    loadJsonLocal<PublishPreset[]>(`${PRESETS_KEY}:${storageScope()}`, []),
-  );
-  const [presetName, setPresetName] = useState("");
   const [showCategoryBrowser, setShowCategoryBrowser] = useState(false);
 
   const [parentSpecs, setParentSpecs] = useState<TemuParentSpec[]>([]);
@@ -1599,36 +1586,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }, 1200);
     return () => clearTimeout(timer);
   }, [form.title, status?.configured.ready, matchSeq]);
-
-  const savePreset = () => {
-    if (!categoryPath.length) {
-      setError("先选好类目，再保存预设");
-      return;
-    }
-    const fallbackName = categoryPath[categoryPath.length - 1].catName.slice(0, 20);
-    const name = presetName.trim() || fallbackName;
-    const next = [
-      { name, categoryPath, freightId: form.freightId, warehouseId: form.warehouseId },
-      ...presets.filter((item) => item.name !== name),
-    ].slice(0, 6);
-    setPresets(next);
-    saveJsonLocal(presetsKey, next);
-    setPresetName("");
-  };
-
-  const applyPreset = (preset: PublishPreset) => {
-    patch({ freightId: preset.freightId || form.freightId, warehouseId: preset.warehouseId || form.warehouseId });
-    if (preset.warehouseId) {
-      setRows((current) => current.map((row) => ({ ...row, warehouseId: preset.warehouseId })));
-    }
-    void applyCategory(preset.categoryPath);
-  };
-
-  const removePreset = (name: string) => {
-    const next = presets.filter((item) => item.name !== name);
-    setPresets(next);
-    saveJsonLocal(presetsKey, next);
-  };
 
   /** 存成产品模板：分类 + 属性 + 运费/仓库/时效/产地/尺码表/开关，都是「每款一样」的东西。 */
   const saveProductTemplate = (name: string) => {
@@ -3593,31 +3550,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   现在按状态分两副面孔：已选类目 → 一条摘要条；未选 → 只留搜索与推荐。
                   刷新/浏览全部/存预设属于低频操作，收进「高级」折叠里。 */}
               <div className="temu-cat-picker">
-                {presets.length > 0 && (
-                  <div className="temu-preset-bar">
-                    <span className="temu-preset-title">预设</span>
-                    {presets.map((preset) => (
-                      <span key={preset.name} className="temu-preset-chip">
-                        <button
-                          type="button"
-                          onClick={() => applyPreset(preset)}
-                          title={preset.categoryPath.map((item) => item.catName).join(" / ")}
-                        >
-                          {preset.name}
-                        </button>
-                        <button
-                          type="button"
-                          className="temu-preset-del"
-                          onClick={() => removePreset(preset.name)}
-                          aria-label={`删除预设 ${preset.name}`}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-
                 {leaf?.isLeaf ? (
                   <div className="temu-cat-selected">
                     <div className="temu-cat-selected-main">
@@ -3625,32 +3557,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       <strong>{categoryPath.map(categoryName).join(" / ")}</strong>
                       <span className="temu-cat-selected-id">id {leaf.catId}</span>
                     </div>
-                    <div className="temu-cat-selected-actions">
-                      <button
-                        type="button"
-                        className="temu-btn is-mini"
-                        title="载入已保存的产品模板（分类 + 属性 + 物流）"
-                        onClick={() => setTemplateDialog({ kind: "product", mode: "load" })}
-                      >
-                        载入模板
-                      </button>
-                      <button
-                        type="button"
-                        className="temu-btn is-mini"
-                        title="把当前分类 + 属性 + 物流存成产品模板"
-                        onClick={() => setTemplateDialog({ kind: "product", mode: "save" })}
-                      >
-                        保存模板
-                      </button>
-                      <button
-                        type="button"
-                        className="temu-btn"
-                        onClick={() => resetToLevel(-1)}
-                        disabled={busy !== ""}
-                      >
-                        更换类目
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="temu-btn"
+                      onClick={() => resetToLevel(-1)}
+                      disabled={busy !== ""}
+                    >
+                      更换类目
+                    </button>
                   </div>
                 ) : (
                   <>
@@ -3724,7 +3638,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 )}
 
                 <details className="temu-cat-advanced">
-                  <summary>高级：刷新类目树 · 浏览全部 · 存为预设</summary>
+                  <summary>高级：刷新类目树 · 浏览全部</summary>
                   <div className="temu-cat-advanced-body">
                     <div className="temu-cat-refresh">
                       <button
@@ -3768,21 +3682,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       </>
                     )}
 
-                    <div className="temu-preset-save">
-                      <input
-                        className="temu-input"
-                        value={presetName}
-                        onChange={(event) => setPresetName(event.target.value)}
-                        placeholder="预设名（只记分类+运费+仓库，随手切换用）"
-                        title="预设 = 分类 + 运费模板 + 发货仓库，最多存 6 个，用来快速换品"
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") savePreset();
-                        }}
-                      />
-                      <button type="button" className="temu-btn" onClick={savePreset} disabled={!categoryPath.length}>
-                        存为预设
-                      </button>
-                    </div>
                   </div>
                 </details>
               </div>
@@ -3792,15 +3691,35 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 加一条分隔线 + 把说明挪到标题下面单独一行，
                 否则标题、说明、9 个下拉挤在一起，看不出这里是新的一段。 */}
             <div className="temu-field temu-field-attrs">
-              <span>
-                产品属性<em className="temu-required">*</em>
-              </span>
-              <em className="temu-field-note">
-                带 * 必填；不带的收在下面，不填也能发布
-                {attributes && attributes.properties.length > visibleProperties.length
-                  ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
-                  : ""}
-              </em>
+              <div className="temu-field-head">
+                <span>
+                  产品属性<em className="temu-required">*</em>
+                </span>
+                <em className="temu-field-note">
+                  带 * 必填；不带的收在下面，不填也能发布
+                  {attributes && attributes.properties.length > visibleProperties.length
+                    ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
+                    : ""}
+                </em>
+                <div className="temu-field-head-actions">
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="载入已保存的产品模板（分类 + 属性 + 物流）"
+                    onClick={() => setTemplateDialog({ kind: "product", mode: "load" })}
+                  >
+                    载入模板
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="把当前分类 + 属性 + 物流存成产品模板"
+                    onClick={() => setTemplateDialog({ kind: "product", mode: "save" })}
+                  >
+                    保存模板
+                  </button>
+                </div>
+              </div>
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
