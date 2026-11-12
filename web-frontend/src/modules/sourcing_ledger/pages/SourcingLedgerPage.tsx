@@ -1,4 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type ClipboardEvent } from "react";
+/**
+ * 货源与利润 UI 基线（2026-11-04）
+ *
+ * 以本文件的「批量重量/批量店铺横条 + 已核价页签」布局为准，不要再整页替换成其他分支的版本。
+ * 后续如确需改版：先删除本注释，并在提交说明里写明新的 UI 基线版本。
+ */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { SiteRateSettingsDialog } from "../components/SiteRateSettingsDialog";
 import {
@@ -34,8 +47,7 @@ type StatusTab = { key: string; label: string; statuses: LedgerStatus[] };
 const STATUS_TABS: StatusTab[] = [
   { key: "", label: "全部", statuses: [] },
   { key: "pending", label: "未采核价", statuses: PENDING_STATUSES },
-  { key: "ready", label: "可入库", statuses: ["ready"] },
-  { key: "low_profit", label: "利润偏低", statuses: ["low_profit"] },
+  { key: "priced", label: "已核价", statuses: ["ready", "low_profit"] },
   { key: "in_library", label: "已入库", statuses: ["in_library"] },
 ];
 
@@ -110,11 +122,28 @@ function numberText(value: unknown, fallback = ""): string {
   return Number.isFinite(number) ? String(number) : text;
 }
 
+/** 采集插件偶尔把整块价格审核弹窗文字塞进货源标题，展示时按垃圾文本丢弃。 */
+function sourceTitleText(source: LedgerSource): string {
+  const text = String(source.source_title || "").trim();
+  if (!text) return "";
+  const junk =
+    text.includes("采集来源") ||
+    (text.includes("移除") && text.includes("SKU")) ||
+    text.length > 120;
+  return junk ? "" : text;
+}
+
+/** 抽屉打开即编辑：默认编辑主货源，没有主货源就用第一条。 */
+function editFormFor(payload: LedgerItemDetail): SourceForm | null {
+  const source = payload.sources.find((item) => Boolean(item.is_primary)) || payload.sources[0];
+  return source ? formFromSource(source) : null;
+}
+
 function formFromSource(source: LedgerSource): SourceForm {
   return {
     id: String(source.id || ""),
     source_url: source.source_url || "",
-    source_title: source.source_title || "",
+    source_title: sourceTitleText(source),
     // 直接展示利润实际用到的数值：运费空按 0、重量空按默认 0.5kg，避免看起来「没算就出利润」
     price_cny: numberText(source.price_cny),
     domestic_freight_cny: numberText(source.domestic_freight_cny, "0"),
@@ -133,11 +162,13 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [status, setStatus] = useState("");
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [site, setSite] = useState("");
+  const [storeDraft, setStoreDraft] = useState("");
+  const [storeOpen, setStoreOpen] = useState(false);
   const [batchId, setBatchId] = useState("");
+  const [batches, setBatches] = useState<LedgerBatchOption[]>([]);
   const [storeFilter, setStoreFilter] = useState("");
   const [storeOptions, setStoreOptions] = useState<string[]>([]);
   const [storeChoices, setStoreChoices] = useState<string[]>([]);
-  const [batches, setBatches] = useState<LedgerBatchOption[]>([]);
   const [keyword, setKeyword] = useState("");
   const [sites, setSites] = useState<Array<{ site_code: string; display_name: string }>>([]);
   const [detail, setDetail] = useState<LedgerItemDetail | null>(null);
@@ -168,9 +199,9 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       .listItems({
         status: statusParam,
         site,
-        store: storeFilter,
         keyword: keyword.trim(),
         batch: batchId,
+        store: storeFilter,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       })
@@ -230,64 +261,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     }
   };
 
-  const changeStore = async (storeName: string) => {
-    if (!detail) return;
-    setBusy("store");
-    setNotice("");
-    setError("");
-    try {
-      const payload = await sourcingLedgerApi.setItemStore(detail.skc, storeName);
-      setDetail(payload);
-      setNotice(storeName ? `店铺已设为 ${storeName}` : "已清空店铺");
-      reload();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const openDetail = useCallback(async (item: LedgerItem) => {
-    setDetailBusy(true);
-    setNotice("");
-    setError("");
-    setForm(null);
-    try {
-      const payload = await sourcingLedgerApi.getItem(item.skc, item.site);
-      setDetail(payload);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setDetailBusy(false);
-    }
-  }, []);
-
-  const reloadDetail = useCallback(async (skc: string, targetSite: string) => {
-    const payload = await sourcingLedgerApi.getItem(skc, targetSite);
-    setDetail(payload);
-    reload();
-  }, [reload]);
-
-  // 抽屉里改价后详情会整体刷新：手动申报价输入框跟随最新一条手动记录回填。
-  useEffect(() => {
-    const manual = (detail?.declared_prices || []).find((row) => row.manual);
-    setManualPriceDraft(manual ? manual.adjusted_price_cny : "");
-  }, [detail]);
-
-  const run = async (key: string, action: () => Promise<void>, success: string) => {
-    setBusy(key);
-    setNotice("");
-    setError("");
-    try {
-      await action();
-      setNotice(success);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy("");
-    }
-  };
-
   /**
    * 申报价三件事：指定用哪个 SKU 的价格 / 手动填价 / 删掉某个 SKU 的申报价。
    *
@@ -339,6 +312,64 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       },
       "申报价已保存，利润已按新价格重算",
     );
+  };
+
+  const openDetail = useCallback(async (item: LedgerItem) => {
+    setDetailBusy(true);
+    setNotice("");
+    setError("");
+    setForm(null);
+    try {
+      const payload = await sourcingLedgerApi.getItem(item.skc, item.site);
+      setDetail(payload);
+      // 打开抽屉即可直接编辑：默认展开主货源的成本表单，不再需要先点「编辑」。
+      setForm(editFormFor(payload));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setDetailBusy(false);
+    }
+  }, []);
+
+  const reloadDetail = useCallback(async (skc: string, targetSite: string) => {
+    const payload = await sourcingLedgerApi.getItem(skc, targetSite);
+    setDetail(payload);
+    setForm(editFormFor(payload));
+    reload();
+  }, [reload]);
+
+  useEffect(() => {
+    setStoreDraft(detail?.store_name || "");
+  }, [detail?.skc, detail?.store_name]);
+
+  useEffect(() => {
+    const manual = (detail?.declared_prices || []).find((row) => row.manual);
+    setManualPriceDraft(manual ? manual.adjusted_price_cny : "");
+  }, [detail]);
+
+  const saveStore = async (value: string) => {
+    if (!detail) return;
+    const next = value.trim();
+    if (next === (detail.store_name || "")) return;
+    await run("store", async () => {
+      const payload = await sourcingLedgerApi.setItemStore(detail.skc, next);
+      setDetail(payload);
+      reload();
+    }, next ? `店铺已设为 ${next}` : "已清空店铺");
+  };
+
+  const run = async (key: string, action: () => Promise<void>, success: string) => {
+    setBusy(key);
+    setNotice("");
+    setError("");
+    try {
+      await action();
+      setNotice(success);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy("");
+    }
   };
 
   const saveSource = async () => {
@@ -462,8 +493,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     try {
       const result = await sourcingLedgerApi.setStores(selected, name);
       setNotice(`已把 ${result.updated} 个商品的店铺设为「${result.store_name}」`);
-      setSelected([]);
-      setBatchStoreDraft("");
       reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -472,19 +501,15 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     }
   };
 
-  const addImage = async (source: LedgerSource) => {    await addImageUrl(source, (imageDraft[source.id] || "").trim());
-  };
-
-  const addImageUrl = async (source: LedgerSource, url: string) => {
+  const replaceMainImage = async (source: LedgerSource, url: string) => {
     if (!detail || !url) return;
     setBusy(`image-${source.id}`);
     setNotice("");
     setError("");
     try {
-      const payload = await sourcingLedgerApi.addSourceImage(detail.skc, source.id, url);
+      const payload = await sourcingLedgerApi.setSourceMainImage(detail.skc, source.id, url);
       setDetail(payload);
-      setImageDraft((current) => ({ ...current, [source.id]: "" }));
-      setNotice("图片已添加");
+      setNotice("货源图片已更新");
       reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -516,9 +541,9 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     }
   };
 
-  const uploadImage = async (source: LedgerSource, file: File | null) => {
+  const uploadMainImage = async (source: LedgerSource, file: File | null) => {
     const dataUrl = await readImageFile(file);
-    if (dataUrl) await addImageUrl(source, dataUrl);
+    if (dataUrl) await replaceMainImage(source, dataUrl);
   };
 
   const uploadFormImage = async (file: File | null) => {
@@ -544,7 +569,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
 
   const removeMainImage = async (source: LedgerSource) => {
     if (!detail) return;
-    if (!window.confirm("删除这条货源的主图？删除后可用「上传图片」或 Ctrl+V 重新添加。")) return;
     setBusy(`image-${source.id}`);
     setNotice("");
     setError("");
@@ -583,55 +607,30 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
 
   return (
     <div className="ledger-page">
-      <section className="ledger-hero">
-        <div className="ledger-hero-main">
+      <header className="ledger-head">
+        <div>
           <h1>货源与利润</h1>
           <p>采集货源 → 上架 → Temu 申报价 → 利润核算 → 入产品库</p>
         </div>
-        <div className="ledger-hero-actions">
-          <button type="button" className="ledger-hero-btn" onClick={() => setRateOpen(true)}>
+        <div className="ledger-head-actions">
+          {selected.length > 0 && (
+            <button
+              type="button"
+              className="ledger-btn is-danger"
+              onClick={() => void removeItems(selected)}
+              disabled={Boolean(busy)}
+            >
+              {busy === "delete" ? "删除中…" : `删除已选 ${selected.length}`}
+            </button>
+          )}
+          <button type="button" className="ledger-btn" onClick={() => setRateOpen(true)}>
             站点费率设置
           </button>
-          <button type="button" className="ledger-hero-btn" onClick={reload} disabled={loading}>
+          <button type="button" className="ledger-btn" onClick={reload} disabled={loading}>
             {loading ? "刷新中…" : "刷新"}
           </button>
         </div>
-      </section>
-
-      <div className="ledger-toolbar">
-        <nav className="ledger-status-tabs">
-          {STATUS_TABS.map((tab) => {
-            const count = tab.statuses.length
-              ? tab.statuses.reduce((sum, value) => sum + (counts[value] || 0), 0)
-              : Object.values(counts).reduce((sum, value) => sum + value, 0);
-            const active = tab.key === status;
-            const hint =
-              tab.key === "pending"
-                ? PENDING_STATUSES.map((value) => `${STATUS_LABELS[value]} ${counts[value] || 0}`).join(" · ")
-                : tab.key === "ready"
-                  ? "净利润 ≥ ¥10 即可入库"
-                  : tab.key === "low_profit"
-                    ? "已采核价，但净利润 < ¥10"
-                    : undefined;
-            return (
-              <button
-                key={tab.key || "all"}
-                type="button"
-                className={`ledger-tab${active ? " is-active" : ""}`}
-                title={hint}
-                onClick={() => {
-                  setStatus(tab.key);
-                  setPage(1);
-                }}
-              >
-                {tab.label}
-                <em>{count}</em>
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="ledger-toolbar-actions">
+        <div className="ledger-batch-bar">
           <span className="ledger-total">共 {total} 个商品 · 利润从高到低</span>
           <div className="ledger-batch">
             <span className="ledger-batch-title">批量重量（kg）</span>
@@ -673,18 +672,38 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
               {busy === "stores" ? "应用中…" : `应用到已选 ${selected.length} 个`}
             </button>
           </div>
-          {selected.length > 0 && (
-            <button
-              type="button"
-              className="ledger-btn is-danger"
-              onClick={() => void removeItems(selected)}
-              disabled={Boolean(busy)}
-            >
-              {busy === "delete" ? "删除中…" : `删除已选 ${selected.length}`}
-            </button>
-          )}
         </div>
-      </div>
+      </header>
+
+      <nav className="ledger-status-tabs">
+        {STATUS_TABS.map((tab) => {
+          const count = tab.statuses.length
+            ? tab.statuses.reduce((sum, value) => sum + (counts[value] || 0), 0)
+            : Object.values(counts).reduce((sum, value) => sum + value, 0);
+          const active = tab.key === status;
+          const hint =
+            tab.key === "pending"
+              ? PENDING_STATUSES.map((value) => `${STATUS_LABELS[value]} ${counts[value] || 0}`).join(" · ")
+              : tab.key === "priced"
+                ? "净利润 ≥ ¥10 可入库，低于 ¥10 标为利润偏低"
+                : undefined;
+          return (
+            <button
+              key={tab.key || "all"}
+              type="button"
+              className={`ledger-tab${active ? " is-active" : ""}`}
+              title={hint}
+              onClick={() => {
+                setStatus(tab.key);
+                setPage(1);
+              }}
+            >
+              {tab.label}
+              <em>{count}</em>
+            </button>
+          );
+        })}
+      </nav>
 
       <section className="ledger-filters">
         <label>
@@ -769,20 +788,14 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                   aria-label="全选当前页"
                 />
               </th>
-              <th className="ledger-col-product">商品</th>
-              <th className="ledger-col-site">站点</th>
-              <th className="ledger-col-store">店铺</th>
-              <th className="ledger-col-source">货源</th>
-              <th className="ledger-col-num">到手成本</th>
-              <th className="ledger-col-num">申报价（调整后）</th>
-              <th className="ledger-col-num">
-                利润
-                <small className="ledger-th-hint" title="货源未填重量时，利润按默认 0.5kg 计算">
-                  按 0.5kg 估算
-                </small>
-              </th>
-              <th className="ledger-col-status">状态</th>
-              <th className="ledger-col-actions">操作</th>
+              <th>商品</th>
+              <th>站点</th>
+              <th>店铺</th>
+              <th>到手成本</th>
+              <th>申报价（调整后）</th>
+              <th>利润</th>
+              <th>状态</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -796,67 +809,79 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     aria-label={`选择 ${item.skc}`}
                   />
                 </td>
-                <td className="ledger-cell-product ledger-col-product">
-                  <div className="ledger-product-inner">
-                    {item.image_url ? (
-                      <button
-                        type="button"
-                        className="ledger-product-thumb"
-                        title="点击查看大图"
-                        onClick={() => setPreviewImage(item.image_url)}
-                      >
-                        <img src={item.image_url} alt="" referrerPolicy="no-referrer" />
-                      </button>
-                    ) : (
-                      <i />
-                    )}
-                    <div className="ledger-product-text">
-                      <button
-                        type="button"
-                        className={`ledger-title${
-                          expandedTitle === `${item.skc}-${item.site}` ? " is-expanded" : ""
-                        }`}
-                        title={expandedTitle === `${item.skc}-${item.site}` ? "点击收起" : "点击展开完整标题"}
-                        onClick={() =>
-                          setExpandedTitle((current) =>
-                            current === `${item.skc}-${item.site}` ? "" : `${item.skc}-${item.site}`,
-                          )
-                        }
-                      >
-                        {item.title || item.skc}
-                      </button>
-                      <small>
-                        {item.skc}
-                        {item.market_skc_id ? ` · SKC ${item.market_skc_id}` : ""}
-                        {item.market_skc_code && item.market_skc_code !== item.skc
-                          ? ` · 平台 ${item.market_skc_code}`
-                          : ""}
-                        {item.sku_count ? ` · ${item.sku_count} 个 SKU` : ""}
-                      </small>
-                    </div>
+                <td className="ledger-cell-product">
+                  {item.image_url ? (
+                    <button
+                      type="button"
+                      className="ledger-product-thumb"
+                      title="点击查看大图"
+                      onClick={() => setPreviewImage(item.image_url)}
+                    >
+                      <img src={item.image_url} alt="" referrerPolicy="no-referrer" />
+                    </button>
+                  ) : (
+                    <i />
+                  )}
+                  <div className="ledger-product-text">
+                    <button
+                      type="button"
+                      className={`ledger-title${
+                        expandedTitle === `${item.skc}-${item.site}` ? " is-expanded" : ""
+                      }`}
+                      title={expandedTitle === `${item.skc}-${item.site}` ? "点击收起" : "点击展开完整标题"}
+                      onClick={() =>
+                        setExpandedTitle((current) =>
+                          current === `${item.skc}-${item.site}` ? "" : `${item.skc}-${item.site}`,
+                        )
+                      }
+                    >
+                      {item.title || item.skc}
+                    </button>
+                    <small>
+                      {item.skc}
+                      {item.market_skc_id ? ` · SKC ${item.market_skc_id}` : ""}
+                      {item.market_skc_code && item.market_skc_code !== item.skc
+                        ? ` · 平台 ${item.market_skc_code}`
+                        : ""}
+                      {item.sku_count ? ` · ${item.sku_count} 个 SKU` : ""}
+                    </small>
                   </div>
                 </td>
-                <td className="ledger-col-site">{item.site ? item.site.replace(/站$/, "") : "—"}</td>
+                <td className="ledger-site-cell">{item.site ? item.site.replace(/站$/, "") : "—"}</td>
                 <td className="ledger-store-cell" title={item.store_name || undefined}>
                   {item.store_name || "—"}
                 </td>
-                <td className="ledger-col-source">{item.source_count ? `${item.source_count} 条` : "—"}</td>
-                <td className="ledger-col-num">{money(item.best_source?.landed_cost_cny)}</td>
-                <td className="ledger-col-num">
+                <td>{money(item.best_source?.landed_cost_cny)}</td>
+                <td>
                   {money(item.adjusted_min)}
+                  {item.price_sku_ref ? (
+                    <small className="ledger-estimate" title="已在抽屉里指定用哪个 SKU 核算">指定 SKU</small>
+                  ) : null}
                   {item.original_min && item.original_min !== item.adjusted_min ? (
                     <small className="ledger-muted"> 原 {money(item.original_min)}</small>
                   ) : null}
                 </td>
-                <td className="ledger-col-num">{profitText(item.profit)}</td>
-                <td className="ledger-col-status">
+                <td>
+                  {profitText(item.profit)}
+                  {item.weight_estimated ? (
+                    <small className="ledger-estimate" title="货源未填重量，利润按默认 0.5kg 计算">
+                      按 0.5kg 估算
+                    </small>
+                  ) : null}
+                </td>
+                <td>
                   <span className={`ledger-status ${statusTone(item.status)}`}>
                     {STATUS_LABELS[item.status] || item.status}
                   </span>
                 </td>
-                <td className="ledger-col-actions">
-                  <button type="button" className="ledger-link" onClick={() => void openDetail(item)}>
-                    货源 / 利润
+                <td className="ledger-action-cell">
+                  <button
+                    type="button"
+                    className="ledger-link"
+                    title="打开货源 / 利润详情"
+                    onClick={() => void openDetail(item)}
+                  >
+                    详情
                   </button>
                   <button
                     type="button"
@@ -883,7 +908,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       {total > 0 && (
         <div className="ledger-pager">
           <span className="ledger-pager-info">
-            第 {page} / {totalPages} 页 · 共 {total} 个商品 · 利润从高到低
+            第 {page} / {totalPages} 页 · 共 {total} 个商品
           </span>
           <div className="ledger-pager-actions">
             <select
@@ -968,18 +993,60 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     </select>
                     <small>采集来源：{detail.site || "未识别"}</small>
                   </label>
-                  <label className="ledger-site-picker">
-                    <span>店铺</span>
-                    <select
-                      value={detail.store_name || ""}
-                      disabled={busy === "store"}
-                      onChange={(event) => void changeStore(event.target.value)}
-                    >
-                      <option value="">未设置</option>
-                      {(detail.stores || []).map((name) => (
-                        <option key={name} value={name}>{name}</option>
-                      ))}
-                    </select>
+                  <label className="ledger-site-picker ledger-store-picker">
+                    <span>店铺（可选）</span>
+                    <span className="ledger-store-control">
+                      <input
+                        value={storeDraft}
+                        maxLength={120}
+                        placeholder="选择或填写店铺"
+                        disabled={busy === "store"}
+                        onChange={(event) => {
+                          setStoreDraft(event.target.value);
+                          setStoreOpen(true);
+                        }}
+                        onFocus={() => setStoreOpen(true)}
+                        onClick={() => setStoreOpen(true)}
+                        onBlur={() => window.setTimeout(() => setStoreOpen(false), 120)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") setStoreOpen(false);
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            setStoreOpen(false);
+                            void saveStore(storeDraft);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        aria-label="展开店铺列表"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => setStoreOpen((value) => !value)}
+                      >
+                        ⌄
+                      </button>
+                      {storeOpen && (detail.stores || []).length ? (
+                        <span className="ledger-store-menu" role="listbox">
+                          {(detail.stores || []).map((name) => (
+                            <button
+                              key={name}
+                              type="button"
+                              role="option"
+                              aria-selected={storeDraft.trim() === name}
+                              className={storeDraft.trim() === name ? "is-active" : undefined}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => {
+                                setStoreDraft(name);
+                                setStoreOpen(false);
+                                void saveStore(name);
+                              }}
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </span>
+                      ) : null}
+                    </span>
                   </label>
                 </div>
                 <button type="button" className="ledger-close" onClick={() => setDetail(null)}>×</button>
@@ -1003,7 +1070,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     <div className="ledger-source-body">
                       <div className="ledger-source-main">
                       <a href={source.source_url} target="_blank" rel="noreferrer">
-                        {source.source_title || source.offer_id || source.source_url}
+                        {sourceTitleText(source) || source.offer_id || source.source_url}
                       </a>
                       <small>
                         单价 {money(source.price_cny)} · 运费 {money(source.domestic_freight_cny)} · 到手{" "}
@@ -1013,102 +1080,19 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                       <small>利润 {profitText(source.profit as Record<string, unknown>)}</small>
                     </div>
 
-                    <div
-                      className="ledger-thumbs"
-                      tabIndex={0}
-                      title="点一下这里，再按 Ctrl+V 可粘贴图片"
-                      onPaste={(event) =>
-                        void pasteImage(event, (url) => void addImageUrl(source, url))
-                      }
-                    >
-                      {source.main_image_url ? (
-                        <span className="ledger-thumb-wrap">
-                          <button
-                            type="button"
-                            className="ledger-thumb"
-                            title="点击查看大图"
-                            onClick={() => setPreviewImage(String(source.main_image_url))}
-                          >
-                            <img src={source.main_image_url} alt="" referrerPolicy="no-referrer" />
-                          </button>
-                          <button
-                            type="button"
-                            className="ledger-thumb-del"
-                            title="删除主图"
-                            onClick={() => void removeMainImage(source)}
-                            disabled={Boolean(busy)}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ) : null}
-                      {(source.images || []).map((image) => (
-                        <span key={image.id} className="ledger-thumb-wrap">
-                          <button
-                            type="button"
-                            className="ledger-thumb"
-                            title="点击查看大图"
-                            onClick={() => setPreviewImage(image.image_url)}
-                          >
-                            <img src={image.image_url} alt="" referrerPolicy="no-referrer" />
-                          </button>
-                          <button
-                            type="button"
-                            className="ledger-thumb-del"
-                            title="删除图片"
-                            onClick={() => void removeImage(source, image.id)}
-                            disabled={Boolean(busy)}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="ledger-thumb-add">
-                      <input
-                        value={imageDraft[source.id] || ""}
-                        placeholder="粘贴图片链接 https://…"
-                        onChange={(event) =>
-                          setImageDraft((current) => ({ ...current, [source.id]: event.target.value }))
-                        }
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") void addImage(source);
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="ledger-link"
-                        onClick={() => void addImage(source)}
-                        disabled={Boolean(busy) || !(imageDraft[source.id] || "").trim()}
-                      >
-                        {busy === `image-${source.id}` ? "处理中…" : "添加链接"}
-                      </button>
-                      <label className="ledger-link ledger-upload">
-                        上传图片
-                        <input
-                          type="file"
-                          accept="image/*"
-                          disabled={Boolean(busy)}
-                          onChange={(event) => {
-                            const file = event.target.files?.[0] || null;
-                            event.target.value = "";
-                            void uploadImage(source, file);
-                          }}
-                        />
-                      </label>
-                    </div>
+                    <SourceImageDrop
+                      imageUrl={source.main_image_url || (source.images || [])[0]?.image_url || ""}
+                      busy={Boolean(busy)}
+                      onFile={(file) => void uploadMainImage(source, file)}
+                      onRemove={() => {
+                        const firstImage = (source.images || [])[0];
+                        if (source.main_image_url) void removeMainImage(source);
+                        else if (firstImage) void removeImage(source, firstImage.id);
+                      }}
+                    />
                     </div>
 
                     <div className="ledger-source-actions">
-                      <button
-                        type="button"
-                        className="ledger-link"
-                        onClick={() => setForm(formFromSource(source))}
-                        disabled={Boolean(busy)}
-                      >
-                        编辑
-                      </button>
                       <button
                         type="button"
                         className="ledger-link"
@@ -1145,18 +1129,23 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
             {form && (
               <section className="ledger-section ledger-form">
                 <h3>{form.id ? "编辑货源" : "新增货源"}</h3>
-                <label>
-                  <span>1688 链接</span>
-                  <input
-                    value={form.source_url}
-                    placeholder="https://detail.1688.com/offer/..."
-                    onChange={(event) => setForm({ ...form, source_url: event.target.value })}
-                  />
-                </label>
-                <label>
-                  <span>货源标题</span>
-                  <input value={form.source_title} onChange={(event) => setForm({ ...form, source_title: event.target.value })} />
-                </label>
+                {/* 已有货源只改成本：链接和标题由采集带入，不允许用户改。 */}
+                {!form.id && (
+                  <>
+                    <label>
+                      <span>1688 链接</span>
+                      <input
+                        value={form.source_url}
+                        placeholder="https://detail.1688.com/offer/..."
+                        onChange={(event) => setForm({ ...form, source_url: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>货源标题</span>
+                      <input value={form.source_title} onChange={(event) => setForm({ ...form, source_title: event.target.value })} />
+                    </label>
+                  </>
+                )}
                 <div className="ledger-form-row">
                   <label>
                     <span>单价（元）</span>
@@ -1249,9 +1238,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     </div>
                   </div>
                 )}
-                <p className="ledger-hint">
-                  到手成本 = 单价 + 国内运费（起订量按 1 件，不再摊销）。默认按到手成本最低的一条核算利润，可手动设为默认。
-                </p>
                 {editingSource?.weight_estimated ? (
                   <p className="ledger-hint">
                     这条货源原本没填重量，利润按默认 0.5kg 计算，已把 0.5 填在上方；改成实际重量后保存即可。
@@ -1265,74 +1251,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     取消
                   </button>
                 </div>
-              </section>
-            )}
-
-            {bestSource && (
-              <section className="ledger-section">
-                <h3>利润构成（{detail.site_code || "站点未识别"}）</h3>
-                <dl className="ledger-breakdown">
-                  <div>
-                    <dt>申报价（调整后最小）</dt>
-                    <dd>{money(detail.adjusted_min)}</dd>
-                  </div>
-                  <div>
-                    <dt>到手成本</dt>
-                    <dd>
-                      单价 {money(bestSource.price_cny)} + 国内运费 {money(bestSource.domestic_freight_cny)} ={" "}
-                      {money(bestSource.landed_cost_cny)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>重量（首程/尾程按它分档）</dt>
-                    <dd>
-                      {bestSource.weight_kg ? `${bestSource.weight_kg} kg` : "未填，按 0.5kg 估算"}
-                      {bestSource.weight_estimated ? (
-                        <span className="ledger-estimate">按 0.5kg 估算</span>
-                      ) : null}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>首程运费</dt>
-                    <dd>{money(String((bestSource.profit as Record<string, unknown>)?.shipping_cost ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>国内操作费</dt>
-                    <dd>{money(String((bestSource.profit as Record<string, unknown>)?.domestic_fee ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>尾程费</dt>
-                    <dd>{money(String((bestSource.profit as Record<string, unknown>)?.end_fee ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>运费补贴</dt>
-                    <dd>+{money(String((bestSource.profit as Record<string, unknown>)?.shipping_subsidy ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>总成本</dt>
-                    <dd>{money(String((bestSource.profit as Record<string, unknown>)?.total_cost ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>毛利润</dt>
-                    <dd>{money(String((bestSource.profit as Record<string, unknown>)?.gross_profit ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>净利润</dt>
-                    <dd>{money(String((bestSource.profit as Record<string, unknown>)?.net_profit ?? ""))}</dd>
-                  </div>
-                  <div>
-                    <dt>利润率（净利润 ÷ 总成本）</dt>
-                    <dd>
-                      {(() => {
-                        const rate = Number((bestSource.profit as Record<string, unknown>)?.profit_rate);
-                        return Number.isFinite(rate) ? `${(rate * 100).toFixed(2)}%` : "—";
-                      })()}
-                    </dd>
-                  </div>
-                </dl>
-                <p className="ledger-hint">
-                  费率来自「站点费率设置」，与「利润活动」共用；保存后两端与产品库同步重算。
-                </p>
               </section>
             )}
 
@@ -1439,6 +1357,11 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                     ? `按货源 ${money(bestSource.landed_cost_cny)} 计算`
                     : "先添加货源并采集申报价"}
                 </small>
+                {bestSource && detail.adjusted_min && !detail.site_code ? (
+                  <small className="ledger-foot-tip">
+                    还没有站点，无法计算利润：请在上方「站点」里选择站点
+                  </small>
+                ) : null}
               </div>
               {detail.in_library ? (
                 <button
@@ -1503,6 +1426,79 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
           reload();
         }}
       />
+    </div>
+  );
+}
+
+function SourceImageDrop({
+  imageUrl,
+  busy,
+  onFile,
+  onRemove,
+}: {
+  imageUrl: string;
+  busy: boolean;
+  onFile: (file: File | null) => void;
+  onRemove: () => void;
+}) {
+  const onPaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const image = Array.from(event.clipboardData.files).find((item) => item.type.startsWith("image/"));
+    if (!image) return;
+    event.preventDefault();
+    onFile(image);
+  };
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const image = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith("image/"));
+    if (image) onFile(image);
+  };
+  return (
+    <div
+      className="ledger-image-drop"
+      tabIndex={0}
+      title="点一下这里，再按 Ctrl+V 可粘贴图片"
+      onPaste={onPaste}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+    >
+      {imageUrl ? (
+        <img
+          className="ledger-image-preview"
+          src={imageUrl}
+          alt="货源图片"
+          referrerPolicy="no-referrer"
+        />
+      ) : (
+        <div className="ledger-image-icon">▢</div>
+      )}
+      <div className="ledger-image-copy">
+        <strong>货源图片 Ctrl+V</strong>
+        <span>
+          {busy
+            ? "处理中…"
+            : imageUrl
+              ? "已设置主图，可粘贴、拖入或选择新图替换"
+              : "可选：粘贴、拖入或选择图片"}
+        </span>
+      </div>
+      {imageUrl ? (
+        <button type="button" className="ledger-image-remove" onClick={onRemove} disabled={busy}>
+          移除
+        </button>
+      ) : null}
+      <label className="ledger-file-button">
+        选择图片
+        <input
+          type="file"
+          accept="image/*"
+          disabled={busy}
+          onChange={(event) => {
+            const file = event.target.files?.[0] || null;
+            event.target.value = "";
+            if (file) onFile(file);
+          }}
+        />
+      </label>
     </div>
   );
 }
