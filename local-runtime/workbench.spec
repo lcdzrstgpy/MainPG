@@ -74,6 +74,24 @@ if _ms_templates.is_dir():
 else:
     print("[workbench.spec] WARNING: 妙手导入模板目录不存在")
 
+# 浏览器插件源码目录：店铺账号 →「打开独立浏览器」会用 --load-extension 加载它，
+# 实现多账号并行。以前只认仓库根目录的 W-H-browser-extension-v*，冻结版里根本没有
+# 这个目录，用户点开浏览器就报「没有找到已解压的浏览器插件目录」。
+_ext_dirs = [
+    path for path in REPO.glob("W-H-browser-extension-v*")
+    if path.is_dir() and (path / "manifest.json").is_file()
+]
+if _ext_dirs:
+    def _ext_version(path: Path):
+        found = re.search(r"v(\d+(?:\.\d+)*)", path.name)
+        return tuple(int(part) for part in found.group(1).split(".")) if found else (0,)
+
+    _latest_ext = max(_ext_dirs, key=_ext_version)
+    datas.append((str(_latest_ext), "browser-extension"))
+    print(f"[workbench.spec] bundled browser extension {_latest_ext.name}")
+else:
+    print("[workbench.spec] WARNING: 没有找到 W-H-browser-extension-v*，多账号浏览器将无法加载插件")
+
 # 前端构建产物（web-frontend/dist → _internal/web-frontend/dist）
 _frontend_dist = REPO / "web-frontend" / "dist"
 if _frontend_dist.is_dir():

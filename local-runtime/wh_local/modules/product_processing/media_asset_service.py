@@ -293,12 +293,21 @@ class MediaAssetService:
             "carousel": [],
             "dimension": [],
         }
-        for binding in self.repository.list_bindings(
+        bindings = list(
+            self.repository.list_bindings(
+                workspace_id,
+                product_draft_id=product_draft_id,
+                active_only=True,
+            )
+        )
+        # 资产一次批量取：以前在循环里逐条 get_asset，一屏 20 张图就是 20 次查询 ——
+        # 成品库首屏要跑 8 个任务，累计 250 次往返，光这里 0.4 秒。
+        assets = self.repository.get_assets(
+            [str(binding.get("asset_id") or "") for binding in bindings],
             workspace_id,
-            product_draft_id=product_draft_id,
-            active_only=True,
-        ):
-            asset = self.repository.get_asset(binding["asset_id"], workspace_id)
+        )
+        for binding in bindings:
+            asset = assets.get(str(binding.get("asset_id") or ""))
             if asset is None:
                 continue
             role = str(binding.get("role") or "gallery")

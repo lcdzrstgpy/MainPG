@@ -28,6 +28,8 @@ export type WorkspaceModuleId =
   | "order_profit_overview"
   | "order_profit_orders"
   | "order_profit_funds"
+  | "order_profit_binding"
+  | "order_profit_costs"
   | "order_profit_accounts"
   | "order_profit_capture"
   | "order_profit_home"
@@ -195,7 +197,7 @@ const productProcessingHistory: WorkspaceModule = {
 
 const temuPublish: WorkspaceModule = {
   id: "temu_publish",
-  label: "发布商品（实验）",
+  label: "发布商品",
   icon: "",
   iconClass: "iconfont icon-upload",
   description: "选择类目与属性，组装 Temu 商品发布请求体",
@@ -203,10 +205,12 @@ const temuPublish: WorkspaceModule = {
 
 const temuDraftLibrary: WorkspaceModule = {
   id: "temu_draft_library",
-  label: "草稿库",
+  label: "成品库",
   icon: "",
   iconClass: "iconfont icon-database",
-  description: "汇总 AI 处理与 POD 成品，一键带入发布商品",
+  // 里面放的是 AI 处理完 / POD 定制完的东西 —— 已经做完了，只差没上架；
+  // 叫「草稿」会让人以为还没做完，也和 Temu 后台的草稿箱撞名。
+  description: "AI 处理与 POD 定制成品，一键带入发布商品",
 };
 
 const temuPublishHistory: WorkspaceModule = {
@@ -272,7 +276,25 @@ const sourcingLedger: WorkspaceModule = {
 /**
  * 店铺数据侧栏：数据量偏少的页面合并展示。
  * 经营概览 = 首页指标 + 流量 + 销量；账户资金 = 对账流水 + 结算回款。
+ * 2026-11-09：成本桥接改造期间，旧的六个子板块先从侧栏隐藏（路由保留），
+ * 「店铺绑定」与「链接成本」作为两个独立入口；验收后再清理旧代码。
  */
+const orderProfitBindingModule: WorkspaceModule = {
+  id: "order_profit_binding",
+  label: "店铺绑定",
+  icon: "",
+  iconClass: "iconfont icon-user",
+  description: "输入 Temu 账号密码，校验服务器上的店铺记录并建立绑定",
+};
+
+const orderProfitCostModule: WorkspaceModule = {
+  id: "order_profit_costs",
+  label: "链接成本",
+  icon: "",
+  iconClass: "iconfont icon-calculator",
+  description: "手动同步已绑定店铺的链接数据并回填单件成本",
+};
+
 const orderProfitModules: WorkspaceModule[] = [
   {
     id: "order_profit_overview",
@@ -280,6 +302,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-dashboard",
     description: "店铺首页指标、流量分析与销量库存",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_orders",
@@ -287,6 +310,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-orderedlist",
     description: "全部/待发货/已发货/已签收/已取消订单",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_funds",
@@ -294,6 +318,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-accountbook-fill",
     description: "对账中心流水与结算回款",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_capture",
@@ -301,6 +326,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-cloud-download",
     description: "插件会话、一键采集与实时进度",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_records",
@@ -308,6 +334,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-time-circle",
     description: "订单列表/详情采集写入的批次与入库结果",
+    hiddenFromSidebar: true,
   },
   {
     id: "order_profit_accounts",
@@ -315,6 +342,7 @@ const orderProfitModules: WorkspaceModule[] = [
     icon: "",
     iconClass: "iconfont icon-user",
     description: "多账号独立浏览器、自动登录与验证码在线等待",
+    hiddenFromSidebar: true,
   },
 ];
 
@@ -481,9 +509,9 @@ const orderProfitWorkflow: WorkspaceNavigationGroup = {
   label: "店铺数据管理",
   icon: "",
   iconClass: "iconfont icon-accountbook-fill",
-  description: "Temu 店铺指标、订单与账户资金",
-  defaultChildId: "order_profit_overview",
-  children: orderProfitModules,
+  description: "校验账号绑定店铺、手动同步链接数据并回填成本",
+  defaultChildId: "order_profit_binding",
+  children: [orderProfitBindingModule, orderProfitCostModule, ...orderProfitModules],
 };
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
@@ -499,13 +527,13 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     children: [productWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
   },
   {
-    // 海外上架（原「发布商品」）：草稿库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
+    // 海外上架：成品库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
     // 而不是一张空表单。
     id: "overseas_listing",
     label: "海外上架",
     icon: "",
     iconClass: "iconfont icon-upload",
-    description: "Temu 商品发布与草稿库",
+    description: "Temu 商品发布：成品库 → 发布商品 → 发布历史",
     defaultChildId: "temu_draft_library",
     children: [temuDraftLibrary, temuPublish, temuPublishHistory],
   },
@@ -570,6 +598,8 @@ export const workspacePageModules: WorkspaceModule[] = [
   profitActivity,
   productLibrary,
   ...orderProfitModules,
+  orderProfitBindingModule,
+  orderProfitCostModule,
   ...orderProfitLegacyModules,
   personalCenter,
 ];

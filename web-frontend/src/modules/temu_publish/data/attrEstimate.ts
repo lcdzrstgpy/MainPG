@@ -101,8 +101,7 @@ export function estimateAttributePicks(options: {
 
       const name = prop.name || prop.propertyName || `pid=${pid}`;
       const units = prop.valueUnit ?? [];
-      // 空串等于没有单位：Temu 会给无单位属性返回 [""]
-      const unit = units.length ? String(units[0] ?? "").trim() : "";
+      const unit = units.length ? String(units[0] ?? "") : "";
       const usable = (prop.values ?? []).filter((value) => {
         const text = String(value.value ?? "").trim();
         return !!text && !PLACEHOLDER_VALUE.test(text) && hasMatchableText(text);

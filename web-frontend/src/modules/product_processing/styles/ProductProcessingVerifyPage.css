@@ -604,6 +604,36 @@
   flex-shrink: 0;
 }
 
+/* 草稿池手动精小品标注：轻量胶囊，不抢主操作按钮的视觉权重。 */
+.pool-precision {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid #e2d9f3;
+  background: #f6f2fd;
+  color: #6a4f9c;
+  font-size: 0.66rem;
+  font-weight: 800;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.pool-precision input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #7c5cc4;
+  cursor: pointer;
+}
+
+.pool-precision input:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .pool-source-link {
   display: inline-flex;
   align-items: center;
@@ -5959,17 +5989,12 @@
 .verify-batch-popover-head > div:first-child { display: grid; gap: 3px; }
 .verify-batch-popover-head strong { color: #24455c; font-size: .86rem; }
 .verify-batch-popover-head span { color: #7e93a4; font-size: .7rem; }
-.verify-batch-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.verify-batch-actions button { padding: 7px 12px; border: 1px solid #cfe1eb; border-radius: 8px; color: #167797; background: #f4fbfe; font-size: .72rem; font-weight: 800; cursor: pointer; }
-.verify-batch-actions button.is-danger { border-color: #edc9cd; color: #a74c55; background: #fff6f6; }
-.verify-batch-actions button:disabled { cursor: not-allowed; opacity: .45; }
 /* 侧抽屉列表：撑满抽屉剩余高度（head 之外的可用空间），仅在列表内部滚动。
    max-height:none 显式清除同选择器在其他区块的遗留上限，避免被再次钉死。 */
 .verify-batch-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
 .verify-batch-row { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-bottom: 1px solid #f0f4f7; }
 .verify-batch-row:last-child { border-bottom: 0; }
 .verify-batch-row.is-active { background: #f0fbfe; }
-.verify-batch-check input { width: 15px; height: 15px; accent-color: #0aa6cc; }
 .verify-batch-main { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; border: 0; background: none; padding: 2px 0; cursor: pointer; text-align: left; }
 .verify-batch-tags { display: inline-flex; align-items: center; gap: 6px; flex: none; }
 .verify-batch-tags em { padding: 3px 8px; border-radius: 999px; color: #0c6f92; background: #e8f6fb; font-size: .64rem; font-style: normal; font-weight: 800; }

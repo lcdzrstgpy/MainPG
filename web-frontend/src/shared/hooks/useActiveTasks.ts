@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getAuthAccount, getAuthToken } from "../../transport/http/client";
+import { apiUrl, getAuthAccount, getAuthToken } from "../../transport/http/client";
 
 /** 与后端 /api/tasks/active-overview 的 item 结构对应。 */
 export type ActiveTaskItem = {
@@ -47,7 +47,7 @@ async function fetchOverview(): Promise<Overview | null> {
     };
     const token = getAuthToken();
     if (token) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch("/api/tasks/active-overview", { headers });
+    const response = await fetch(apiUrl("/api/tasks/active-overview"), { headers });
     // 请求失败返回 null（≠ 空列表）：空列表意味着「确实没任务了」，
     // 而网络抖动 / 5xx / 未登录不该被解读成任务消失，否则按钮会闪。
     if (!response.ok) return null;

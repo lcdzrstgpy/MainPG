@@ -25,8 +25,12 @@ export type TemuSizeChartInfo = {
   required?: boolean;
   has_size_chart: boolean;
   count: number;
-  /** 店里已有的表（结构未确认，仅备查） */
-  tables?: unknown[];
+  /**
+   * 店里已有的尺码表（可以直接填进 sizeTemplateIds 的那种）。
+   * 后端收敛成 `{id, name}`：网关字段名没确认，认不出 id 的行会被丢掉，所以
+   * `count` 可能大于 `tables.length`。
+   */
+  tables?: Array<{ id: number; name: string }>;
   raw?: unknown;
   /** 该尺码组的测量项（肩宽/胸围全围/裙长…） */
   elements?: Array<{ id: number; name: string; necessary: boolean }>;
@@ -348,11 +352,25 @@ export type TemuDraftLibrary = {
   page: number;
   page_size: number;
   pages: number;
+  /**
+   * 还有没取出来的商品：某个处理批次里的商品数超过「每批一页（20）」时为 true。
+   * 为 true 时界面显示「加载更多」，点一次把 item_offset 推进 20 再取一遍。
+   */
+  has_more?: boolean;
+  /** 当前每个批次已经取到第几个（0 起）。界面用它显示「已加载到第 N 个 / 批」。 */
+  item_offset?: number;
   source: "all" | "ai" | "pod";
   query: string;
 };
 
 export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";
+
+/**
+ * 发布历史「去修这条」→ 草稿库自动打开指定草稿。
+ * 历史条目记了来源草稿 id（ai:任务:项 / pod:批次:款式），草稿库条目 id 同源，
+ * 切过去找到那条直接走「编辑」链路（整表预填进发布页），不用用户再翻。
+ */
+export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";
 
 /**
  * 草稿库「用于发布」的事件通道。

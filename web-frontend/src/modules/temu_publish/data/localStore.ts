@@ -83,7 +83,6 @@ export type PublishFailure = {
   priceLabel: string;
   at: string;
   reason: string;
-  hint: string;
   traceId: string;
   /** 重试时直接带回发布页的预填数据 */
   prefill?: Record<string, unknown>;
@@ -158,19 +157,19 @@ export const localStore = {
 };
 
 /**
- * 从报错信息里抽出「原因 + 建议 + Trace ID」。
  * Temu 的报错常带 Trace_id=xxx，把那一长串留给排查；正文转成人话。
  */
-export function parsePublishError(error: unknown): { reason: string; hint: string; traceId: string } {
+/**
+ * 把发布异常拆成「原因」和 «Trace id»。
+ *
+ * 这里**不再**自己猜一份「怎么改」的建议：后端 `_gateway_message` 已经把结论、
+ * 原话和建议拼进 message 了，前端再按关键词猜一套只会出现两种说法打架。
+ * （猜出来的那份以前存在失败记录的 hint 字段里，但历史页从来没渲染过 —— 纯死数据。）
+ */
+export function parsePublishError(error: unknown): { reason: string; traceId: string } {
   const text = error instanceof Error ? error.message : String(error ?? "");
   const trace = /Trace[_\s]?id[=:：]\s*([A-Za-z0-9-]+)/i.exec(text)?.[1] ?? "";
   const reason = text.replace(/Trace[_\s]?id[=:：]\s*[A-Za-z0-9-]+/gi, "").trim() || "未知错误";
-  let hint = "检查必填项与图片规格后重试。";
-  if (/图片|image|img/i.test(reason)) hint = "轮播图需 1:1、≥800×800；详情图一个模块只能一张。";
-  else if (/类目|category|cat/i.test(reason)) hint = "确认选到叶子类目，且该分类在店铺后台能正常建品。";
-  else if (/属性|property|spec/i.test(reason)) hint = "补全必填属性；规格不合法时先在后台重置规格模版。";
-  else if (/价格|price|currency/i.test(reason)) hint = "申报价格单位是分且必须 > 0，币种固定 CNY。";
-  else if (/库存|stock/i.test(reason)) hint = "库存要 ≥ 0，仓库不能是 type=3 的仓。";
-  else if (/token|授权|auth/i.test(reason)) hint = "店铺 token 可能过期，重新授权后到「我的店铺」更新。";
-  return { reason: reason.slice(0, 400), hint, traceId: trace };
+  return { reason: reason.slice(0, 400), traceId: trace };
 }
+

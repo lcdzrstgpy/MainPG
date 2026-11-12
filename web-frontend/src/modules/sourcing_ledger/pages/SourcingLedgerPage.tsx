@@ -175,6 +175,8 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [detailBusy, setDetailBusy] = useState(false);
   const [form, setForm] = useState<SourceForm | null>(null);
   const [busy, setBusy] = useState("");
+  // 手动填申报价（采集不到时按 Temu 可上架价直接填），随申报价区块一起补回
+  const [manualPriceDraft, setManualPriceDraft] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [weightDraft, setWeightDraft] = useState("");
   const [batchStoreDraft, setBatchStoreDraft] = useState("");
@@ -182,7 +184,6 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [expandedTitle, setExpandedTitle] = useState("");
   const [rateOpen, setRateOpen] = useState(false);
   const [imageDraft, setImageDraft] = useState<Record<string, string>>({});
-  const [manualPriceDraft, setManualPriceDraft] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [reloadToken, setReloadToken] = useState(0);
@@ -260,23 +261,39 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
     }
   };
 
+  /**
+   * 申报价三件事：指定用哪个 SKU 的价格 / 手动填价 / 删掉某个 SKU 的申报价。
+   *
+   * 2026-11-09 合并 `fix/dxm-export-and-activity-filter` 时发现：这三个入口
+   * 在我们这版的整页重写里被静默删掉过（API 还在，UI 没了），页面上只能看价、
+   * 不能选价也不能删。同一个问题队友在 `feature/pp-main-bg-scene` 上已经补过一次，
+   * 所以这里连注释一起补回来 —— 下次再整页重写时请保留。
+   */
   const choosePriceSku = async (skuRef: string) => {
     if (!detail) return;
-    await run("price-selection", async () => {
-      const payload = await sourcingLedgerApi.setPriceSelection(detail.skc, skuRef);
-      setDetail(payload);
-      reload();
-    }, skuRef ? "已改用该 SKU 的申报价" : "已恢复默认最低申报价");
+    await run(
+      "price-selection",
+      async () => {
+        const payload = await sourcingLedgerApi.setPriceSelection(detail.skc, skuRef);
+        setDetail(payload);
+        reload();
+      },
+      skuRef ? "已改用该 SKU 的申报价" : "已恢复默认最低申报价",
+    );
   };
 
   const removeDeclaredPrice = async (rowId: string) => {
     if (!detail || !rowId) return;
     if (!window.confirm("删除这个 SKU 的申报价？删除后不再参与最低价与利润计算。")) return;
-    await run("declared-delete", async () => {
-      const payload = await sourcingLedgerApi.deleteDeclaredPrice(detail.skc, rowId);
-      setDetail(payload);
-      reload();
-    }, "SKU 已删除");
+    await run(
+      "declared-delete",
+      async () => {
+        const payload = await sourcingLedgerApi.deleteDeclaredPrice(detail.skc, rowId);
+        setDetail(payload);
+        reload();
+      },
+      "SKU 已删除",
+    );
   };
 
   const saveManualPrice = async () => {
@@ -286,11 +303,15 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
       setError("请填写申报价");
       return;
     }
-    await run("manual-price", async () => {
-      const payload = await sourcingLedgerApi.setManualPrice(detail.skc, price);
-      setDetail(payload);
-      reload();
-    }, "申报价已保存，利润已按新价格重算");
+    await run(
+      "manual-price",
+      async () => {
+        const payload = await sourcingLedgerApi.setManualPrice(detail.skc, price);
+        setDetail(payload);
+        reload();
+      },
+      "申报价已保存，利润已按新价格重算",
+    );
   };
 
   const openDetail = useCallback(async (item: LedgerItem) => {
@@ -734,15 +755,19 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
         </label>
         <label className="ledger-keyword">
           <span>关键词</span>
-          <input
+          <textarea
             value={keyword}
-            placeholder="货号 / SKC / 标题"
+            rows={1}
+            placeholder="货号 / SKC / 标题，可换行批量粘贴"
             onChange={(event) => {
               setKeyword(event.target.value);
               setPage(1);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter") reload();
+              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                reload();
+              }
             }}
           />
         </label>
@@ -1265,7 +1290,7 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                 >
                   {busy === "manual-price" ? "保存中…" : "保存"}
                 </button>
-                <small>采集不到时可直接填 Temu 上可上架的申报价，同样参与利润核算</small>
+                <small>采集不到申报价时直接填，保存后利润按新价重算</small>
               </div>
               <div className="ledger-price-table">
                 <table>
@@ -1279,8 +1304,13 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                   </thead>
                   <tbody>
                     {detail.declared_prices.map((row, index) => (
-                      <tr key={row.id || `${row.sku_id}-${index}`} className={row.selected ? "is-selected" : ""}>
-                        <td className="ledger-price-attr" title={row.sku_attribute_text}>{row.sku_attribute_text || "—"}</td>
+                      <tr
+                        key={row.id || `${row.sku_id}-${index}`}
+                        className={row.selected ? "is-selected" : ""}
+                      >
+                        <td className="ledger-price-attr" title={row.sku_attribute_text}>
+                          {row.sku_attribute_text || "—"}
+                        </td>
                         <td>{money(row.original_price_cny)}</td>
                         <td>{money(row.adjusted_price_cny)}</td>
                         <td className="ledger-price-actions">

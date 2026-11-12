@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -15,7 +16,12 @@ from .client import TemuCredentialMissing, TemuGatewayError, clear_shared_catalo
 from . import submissions as submission_ledger
 from .submissions import DuplicateSubmission
 from .gateway_sync import mark_provider_credentials_stale, sync_provider_credentials
-from .library import collect_all_draft_entries, paginate_draft_library
+from .library import (
+    collect_all_draft_entries,
+    materialize_draft_search,
+    paginate_draft_library,
+    scan_draft_library,
+)
 from .schemas import (
     DetailImageUploadRequest,
     DimensionCheckRequest,
@@ -32,45 +38,135 @@ from .service import TemuPublishService
 logger = logging.getLogger("wh_local.temu_publish")
 
 # 网关鉴权类错误：告诉用户到底该改哪一处，而不是只丢一句「client_id or token is invalid」。
-_GATEWAY_HINTS = {
+# 网关错误 → (一句话结论, 怎么改, 该去哪个区块改)
+#
+# 结论和原话要分开：Temu 的原话是直译（「体积内容必须遵循最长边 ≥ 次长边 ≥ 最短边原则」），
+# 用户看不懂「体积内容」指的是长宽高；但原话不能丢，排障时只有它能对上 Temu 的文档。
+# 第三项是发布页的区块 id，前端据此在报错条上给一个「去改」按钮。
+_GATEWAY_HINTS: dict[str, tuple[str, str, str]] = {
     "CLIENT_TOKEN_REQUIRED": (
-        "服务商网关凭据没填全：这里要填的是服务商后台的 client_id / token，"
-        "不是 Temu 店铺的 access_token"
+        "服务商凭据没填全",
+        "这里要填服务商后台的 client_id / token，不是 Temu 店铺的 access_token",
+        "",
     ),
     "CLIENT_TOKEN_INVALID": (
-        "这是服务商网关的 client_id / token 无效，跟店铺 access_token 无关（请求还没到 Temu）。"
-        "让给凭据的人确认：client 和 token 是不是同一对、有没有被重置、本机公网 IP 在不在白名单"
+        "服务商网关不认这组凭据（跟店铺 access_token 无关，请求还没到 Temu）",
+        "让给凭据的人确认：client 和 token 是不是同一对、有没有被重置、本机公网 IP 在不在白名单",
+        "",
     ),
     "CLIENT_PERMISSION_DENIED": (
-        "服务商网关拒绝了这个 client：多半是应用没开该接口权限，或本机 IP 不在白名单"
+        "服务商网关拒绝了这个 client",
+        "多半是应用没开该接口权限，或本机 IP 不在白名单",
+        "",
     ),
-    "7000006": "这个 access_token 没和商务应用绑定：回店铺后台重新授权，再把新 token 填进来",
+    "7000006": (
+        "这个 access_token 没和商务应用绑定",
+        "回店铺后台重新授权，再把新 token 填进来",
+        "",
+    ),
     # Temu 校验「属性 + 规格」两套定义，任一对不上都回这个码。
     # 2026-11-03 实测：桌布 / 化妆包这类 **没有销售属性** 的类目，真正原因是补的规格
     # 不是该类目的合法值（id 全 0 的占位、或值不在「颜色」预设值里），跟缓存新旧无关。
     # 所以文案别再一口咬定「属性表过时」，先让用户看 Temu 给没给具体字段。
     "6000002": (
-        "Temu 说这个类目的属性/规格定义跟它对不上。"
-        "如果上面的原话里点名了具体属性（如「属性[颜色]校验错误」），改那一项；"
-        "没点名就把必填属性/规格重新选一遍再提交"
-        "（没有销售属性的类目会自动补一条真实规格占位，不用自己造）"
+        "类目属性/规格跟 Temu 对不上",
+        "原话里点名了具体属性（如「属性[颜色]校验错误」）就改那一项；没点名就把必填属性、"
+        "规格重新选一遍再提交（没有销售属性的类目会自动补一条真实规格占位，不用自己造）",
+        "sec-info",
     ),
     "NETWORK_ERROR": (
-        "连不上服务商网关（TLS 握手被中断）。常见原因是系统代理把这条国内网关请求也劫走了；"
-        "程序默认不走系统代理，确实需要走代理时用环境变量 WH_TEMU_PROXY 指定"
+        "连不上服务商网关",
+        "常见原因是系统代理把这条国内网关请求也劫走了；确实需要走代理时用环境变量 WH_TEMU_PROXY 指定",
+        "",
     ),
 }
 
-# 类目属性定义在 Temu 侧变过的错误码（实测 2026-11-03，桌布类目 10498）。
+# 没见过的错误码用 Temu 原话兜底。这些说法全部来自真实失败记录（temu_publish_submissions），
+# 出现新说法就往这里加一行 —— 比死等错误码表补全快得多。
+# 顺序有意义：更具体的放前面（「轮播图最少 3 张」要先于泛化的「图片」）。
+_GATEWAY_PATTERNS: list[tuple[str, tuple[str, str, str]]] = [
+    ("体积内容|最长边|次长边|最短边", (
+        "长宽高不合规",
+        "按实际尺寸填长宽高（单位厘米，不能是 0）；提交时会自动按长→短排序，仍然报这个多半是数值超范围或填反了",
+        "sec-pack",
+    )),
+    ("发货时效|shipment", (
+        "这个发货时效档位 Temu 不收",
+        "换 1 / 2 / 7 个工作日再提交，自定义档位不一定被接受",
+        "sec-pack",
+    )),
+    ("轮播图最少|轮播图不足|at least 3", (
+        "轮播图不够",
+        "补到 3 张以上（最多 10 张），第一张是主图",
+        "sec-info",
+    )),
+    ("素材图|Material Image", (
+        "产品素材图不合规",
+        "要 1:1、宽 ≥800 的方图；服饰类目不能拿 3:4 的轮播图顶",
+        "sec-info",
+    )),
+    ("详情图|Detail graphic", (
+        "详情图不合规",
+        "详情图会被统一缩到 800 宽；仍报错就把这个模块删掉重传",
+        "sec-info",
+    )),
+    ("属性|propertyId|property", (
+        "类目属性跟 Temu 对不上",
+        "按原话点名的属性改；没点名就把必填属性重新选一遍再提交",
+        "sec-info",
+    )),
+    ("规格|spec|SKC", (
+        "规格/变种不合规",
+        "颜色、尺码必须用类目预设值，自己造的值会被拒",
+        "sec-variant",
+    )),
+    ("申报价|价格|price", (
+        "申报价不合规",
+        "必须是大于 0 的数字，币种固定 CNY",
+        "sec-variant",
+    )),
+    ("库存|stock", (
+        "库存不合规",
+        "不能是负数；0 是允许的（先建品后补货）",
+        "sec-variant",
+    )),
+    ("类目|category", (
+        "类目链有问题",
+        "确认选到了叶子类目，并且这个类目在店铺后台能建品",
+        "sec-base",
+    )),
+]
+
 _CATEGORY_ATTRS_CHANGED = "6000002"
 
 
-def _gateway_message(error_code: str, message: str) -> str:
-    """把网关错误拼成「原因（错误码）+ 该怎么改」。"""
+def _gateway_message(error_code: str, message: str) -> tuple[str, str]:
+    """网关错误 →（给用户看的整句, 该去哪个区块改）。
+
+    整句的结构：「Temu 拒绝了这次提交：<结论>（原话：…，错误码 X）。<怎么改>」。
+    认不出来的错误码/说法，就把原话原样给出去 + 提醒转给对接人 ——
+    比只剩一句英文直译强，也不会假装我们知道怎么修。
+    """
     reason = (message or "").strip() or "未返回原因"
-    suffix = f"（错误码 {error_code}）" if error_code else ""
-    hint = _GATEWAY_HINTS.get(str(error_code or "").upper())
-    return f"Temu 拒绝了这次提交：{reason}{suffix}" + (f"。{hint}" if hint else "")
+    code = str(error_code or "").strip()
+    title = hint = section = ""
+    known = _GATEWAY_HINTS.get(code.upper())
+    if known:
+        title, hint, section = known
+    else:
+        for pattern, info in _GATEWAY_PATTERNS:
+            if re.search(pattern, reason, re.I):
+                title, hint, section = info
+                break
+    if not title:
+        suffix = f"（错误码 {code}）" if code else ""
+        return (
+            f"Temu 拒绝了这次提交：{reason}{suffix}。这条原因还没归过类，把上面原话发给对接人看",
+            "",
+        )
+    tail = f"（原话：{reason}，错误码 {code}）" if code else f"（原话：{reason}）"
+    text = f"Temu 拒绝了这次提交：{title}{tail}"
+    return (f"{text}。{hint}" if hint else text), section
 
 
 # 需要到服务商/上游修配置的错误码，按网关错误（502）返回，便于前端区分“参数问题”。
@@ -93,10 +189,39 @@ _PROVIDER_CREDENTIAL_ERRORS = frozenset(
 
 
 # 草稿库聚合结果短缓存：进页面/切页签回来不必重新扫 8 个任务 + 6 个批次。
-# key = (账号, limit)；发布/刷新会带 refresh=1 绕过。
-_LIBRARY_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
-_LIBRARY_CACHE_TTL = 60.0
+# key = (账号, limit)；「刷新」按钮会带 refresh=1 绕过。
+#
+# TTL 从 60 秒放到 180 秒：聚合本身要跑 8 次 task_preview（实测约 1 秒），
+# 60 秒意味着用户来回切几次页签就重扫一遍，体感就是「每次都慢」。
+# 加长不会让用户看到过期数据 —— 「发布成功的商品从库里消失」这一步不走缓存
+# （见 draft_library 里的 published_draft_ids，每次实时过滤）。
+_LIBRARY_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any]]] = {}
+_LIBRARY_CACHE_TTL = 180.0
 _LIBRARY_CACHE_LOCK = threading.Lock()
+
+# 搜索结果缓存：key = (账号, 归一化关键字)，存的是「扫完全库的命中集合」（不带图片），
+# 翻页/切来源都在它上面切，不用每页重扫。图片投影仍然按页做，所以缓存里没法存整页。
+_SEARCH_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_SEARCH_CACHE_TTL = 120.0
+_SEARCH_CACHE_MAX = 64
+
+
+def _evict_search_cache(now: float) -> None:
+    """缓存满了先删过期的，再按时间淘汰最老的。
+
+    一条命中集合可能带几百上千个条目（每个还带着变种列表），随手打几个关键字
+    就能塞满；只删「过期」不够 —— 用户连打十几个字时全是新鲜的，内存会一直涨。
+    """
+    if len(_SEARCH_CACHE) < _SEARCH_CACHE_MAX:
+        return
+    cutoff = now - _SEARCH_CACHE_TTL
+    for stale_key in [key for key, value in _SEARCH_CACHE.items() if value[0] < cutoff]:
+        _SEARCH_CACHE.pop(stale_key, None)
+    if len(_SEARCH_CACHE) < _SEARCH_CACHE_MAX:
+        return
+    overflow = len(_SEARCH_CACHE) - _SEARCH_CACHE_MAX + 1
+    for oldest_key, _value in sorted(_SEARCH_CACHE.items(), key=lambda item: item[1][0])[:overflow]:
+        _SEARCH_CACHE.pop(oldest_key, None)
 
 
 def create_temu_publish_router(
@@ -139,6 +264,52 @@ def create_temu_publish_router(
         """凭证按账号隔离：每次请求都换成当前登录账号的店铺上下文。"""
         return service.with_owner(actor.id)
 
+    def _search_library(
+        actor: Actor,
+        needle: str,
+        *,
+        source: str,
+        page: int,
+        page_size: int,
+        refresh: bool,
+    ) -> dict[str, Any]:
+        """全量搜索：扫全库 → 缓存命中集合 → 按页补图片。
+
+        缓存只存「扫完后命中的条目（AI 侧没图）」，因为图片投影是按页做的；
+        翻页、切来源筛选都在这份命中集合上切，不会重扫任务。
+        """
+        key = (actor.id, needle.lower())
+        now = time.time()
+        scan: dict[str, Any] | None = None
+        if not refresh:
+            with _LIBRARY_CACHE_LOCK:
+                hit = _SEARCH_CACHE.get(key)
+            if hit and now - hit[0] < _SEARCH_CACHE_TTL:
+                scan = hit[1]
+        if scan is None:
+            pod_service = pod_service_getter() if callable(pod_service_getter) else None
+            scan = scan_draft_library(
+                product_processing=product_processing,
+                pod_service=pod_service,
+                actor=actor,
+                query=needle,
+            )
+            with _LIBRARY_CACHE_LOCK:
+                _evict_search_cache(now)
+                _SEARCH_CACHE[key] = (now, scan)
+
+        # 已发布过的商品照旧实时剔除（不走缓存，发布完刷新立刻消失）
+        published = submission_ledger.published_draft_ids(database_path, actor.id)
+        return materialize_draft_search(
+            scan,
+            product_processing=product_processing,
+            actor=actor,
+            source=source,
+            page=page,
+            page_size=page_size,
+            exclude_ids=published,
+        )
+
     def _handle(exc: Exception) -> HTTPException:
         if isinstance(exc, DuplicateSubmission):
             # 409：前端靠 detail.message 里的「重复提交」前缀弹二次确认
@@ -171,6 +342,7 @@ def create_temu_publish_router(
             # 6000002 = Temu 说「货品类目属性更新」。本地类目/属性表缓存有 1 小时 TTL，
             # 这段时间里组出来的 pid/vid 全是旧的，提交必被拒 —— 而且用户刷新页面也还是
             # 命中同一份缓存，会一直卡在同一个错上。这里直接清掉，让下一次请求拿到新表。
+            gateway_message, gateway_section = _gateway_message(exc.error_code, exc.message)
             if str(exc.error_code or "") == _CATEGORY_ATTRS_CHANGED:
                 # ⚠️ 不能用 service.client()：_handle 是模块级闭包，拿不到当前 actor，
                 # 那会构造出一个「按默认凭证」的实例，清的是它自己的空缓存 ——
@@ -195,7 +367,8 @@ def create_temu_publish_router(
                 status_code=status,
                 detail={
                     "error_code": exc.error_code or "TEMU_GATEWAY_ERROR",
-                    "message": _gateway_message(exc.error_code, exc.message),
+                    "message": gateway_message,
+                    "section": gateway_section,
                     "api_type": exc.api_type,
                 },
             )
@@ -278,15 +451,32 @@ def create_temu_publish_router(
         page_size: int = Query(default=30, ge=1, le=100),
         source: str = Query(default="", description="ai / pod，留空=全部"),
         q: str = Query(default="", max_length=120, description="标题/货号/类目关键字"),
-        refresh: bool = Query(default=False, description="true=跳过 60 秒缓存，强制重扫"),
+        item_offset: int = Query(
+            default=0,
+            ge=0,
+            le=10000,
+            description="每个任务内的起始下标：点「加载更多」时按一页（20）递增，用来取同一个批次里后面的商品",
+        ),
+        refresh: bool = Query(default=False, description="true=跳过缓存，强制重扫"),
         actor: Actor = Depends(actor_from_authorization),
     ) -> dict[str, Any]:
         """聚合 AI 处理结果与 POD 成品，供发布页一键带入（服务端分页）。
 
         扫描任务/批次很贵，所以**全量聚合结果**按账号缓存 60 秒；
         来源筛选、关键字搜索、翻页都只在缓存上切片，翻页不会触发重扫。
+
+        带 ``q`` 时走另一条路：普通聚合只取每个任务前 20 个商品，
+        搜索必须把每个任务的任务项扫全，否则搜不到藏在后面的商品
+        （见 ``scan_draft_library``）。
         """
-        key = (actor.id, limit)
+        needle = str(q or "").strip()
+        if needle:
+            return _search_library(
+                actor, needle, source=source, page=page, page_size=page_size, refresh=refresh
+            )
+
+        # 缓存要带上 item_offset：不同偏移拿的是不同那一页，共用缓存会串页
+        key = (actor.id, limit, item_offset)
         now = time.time()
         cached: dict[str, Any] | None = None
         if not refresh:
@@ -302,6 +492,7 @@ def create_temu_publish_router(
                 pod_service=pod_service,
                 actor=actor,
                 limit=limit,
+                item_offset=item_offset,
             )
             with _LIBRARY_CACHE_LOCK:
                 _LIBRARY_CACHE[key] = (now, cached)

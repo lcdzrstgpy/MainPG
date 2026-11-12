@@ -261,7 +261,7 @@ class PodCustomizationAiRuntime(AiRuntime):
         content_type, _suffix, _width, _height = inspect_pod_image(content)
         return content, content_type
 
-    def split_listing_grid(self, media):
+    def split_listing_grid(self, media, *, preserve_aspect: bool = False):
         """Reuse the established local four-grid splitter; no AI call is made.
 
         在既有的"裁边 → 放大到 800×800"之前加一层**清晰化**：上游母图实测 1254×1254，
@@ -277,6 +277,8 @@ class PodCustomizationAiRuntime(AiRuntime):
             enhance=options_from_env(upscale_when_larger=False),
             # POD 只用四格面板：汇总图要多解码 4 张 JPEG 再建 1600² 画布，纯浪费。
             include_summary=False,
+            # 精小品可能下发非方形母图（宽物/竖物）：补边而不是居中裁方，避免切掉产品。
+            preserve_aspect=preserve_aspect,
             on_enhance_metrics=self._log_enhance_metrics,
         )
         return [part for part in parts if part.stage.startswith("grid_image_") and part.stage != "grid_image_summary"]

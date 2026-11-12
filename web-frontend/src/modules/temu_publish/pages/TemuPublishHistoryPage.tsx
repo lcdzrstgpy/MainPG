@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
 import type { TemuPublishHistoryItem } from "../types";
+import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
+import { explainPublishError, shortReasonLabel } from "../data/errorExplain";
 import {
   copyText,
   dayLabelOf,
@@ -149,6 +151,8 @@ export function TemuPublishHistoryPage({
   const [appliedKeyword, setAppliedKeyword] = useState("");
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [copied, setCopied] = useState("");
+  /** 失败页签的「常见原因」筛选：点某个原因只看这一类（清空＝看全部） */
+  const [reasonFilter, setReasonFilter] = useState("");
   // 剪贴板被浏览器/WebView 拒绝时不能静默：用户点「复制 id」没反应会以为功能坏了
   const [copyError, setCopyError] = useState("");
   // 列表可能是几分钟前拉的：相对时间要有东西可参照，避免「刚刚」永远不刷新
@@ -222,8 +226,32 @@ export function TemuPublishHistoryPage({
 
   const succeeded = counts.success;
   const failed = counts.failed;
-  const finished = succeeded + failed;
-  const successRate = finished ? Math.round((succeeded / finished) * 100) : 0;
+
+  /** 一条失败记录的「原因文本」（去错误码、去首尾空白）。 */
+  const reasonTextOf = (item: TemuPublishHistoryItem) =>
+    (item.error ? stripErrorCode(item.error, errorCodeOf(item)) : "（Temu 没有返回原因）").trim();
+
+  /**
+   * 失败页签：把已加载的记录按原因归堆。
+   *
+   * 「发 30 条失败 20 条」时，一条条翻才能看出「其实都栽在同一个属性校验上」。
+   * 归堆取前 4 类，点一下就只看这一类。
+   */
+  const reasonGroups = (() => {
+    if (tab !== "failed") return [];
+    const map = new Map<string, number>();
+    for (const item of items) {
+      const key = reasonTextOf(item).slice(0, 60);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return [...map.entries()]
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 4);
+  })();
+  const listItems = reasonFilter
+    ? items.filter((item) => reasonTextOf(item).slice(0, 60) === reasonFilter)
+    : items;
 
   // 每个日期块有多少条：「今天 · 3 条」比一个孤零零的「今天」有用
   const dayCounts = new Map<string, number>();
@@ -236,7 +264,7 @@ export function TemuPublishHistoryPage({
   const emptyText = appliedKeyword
     ? `没有匹配「${appliedKeyword}」的记录，换个关键词试试（标题、商品 id、类目名都能搜）。`
     : tab === "success"
-      ? "还没有成功发布过商品。从草稿库挑一条发布成功后，这里会记下商品 id。"
+      ? "还没有成功发布过商品。从成品库挑一条发布成功后，这里会记下商品 id。"
       : "还没有失败记录 —— 失败时这里会显示 Temu 的原话和错误码，方便照着改。";
 
   async function handleCopy(key: string, text: string) {
@@ -257,22 +285,7 @@ export function TemuPublishHistoryPage({
       <header className="temu-history-head">
         <div className="temu-history-title">
           <h1>发布历史</h1>
-          <p>成功与失败分开记；成功过的草稿会自动从草稿库移除，避免重复上架。</p>
-        </div>
-
-        <div className="temu-history-stats" aria-label="发布统计">
-          <div className="temu-history-stat is-success">
-            <span>成功</span>
-            <strong>{succeeded}</strong>
-          </div>
-          <div className={`temu-history-stat${failed ? " is-warn" : ""}`}>
-            <span>失败</span>
-            <strong>{failed}</strong>
-          </div>
-          <div className="temu-history-stat is-rate">
-            <span>成功率</span>
-            <strong>{finished ? `${successRate}%` : "—"}</strong>
-          </div>
+          <p>成功与失败分开记；成功过的成品会自动从成品库移除，避免重复上架。</p>
         </div>
       </header>
 
@@ -286,6 +299,7 @@ export function TemuPublishHistoryPage({
             onClick={() => {
               setTab("success");
               setExpanded({});
+              setReasonFilter("");
             }}
           >
             成功 <em>{succeeded}</em>
@@ -298,6 +312,7 @@ export function TemuPublishHistoryPage({
             onClick={() => {
               setTab("failed");
               setExpanded({});
+              setReasonFilter("");
             }}
           >
             失败 <em>{failed}</em>
@@ -320,6 +335,33 @@ export function TemuPublishHistoryPage({
         </label>
       </div>
 
+      {tab === "failed" && reasonGroups.length > 1 ? (
+        <div className="temu-history-reasons" aria-label="常见失败原因">
+          <span className="temu-history-reasons-label">常见原因</span>
+          {reasonGroups.map((group) => (
+            <button
+              key={group.reason}
+              type="button"
+              className={`temu-history-reason-chip${reasonFilter === group.reason ? " is-active" : ""}`}
+              title={group.reason}
+              onClick={() => setReasonFilter(reasonFilter === group.reason ? "" : group.reason)}
+            >
+              {(() => {
+                // 显示人话（Temu 原文太工程化），筛选仍用原文当 key 才筛得准
+                const label = shortReasonLabel(group.reason);
+                return label.length > 24 ? `${label.slice(0, 24)}…` : label;
+              })()}
+              <em>×{group.count}</em>
+            </button>
+          ))}
+          {reasonFilter ? (
+            <button type="button" className="temu-history-reason-clear" onClick={() => setReasonFilter("")}>
+              看全部
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {error ? (
         <p className="temu-history-error" role="alert">
           {error}
@@ -335,12 +377,15 @@ export function TemuPublishHistoryPage({
       {!loading && !items.length ? <p className="temu-history-empty">{emptyText}</p> : null}
 
       <ul className="temu-history-list">
-        {items.map((item) => {
+        {listItems.map((item) => {
           const isSuccess = item.status === "success";
           const code = errorCodeOf(item);
           const price = formatPriceRange(item.price_min, item.price_max);
           const source = sourceLabelOf(item.draft_id);
-          const reason = item.error ? stripErrorCode(item.error, code) : "（Temu 没有返回原因）";
+          const reason = reasonTextOf(item);
+          // Temu 回的是工程话（「货品类目属性更新，请刷新页面后重新创建货品」），
+          // 用户看这句不知道该干嘛。能翻译就先说人话 + 修法，原文留着复制/展开。
+          const explained = isSuccess ? null : explainPublishError(item.error || reason);
           const isLong = reason.length > 72;
           const isOpen = Boolean(expanded[item.id]);
           const day = dayLabelOf(item.created_ts, now);
@@ -414,7 +459,19 @@ export function TemuPublishHistoryPage({
                         </span>
                         {code ? <span className="temu-history-code">错误码 {code}</span> : null}
                       </div>
-                      <p className={`temu-history-reason${isLong && !isOpen ? " is-clamped" : ""}`}>
+                      {explained ? (
+                        <>
+                          <p className="temu-history-reason-human">{explained.human}</p>
+                          <p className="temu-history-reason-fix">
+                            <span>怎么修</span>
+                            {explained.fix}
+                          </p>
+                        </>
+                      ) : null}
+                      <p
+                        className={`temu-history-reason${explained ? " is-raw" : ""}${isLong && !isOpen ? " is-clamped" : ""}`}
+                      >
+                        {explained ? "原始提示：" : ""}
                         {reason}
                       </p>
                       <div className="temu-history-row-foot">
@@ -438,8 +495,27 @@ export function TemuPublishHistoryPage({
                           {copied === `err-${item.id}` ? "已复制" : "复制原因"}
                         </button>
                         {onOpenDraftLibrary ? (
-                          <button type="button" className="temu-history-retry" onClick={onOpenDraftLibrary}>
-                            去草稿库重发
+                          <button
+                            type="button"
+                            className="temu-history-retry"
+                            title={
+                              item.draft_id
+                                ? "回成品库自动打开这条草稿，改完再发"
+                                : "手填的商品没有来源草稿，回成品库重新挑一条"
+                            }
+                            onClick={() => {
+                              // 记了来源草稿 id → 草稿库自动打开那条；没记就只切过去
+                              if (item.draft_id) {
+                                try {
+                                  window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, item.draft_id);
+                                } catch {
+                                  // 隐私模式写不进 storage：退回普通跳转
+                                }
+                              }
+                              onOpenDraftLibrary();
+                            }}
+                          >
+                            {item.draft_id ? "去修这条" : "去成品库重发"}
                           </button>
                         ) : null}
                       </div>

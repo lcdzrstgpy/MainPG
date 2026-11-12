@@ -70,6 +70,23 @@ test("image service nests the existing workflows one level deeper", () => {
     "dimension_canvas",
   ]);
 
+  // 海外上架（原「发布商品」）：草稿库在前、发布页在后；默认进来停在草稿库
+  // （空发布表单没什么可填的，先让用户看到有哪些成品可发）。
+  const overseas = findGroup("overseas_listing");
+  assert.equal(overseas?.label, "海外上架");
+  assert.equal(overseas?.defaultChildId, "temu_draft_library");
+  assert.deepEqual(overseas?.children?.map((child) => child.id), [
+    "temu_draft_library",
+    "temu_publish",
+    "temu_publish_history",
+  ]);
+  assert.deepEqual(overseas?.children?.map((child) => child.label), [
+    "成品库",
+    "发布商品",
+    "发布历史",
+  ]);
+  assert.equal(workspacePageModules.find((module) => module.id === "ai_video")?.label, "AI 视频（实验）");
+
   const podWorkflow = findGroup("pod_workflow");
   // 自由创意是 POD 首项，点开分组默认落到它。
   assert.equal(podWorkflow?.defaultChildId, "pod_free_customization");
@@ -128,17 +145,10 @@ test("data insights groups sourcing profit and store data management", () => {
   ]);
 
   const storeData = findGroup("order_profit");
-  assert.equal(storeData?.defaultChildId, "order_profit_overview");
+  assert.equal(storeData?.defaultChildId, "order_profit_binding");
   assert.deepEqual(
     storeData?.children.filter((child) => !isWorkspaceNavigationGroup(child) && !child.hiddenFromSidebar).map((child) => child.id),
-    [
-      "order_profit_overview",
-      "order_profit_orders",
-      "order_profit_funds",
-      "order_profit_capture",
-      "order_profit_records",
-      "order_profit_accounts",
-    ],
+    ["order_profit_binding", "order_profit_costs"],
   );
   // 合并前的单页入口仍保留在页面路由里，避免浏览器已保存的旧页签失效。
   for (const legacyId of [

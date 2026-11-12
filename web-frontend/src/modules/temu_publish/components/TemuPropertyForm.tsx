@@ -44,6 +44,16 @@ export function TemuPropertyForm({
   const guessed = new Set(guessedPids ?? []);
   const visible = visibleProperties(attributes, picks);
   const groups = buildAttributeGroups(attributes, visible);
+  /**
+   * 还空着的必填项名字。
+   *
+   * 以前只有「提交被拦」或点「检查必填」才知道缺哪几个，属性区本身不吭声 ——
+   * 13 个下拉里找 5 个没填的，靠肉眼扫。这里实时列出来，填一个少一个。
+   */
+  const missingRequired = groups.required.filter((item) => {
+    const pick = picks[item.pid] ?? EMPTY_ATTR;
+    return !pick.vid && !pick.text.trim();
+  });
 
   const patchPick = (pid: number, patch: Partial<AttrPick>) => {
     const current = picks[pid] ?? EMPTY_ATTR;
@@ -60,8 +70,7 @@ export function TemuPropertyForm({
   const attrField = (item: TemuProperty, required: boolean) => {
     const label = item.name || item.propertyName || `属性 ${item.pid}`;
     const pick = picks[item.pid] ?? EMPTY_ATTR;
-    // 空串也是「没有单位」：Temu 会给无单位属性返回 [""]，不能当数值框渲染
-    const unit = String(item.valueUnit?.[0] ?? "").trim();
+    const unit = item.valueUnit?.[0] ?? "";
     const unitHint = unit
       ? `${item.numberInputTitle || "请输入数值"}（${unit}）`
       : item.numberInputTitle || "请输入";
@@ -74,6 +83,7 @@ export function TemuPropertyForm({
         <span>
           {label}
           {required && <em className="temu-required">*</em>}
+          {emptyRequired && <i className="temu-attr-req-dot" title="这个必填项还没填" />}
           {guessed.has(item.pid) && (
             <em className="temu-attr-guessed" title="这个值是按类目估的（没有依据时取第一个可用选项），发布前请核对">
               估
@@ -149,6 +159,14 @@ export function TemuPropertyForm({
           <div className="temu-attr-required-head">
             <strong>必填属性 {groups.required.length} 项</strong>
             <span>带 <em className="temu-required">*</em> 的都要选，缺一个 Temu 会直接拒</span>
+            {missingRequired.length > 0 ? (
+              <em className="temu-attr-missing">
+                还缺 {missingRequired.length} 个：
+                {missingRequired
+                  .map((item) => item.name || item.propertyName || `属性 ${item.pid}`)
+                  .join("、")}
+              </em>
+            ) : null}
           </div>
           <div className="temu-attr-grid">
             {groups.required.map((item) => attrGroup(item, true))}
@@ -156,14 +174,16 @@ export function TemuPropertyForm({
         </div>
       )}
       {groups.optional.length > 0 && (
-        <details className="temu-optional-attrs">
-          <summary>
+        // 选填属性不做折叠：这些项里有「下级属性的开关」，藏起来用户根本不知道
+        // 自己漏了哪几项能开（折叠过一次就再没人展开）。标题只留说明作用。
+        <div className="temu-optional-attrs">
+          <div className="temu-optional-attrs-head">
             选填属性 {groups.optional.length} 项（{optionalHint}）
-          </summary>
+          </div>
           <div className="temu-attr-grid">
             {groups.optional.map((item) => attrGroup(item, false))}
           </div>
-        </details>
+        </div>
       )}
       {groups.required.length === 0 && groups.optional.length === 0 && (
         <p className="temu-empty">这个分类没有可填属性。</p>

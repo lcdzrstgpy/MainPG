@@ -177,9 +177,18 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   const warehouses = useMemo(() => flatWarehouses(warehouseGroups), [warehouseGroups]);
   const missing = attributes ? missingRequiredNames(visibleProperties(attributes, picks), picks) : [];
 
+  /**
+   * 这份现场配置能不能直接拿去发：类目 + 运费 + 仓库 + **必填属性填完**。
+   *
+   * 少了最后一条，父组件的「开始发布」会在必填属性没填时也亮起来，
+   * 一整批注定被 Temu 拒的商品就这么提交出去了（每条都要等网关回错误）。
+   */
+  const configReady =
+    path.length > 0 && !!freightId && !!warehouseId && !!attributes && missing.length === 0;
+
   // 配置齐了就回传模板；不齐回传 null（父组件据此判断能不能发）
   useEffect(() => {
-    if (!path.length || !freightId || !warehouseId) {
+    if (!configReady) {
       onChange(null);
       return;
     }
@@ -207,7 +216,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       sizeParentName: sizeSpec?.parentSpecName,
       savedAt: new Date().toLocaleString("zh-CN"),
     });
-  }, [path, picks, freightId, warehouseId, shipmentDays, specs, onChange]);
+  }, [configReady, path, picks, freightId, warehouseId, shipmentDays, specs, onChange]);
 
   return (
     <div className="temu-batch-manual">

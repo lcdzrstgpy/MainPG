@@ -1,8 +1,10 @@
-import { ppRequest } from "../../product_processing/api/client";
+import { ppRequest, ppUpload } from "../../product_processing/api/client";
 import { productProcessingApiContext } from "../../product_processing/api/context";
 import type {
   AfterSaleRow,
   AppealRow,
+  AutoCaptureRunResult,
+  AutoCaptureSettings,
   CaptureBatches,
   CaptureRunList,
   FinanceResponse,
@@ -15,6 +17,7 @@ import type {
   OrderProfitCommand,
   OrderProfitDailyResponse,
   OrderProfitOrdersResponse,
+  OrderProfitRankingResponse,
   OrderProfitSettings,
   OrderProfitStore,
   OrderTrendResponse,
@@ -66,18 +69,31 @@ export const orderProfitApi = {
     ppRequest<{ ok: boolean }>(context(), `/plugin/devices/${encodeURIComponent(deviceId)}`, {
       method: "DELETE",
     }),
-  startCapture: (sessionId: string, mode: "list" | "detail") =>
+  startCapture: (sessionId: string, mode: "list" | "detail", months: string[] = [], regions: string[] = []) =>
     ppRequest<OrderProfitCommand>(context(), `${BASE}/captures`, {
       method: "POST",
-      body: { session_id: sessionId, mode },
+      body: {
+        session_id: sessionId,
+        mode,
+        ...(months.length ? { months } : {}),
+        ...(regions.length ? { regions } : {}),
+      },
     }),
-  startCaptureAll: (sessionId: string, incremental = false, shopName = "") =>
+  startCaptureAll: (
+    sessionId: string,
+    incremental = false,
+    shopName = "",
+    months: string[] = [],
+    regions: string[] = [],
+  ) =>
     ppRequest<OrderProfitCommand>(context(), `${BASE}/captures-all`, {
       method: "POST",
       body: {
         session_id: sessionId,
         incremental,
         ...(shopName.trim() ? { shop_name: shopName.trim() } : {}),
+        ...(months.length ? { months } : {}),
+        ...(regions.length ? { regions } : {}),
       },
     }),
   startResourceCapture: (sessionId: string, resource: string) =>
@@ -114,6 +130,23 @@ export const orderProfitApi = {
         shop: params.shop,
         limit: params.limit ?? 500,
         offset: params.offset ?? 0,
+      })}`,
+    ),
+  ordersRanking: (params: {
+    months?: string[];
+    shop?: string;
+    groupBy?: "link" | "sku";
+    metric?: "quantity" | "payback";
+    limit?: number;
+  }) =>
+    ppRequest<OrderProfitRankingResponse>(
+      context(),
+      `${BASE}/orders/ranking${query({
+        months: (params.months || []).join(","),
+        shop: params.shop,
+        group_by: params.groupBy || "link",
+        metric: params.metric || "quantity",
+        limit: params.limit ?? 50,
       })}`,
     ),
   updateOrderCost: (parentOrderSn: string, purchaseCostCny: number | null, shop = "") =>
@@ -194,6 +227,20 @@ export const orderProfitApi = {
     ),
   settlementSummary: (shop?: string) =>
     ppRequest<SettlementResponse>(context(), `${BASE}/settlement/summary${query({ shop })}`),
+  importSettlementFile: (file: File, status: "pending" | "settled", shop = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("status", status);
+    if (shop.trim()) form.append("shop", shop.trim());
+    return ppUpload<{
+      ok: boolean;
+      parsed: number;
+      written: number;
+      backfilled_items: number;
+      file: string;
+      headers?: string[];
+    }>(context(), `${BASE}/settlement/import-file`, form);
+  },
   storeMetrics: (shop?: string) =>
     ppRequest<{ metrics: StoreMetrics | null }>(context(), `${BASE}/store-metrics${query({ shop })}`),
   trafficSummary: (shop?: string) =>
@@ -256,6 +303,19 @@ export const orderProfitApi = {
       { method: "POST", body: { value } },
     ),
   activeShop: () => ppRequest<{ shop: ProfitShop | null }>(context(), `${BASE}/shops/active`),
+  autoCapture: () =>
+    ppRequest<{ auto_capture: AutoCaptureSettings }>(context(), `${BASE}/auto-capture`),
+  saveAutoCapture: (payload: {
+    enabled: boolean;
+    interval_minutes: number;
+    auto_open_browser: boolean;
+  }) =>
+    ppRequest<{ auto_capture: AutoCaptureSettings }>(context(), `${BASE}/auto-capture`, {
+      method: "PUT",
+      body: payload,
+    }),
+  runAutoCapture: () =>
+    ppRequest<AutoCaptureRunResult>(context(), `${BASE}/auto-capture/run`, { method: "POST" }),
   bindShop: (payload: { name: string; note?: string; platform?: string; mall_id?: string }) =>
     ppRequest<ShopsResponse & { shop: ProfitShop; backfilled: number; sync_warning?: string }>(
       context(),

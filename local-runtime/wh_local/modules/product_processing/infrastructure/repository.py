@@ -1485,6 +1485,149 @@ class ProductProcessingRepository:
             rows = session.scalars(statement.order_by(ProcessingTaskItemRow.id)).all()
             return [self._item(row) for row in rows]
 
+    def get_task_items_by_ids(
+        self,
+        task_id: int,
+        item_ids: Iterable[int],
+        *,
+        completed_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """只读取指定的任务项（按关键字搜索命中后用）。"""
+        ids = list(dict.fromkeys(int(item) for item in item_ids))
+        if not ids:
+            return []
+        with self.database.sessions() as session:
+            statement = select(ProcessingTaskItemRow).where(
+                ProcessingTaskItemRow.task_id == int(task_id),
+                ProcessingTaskItemRow.id.in_(ids),
+            )
+            if completed_only:
+                statement = statement.where(ProcessingTaskItemRow.status == "completed")
+            rows = session.scalars(statement.order_by(ProcessingTaskItemRow.id)).all()
+            return [self._item(row) for row in rows]
+
+    def search_task_items(
+        self,
+        task_id: int,
+        needle: str,
+        *,
+        limit: int = 500,
+        completed_only: bool = False,
+        match_all: bool = False,
+    ) -> list[int]:
+        """在库内按关键字筛任务项，返回命中的 item id（单个任务）。"""
+        rows = self.search_task_items_bulk(
+            [int(task_id)],
+            needle,
+            limit_per_task=limit,
+            cancelled_task_ids=[int(task_id)] if completed_only else (),
+            match_all=match_all,
+        )
+        return rows.get(int(task_id), [])
+
+    def search_task_items_bulk(
+        self,
+        task_ids: Iterable[int],
+        needle: str,
+        *,
+        limit_per_task: int = 2000,
+        cancelled_task_ids: Iterable[int] = (),
+        match_all: bool = False,
+    ) -> dict[int, list[int]]:
+        """在库内按关键字一次性筛**多个任务**的任务项，返回 {task_id: [item_id]}。
+
+        搜索必须扫全量（一个任务里可能几百个商品），但不该把几百条 result_json
+        读进 Python 再逐条比对 —— 那正好是「全量搜索」最贵的一步。这里把匹配
+        交给 SQLite 的 JSON1：标题 / 货号 / 类目都在库里直接比。
+
+        **一次查完所有任务**，而不是每个任务开一次会话：成品库搜索会扫几十个批次，
+        按任务逐个查时 SQLAlchemy 的会话开销（每批约 6ms）比查询本身还贵。
+
+        参数：
+        - ``cancelled_task_ids``：这些任务只算 ``completed`` 的项（和预检口径一致）
+        - ``match_all=True``：搜的是批次名，整个任务都算命中（与列表里 subtitle
+          参与匹配的口径一致）
+        """
+        ids = list(dict.fromkeys(int(value) for value in task_ids))
+        if not ids:
+            return {}
+        text_needle = str(needle or "").strip().lower()
+        if not match_all and not text_needle:
+            return {}
+
+        statement = (
+            select(ProcessingTaskItemRow.id, ProcessingTaskItemRow.task_id)
+            .select_from(ProcessingTaskItemRow)
+            .outerjoin(
+                ProductDraftRow,
+                ProductDraftRow.id == ProcessingTaskItemRow.product_draft_id,
+            )
+            .where(ProcessingTaskItemRow.task_id.in_(ids))
+        )
+        cancelled = [int(value) for value in cancelled_task_ids]
+        if cancelled:
+            statement = statement.where(
+                or_(
+                    ProcessingTaskItemRow.status == "completed",
+                    ProcessingTaskItemRow.task_id.notin_(cancelled),
+                )
+            )
+        if not match_all:
+            # LIKE 里的 % 和 _ 是通配符：用户输入必须转义，
+            # 否则搜「100%」会变成「以 100 开头」。
+            escaped = (
+                text_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            pattern = f"%{escaped}%"
+            result_json = ProcessingTaskItemRow.result_json
+            statement = statement.where(
+                or_(
+                    func.lower(func.coalesce(ProcessingTaskItemRow.title, "")).like(
+                        pattern, escape="\\"
+                    ),
+                    func.lower(_json_scalar(result_json, "$.optimized_title")).like(
+                        pattern, escape="\\"
+                    ),
+                    func.lower(_json_scalar(result_json, "$.sku")).like(pattern, escape="\\"),
+                    func.lower(func.coalesce(ProductDraftRow.title, "")).like(
+                        pattern, escape="\\"
+                    ),
+                    func.lower(
+                        func.coalesce(
+                            _json_scalar(ProductDraftRow.preview_overrides_json, "$.title"), ""
+                        )
+                    ).like(pattern, escape="\\"),
+                    func.lower(
+                        func.coalesce(
+                            _json_scalar(ProductDraftRow.raw_payload_json, "$.category_path"),
+                            "",
+                        )
+                    ).like(pattern, escape="\\"),
+                    # 采集链路把类目放在 payload 顶层；手工/接口造的 payload
+                    # 可能套一层 raw_payload，两种都认。
+                    func.lower(
+                        func.coalesce(
+                            _json_scalar(
+                                ProductDraftRow.raw_payload_json,
+                                "$.raw_payload.category_path",
+                            ),
+                            "",
+                        )
+                    ).like(pattern, escape="\\"),
+                )
+            )
+        with self.database.sessions() as session:
+            rows = session.execute(
+                statement.order_by(ProcessingTaskItemRow.id)
+            ).all()
+        matched: dict[int, list[int]] = {}
+        cap = max(1, int(limit_per_task))
+        for item_id, task_id in rows:
+            bucket = matched.setdefault(int(task_id), [])
+            if len(bucket) < cap:
+                bucket.append(int(item_id))
+        return matched
+
     def task_item_preview_rows(
         self,
         task_id: int,
@@ -1680,6 +1823,58 @@ class ProductProcessingRepository:
                 .limit(limit)
             ).all()
             return [self._task(row) for row in rows], total
+
+    def list_task_summaries(
+        self,
+        limit: int,
+        workspace_id: str = "local",
+        *,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """任务列表的轻量版：**不加载 items**（也就不解析 result_json）。
+
+        ``list_tasks`` 会用 selectinload 把整任务的条目一起读出来 —— 历史页要那些
+        数据，但「按关键字搜全库」只需要批次号/标题/状态/成功数。40 个批次时
+        前者 0.15s、后者几毫秒，差的全是白读的 result_json。
+        """
+        with self.database.sessions() as session:
+            filters = [ProcessingTaskRow.workspace_id == workspace_id]
+            total = int(
+                session.scalar(
+                    select(func.count()).select_from(ProcessingTaskRow).where(*filters)
+                )
+                or 0
+            )
+            rows = session.execute(
+                select(
+                    ProcessingTaskRow.id,
+                    ProcessingTaskRow.title,
+                    ProcessingTaskRow.status,
+                    ProcessingTaskRow.total_count,
+                    ProcessingTaskRow.success_count,
+                    ProcessingTaskRow.created_at,
+                    ProcessingTaskRow.updated_at,
+                )
+                .where(*filters)
+                .order_by(ProcessingTaskRow.created_at.desc(), ProcessingTaskRow.id.desc())
+                .offset(max(0, int(offset)))
+                .limit(max(1, int(limit)))
+            ).all()
+        return (
+            [
+                {
+                    "task_id": int(row.id),
+                    "title": row.title or "",
+                    "status": row.status or "",
+                    "total_count": int(row.total_count or 0),
+                    "success_count": int(row.success_count or 0),
+                    "created_at": row.created_at or "",
+                    "updated_at": row.updated_at or "",
+                }
+                for row in rows
+            ],
+            total,
+        )
 
     def latest_completed_sources_by_title(
         self,
@@ -3095,6 +3290,7 @@ class ProductProcessingRepository:
             "preview_revision": int(row.preview_revision or 0),
             "media_contract_version": int(row.media_contract_version or 1),
             "sku_availability_raw": str(row.sku_availability_json or ""),
+            "precision_annotation": str(row.precision_annotation or ""),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }

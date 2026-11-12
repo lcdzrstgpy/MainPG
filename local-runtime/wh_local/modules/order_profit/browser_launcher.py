@@ -7,6 +7,7 @@ Temu 的登录态是浏览器 cookie，同一配置目录只能同时登一个�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,8 +29,54 @@ class BrowserLaunchError(RuntimeError):
 
 
 def _repo_root() -> Path:
-    # local-runtime/wh_local/modules/order_profit/browser_launcher.py
+    # 开发态：local-runtime/wh_local/modules/order_profit/browser_launcher.py
+    # 打包态：<安装目录>/_internal/wh_local/...，此时 parents[4] 就是安装目录。
     return Path(__file__).resolve().parents[4]
+
+
+def _version_key(path: Path) -> tuple[int, ...]:
+    match = re.search(r"v(\d+(?:\.\d+)*)", path.name)
+    if not match:
+        return (0,)
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _extension_roots() -> list[Path]:
+    """插件可能的落地位置：随包分发的 browser-extension、安装目录、仓库根目录。"""
+    roots: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent)
+    roots.append(_repo_root())
+    return roots
+
+
+def find_extension_dir() -> Path:
+    override = os.environ.get("WH_EXTENSION_DIR", "").strip()
+    if override:
+        path = Path(override)
+        if (path / "manifest.json").exists():
+            return path
+        raise BrowserLaunchError(f"WH_EXTENSION_DIR 下没有 manifest.json：{path}")
+    candidates: list[Path] = []
+    for root in _extension_roots():
+        # 随包分发的目录优先：打包后仓库里的 W-H-* 目录并不存在。
+        bundled = root / "browser-extension"
+        if (bundled / "manifest.json").is_file():
+            return bundled
+        candidates.extend(
+            path for path in root.glob("W-H-browser-extension-v*")
+            if path.is_dir() and (path / "manifest.json").is_file()
+        )
+    if not candidates:
+        raise BrowserLaunchError(
+            "没有找到浏览器插件目录（W-H-browser-extension-v*）：请重新安装客户端，"
+            "或把解压后的插件目录路径写到环境变量 WH_EXTENSION_DIR"
+        )
+    # 同版本内容一致，取版本号最大的一份，避免仓库里存着旧版本时加载到旧插件。
+    return max(candidates, key=_version_key)
 
 
 def find_browser() -> str:
@@ -44,23 +91,6 @@ def find_browser() -> str:
         if found:
             return found
     raise BrowserLaunchError("没有找到 Edge/Chrome，请安装或在 WH_BROWSER_PATH 指定浏览器路径")
-
-
-def find_extension_dir() -> Path:
-    override = os.environ.get("WH_EXTENSION_DIR", "").strip()
-    if override:
-        path = Path(override)
-        if (path / "manifest.json").exists():
-            return path
-        raise BrowserLaunchError(f"WH_EXTENSION_DIR 下没有 manifest.json：{path}")
-    candidates = sorted(
-        _repo_root().glob("W-H-browser-extension-v*"),
-        key=lambda item: item.name,
-    )
-    for path in reversed(candidates):
-        if (path / "manifest.json").exists():
-            return path
-    raise BrowserLaunchError("仓库里没有找到已解压的浏览器插件目录（W-H-browser-extension-v*）")
 
 
 def profile_dir(data_dir: str | Path, tag: str) -> Path:
@@ -90,6 +120,9 @@ def open_instance(
         "--new-window",
         start_url,
     ]
+    # 服务器（Linux + root）跑浏览器：沙箱不可用，且 /dev/shm 往往偏小。
+    if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        args[1:1] = ["--no-sandbox", "--disable-dev-shm-usage"]
     creationflags = 0
     if sys.platform == "win32":
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(

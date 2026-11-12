@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ...session import Actor
@@ -22,6 +23,14 @@ POD_FINISHED_STATUSES = {"completed", "partial_failure"}
 
 DEFAULT_PAGE_SIZE = 30
 MAX_PAGE_SIZE = 100
+
+# 全量搜索的扫描上限：单个任务最多返回多少条命中。
+# 正常任务几十到几百个；真出现几千个的异常任务时搜索不能一直读，扫到这里就停并提示。
+SEARCH_MAX_ITEMS = 2000
+# 搜索要扫多少个 AI 批次。列表为了首屏快只看最近 8 个批次，
+# 但「搜自己的商品」不能只管这 8 个 —— 用户 28 个批次里的老商品也必须搜得到。
+# 40 个批次 × 每批几毫秒 SQL（匹配在库里做），实测仍在一百多毫秒。
+SEARCH_TASK_LIMIT = 40
 
 
 def collect_draft_library(
@@ -61,14 +70,23 @@ def collect_all_draft_entries(
     limit: int = 60,
     task_limit: int = 8,
     batch_limit: int = 6,
+    item_limit: int = 20,
+    item_offset: int = 0,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     ai_entries: list[dict[str, Any]] = []
     pod_entries: list[dict[str, Any]] = []
+    ai_has_more = False
 
     if product_processing is not None:
         try:
-            ai_entries = _collect_ai_entries(product_processing, actor, task_limit)
+            ai_entries, ai_has_more = _collect_ai_entries(
+                product_processing,
+                actor,
+                task_limit,
+                item_limit=item_limit,
+                item_offset=item_offset,
+            )
         except Exception as exc:  # noqa: BLE001 - 单个来源失败不拖垮草稿库
             warnings.append(f"AI 处理结果读取失败：{exc}")
 
@@ -92,6 +110,9 @@ def collect_all_draft_entries(
     return {
         "entries": entries,
         "warnings": warnings,
+        # 还有没取出来的商品（某个任务的 item_count > offset + limit）→ 前端给「加载更多」
+        "has_more": ai_has_more,
+        "item_offset": max(0, int(item_offset)),
         "counts": {
             "ai": sum(1 for item in entries if item["source"] == "ai"),
             "pod": sum(1 for item in entries if item["source"] == "pod"),
@@ -143,29 +164,400 @@ def paginate_draft_library(
         "page": current,
         "page_size": size,
         "pages": pages,
+        # 是否还有未加载的商品（跨任务汇总）：True 时前端显示「加载更多」
+        "has_more": bool(payload.get("has_more")),
+        "item_offset": int(payload.get("item_offset") or 0),
         "source": wanted if wanted in {"ai", "pod"} else "all",
         "query": str(query or "").strip(),
     }
 
 
-def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dict[str, Any]]:
+def scan_draft_library(
+    *,
+    product_processing: Any,
+    pod_service: Any,
+    actor: Actor,
+    query: str,
+    task_limit: int = SEARCH_TASK_LIMIT,
+    batch_limit: int = 6,
+) -> dict[str, Any]:
+    """全量搜索的第一趟：在**整个库**里按关键字筛，先不投影图片。
+
+    普通浏览只聚合最近 8 个批次、每个批次前 20 个商品（一屏够用、成本恒定），
+    所以搜索不能复用那份结果 —— 用户搜「蓝色桌布」，这条可能在某个任务的第 480 个，
+    甚至在列表根本没显示的老批次里。这里把每个任务的任务项全部扫一遍（匹配在库里做），
+    命中之后再按页补图片。
+
+    返回的 AI 条目 **images 为空**，由 `materialize_draft_search` 补。
+    """
+    needle = str(query or "").strip().lower()
+    warnings: list[str] = []
+    ai_entries: list[dict[str, Any]] = []
+    pod_entries: list[dict[str, Any]] = []
+
+    if product_processing is not None and needle:
+        try:
+            ai_entries = _scan_ai_matches(
+                product_processing, actor, task_limit, needle, warnings
+            )
+        except Exception as exc:  # noqa: BLE001 - 搜索失败要能看懂原因，别整页炸掉
+            warnings.append(f"AI 处理结果搜索失败：{exc}")
+
+    if pod_service is not None:
+        try:
+            pod_entries = _collect_pod_entries(pod_service, actor, batch_limit)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"POD 结果读取失败：{exc}")
+        if needle:
+            pod_entries = [item for item in pod_entries if _matches_query(item, needle)]
+
+    ai_entries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    pod_entries.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return {
+        "query": str(query or "").strip(),
+        "ai": ai_entries,
+        "pod": pod_entries,
+        "warnings": warnings,
+        # 搜索时计数跟着命中走：tab 上的数字必须和列表里能看到的条数对得上
+        "counts": {
+            "ai": len(ai_entries),
+            "pod": len(pod_entries),
+            "total": len(ai_entries) + len(pod_entries),
+        },
+    }
+
+
+def materialize_draft_search(
+    scan: dict[str, Any],
+    *,
+    product_processing: Any,
+    actor: Actor,
+    source: str = "",
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    exclude_ids: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """全量搜索的第二趟：切页 + 只给这一页的 AI 条目补图片投影。
+
+    图片投影（`task_preview_media`）是这条链路上唯一贵的一步，
+    所以只在真正要显示的那一页做，翻页照样快。
+    """
+    wanted = str(source or "").strip().lower()
+    if wanted not in {"ai", "pod"}:
+        wanted = ""
+    excluded = set(exclude_ids or ())
+
+    def _keep(item: dict[str, Any]) -> bool:
+        if excluded and str(item.get("id") or "") in excluded:
+            return False
+        return not wanted or item.get("source") == wanted
+
+    merged = [item for item in (scan.get("ai") or []) + (scan.get("pod") or []) if _keep(item)]
+    merged.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+
+    size = max(1, min(MAX_PAGE_SIZE, int(page_size or DEFAULT_PAGE_SIZE)))
+    total = len(merged)
+    pages = max(1, (total + size - 1) // size)
+    current = max(1, min(pages, int(page or 1)))
+    start = (current - 1) * size
+    window = merged[start : start + size]
+
+    _failed = _fill_ai_images(product_processing, actor, window)
+    # 补完还是没有图（草稿图片全丢）的条目仍按普通路径的口径剔掉：
+    # 卡片上没有图就等于没法发布，列出来反而让人以为能点。
+    entries = [item for item in window if item.get("images")]
+    warnings = list(scan.get("warnings") or [])
+    if _failed:
+        # 别静默返回空列表：用户会以为「库里没有」，其实是图没读出来
+        warnings.append(
+            f"{_failed} 个批次的图片读取失败，这些商品暂时不在搜索结果里，稍后刷新重试"
+        )
+
+    return {
+        "entries": entries,
+        "warnings": warnings,
+        "counts": dict(scan.get("counts") or {}),
+        "total": total,
+        "page": current,
+        "page_size": size,
+        "pages": pages,
+        # 搜索是把全量扫完再切页的，没有「还没加载」的东西
+        "has_more": False,
+        "item_offset": 0,
+        "source": wanted or "all",
+        "query": str(scan.get("query") or ""),
+    }
+
+
+def _task_summaries(service: Any, workspace_id: str, task_limit: int) -> tuple[list[dict[str, Any]], int]:
+    """取最近若干个批次的轻量摘要（不读任务条目）。
+
+    有轻量接口就用它：`task_history` 会把每个任务的条目一起读出来，
+    搜全库时那是纯浪费。测试里的假服务没有这个方法，退回 `task_history`。
+    """
+    limit = max(1, task_limit)
+    summaries = getattr(service.repository, "list_task_summaries", None)
+    if callable(summaries):
+        try:
+            tasks, total = summaries(limit, workspace_id)
+            return list(tasks or []), int(total or 0)
+        except Exception:  # noqa: BLE001 - 退回历史接口，别让搜索直接失败
+            pass
+    history = service.task_history(limit, workspace_id)
+    return list(history.get("tasks") or []), int(history.get("total") or 0)
+
+
+def _scan_ai_matches(
+    service: Any,
+    actor: Actor,
+    task_limit: int,
+    needle: str,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """并发扫最近若干个任务的全部任务项，返回关键字命中的条目（无图片）。"""
+    tasks, total_tasks = _task_summaries(service, actor.workspace_id, task_limit)
+    # 批次比上限还多 → 更早的批次没搜到，必须说出来，别让用户以为「搜不到＝没有」
+    if total_tasks > max(1, task_limit):
+        warnings.append(f"批次太多，只搜了最近 {len(tasks)} 个批次里的商品")
+    finished: list[dict[str, Any]] = []
+    for task in tasks:
+        if str(task.get("status")) not in AI_FINISHED_STATUSES:
+            continue
+        if int(task.get("success_count") or 0) <= 0:
+            continue
+        finished.append(task)
+    if not finished:
+        return []
+
+    # 匹配一次查完所有批次（每个批次开一次会话的话，会话开销比查询本身还贵）。
+    # 「搜批次名」的批次单独走 match_all：整个批次都算命中。
+    title_hits = [task for task in finished if needle in str(task.get("title") or "").lower()]
+    others = [task for task in finished if task not in title_hits]
+    matched: dict[int, list[int]] = {}
+    try:
+        if others:
+            found = service.repository.search_task_items_bulk(
+                [int(task["task_id"]) for task in others],
+                needle,
+                limit_per_task=SEARCH_MAX_ITEMS,
+                cancelled_task_ids=[
+                    int(task["task_id"])
+                    for task in others
+                    if str(task.get("status")) == "cancelled"
+                ],
+            )
+            # 没命中的批次也要留个空列表：「查过、没中」和「还没查」必须分得开，
+            # 否则每个批次都要再单独查一次库（25 个批次多花 0.15 秒）。
+            for task in others:
+                matched[int(task["task_id"])] = found.get(int(task["task_id"]), [])
+        if title_hits:
+            found = service.repository.search_task_items_bulk(
+                [int(task["task_id"]) for task in title_hits],
+                needle,
+                limit_per_task=SEARCH_MAX_ITEMS,
+                match_all=True,
+            )
+            for task in title_hits:
+                matched[int(task["task_id"])] = found.get(int(task["task_id"]), [])
+    except Exception:  # noqa: BLE001 - 查询挂掉就让下面逐个任务自己查，别整页空
+        matched = {}
+
+    def scan_one(task: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return _scan_ai_task(
+                service,
+                actor,
+                task,
+                needle,
+                warnings,
+                matched.get(int(task["task_id"])),
+            )
+        except Exception:  # noqa: BLE001 - 单个任务扫挂了只跳过它自己
+            return []
+
+    with ThreadPoolExecutor(max_workers=min(4, len(finished))) as pool:
+        batches = list(pool.map(scan_one, finished))
+    return [entry for batch in batches for entry in batch]
+
+
+def _scan_ai_task(
+    service: Any,
+    actor: Actor,
+    task: dict[str, Any],
+    needle: str,
+    warnings: list[str],
+    matched_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """扫一个任务：匹配在库里做（JSON1 + LIKE），只为命中的条目建条目。"""
+    # 批量匹配已经明确「这个批次一条都没中」→ 连任务元数据都不用读
+    if matched_ids is not None and not matched_ids:
+        return []
+    task_id = int(task["task_id"])
+    task_title = str(task.get("title") or "")
+    # 搜的是批次名 → 整个任务都算命中（列表里 subtitle 也参与匹配）
+    match_all = bool(needle) and needle in task_title.lower()
+    preview = service.task_search_preview(
+        task_id,
+        needle,
+        workspace_id=actor.workspace_id,
+        limit=SEARCH_MAX_ITEMS,
+        match_all=match_all,
+        matched_ids=matched_ids,
+    )
+    items = preview.get("items") or []
+    if preview.get("truncated"):
+        warnings.append(
+            f"任务「{task_title or task_id}」命中超过 {SEARCH_MAX_ITEMS} 条，"
+            f"只返回了前 {SEARCH_MAX_ITEMS} 条"
+        )
+    if not items:
+        return []
+    draft_ids = [
+        int(item["product_draft_id"])
+        for item in items
+        if item.get("product_draft_id") is not None
+    ]
+    drafts_by_id: dict[int, dict[str, Any]] = {}
+    if draft_ids:
+        try:
+            drafts_by_id = {
+                int(draft["id"]): draft
+                for draft in service.repository.get_drafts(
+                    draft_ids, workspace_id=actor.workspace_id
+                )
+            }
+        except Exception:  # noqa: BLE001 - 读不到草稿就退回只用预览字段
+            drafts_by_id = {}
+    entries: list[dict[str, Any]] = []
+    for item in items:
+        entry = _build_ai_entry(
+            task,
+            item,
+            drafts_by_id.get(int(item.get("product_draft_id") or 0)),
+            task_id,
+            require_images=False,
+        )
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def _fill_ai_images(
+    product_processing: Any,
+    actor: Actor,
+    entries: list[dict[str, Any]],
+) -> int:
+    """给这一页里还没图的 AI 条目补图片投影（按任务分组，一次批量取）。
+
+    返回**投影失败的任务数**：一路都失败时上层要提示用户，而不是安静地空列表。
+    """
+    if product_processing is None:
+        return 0
+    failed = 0
+    pending: dict[int, list[dict[str, Any]]] = {}
+    for item in entries:
+        if item.get("source") != "ai" or item.get("images"):
+            continue
+        draft_id = item.get("draft_id")
+        task_id = item.get("task_id")
+        try:
+            draft_id = int(draft_id or 0)
+            task_id = int(task_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if draft_id <= 0 or task_id <= 0:
+            continue
+        pending.setdefault(task_id, []).append(item)
+
+    for task_id, items in pending.items():
+        by_draft: dict[int, dict[str, Any]] = {}
+        try:
+            payload = product_processing.task_preview_media(
+                task_id,
+                [int(item["draft_id"]) for item in items],
+                workspace_id=actor.workspace_id,
+            )
+            raw = payload.get("items") if isinstance(payload, dict) else {}
+            if isinstance(raw, dict):
+                by_draft = {int(key): value for key, value in raw.items() if str(key).isdigit()}
+        except Exception:  # noqa: BLE001 - 图取不到就当这条没图，下面会剔掉
+            failed += 1
+            by_draft = {}
+        for item in items:
+            projected = by_draft.get(int(item.get("draft_id") or 0))
+            if not isinstance(projected, dict):
+                continue
+            carousel = _dedupe(
+                list(projected.get("carousel_images") or [])
+                + ([projected.get("main_image")] if projected.get("main_image") else [])
+            )
+            detail = _dedupe(list(projected.get("detail_images") or []))
+            item["carousel_images"] = carousel
+            item["detail_images"] = detail
+            item["images"] = _dedupe(carousel + detail)
+            item["main_image"] = str(projected.get("main_image") or "")
+    return failed
+
+
+def _collect_ai_entries(
+    service: Any,
+    actor: Actor,
+    task_limit: int,
+    *,
+    item_limit: int = 20,
+    item_offset: int = 0,
+) -> list[dict[str, Any]]:
+    """聚合最近若干个任务里「可导出」的商品。
+
+    `item_limit` / `item_offset` 透传给 `task_preview`（它对任务项是真 LIMIT/OFFSET），
+    所以「一个任务里有 500 个商品」不再被截成前 20 个 —— 前端点「加载更多」时
+    调大 offset 就能把后面的取出来，而成本恒定（每批只取一页）。
+    """
     history = service.task_history(max(1, task_limit), actor.workspace_id)
     entries: list[dict[str, Any]] = []
+    finished: list[dict[str, Any]] = []
     for task in history.get("tasks") or []:
         if str(task.get("status")) not in AI_FINISHED_STATUSES:
             continue
         if int(task.get("success_count") or 0) <= 0:
             continue
-        task_id = int(task["task_id"])
+        finished.append(task)
+    if not finished:
+        return entries
+
+    # 每个任务的预览是一次独立的只读查询：串行跑 8 个实测约 1 秒，
+    # 并发 4 路能压到三分之一（本地库是 WAL，多读互不阻塞）。
+    # 单个任务失败只跳过它自己，和原来逐个 try/except 的语义一致。
+    #
+    # 图片只投影前 60 条：再多就是给收件箱里的缩略图付全尺寸的代价，
+    # 而一屏也就看 10 条左右。
+    page_limit = max(1, int(item_limit))
+    page_offset = max(0, int(item_offset))
+    media_limit = min(page_limit, 60)
+
+    def preview_one(task: dict[str, Any]) -> dict[str, Any] | None:
         try:
-            preview = service.task_preview(
-                task_id,
+            return service.task_preview(
+                int(task["task_id"]),
                 workspace_id=actor.workspace_id,
-                item_limit=20,
-                media_limit=20,
+                item_limit=page_limit,
+                item_offset=page_offset,
+                media_limit=media_limit,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - 单个任务读不出来不该拖垮整库
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(4, len(finished))) as pool:
+        previews = list(pool.map(preview_one, finished))
+
+    has_more = False
+    for task, preview in zip(finished, previews):
+        if not preview:
             continue
+        # 这个任务还有没取出来的商品（item_count 是任务内总数）→ 前端可以「加载更多」
+        if preview.get("has_more"):
+            has_more = True
+        task_id = int(task["task_id"])
         # 预览条目只有 8 个核心字段；描述、来源链接、变种属性都在草稿里。
         # 一次性批量读，避免逐条 get_draft 的 N+1。
         item_list = [
@@ -187,63 +579,84 @@ def _collect_ai_entries(service: Any, actor: Actor, task_limit: int) -> list[dic
                 drafts_by_id = {}
 
         for item in preview.get("items") or []:
-            if not item.get("exportable") or item.get("excluded"):
-                continue
-            carousel = _dedupe(
-                list(item.get("carousel_images") or [])
-                + ([item.get("main_image")] if item.get("main_image") else [])
+            entry = _build_ai_entry(
+                task,
+                item,
+                drafts_by_id.get(int(item.get("product_draft_id") or 0)),
+                task_id,
             )
-            detail = _dedupe(list(item.get("detail_images") or []))
-            images = _dedupe(carousel + detail)
-            if not images:
-                continue
-            core = item.get("core_fields") or {}
-            draft_row = drafts_by_id.get(int(item.get("product_draft_id") or 0)) or {}
-            # 申报价：显式价（预览改过的）> 草稿列 > 导出表同款推算（成本 × 倍数，下限 150）。
-            # 之前只读 declared_price 列，而该列绝大多数是 NULL，界面上就成了「—」。
-            raw_payload = draft_row.get("raw_payload") if isinstance(draft_row.get("raw_payload"), dict) else {}
-            # category_path 可能是字符串，也可能是列表；先判列表再取字符串，
-            # 否则 list 会被 _text 变成 "['a', 'b']" 直接显示在界面上。
-            raw_category = raw_payload.get("category_path")
-            if isinstance(raw_category, list):
-                category_name = " > ".join(_text(item) for item in raw_category if _text(item))
-            else:
-                category_name = _text(raw_category)
-            declared_price, declared_estimated = _declared_price_cny(
-                explicit=core.get("declared_price") or draft_row.get("declared_price"),
-                suggested=core.get("suggested_price"),
-                cost=draft_row.get("cost"),
-            )
-            entries.append(
-                {
-                    "source": "ai",
-                    "id": f"ai:{task_id}:{item.get('item_id')}",
-                    "title": str(item.get("title") or "").strip(),
-                    "subtitle": str(task.get("title") or ""),
-                    "status": str(item.get("status") or ""),
-                    "images": images,
-                    "carousel_images": carousel,
-                    "detail_images": detail,
-                    "main_image": str(item.get("main_image") or ""),
-                    "updated_at": str(task.get("updated_at") or ""),
-                    "task_id": task_id,
-                    "draft_id": item.get("product_draft_id"),
-                    "sku": _text(core.get("sku")),
-                    "declared_price": declared_price,
-                    "declared_price_estimated": declared_estimated,
-                    # 草稿自带的类目（AI 处理阶段采集到的类目路径，可能是空）
-                    "category_name": category_name,
-                    # 建议售价：导出表这一列留空，这里也只取显式填过的值，不拿成本冒充
-                    "suggested_price": core.get("suggested_price"),
-                    "stock": _trusted_stock(core.get("stock")),
-                    "weight_g": core.get("weight_g"),
-                    "length_cm": core.get("length_cm"),
-                    "width_cm": core.get("width_cm"),
-                    "height_cm": core.get("height_cm"),
-                    **_draft_extra_fields(drafts_by_id.get(int(item.get("product_draft_id") or 0))),
-                }
-            )
-    return entries
+            if entry is not None:
+                entries.append(entry)
+    return entries, has_more
+
+
+def _build_ai_entry(
+    task: dict[str, Any],
+    item: dict[str, Any],
+    draft_row: dict[str, Any] | None,
+    task_id: int,
+    *,
+    require_images: bool = True,
+) -> dict[str, Any] | None:
+    """把一条任务项转成草稿库条目。
+
+    ``require_images=False``：全量搜索的第一趟只取元数据（``media_limit=0`` 时
+    预检把图片字段清空），命中之后才单独补图片投影，所以这一趟不能因为「没图」丢掉。
+    """
+    if not item.get("exportable") or item.get("excluded"):
+        return None
+    carousel = _dedupe(
+        list(item.get("carousel_images") or [])
+        + ([item.get("main_image")] if item.get("main_image") else [])
+    )
+    detail = _dedupe(list(item.get("detail_images") or []))
+    images = _dedupe(carousel + detail)
+    if require_images and not images:
+        return None
+    core = item.get("core_fields") or {}
+    draft_row = draft_row or {}
+    # 申报价：显式价（预览改过的）> 草稿列 > 导出表同款推算（成本 × 倍数，下限 150）。
+    # 之前只读 declared_price 列，而该列绝大多数是 NULL，界面上就成了「—」。
+    raw_payload = draft_row.get("raw_payload") if isinstance(draft_row.get("raw_payload"), dict) else {}
+    # category_path 可能是字符串，也可能是列表；先判列表再取字符串，
+    # 否则 list 会被 _text 变成 "['a', 'b']" 直接显示在界面上。
+    raw_category = raw_payload.get("category_path")
+    if isinstance(raw_category, list):
+        category_name = " > ".join(_text(value) for value in raw_category if _text(value))
+    else:
+        category_name = _text(raw_category)
+    declared_price, declared_estimated = _declared_price_cny(
+        explicit=core.get("declared_price") or draft_row.get("declared_price"),
+        suggested=core.get("suggested_price"),
+        cost=draft_row.get("cost"),
+    )
+    return {
+        "source": "ai",
+        "id": f"ai:{task_id}:{item.get('item_id')}",
+        "title": str(item.get("title") or "").strip(),
+        "subtitle": str(task.get("title") or ""),
+        "status": str(item.get("status") or ""),
+        "images": images,
+        "carousel_images": carousel,
+        "detail_images": detail,
+        "main_image": str(item.get("main_image") or ""),
+        "updated_at": str(task.get("updated_at") or ""),
+        "task_id": task_id,
+        "draft_id": item.get("product_draft_id"),
+        "sku": _text(core.get("sku")),
+        "declared_price": declared_price,
+        "declared_price_estimated": declared_estimated,
+        # 草稿自带的类目（AI 处理阶段采集到的类目路径，可能是空）
+        "category_name": category_name,
+        # 建议售价：导出表这一列留空，这里也只取显式填过的值，不拿成本冒充
+        "suggested_price": core.get("suggested_price"),
+        "stock": _trusted_stock(core.get("stock")),
+        "weight_g": core.get("weight_g"),
+        "length_cm": core.get("length_cm"),
+        "width_cm": core.get("width_cm"),
+        "height_cm": core.get("height_cm"),
+        **_draft_extra_fields(draft_row or None),
+    }
 
 
 def _collect_pod_entries(service: Any, actor: Actor, batch_limit: int) -> list[dict[str, Any]]:

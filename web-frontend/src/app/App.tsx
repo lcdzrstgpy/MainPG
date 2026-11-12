@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 
 import { WorkspaceShell } from "./layout/WorkspaceShell";
+import { WorkspaceErrorBoundary } from "../shared/components/WorkspaceErrorBoundary";
 import { AuthPage } from "../modules/customer/pages/AuthPage";
 import { StartupUpdateGate } from "../modules/app_update/components/StartupUpdateGate";
 import { RuntimeUpdateNotifier } from "../modules/app_update/components/RuntimeUpdateNotifier";
 import { GlobalToast } from "../shared/components/GlobalToast";
 import { BackendOfflineNotice } from "../shared/components/BackendOfflineNotice";
-import { getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
+import { apiUrl, getAuthAccount, getAuthToken, httpJson, releaseAuthSession, toUserMessage } from "../transport/http/client";
 import type { BrandLogoRect } from "../shared/brand";
 
 type MeResponse = {
@@ -26,7 +27,7 @@ async function fetchActiveTaskCount(): Promise<number> {
     const headers: Record<string, string> = { "X-Workspace-ID": account.workspace_id || account.workspace_code || "local" };
     const token = getAuthToken();
     if (token) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch("/api/product-processing/tasks/active-count", { headers });
+    const response = await fetch(apiUrl("/api/product-processing/tasks/active-count"), { headers });
     if (!response.ok) return 0;
     const data = (await response.json().catch(() => ({}))) as { count?: unknown };
     return typeof data?.count === "number" ? data.count : 0;
@@ -163,13 +164,17 @@ export function App() {
       <AuthPage exiting={authExiting} onEnter={enterWorkspaceAfterLogin} />
     )}
     {enteredWorkspace && (
-      <WorkspaceShell
-        currentRole={accountRole}
-        onSignOut={signOut}
-        playEntryAnimation={playEntryAnimation}
-        entryOrigin={entryOrigin}
-        onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
-      />
+      // 外层兜底：WorkspaceShell 自身（页签恢复、导航）出错时至少给一句提示，
+      // 而不是让整个窗口变成一片空白。
+      <WorkspaceErrorBoundary resetKey="workspace" scope="工作台">
+        <WorkspaceShell
+          currentRole={accountRole}
+          onSignOut={signOut}
+          playEntryAnimation={playEntryAnimation}
+          entryOrigin={entryOrigin}
+          onEntryAnimationComplete={() => setPlayEntryAnimation(false)}
+        />
+      </WorkspaceErrorBoundary>
     )}
     <RuntimeUpdateNotifier />
     <GlobalToast />

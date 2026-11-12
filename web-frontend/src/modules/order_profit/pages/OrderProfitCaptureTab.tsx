@@ -6,6 +6,7 @@ import { CaptureCenterCard } from "../components/CaptureCenterCard";
 import { ShopDataGlyph } from "../components/ShopDataGlyph";
 import { ShopDataScene } from "../components/ShopDataScene";
 import { EmptyBlock } from "../components/ShopDataPrimitives";
+import { MonthMultiSelect } from "../components/ChartControls";
 import { TeamRollupDialog } from "../components/TeamRollupDialog";
 import {
   captureStatusChip,
@@ -23,6 +24,7 @@ import {
 } from "../data/captureTaskStorage";
 import { money, numberText } from "../format";
 import type {
+  AutoCaptureSettings,
   CaptureRunSummary,
   OrderProfitCaptureStatus,
   OrderProfitSettings,
@@ -60,12 +62,18 @@ export function OrderProfitCaptureTab({
   const [activeShop, setActiveShop] = useState<ProfitShop | null>(null);
   const [shopBusy, setShopBusy] = useState(false);
   const [lastFullAt, setLastFullAt] = useState(0);
+  // 订单采集范围：月份决定插件往下翻到哪一页停，区域决定跑美国/欧区中的哪几个。
+  const [orderMonths, setOrderMonths] = useState<string[]>([]);
+  const [syncMonths, setSyncMonths] = useState<string[]>([]);
+  const [syncRegions, setSyncRegions] = useState<string[]>(["美国", "欧区"]);
   const [recentRuns, setRecentRuns] = useState<CaptureRunSummary[]>([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [submitBusy, setSubmitBusy] = useState(false);
   const [submitText, setSubmitText] = useState("");
   const [rollupPreview, setRollupPreview] = useState<TeamRollupPreview | null>(null);
   const [rollupResult, setRollupResult] = useState<TeamRollupSubmitResult | null>(null);
+  const [autoCapture, setAutoCapture] = useState<AutoCaptureSettings | null>(null);
+  const [autoBusy, setAutoBusy] = useState(false);
   const pollTimer = useRef<number | null>(null);
   // 记住当前指令号：刚下发时 status 还没回来，终止按钮也要能停。
   const activeCommandIdRef = useRef(0);
@@ -121,8 +129,9 @@ export function OrderProfitCaptureTab({
       orderProfitApi.listSessions(),
       orderProfitApi.getSettings(),
       orderProfitApi.listShops(),
+      orderProfitApi.autoCapture(),
     ])
-      .then(([sessionPayload, settingsPayload, shopPayload]) => {
+      .then(([sessionPayload, settingsPayload, shopPayload, autoPayload]) => {
         if (cancelled) return;
         const list = sessionPayload.sessions || [];
         setSessions(list);
@@ -146,6 +155,7 @@ export function OrderProfitCaptureTab({
         setRateInput(String(nextSettings.usd_cny_rate));
         setCommissionInput(String(nextSettings.commission_rate * 100));
         setHeadInput(String(nextSettings.head_unit_price_cny));
+        setAutoCapture(autoPayload.auto_capture);
       })
       .catch((cause) => {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
@@ -162,6 +172,23 @@ export function OrderProfitCaptureTab({
   useEffect(() => {
     setLastFullAt(loadLastFullSyncAt(activeShop?.name || ""));
   }, [activeShop?.name]);
+
+  // 订单已有哪些月份：只作为「可选范围」提示，没采过的月份也可以先选，插件会翻到起始月份为止。
+  useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
+    orderProfitApi
+      .ordersMonths(activeShop?.name || "")
+      .then((payload) => {
+        if (!cancelled) setOrderMonths(payload.months || []);
+      })
+      .catch(() => {
+        // 月份拉取失败不阻塞采集，只是少了历史月份提示。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isActive, activeShop?.name, refreshToken]);
 
   /** 采集进入终态时清掉持久化任务；全量成功才刷新“上次全量”时间。 */
   const finishTask = (commandId: number, success: boolean) => {
@@ -332,24 +359,35 @@ export function OrderProfitCaptureTab({
     const incremental = requested === "auto"
       ? resolveSyncKind({ now: Date.now(), lastFullAt }) === "incremental"
       : requested === "incremental";
+    // 选了月份范围时不能走增量：增量只读每个区域第一页，到不了历史月份。
+    const useMonths = syncMonths.length > 0;
+    const effectiveIncremental = useMonths ? false : incremental;
     clearPoll();
     setBusy(true);
     setStatus(null);
     setError("");
     try {
-      const command = await orderProfitApi.startCaptureAll(activeSession, incremental, activeShop.name);
+      const command = await orderProfitApi.startCaptureAll(
+        activeSession,
+        effectiveIncremental,
+        activeShop.name,
+        syncMonths,
+        syncRegions,
+      );
       activeCommandIdRef.current = command.command_id;
       saveActiveCaptureTask({
         commandId: command.command_id,
-        kind: incremental ? "incremental" : "full",
-        label: incremental ? "增量同步" : "全量同步",
+        kind: effectiveIncremental ? "incremental" : "full",
+        label: effectiveIncremental ? "增量同步" : (useMonths ? "按月份采集" : "全量同步"),
         shopName: activeShop.name,
         startedAt: Date.now(),
       });
       showToast(
-        incremental
+        effectiveIncremental
           ? "已开始增量同步：只补最新数据，失败项可在下方单独重试"
-          : "已开始全量同步：依次采集 6 类数据，采集中可以离开本页",
+          : useMonths
+            ? `已开始按月份采集：订单会按 ${syncMonths.slice().sort()[0]} 起的范围翻页，其余数据照常更新`
+            : "已开始全量同步：依次采集 6 类数据，采集中可以离开本页",
         "info",
       );
       await pollStatus(command.command_id);
@@ -392,6 +430,63 @@ export function OrderProfitCaptureTab({
     } finally {
       setShopBusy(false);
     }
+  };
+
+  /** 自动同步：开关/间隔即时保存，下次 tick 生效。 */
+  const saveAutoCapture = async (
+    patch: Partial<Pick<AutoCaptureSettings, "enabled" | "interval_minutes" | "auto_open_browser">>,
+  ) => {
+    if (!autoCapture || autoBusy) return;
+    const previous = autoCapture;
+    const next = { ...autoCapture, ...patch };
+    setAutoCapture(next);
+    setAutoBusy(true);
+    try {
+      const payload = await orderProfitApi.saveAutoCapture({
+        enabled: next.enabled,
+        interval_minutes: next.interval_minutes,
+        auto_open_browser: next.auto_open_browser,
+      });
+      setAutoCapture(payload.auto_capture);
+    } catch (cause) {
+      setAutoCapture(previous);
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const runAutoCaptureNow = async () => {
+    if (autoBusy) return;
+    setAutoBusy(true);
+    try {
+      const result = await orderProfitApi.runAutoCapture();
+      if (result.ran) {
+        showToast(
+          `已下发 ${result.queued ?? 0} 个店铺${
+            result.opened ? `，自动打开浏览器 ${result.opened} 个` : ""
+          }`,
+          "success",
+        );
+        onCaptured();
+      } else {
+        showToast(result.reason === "disabled" ? "自动同步未启用" : "本轮未执行", "info");
+      }
+      const payload = await orderProfitApi.autoCapture();
+      setAutoCapture(payload.auto_capture);
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const formatAutoTime = (value: string) => {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? "—"
+      : date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
   };
 
   /** 先拉一次预览，弹窗里确认「哪些店铺 → 哪个服务器账号」后再真正提交。 */
@@ -577,6 +672,46 @@ export function OrderProfitCaptureTab({
             <strong>开始同步</strong>
           </div>
 
+          <div className="op-capture-scope">
+            <label className="op-field">
+              <span>订单月份范围</span>
+              <MonthMultiSelect
+                months={orderMonths}
+                value={syncMonths}
+                onChange={setSyncMonths}
+                placeholder="不限（翻到分页结束）"
+              />
+            </label>
+            <div className="op-field">
+              <span>采集区域</span>
+              <div className="op-scope-regions">
+                {["美国", "欧区"].map((region) => {
+                  const checked = syncRegions.includes(region);
+                  return (
+                    <label key={region} className={`op-scope-region ${checked ? "is-checked" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={busy}
+                        onChange={() => {
+                          const next = checked
+                            ? syncRegions.filter((item) => item !== region)
+                            : [...syncRegions, region];
+                          // 至少保留一个区域，避免下发空范围变成「什么都不采」。
+                          setSyncRegions(next.length ? next : syncRegions);
+                        }}
+                      />
+                      <span>{region}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <p className="op-hint">
+            月份只作用于订单：插件从最新一页往下翻，遇到早于起始月份就停止；区域决定只跑美国还是欧区。
+          </p>
+
           <div className="op-capture-actions">
             <button
               type="button"
@@ -611,6 +746,68 @@ export function OrderProfitCaptureTab({
                 : "将执行全量同步：依次采集店铺首页、流量、销量、对账、结算和订单。"}
             </p>
           ) : null}
+
+          <div className="op-auto-sync">
+            <div className="op-auto-sync-head">
+              <div>
+                <strong>自动同步</strong>
+                <span className="op-hint">开机后按间隔自动采集，无需停留本页</span>
+              </div>
+              <label className="op-switch">
+                <input
+                  type="checkbox"
+                  checked={Boolean(autoCapture?.enabled)}
+                  disabled={!autoCapture || autoBusy}
+                  onChange={(event) => void saveAutoCapture({ enabled: event.target.checked })}
+                />
+                <span aria-hidden="true" />
+              </label>
+            </div>
+            <div className="op-auto-sync-row">
+              <label className="op-field">
+                <span>间隔</span>
+                <select
+                  value={autoCapture?.interval_minutes ?? 120}
+                  disabled={!autoCapture || autoBusy}
+                  onChange={(event) =>
+                    void saveAutoCapture({ interval_minutes: Number(event.target.value) })
+                  }
+                >
+                  {[30, 60, 120, 240, 480].map((minutes) => (
+                    <option key={minutes} value={minutes}>
+                      {minutes < 60 ? `${minutes} 分钟` : `${minutes / 60} 小时`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="op-check">
+                <input
+                  type="checkbox"
+                  checked={Boolean(autoCapture?.auto_open_browser)}
+                  disabled={!autoCapture || autoBusy}
+                  onChange={(event) =>
+                    void saveAutoCapture({ auto_open_browser: event.target.checked })
+                  }
+                />
+                未连接时自动打开浏览器
+              </label>
+              <button
+                type="button"
+                className="op-btn"
+                disabled={autoBusy}
+                onClick={() => void runAutoCaptureNow()}
+              >
+                {autoBusy ? "执行中…" : "立即执行一次"}
+              </button>
+            </div>
+            <p className="op-hint">
+              {autoCapture?.last_run_at
+                ? `上次执行 ${formatAutoTime(autoCapture.last_run_at)} · 下发 ${
+                    autoCapture.last_result?.queued ?? 0
+                  } 个店铺`
+                : "尚未执行过自动同步"}
+            </p>
+          </div>
 
           <details className="op-disclosure">
             <summary>

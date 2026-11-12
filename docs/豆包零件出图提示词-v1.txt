@@ -1,0 +1,98 @@
+豆包零件出图提示词 v1（19 张）
+用法：下面每个方框里的英文，单独复制一条发给豆包出图，一次出一张；中文行只是文件名/说明，不要一起发。
+出图为纯白底，方便工作台用 rembg 自动抠图；如果你的豆包支持透明底，把 pure white seamless background 换成 pure transparent background 即可。
+
+=====================================================================
+P1 浅橡木块 → 保存为 P1_light-oak-block.png
+=====================================================================
+Photorealistic product photography prop: light oak wood block, 20x10x6 cm, fine straight grain, slightly rounded edges, matte oiled finish. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P2 米白亚麻布 → 保存为 P2_washed-linen-cloth.png
+=====================================================================
+Photorealistic product photography prop: washed ivory linen cloth, loose natural folds, visible weave texture, soft matte surface. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P3 暖灰石板 → 保存为 P3_warm-gray-stone-slab.png
+=====================================================================
+Photorealistic product photography prop: warm gray honed stone slab, 30x20x3 cm, fine matte texture, softly chipped edge. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P4 白陶瓷浅盘 → 保存为 P4_white-ceramic-dish.png
+=====================================================================
+Photorealistic product photography prop: shallow white ceramic dish, 22 cm diameter, glossy glaze, thin rim. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P5 牛皮纸 → 保存为 P5_kraft-paper-sheet.png
+=====================================================================
+Photorealistic product photography prop: plain kraft paper sheet, 40x30 cm, subtle fiber texture, slightly curled corner. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P6 黄铜小夹 → 保存为 P6_brass-clip.png
+=====================================================================
+Photorealistic product photography prop: small brushed brass clip, 6 cm, matte metal, visible hinge pin. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P7 尤加利枝 → 保存为 P7_eucalyptus-sprig.png
+=====================================================================
+Photorealistic product photography prop: single eucalyptus sprig, 25 cm, muted sage leaves, natural stem curve. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P8 磨砂玻璃杯 → 保存为 P8_frosted-glass-cup.png
+=====================================================================
+Photorealistic product photography prop: frosted glass cup, 9 cm tall, soft translucency, no liquid. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P9 胡桃木砧板（家居与厨房）→ 保存为 P9_walnut-cutting-board.png
+=====================================================================
+Photorealistic product photography prop: walnut cutting board, 30x20x2 cm, visible end grain, rounded handle hole, oiled finish. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P10 原木衣架（服装与配饰）→ 保存为 P10_oak-hanger.png
+=====================================================================
+Photorealistic product photography prop: slim oak clothes hanger, 40 cm wide, brushed metal hook, no garment. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P11 编织地垫（宠物用品）→ 保存为 P11_woven-floor-mat.png
+=====================================================================
+Photorealistic product photography prop: round woven jute mat, 50 cm diameter, tight braid, warm sand tone. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P12 暖灰纸堆（办公与文具）→ 保存为 P12_warm-gray-paper-stack.png
+=====================================================================
+Photorealistic product photography prop: neat stack of warm gray paper sheets, 5 cm thick, aligned edges, no printing. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P13 瑜伽垫卷（运动户外）→ 保存为 P13_rolled-yoga-mat.png
+=====================================================================
+Photorealistic product photography prop: tightly rolled dark gray yoga mat, 15 cm diameter, matte foam texture, strap-free. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P14 超纤毛巾（汽车用品）→ 保存为 P14_microfiber-towel.png
+=====================================================================
+Photorealistic product photography prop: folded microfiber towel, 25x25 cm, short dense pile, charcoal gray. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P15 洞洞板方块（工具与五金）→ 保存为 P15_pegboard-square.png
+=====================================================================
+Photorealistic product photography prop: 30x30 cm gray steel pegboard square, regular hole grid, matte powder coat. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P16 毛毡内胆套（纯物理配件）→ 保存为 P16_felt-sleeve.png
+=====================================================================
+Photorealistic product photography prop: charcoal felt sleeve, 24x17 cm, stitched edge, soft structured shape. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P17 亚克力托盘（美妆个护工具）→ 保存为 P17_acrylic-tray.png
+=====================================================================
+Photorealistic product photography prop: clear acrylic tray, 20x14 cm, 2 cm raised rim, clean polished edges. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P18 深绿毛毡垫（成人玩具游戏）→ 保存为 P18_green-felt-mat.png
+=====================================================================
+Photorealistic product photography prop: deep green felt mat, 60x60 cm, dense fiber surface, thin stitched border. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.
+
+=====================================================================
+P19 红陶花盆（园艺庭院工具）→ 保存为 P19_terracotta-pot.png
+=====================================================================
+Photorealistic product photography prop: small terracotta pot, 16 cm tall, unglazed clay, visible drainage rim. Single object, centered, filling 70% of frame, 45-degree high angle three-quarter view, soft 5200K diffused key light from upper left, gentle contact shadow directly under the object, matte natural materials, clean sharp edges, isolated on pure white seamless background, no text, no watermark, no people, no hands, no brand logo, 1:1 square.

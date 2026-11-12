@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -64,8 +64,79 @@ def _round(value: float | None, digits: int = 4) -> float | None:
     return None if value is None else round(value + 1e-9, digits)
 
 
+def _add_optional(current: float | None, value: float | None) -> float | None:
+    """累加金额，但保持「没采到」和「真的是 0」的区别。
+
+    没有值的字段继续保持 None，避免前端把缺失显示成 ¥0.00。
+    """
+    if value is None:
+        return current
+    return (current or 0.0) + value
+
+
+def _reversal(value: Any) -> float | None:
+    """冲回/退款是扣减项：统一存成负数，汇总时直接相加。"""
+    amount = _float(value)
+    return None if amount is None else -abs(amount)
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _normalize_order_time(value: Any) -> str:
+    """把订单时间统一成 YYYY-MM-DD HH:MM:SS。
+
+    月份筛选、月份排行都依赖 order_time 的 ``YYYY-MM`` 前缀；插件传给我们的
+    可能是秒/毫秒时间戳、``2026/10/05``、``2026年10月5日`` 或带时区的 ISO 串，
+    这里统一收口，避免同一单因为格式不同被算到不同月份。
+    """
+    text = _text(value)
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{10,13}", text):
+        stamp = int(text)
+        if len(text) >= 13:
+            stamp //= 1000
+        try:
+            return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            return text
+    cleaned = (
+        text.replace("年", "-").replace("月", "-").replace("日", " ")
+        .replace("/", "-").replace("T", " ").strip()
+    )
+    match = re.match(
+        r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ ]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?",
+        cleaned,
+    )
+    if not match:
+        return text
+    year, month, day = match.group(1), int(match.group(2)), int(match.group(3))
+    hour = int(match.group(4) or 0)
+    minute = int(match.group(5) or 0)
+    second = int(match.group(6) or 0)
+    return f"{year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}:{second:02d}"
+
+
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+_TEMU_ORDER_REGIONS = ("美国", "欧区")
+
+
+def _capture_months(months: list[str] | None) -> list[str]:
+    """采集用的月份范围：只接受 YYYY-MM，去重后按时间正序。"""
+    wanted: list[str] = []
+    for item in months or []:
+        value = _text(item)
+        if _MONTH_RE.match(value) and value not in wanted:
+            wanted.append(value)
+    return sorted(wanted)
+
+
+def _capture_regions(regions: list[str] | None) -> list[str]:
+    """采集区域：只允许美国/欧区，按固定顺序返回。"""
+    selected = {_text(item) for item in (regions or [])}
+    return [region for region in _TEMU_ORDER_REGIONS if region in selected]
 
 
 def _is_unreceived_status(status: Any, code: Any = "") -> bool:
@@ -103,6 +174,8 @@ class OrderProfitService:
         # 软件里输入的验证码，等插件取走。
         self._capture_inputs: dict[int, str] = {}
         self._account_vault: AccountVault | None = None
+        # 自动同步里「刚拉起浏览器」的时间，避免插件没连上时每次都重启进程。
+        self._auto_opened_at: dict[str, float] = {}
 
     # ---------- plugin sessions / captures ----------
     def report_progress(
@@ -180,6 +253,8 @@ class OrderProfitService:
         *,
         session_id: str,
         mode: str = "list",
+        months: list[str] | None = None,
+        regions: list[str] | None = None,
     ) -> dict[str, Any]:
         if self._queue is None:
             raise RuntimeError("plugin queue is unavailable")
@@ -202,16 +277,23 @@ class OrderProfitService:
         capabilities = session.get("capabilities") or {}
         if capabilities.get(TEMU_ORDER_PROFIT_CAPTURE) is not True:
             raise ValueError("plugin session does not support order profit capture")
+        payload: dict[str, Any] = {
+            "mode": mode,
+            "auto_query": True,
+            "all_statuses": True,
+        }
+        wanted_months = _capture_months(months)
+        if wanted_months:
+            payload["months"] = wanted_months
+        wanted_regions = _capture_regions(regions)
+        if wanted_regions:
+            payload["regions"] = wanted_regions
         command = self._queue.queue_command(
             actor_id=str(session.get("actor_id") or ""),
             workspace_id=workspace_id,
             session_id=int(session.get("session_id")),
             command_type=TEMU_ORDER_PROFIT_CAPTURE,
-            payload={
-                "mode": mode,
-                "auto_query": True,
-                "all_statuses": True,
-            },
+            payload=payload,
             idempotency_key=f"order-profit:{workspace_id}:{mode}:{int(time.time() * 1000)}",
         )
         return self._command_summary(command)
@@ -255,6 +337,8 @@ class OrderProfitService:
         session_id: str,
         incremental: bool = False,
         shop_name: str = "",
+        months: list[str] | None = None,
+        regions: list[str] | None = None,
     ) -> dict[str, Any]:
         """一键采集。incremental=True 时只补最新数据（订单/财务/结算只读第一页）。"""
         session = self._session_for_command(workspace_id, session_id)
@@ -271,6 +355,12 @@ class OrderProfitService:
         expected_shop = _text(shop_name)
         if expected_shop:
             payload["shop_name"] = expected_shop
+        wanted_months = _capture_months(months)
+        if wanted_months:
+            payload["months"] = wanted_months
+        wanted_regions = _capture_regions(regions)
+        if wanted_regions:
+            payload["regions"] = wanted_regions
         command = self._queue.queue_command(
             actor_id=str(session.get("actor_id") or ""),
             workspace_id=workspace_id,
@@ -1174,15 +1264,22 @@ class OrderProfitService:
                 or _text(raw.get("po"))
             )
             match = re.search(r"PO-[A-Za-z0-9-]+", po_text)
-            if match is None:
+            if match is None and not _text(raw.get("penalty_amount")):
                 continue
             rows.append({
-                "parent_order_sn": match.group(0),
+                "parent_order_sn": match.group(0) if match else po_text,
                 "currency": _text(raw.get("currency")) or "CNY",
+                "settlement_amount": _float(raw.get("settlement_amount")),
+                "penalty_amount": _float(raw.get("penalty_amount")),
+                "batch_no": _text(raw.get("batch_no")),
+                "flow_id": _text(raw.get("flow_id")),
+                "doc_no": _text(raw.get("doc_no")),
+                "arrive_time": _text(raw.get("arrive_time")),
                 "sales_payback": _float(raw.get("sales_payback")),
-                "sales_reversal": _float(raw.get("sales_reversal")),
+                # 冲回是扣减项：无论来源写成正数还是负数，统一存成负数，避免汇总时符号打架。
+                "sales_reversal": _reversal(raw.get("sales_reversal")),
                 "freight_payback": _float(raw.get("freight_payback")),
-                "freight_reversal": _float(raw.get("freight_reversal")),
+                "freight_reversal": _reversal(raw.get("freight_reversal")),
                 "declared_price": _float(raw.get("declared_price")),
                 "quantity": _int(raw.get("quantity")),
                 "goods_name": _text(raw.get("goods_name")),
@@ -1563,7 +1660,7 @@ class OrderProfitService:
             "order_status": _text(raw.get("order_status")),
             "order_status_code": _text(raw.get("order_status_code")),
             "site": _text(raw.get("site")),
-            "order_time": _text(raw.get("order_time")),
+            "order_time": _normalize_order_time(raw.get("order_time")),
             "shop_name": _text(raw.get("shop_name")),
             "mall_id": _text(raw.get("mall_id")),
             "unit_cost_cny": None,
@@ -1698,14 +1795,13 @@ class OrderProfitService:
         summary["ad_cost"] = finance["ad_cost"]
         summary["penalty"] = finance["penalty"]
         summary["finance"] = finance
-        summary["profit"] = _round(
-            (summary.get("profit") or 0)
-            - finance["ad_cost"]
-            - finance["penalty"]
-        )
+        if summary.get("profit") is not None:
+            summary["profit"] = _round(
+                summary["profit"] - finance["ad_cost"] - finance["penalty"]
+            )
         summary["profit_rate"] = (
             _round(summary["profit"] / summary["gmv_total"], 6)
-            if summary.get("gmv_total") else None
+            if summary.get("profit") is not None and summary.get("gmv_total") else None
         )
         return {
             "shop_name": scope,
@@ -1719,6 +1815,50 @@ class OrderProfitService:
         """有订单数据的月份列表，供订单页月份多选与趋势图使用。"""
         scope = self._scope_shop(workspace_id, shop)
         return {"months": self._repository.list_order_months(workspace_id, shop=scope, limit=24)}
+
+    def orders_ranking(
+        self,
+        workspace_id: str,
+        *,
+        month: str = "",
+        months: list[str] | None = None,
+        shop: str = "",
+        group_by: str = "link",
+        metric: str = "quantity",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """爆品榜：按商品链接（SKC）或 SKU 聚合订单销量。
+
+        榜单只统计有销量（件数 > 0）的商品；金额字段沿用订单行的回款口径，
+        没采到金额时返回 None，前端显示「—」而不是 0。
+        """
+        group = _text(group_by).lower() or "link"
+        if group not in {"link", "sku"}:
+            raise ValueError("group_by 只能是 link 或 sku")
+        sort_metric = _text(metric).lower() or "quantity"
+        if sort_metric not in {"quantity", "payback"}:
+            raise ValueError("metric 只能是 quantity 或 payback")
+        scope = self._scope_shop(workspace_id, shop)
+        wanted = [str(item) for item in (months or []) if str(item)]
+        rows = self._repository.list_order_ranking(
+            workspace_id,
+            month=_text(month),
+            months=wanted,
+            shop=scope,
+            group_by=group,
+            metric=sort_metric,
+            limit=limit,
+        )
+        paybacks = [float(row["payback"]) for row in rows if row.get("payback") is not None]
+        return {
+            "shop_name": scope,
+            "group_by": group,
+            "metric": sort_metric,
+            "months": wanted,
+            "rows": rows,
+            "total_quantity": sum(int(row["quantity"] or 0) for row in rows),
+            "total_payback": _round(sum(paybacks), 2) if paybacks else None,
+        }
 
     def orders_trend(
         self,
@@ -1788,16 +1928,16 @@ class OrderProfitService:
                 "order_time": "",
                 "sub_orders": set(),
                 "item_count": 0,
-                "gmv_total": 0.0,
-                "declared_total": 0.0,
-                "sales_payback": 0.0,
-                "sales_reversal": 0.0,
-                "freight_payback": 0.0,
-                "freight_reversal": 0.0,
-                "purchase_cost": 0.0,
-                "head_freight": 0.0,
-                "tail_freight": 0.0,
-                "profit_estimate": 0.0,
+                "gmv_total": None,
+                "declared_total": None,
+                "sales_payback": None,
+                "sales_reversal": None,
+                "freight_payback": None,
+                "freight_reversal": None,
+                "purchase_cost": None,
+                "head_freight": None,
+                "tail_freight": None,
+                "profit_estimate": None,
                 "has_financials": False,
                 "items": [],
             })
@@ -1809,30 +1949,42 @@ class OrderProfitService:
             if item.get("sub_order_sn"):
                 order["sub_orders"].add(_text(item["sub_order_sn"]))
             order["item_count"] += _int(item.get("quantity"), 1)
-            order["gmv_total"] += _float(item.get("gmv_cny")) or 0
-            order["declared_total"] += _float(item.get("declared_price")) or 0
-            order["purchase_cost"] += _float(item.get("purchase_cost_cny")) or 0
-            order["head_freight"] += _float(item.get("head_freight_cny")) or 0
-            order["tail_freight"] += _float(item.get("tail_freight_cny")) or 0
-            order["profit_estimate"] += _float(item.get("profit_estimate_cny")) or 0
+            order["gmv_total"] = _add_optional(order["gmv_total"], _float(item.get("gmv_cny")))
+            order["declared_total"] = _add_optional(order["declared_total"], _float(item.get("declared_price")))
+            order["purchase_cost"] = _add_optional(order["purchase_cost"], _float(item.get("purchase_cost_cny")))
+            order["head_freight"] = _add_optional(order["head_freight"], _float(item.get("head_freight_cny")))
+            order["tail_freight"] = _add_optional(order["tail_freight"], _float(item.get("tail_freight_cny")))
+            order["profit_estimate"] = _add_optional(order["profit_estimate"], _float(item.get("profit_estimate_cny")))
             for key in ("sales_payback", "sales_reversal", "freight_payback", "freight_reversal"):
                 value = _float(item.get(key))
                 if value is not None:
-                    order[key] += value
+                    order[key] = _add_optional(order[key], value)
                     order["has_financials"] = True
             order["items"].append(item)
 
         orders = []
         for order in groups.values():
-            settled = (
-                order["sales_payback"] + order["sales_reversal"]
-                + order["freight_payback"] + order["freight_reversal"]
-            )
-            profit = (
-                settled - order["purchase_cost"] - order["head_freight"] - order["tail_freight"]
-                if order["has_financials"]
-                else order["profit_estimate"]
-            )
+            financial_parts = [
+                order["sales_payback"],
+                order["sales_reversal"],
+                order["freight_payback"],
+                order["freight_reversal"],
+            ]
+            settled = None
+            if order["has_financials"]:
+                settled = sum(value or 0.0 for value in financial_parts)
+            # 成本不齐时利润宁可不给，也不要用 0 冒充成本算出一个漂亮但错误的数。
+            profit = None
+            if order["has_financials"]:
+                if (
+                    settled is not None
+                    and order["purchase_cost"] is not None
+                    and order["head_freight"] is not None
+                    and order["tail_freight"] is not None
+                ):
+                    profit = settled - order["purchase_cost"] - order["head_freight"] - order["tail_freight"]
+            else:
+                profit = order["profit_estimate"]
             gmv = order["gmv_total"]
             orders.append({
                 "parent_order_sn": order["parent_order_sn"],
@@ -1857,26 +2009,27 @@ class OrderProfitService:
                 "penalty": 0.0,
                 "ad_cost": 0.0,
                 "profit": _round(profit),
-                "profit_rate": _round(profit / gmv, 6) if gmv else None,
+                "profit_rate": _round(profit / gmv, 6) if profit is not None and gmv else None,
                 "items": order["items"],
             })
         orders.sort(key=lambda item: _text(item.get("order_time")), reverse=True)
         return orders
 
     def _summary_from_orders(self, orders: list[Mapping[str, Any]]) -> dict[str, Any]:
+        # 金额汇总同样区分「没有数据」和「0」：一项都没采到就返回 None。
         summary = {
             "order_count": len(orders),
-            "sales_payback": 0.0,
-            "settled_total": 0.0,
-            "sales_reversal": 0.0,
-            "purchase_cost": 0.0,
-            "head_freight": 0.0,
-            "tail_freight": 0.0,
+            "sales_payback": None,
+            "settled_total": None,
+            "sales_reversal": None,
+            "purchase_cost": None,
+            "head_freight": None,
+            "tail_freight": None,
             "penalty": 0.0,
             "ad_cost": 0.0,
-            "gmv_total": 0.0,
-            "declared_total": 0.0,
-            "profit": 0.0,
+            "gmv_total": None,
+            "declared_total": None,
+            "profit": None,
             "missing_purchase_sku": 0,
             "missing_weight_sku": 0,
             "missing_declared": 0,
@@ -1885,15 +2038,11 @@ class OrderProfitService:
         missing_purchase: set[str] = set()
         missing_weight: set[str] = set()
         for order in orders:
-            summary["sales_payback"] += _float(order.get("sales_payback")) or 0
-            summary["settled_total"] += _float(order.get("settled_total")) or 0
-            summary["sales_reversal"] += _float(order.get("sales_reversal")) or 0
-            summary["purchase_cost"] += _float(order.get("purchase_cost")) or 0
-            summary["head_freight"] += _float(order.get("head_freight")) or 0
-            summary["tail_freight"] += _float(order.get("tail_freight")) or 0
-            summary["gmv_total"] += _float(order.get("gmv_total")) or 0
-            summary["declared_total"] += _float(order.get("declared_total")) or 0
-            summary["profit"] += _float(order.get("profit")) or 0
+            for key in (
+                "sales_payback", "settled_total", "sales_reversal", "purchase_cost",
+                "head_freight", "tail_freight", "gmv_total", "declared_total", "profit",
+            ):
+                summary[key] = _add_optional(summary[key], _float(order.get(key)))
             for item in order.get("items") or []:
                 sku = _text(item.get("sku_id")) or _text(item.get("skc_id"))
                 if _float(item.get("purchase_cost_cny")) is None and sku:
@@ -1906,12 +2055,14 @@ class OrderProfitService:
                     summary["missing_gmv"] += 1
         summary["missing_purchase_sku"] = len(missing_purchase)
         summary["missing_weight_sku"] = len(missing_weight)
-        for key in ("sales_payback", "settled_total", "sales_reversal", "purchase_cost",
-                    "head_freight", "tail_freight", "gmv_total", "declared_total", "profit"):
+        for key in (
+            "sales_payback", "settled_total", "sales_reversal", "purchase_cost",
+            "head_freight", "tail_freight", "gmv_total", "declared_total", "profit",
+        ):
             summary[key] = _round(summary[key])
         summary["profit_rate"] = (
             _round(summary["profit"] / summary["gmv_total"], 6)
-            if summary["gmv_total"] else None
+            if summary["profit"] is not None and summary["gmv_total"] else None
         )
         return summary
 
@@ -2325,6 +2476,132 @@ class OrderProfitService:
             command_id=command_id,
         )
         return self._command_summary(command)
+
+    # ---------- 自动同步（定时采集） ----------
+
+    AUTO_CAPTURE_MIN_INTERVAL = 15
+
+    def auto_capture_state(self, workspace_id: str) -> dict[str, Any]:
+        return {"auto_capture": self._repository.auto_capture_settings(workspace_id)}
+
+    def save_auto_capture_settings(
+        self,
+        workspace_id: str,
+        *,
+        enabled: bool,
+        interval_minutes: int = 120,
+        auto_open_browser: bool = True,
+    ) -> dict[str, Any]:
+        minutes = max(self.AUTO_CAPTURE_MIN_INTERVAL, int(interval_minutes or 120))
+        settings = self._repository.save_auto_capture_settings(
+            workspace_id,
+            enabled=bool(enabled),
+            interval_minutes=minutes,
+            auto_open_browser=bool(auto_open_browser),
+        )
+        return {"auto_capture": settings}
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if not pid:
+            return False
+        try:
+            os.kill(int(pid), 0)
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def auto_capture_sweep(self, workspace_id: str, *, force: bool = False) -> dict[str, Any]:
+        """定时任务入口：给每个已绑定店铺的账号下发一次全量采集。
+
+        浏览器没连上时按配置自动拉起；拉起后要等插件重连，因此本轮不推进
+        ``last_run_at``，让下一拍继续跟进（避免刚打开就等到下一个周期）。
+        """
+        settings = self._repository.auto_capture_settings(workspace_id)
+        interval = max(
+            self.AUTO_CAPTURE_MIN_INTERVAL, int(settings["interval_minutes"] or 120)
+        )
+        now = datetime.now(timezone.utc)
+        if not force:
+            if not settings["enabled"]:
+                return {"ran": False, "reason": "disabled"}
+            last = str(settings.get("last_run_at") or "")
+            if last:
+                try:
+                    elapsed = (now - datetime.fromisoformat(last)).total_seconds()
+                except ValueError:
+                    elapsed = interval * 60
+                if elapsed < interval * 60:
+                    return {
+                        "ran": False,
+                        "reason": "not_due",
+                        "next_in_seconds": int(interval * 60 - elapsed),
+                    }
+
+        accounts = self._repository.list_accounts(workspace_id)
+        results: list[dict[str, Any]] = []
+        for account in accounts:
+            account_id = _text(account.get("id"))
+            shop_name = _text(account.get("shop_name"))
+            item = {
+                "account_id": account_id,
+                "shop_name": shop_name,
+                "alias": _text(account.get("alias")),
+            }
+            if not shop_name:
+                results.append({**item, "action": "skipped", "reason": "未绑定店铺"})
+                continue
+            if _text(account.get("status")) in {"capturing", "logging_in"}:
+                results.append({**item, "action": "skipped", "reason": "正在执行"})
+                continue
+            session = self._session_for_instance(
+                workspace_id, _text(account.get("instance_tag"))
+            )
+            if session is None:
+                pid = int(account.get("instance_pid") or 0)
+                if self._pid_alive(pid):
+                    results.append({**item, "action": "waiting", "reason": "等待插件连接"})
+                    continue
+                if not settings["auto_open_browser"]:
+                    results.append({**item, "action": "offline", "reason": "浏览器未连接"})
+                    continue
+                # 刚拉起过就等它连上，避免每拍都重启一个浏览器进程。
+                if time.time() - self._auto_opened_at.get(account_id, 0.0) < 300:
+                    results.append({**item, "action": "waiting", "reason": "浏览器启动中"})
+                    continue
+                try:
+                    self.open_account_browser(workspace_id, account_id)
+                    self._auto_opened_at[account_id] = time.time()
+                except BaseException as error:  # noqa: BLE001 - 单个账号失败不影响其他店铺
+                    results.append({**item, "action": "open_failed", "reason": str(error)})
+                    continue
+                results.append({**item, "action": "opened_browser"})
+                continue
+            try:
+                self.start_account_capture(workspace_id, account_id)
+            except BaseException as error:  # noqa: BLE001
+                results.append({**item, "action": "failed", "reason": str(error)})
+                continue
+            results.append({**item, "action": "queued"})
+
+        pending = any(
+            row["action"] in {"waiting", "opened_browser"} for row in results
+        )
+        summary = {
+            "ran": True,
+            "ran_at": now.isoformat(timespec="seconds"),
+            "queued": sum(1 for row in results if row["action"] == "queued"),
+            "opened": sum(1 for row in results if row["action"] == "opened_browser"),
+            "waiting": sum(1 for row in results if row["action"] == "waiting"),
+            "total": len(results),
+            "pending": pending,
+            "items": results,
+        }
+        if not pending:
+            self._repository.record_auto_capture_run(
+                workspace_id, ran_at=summary["ran_at"], result=summary
+            )
+        return summary
 
     def _sync_account_capture_state(
         self, workspace_id: str, command: PluginCommand

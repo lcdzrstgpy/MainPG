@@ -17,6 +17,8 @@ function sameOriginProxy() {
 }
 
 export default defineConfig({
+  // 子路径部署（如 https://域名/workbench/）时用 WH_WEB_BASE 注入；默认根路径。
+  base: process.env.WH_WEB_BASE || "/",
   plugins: [react()],
   server: {
     host: "127.0.0.1",

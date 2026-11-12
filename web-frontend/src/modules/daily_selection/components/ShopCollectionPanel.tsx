@@ -7,6 +7,7 @@ import {
   formatShopCollectionError,
   getShopBatchActions,
   isActiveShopBatchStatus,
+  isTerminalShopBatchStatus,
   shopBatchProgress,
   shopBatchStatusLabel,
   shopItemDisplayTitle,
@@ -217,20 +218,69 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
   return (
     <section className="shop-collection-panel" aria-label="整店采集">
       <form className="shop-collection-create" onSubmit={createBatch}>
-        <label>
-          <span>商品链接</span>
-          <input value={sourceInput} onChange={(event) => handleSourceInputChange(event.target.value)}
+        <div className="shop-create-field">
+          <span className="shop-create-label">
+            商品链接
+            <span className="shop-platform-switch" role="group" aria-label="采集平台">
+              <button type="button" className={shopPlatform === "1688" ? "is-active" : ""} aria-pressed={shopPlatform === "1688"} onClick={() => setShopPlatform("1688")}>1688</button>
+              <button type="button" className={shopPlatform === "taobao" ? "is-active" : ""} aria-pressed={shopPlatform === "taobao"} onClick={() => setShopPlatform("taobao")}>淘宝 / 天猫</button>
+            </span>
+          </span>
+          <input aria-label="商品链接" value={sourceInput} onChange={(event) => handleSourceInputChange(event.target.value)}
             placeholder={shopPlatform === "taobao"
               ? "粘贴淘宝/天猫商品链接或店铺主页，平台按链接自动识别（如 item.taobao.com/item.htm?id=…）"
               : "粘贴 1688 店铺主页、商品链接或商品 ID；数字店铺 SID 请写成 sid:123456（平台按链接自动识别）"} />
-        </label>
+        </div>
         <button type="submit" disabled={submitting}>{submitting ? "正在创建…" : "开始采集"}</button>
       </form>
       {(error || notice) && <p className={`shop-collection-message ${error ? "is-error" : "is-success"}`} role="status">{error || notice}</p>}
 
       <div className="shop-collection-grid">
         <div className="shop-batch-detail">
-          {!selectedBatch && <div className="shop-empty"><strong>选择或创建一个批次</strong><p>这里仅管理采集进度；商品详情和导出请在产品池中查看。</p></div>}
+          {!selectedBatch && (
+            <div className="shop-onboard">
+              <div className="shop-onboard-copy">
+                <span className="shop-onboard-eyebrow">SHOP SWEEP · 整店采集</span>
+                <strong>把整个店铺一次性扫一遍</strong>
+                <p>粘贴店铺主页或任一商品链接，后台会把店内商品逐个发现、补详情，离开页面也不会中断。</p>
+                <ol className="shop-onboard-steps">
+                  <li><b>01</b><span><strong>识别店铺</strong><small>按链接自动判断 1688 / 淘宝，先列出店内商品</small></span></li>
+                  <li><b>02</b><span><strong>逐款补详情</strong><small>SKU、阶梯价、属性与库存，失败项可单独重试</small></span></li>
+                  <li><b>03</b><span><strong>结果归档</strong><small>商品进候选池与草稿，可在批次里回看和续采</small></span></li>
+                </ol>
+                <div className="shop-onboard-inputs">
+                  <span>店铺主页链接</span><span>商品链接</span><span>商品 ID</span><span>sid:123456</span>
+                </div>
+              </div>
+              <div className="shop-onboard-side">
+                <svg className="shop-onboard-art" viewBox="0 0 240 168" aria-hidden="true" focusable="false">
+                  <defs>
+                    <linearGradient id="shopOnboardFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0" stopColor="#63cbe8" stopOpacity=".22" />
+                      <stop offset="1" stopColor="#25bda3" stopOpacity=".05" />
+                    </linearGradient>
+                  </defs>
+                  <rect x="30" y="58" width="132" height="86" rx="10" fill="url(#shopOnboardFill)" stroke="#8fd3e6" />
+                  <path d="M22 58h148" stroke="#3aa9c9" strokeWidth="2.4" strokeLinecap="round" />
+                  <path d="M32 58a10 10 0 0 0 20 0 10 10 0 0 0 20 0 10 10 0 0 0 20 0 10 10 0 0 0 20 0 10 10 0 0 0 20 0 10 10 0 0 0 20 0" fill="none" stroke="#3aa9c9" strokeWidth="1.3" opacity=".7" />
+                  <g fill="none" stroke="#7fc8dd" strokeWidth="1.2">
+                    <rect x="44" y="76" width="30" height="22" rx="4" />
+                    <rect x="82" y="76" width="30" height="22" rx="4" />
+                    <rect x="120" y="76" width="30" height="22" rx="4" />
+                    <rect x="44" y="106" width="30" height="22" rx="4" />
+                    <rect x="82" y="106" width="30" height="22" rx="4" />
+                  </g>
+                  <circle cx="168" cy="104" r="26" fill="rgba(37,189,163,.07)" stroke="#25bda3" strokeWidth="1.3" />
+                  <path d="M147 98h34M147 106h24M147 114h17" stroke="#8fd3e6" strokeWidth="1.2" strokeLinecap="round" opacity=".8" />
+                  <path d="M187 123l13 13" stroke="#25bda3" strokeWidth="3.4" strokeLinecap="round" />
+                  <g stroke="#9fd8e9" strokeWidth="1" strokeDasharray="3 7" opacity=".6">
+                    <path d="M30 40h132" /><path d="M30 30h96" />
+                  </g>
+                </svg>
+                <small className="shop-onboard-note">采集只跑进度；商品详情、导出和核价在产品池里继续。</small>
+              </div>
+            </div>
+          )}
           {selectedBatch && (
             <>
               <div className="shop-batch-summary">
@@ -267,7 +317,26 @@ export const ShopCollectionPanel = forwardRef<ShopCollectionPanelHandle, ShopCol
                     <a className="shop-item-link" href={item.source_url} target="_blank" rel="noreferrer" title={item.source_url}>{item.source_url}</a>
                   </article>
                 ))}
-                {items.length === 0 && <p className="shop-empty">商品将在店铺列表发现完成后显示。</p>}
+                {items.length === 0 && (
+                  <div className={`shop-pending${isTerminalShopBatchStatus(selectedBatch.status) ? " is-done" : ""}`}>
+                    <span className="shop-pending-radar" aria-hidden="true"><i /><i /><i /></span>
+                    <div>
+                      <strong>
+                        {isTerminalShopBatchStatus(selectedBatch.status)
+                          ? "本批次没有可展示的商品"
+                          : selectedBatch.status === "resolving"
+                            ? "正在识别店铺"
+                            : "正在发现店内商品"}
+                      </strong>
+                      <p>
+                        {isTerminalShopBatchStatus(selectedBatch.status)
+                          ? "可能是链接没能识别到店铺，或店内商品全部重复；换一个店铺主页链接重新采集即可。"
+                          : "后台会先列出店内商品，再逐款补 SKU 与价格，进度会实时刷新，可以先去处理别的事。"}
+                      </p>
+                      <small>已发现 {selectedBatch.discovered_count} 个 · 已补全 {selectedBatch.succeeded_count} 个 · 失败 {selectedBatch.failed_count} 个</small>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="shop-pagination">
                 <span className="shop-pagination-status">第 {currentPage} 页 / 共 {totalPages} 页</span>

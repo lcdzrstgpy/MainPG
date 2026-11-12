@@ -48,3 +48,22 @@ test("pricing panel shows server-provided POD module prices and hides the block 
   assert.match(contract, /pod_modules\?: BillingPricingModule\[\]/);
   assert.match(contract, /unit_label\?: string/);
 });
+
+test("积分概要的 wallet/plan 缺字段时不能炸页（可选链一路到底）", () => {
+  // 真实崩溃：`summary?.wallet.available_points` 只保护了 summary，
+  // wallet 缺失时渲染直接 TypeError → 整页白屏（错误边界捕获后什么都不显示）。
+  // 接口部分字段没回 / 缓存结构旧版本 / 后端升级改字段都会踩到。
+  const page = readFileSync(new URL("./PersonalCenterPage.tsx", import.meta.url), "utf8");
+
+  // 渲染路径：三处展示位
+  assert.match(page, /useAnimatedNumber\(summary\?\.wallet\?\.available_points\)/);
+  assert.match(page, /summary\.wallet\?\.points_balance \?\? 0\) \+ \(summary\.wallet\?\.plan\?\.extra_balance/);
+  assert.match(page, /summary\.wallet\?\.plan\?\.plan_balance \?\? 0 : null/);
+  // 乐观更新路径（签到/领积分的 catch 分支）
+  assert.match(page, /current\.wallet\?\.available_points \?\? 0/);
+  assert.match(page, /current\.wallet\?\.plan\?\.extra_balance \?\? 0/);
+  assert.match(page, /current\.wallet\?\.plan\?\.plan_balance/);
+  // 半截可选链（`?.wallet.` 后面直接点）不允许再出现
+  assert.doesNotMatch(page, /summary\?\.wallet\./);
+  assert.doesNotMatch(page, /current\.wallet\.[a-z]/);
+});

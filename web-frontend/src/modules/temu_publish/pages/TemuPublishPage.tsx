@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
@@ -11,6 +12,7 @@ import {
 } from "../components/PublishSkuPanel";
 import type { VariantRow } from "../components/PublishSkuPanel";
 import { DraftImagePicker } from "../components/DraftImagePicker";
+import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
 import {
@@ -21,6 +23,7 @@ import {
   toRatioDataUrl,
   toSquareDataUrl,
 } from "../data/imageShape";
+import { mapWithConcurrency } from "../data/concurrency";
 import {
   autoFillAttributePicks,
   autoFillSourceTexts,
@@ -116,28 +119,6 @@ async function matchCategoryWithRetry(
   return null;
 }
 
-/**
- * 限并发地按 INPUT 顺序处理（传图用：并发 3 张，串行 6 张要等 6~18 秒）。
- * 结果顺序与入参一致，调用方照旧拼到 URL 行里。
- */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await worker(items[index], index);
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
-
 type ImageSlot = "carousel" | "outer" | "detail";
 
 const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hint: string }> = [
@@ -159,6 +140,20 @@ const IMAGE_SLOTS: Array<{ key: ImageSlot; label: string; required: boolean; hin
 
 /** 各槽位最多几张：上传时就挡，别等提交才被 Temu 拒。 */
 const IMAGE_LIMITS: Record<ImageSlot, number> = { carousel: 10, outer: 6, detail: 30 };
+
+/** 产品标题长度上限：Temu 官方文档写明 goodsName ≤500 字符（只支持英文/数字/常见符号）。 */
+const TITLE_MAX_CHARS = 500;
+/** 重量（g）范围：实测回执「重量不符合类目2~1000000g限制」里的边界。 */
+const WEIGHT_MIN_G = 2;
+const WEIGHT_MAX_G = 1_000_000;
+
+/**
+ * 提交前传图床的并发数。
+ *
+ * 原来一张一张串行传：10 张轮播 + 6 张外包装 = 16 个来回，网络一慢就是干等。
+ * 全并发又怕打爆图床限流，取 3 折中（实测上传稳定，速度约快 2~3 倍）。
+ */
+const IMAGE_UPLOAD_CONCURRENCY = 3;
 
 
 /**
@@ -353,10 +348,9 @@ function firstWarehouse(groups: TemuWarehouseGroup[]): TemuWarehouse | null {
   return all.find((warehouse) => warehouse.managementType && warehouse.managementType !== "3") ?? all[0] ?? null;
 }
 
-/** 仓库下拉文案：3 类型仓标注风险，避免选完才发现不支持。 */
+/** 仓库下拉文案：只给名字和 ID。3 类型仓不在下拉里标风险（选起来太吵），真被拒了失败原因会说。 */
 function warehouseLabel(warehouse: TemuWarehouse): string {
-  const risk = warehouse.managementType === "3" ? "（可能不支持该商品）" : "";
-  return `${warehouse.warehouseName} · ${warehouse.warehouseId}${risk}`;
+  return `${warehouse.warehouseName} · ${warehouse.warehouseId}`;
 }
 
 function parsePositive(value: string, label: string): number {
@@ -374,6 +368,21 @@ function parseStock(value: string, label: string): number {
   const number = Number(text);
   if (!text || !Number.isFinite(number) || number < 0) throw new Error(`${label}必须填 0 或正整数`);
   return Math.round(number);
+}
+
+/**
+ * 重量（g）：除了 >0，还有 Temu 的范围限制。
+ * 实测报错原文「重量不符合类目2~1000000g限制，无法售卖」—— 提交才说，
+ * 本地先拦，别等图传完了才被拒。范围取实测回执里的边界。
+ */
+function parseWeightG(value: string, label: string): number {
+  const number = parsePositive(value, label);
+  if (number < WEIGHT_MIN_G || number > WEIGHT_MAX_G) {
+    throw new Error(
+      `${label}要在 ${WEIGHT_MIN_G}~${WEIGHT_MAX_G}g 之间（Temu 限制，当前 ${number}g）`,
+    );
+  }
+  return number;
 }
 
 /**
@@ -563,7 +572,9 @@ function SectionHead({
 }) {
   return (
     <div className={`temu-sec-head${active ? " is-active" : ""}`}>
-      <span className={`temu-sec-num${step.done ? " is-done" : ""}`}>{step.done ? "✓" : index + 1}</span>
+      <span className={`temu-sec-num${step.done ? " is-done" : ""}`}>
+        {step.done ? <CheckGlyph /> : index + 1}
+      </span>
       <div className="temu-sec-title">
         <h2>{step.label}</h2>
         <p>{step.hint}</p>
@@ -571,6 +582,33 @@ function SectionHead({
       {extra ? <div className="temu-sec-extra">{extra}</div> : null}
     </div>
   );
+}
+
+/**
+ * 后端在 detail.section 里给「该去哪个区块改」，这里只负责把 id 翻成人话。
+ * 后端用的是页面区块 id（sec-*），加新区块时两边一起加。
+ */
+const SECTION_LABELS: Record<string, string> = {
+  "sec-base": "基本信息",
+  "sec-info": "产品信息",
+  "sec-variant": "变种信息",
+  "sec-pack": "包装信息",
+};
+
+/**
+ * 本地校验失败落在哪一块。
+ *
+ * 后端错误自带 section；前端自己抛的校验错误只有一句中文，这里按关键词归类 ——
+ * 归类对了就把那个区块描红并滚过去，用户在长表单里不用自己找「到底哪里错了」。
+ * 顺序有讲究：「产品货号」要在「货号」之前判（分属产品信息，不是变种）。
+ */
+function sectionOfValidation(message: string): string {
+  if (/店铺凭证|绑定店铺|类目|必填属性/.test(message)) return "sec-base";
+  if (/运费模板|发货仓库|发货时效|外包装图片/.test(message)) return "sec-pack";
+  if (/产品货号/.test(message)) return "sec-info";
+  if (/第 \d+ 行|变种|尺码|颜色|申报价|建议售价|库存|尺寸|重量/.test(message)) return "sec-variant";
+  if (/标题|轮播图|素材图|详情图|站外|链接/.test(message)) return "sec-info";
+  return "";
 }
 
 export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: () => void } = {}) {
@@ -583,12 +621,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     loadJsonLocal<TemuTokenInfo | null>(`${SHOP_INFO_KEY}:${storageScope()}`, null),
   );
   const [error, setError] = useState("");
+  /**
+   * 报错对应的区块 id（后端在 detail.section 里给）。
+   * 有值时错误条上多一个「去改产品信息」按钮 —— 光说「哪里错了」不够，
+   * 长表单里用户还得自己滚到那一块找。
+   */
+  const [errorSection, setErrorSection] = useState("");
   const [busy, setBusy] = useState("");
   // 提交发布进行中：别的任务跑完不能把它「解除」，否则连点就是重复上架
   const [publishing, setPublishing] = useState(false);
   const publishingRef = useRef(false);
   // 只有「点过发布被拦下来」之后才把必填项标红：一进页面满屏红框反而让人焦虑
   const [showFieldErrors, setShowFieldErrors] = useState(false);
+  /** 提交前的图片上传进度（done/total）：上传改并发后，按钮上要能看见在动 */
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 类目没有预设销售属性、但允许自定义规格时（化妆包这类），由用户决定单 SKU 还是多规格。
@@ -772,6 +818,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const patch = (partial: Partial<PublishForm>) => setForm((current) => ({ ...current, ...partial }));
 
+  /**
+   * 已选的尺码表模板 ID（逗号/空格分隔的字符串 ↔ 数组）。
+   * 店里已经有表的时候，让用户点一下直接填，别去 Temu 后台抄 ID。
+   */
+  const selectedSizeTemplateIds = form.sizeTemplates
+    .split(/[,，\s]+/)
+    .map((item) => Number(item))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  const toggleSizeTemplate = (id: number) => {
+    const next = selectedSizeTemplateIds.includes(id)
+      ? selectedSizeTemplateIds.filter((item) => item !== id)
+      : [...selectedSizeTemplateIds, id];
+    patch({ sizeTemplates: next.join(",") });
+  };
+
   // 表单内容落本机：切页签/刷新不丢，等同「保存到待发布」。
   // 防抖 300ms —— 标题每敲一个字都全量写一次（含长图片 URL 数组）会卡。
   useEffect(() => {
@@ -855,7 +917,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         setSpecMismatch(findSpecMismatches(attrs, rows));
       })
       .catch(() => {
-        // 拉不到就维持空白：用户点一下类目还能重试
+        // 拉不到（后端刚重启/网关抖动）不能把一次性标记留在 true：
+        // 那样这次挂载内属性区永远空白。清掉后，下一次换类目/重套类目还会再试。
+        restoredAttrsLoadedRef.current = false;
       });
   }, [categoryPath, attributes, rows]);
 
@@ -991,6 +1055,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           setStatus(settingsR.value);
         } else {
           missed.push("店铺凭证");
+          // 店铺凭证没取到（后端刚重启/网络抖动）时 status 停在 null，而标题自动匹配
+          // 被 status.configured.ready 门控 —— 没有这层重试，草稿库点「编辑」带入的
+          // 没记忆过类目的草稿就永远不触发属性加载，界面看着是「点了没反应」还不报错。
+          // 静默重试三次（2s/5s/10s），取到为止；仍失败就维持「点刷新重试」的原语义。
+          void (async () => {
+            for (const delay of [2000, 5000, 10000]) {
+              await new Promise((resolve) => setTimeout(resolve, delay));
+              if (!alive) return;
+              try {
+                const fresh = await temuPublishApi.settings();
+                if (alive) setStatus(fresh);
+                return;
+              } catch {
+                // 继续下一次重试
+              }
+            }
+          })();
         }
         if (catsR.ok) {
           setCategoryOptions(catsR.value.categoryDTOList ?? []);
@@ -1227,10 +1308,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const run = async (label: string, task: () => Promise<void>) => {
     setBusy(label);
     setError("");
+    setErrorSection("");
     try {
       await task();
     } catch (cause) {
-      setError(errorMessage(cause));
+      const text = errorMessage(cause);
+      setError(text);
+      const section = (cause as { section?: unknown } | null)?.section;
+      // 后端给了 section 就用它；本地校验只有一句话，按关键词归到哪个区块
+      setErrorSection(typeof section === "string" ? section : sectionOfValidation(text));
     } finally {
       // 只清自己那次：发布这种长任务进行中，别的短任务结束不能把按钮重新解禁
       setBusy((current) => (current === label ? "" : current));
@@ -1783,6 +1869,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [pickerSlot, setPickerSlot] = useState<ImageSlot | null>(null);
   /** 图片放大预览（变种图 / 轮播图点开看大图） */
   const [imagePreview, setImagePreview] = useState<{ src: string; alt?: string } | null>(null);
+  /** 「怎么拿 access_token」说明弹窗：查店铺授权状态时随手能点开，不用去翻文档。 */
+  const [tokenHelpOpen, setTokenHelpOpen] = useState(false);
   /** 挑图超出上限时的一句话提示（几秒后自己消失） */
   const [pickerNotice, setPickerNotice] = useState("");
 
@@ -2169,6 +2257,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const resolveDetailImages = async (
     urls: string[],
     cateId?: number,
+    onEach?: () => void,
   ): Promise<Array<{ url: string; width: number; height: number }>> => {
     const sources = urls.map((item) => item.trim()).filter(Boolean);
     if (!sources.length) return [];
@@ -2190,14 +2279,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
     const target = mostCommonWidth(widths);
 
-    const out: Array<{ url: string; width: number; height: number }> = [];
-    for (const text of sources) {
+    return mapWithConcurrency(sources, IMAGE_UPLOAD_CONCURRENCY, async (text) => {
       const cacheKey = `detail:${target}:${text}`;
       const cached = imageCache.current.get(cacheKey);
       if (cached) {
         const size = detailSizeCache.current.get(cacheKey) ?? { width: target, height: 0 };
-        out.push({ url: cached, ...size });
-        continue;
+        onEach?.();
+        return { url: cached, ...size };
       }
       const image = isPublicHttpUrl(text)
         ? text
@@ -2211,20 +2299,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       };
       imageCache.current.set(cacheKey, resolved);
       detailSizeCache.current.set(cacheKey, size);
-      out.push({ url: resolved, ...size });
-    }
-    return out;
+      onEach?.();
+      return { url: resolved, ...size };
+    });
   };
 
   const resolveImages = async (
     urls: string[],
     cateId?: number,
     shape?: { width: number; height: number },
-  ): Promise<string[]> => {
-    const resolved: string[] = [];
-    for (const url of urls) resolved.push(await resolveImage(url, cateId, shape));
-    return resolved;
-  };
+    onEach?: () => void,
+  ): Promise<string[]> =>
+    // 限并发上传：串行时 16 张图要等十几个来回；顺序由 mapWithConcurrency 保证
+    mapWithConcurrency(urls, IMAGE_UPLOAD_CONCURRENCY, async (url) => {
+      const resolved = await resolveImage(url, cateId, shape);
+      onEach?.();
+      return resolved;
+    });
 
   /** 组装发布草稿（校验 + 图片上传 + 创建规格）。build / 校验 / 发布共用同一份。 */
   const composeDraft = async (): Promise<TemuGoodsDraft> => {
@@ -2236,8 +2327,16 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const leaf = categoryPath[categoryPath.length - 1];
     if (!leaf?.isLeaf) throw new Error("请选择到叶子类目");
     if (!form.title.trim()) throw new Error("请填写产品标题");
+    // Temu 官方：goodsName ≤500 字符。超长提交才被拒，这里先拦。
+    if (form.title.trim().length > TITLE_MAX_CHARS) {
+      throw new Error(`产品标题超过 ${TITLE_MAX_CHARS} 字符（Temu 上限，当前 ${form.title.trim().length}）`);
+    }
     const carouselSource = splitLines(form.carousel);
-    if (!carouselSource.length) throw new Error("至少需要一张产品轮播图");
+    // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」），界面上也是这么写的。
+    // 以前只拦空，1~2 张能一路传到网关才被拒 —— 白等一轮图片上传。
+    if (carouselSource.length < 3) {
+      throw new Error(`轮播图至少 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
+    }
     if (carouselSource.length > 10) throw new Error("轮播图最多 10 张");
     // 草稿带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
     const outerSource = splitLines(form.outerImages);
@@ -2280,9 +2379,24 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 不在这里裁的话就只有「手动上传」的图是对的，草稿带入的全靠原图碰运气。
     const apparel = sizeChart.info?.required === true;
     const carouselShape = apparel ? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;
-    const carousel = await resolveImages(carouselSource, leaf.catId, carouselShape);
-    const outerImages = await resolveImages(splitLines(form.outerImages), leaf.catId, SQUARE_SHAPE);
-    const detailImages = await resolveDetailImages(splitLines(form.detailImages), leaf.catId);
+    // 提交前的传图进度：轮播 + 外包装 + 详情全算进来，传完（或失败）立刻清空
+    const uploadTotal = carouselSource.length + outerSource.length + detailSource.length;
+    let uploadDone = 0;
+    const markUploaded = () => {
+      uploadDone += 1;
+      setUploadProgress({ done: uploadDone, total: uploadTotal });
+    };
+    if (uploadTotal) setUploadProgress({ done: 0, total: uploadTotal });
+    let carousel: string[] = [];
+    let outerImages: string[] = [];
+    let detailImages: Array<{ url: string; width: number; height: number }> = [];
+    try {
+      carousel = await resolveImages(carouselSource, leaf.catId, carouselShape, markUploaded);
+      outerImages = await resolveImages(outerSource, leaf.catId, SQUARE_SHAPE, markUploaded);
+      detailImages = await resolveDetailImages(detailSource, leaf.catId, markUploaded);
+    } finally {
+      setUploadProgress(null);
+    }
     // 服饰类目的素材图单独校验「1:1、宽>=800」，而轮播图是 3:4 竖图 ——
     // 留空回退到轮播首图会被 Temu 拒（实测报「素材图[...]校验失败，应符合 1:1，宽>=800」）。
     // 上传轮播时已经自动另裁一张方图填进 material，走到这里还空着说明是草稿带入的竖图，
@@ -2405,7 +2519,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         stock: parseStock(row.stock, `${at}库存`),
         warehouse_id: row.warehouseId,
         // 页面填 g，接口要毫克；尺寸填 cm，接口要毫米。三维已按降序排好（见上面）
-        weight_mg: Math.round(parsePositive(row.weightG, `${at}重量`) * 1000),
+        weight_mg: Math.round(parseWeightG(row.weightG, `${at}重量`) * 1000),
         length_mm: Math.round(longest * 10),
         width_mm: Math.round(middle * 10),
         height_mm: Math.round(shortest * 10),
@@ -2556,7 +2670,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const checkMandatory = () =>
     run("mandatory", async () => {
       const draft = await composeDraft().catch((cause: unknown) => {
-        noteValidationBlocked();
+        noteValidationBlocked(cause);
         throw cause;
       });
       setMandatory(null);
@@ -2569,51 +2683,94 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       jumpTo("sec-publish");
     });
 
-  /** 真正提交到店铺。非幂等 + 有外部副作用，必须先让用户确认。 */
+  /**
+   * 发布确认弹窗（替代 window.confirm）。
+   *
+   * WebView 宿主可能禁用原生 confirm（直接返回 false）—— 点了提交看着像没反应，
+   * 原生框样式也跟工作台不搭。这里换成应用内弹窗，顺便把「要提交什么」列清楚。
+   * kind=duplicate 是后端说「24 小时内提交过同一条」时的二次确认。
+   */
+  const [publishConfirm, setPublishConfirm] = useState<
+    null | {
+      kind: "submit" | "duplicate";
+      draft: TemuGoodsDraft;
+      skuCount: number;
+      note?: string;
+      /** 提交前最后核对用：价格区间 / 图片数 / 运费模板 / 发货仓库 */
+      priceLabel?: string;
+      imageLabel?: string;
+      freightLabel?: string;
+      warehouseLabel?: string;
+    }
+  >(null);
+
+  /** 点「提交发布」：先过校验，再弹应用内确认框（真正提交在 confirmPublish 里）。 */
   const publishGoods = () => {
     // 双击 / 发布期间又点了一次：直接忽略（接口非幂等，重复提交就重复上架）
-    if (publishingRef.current) return;
+    if (publishingRef.current || publishConfirm) return;
     publishingRef.current = true;
     setPublishing(true);
     return run("publish", async () => {
       // 校验没过：把必填项标红，并滚到第一个还没填完的区块 ——
       // 否则长表单里只看到顶部一句「缺少必填属性」，还得自己往下找在哪
       const draft = await composeDraft().catch((cause: unknown) => {
-        noteValidationBlocked();
+        noteValidationBlocked(cause);
         throw cause;
       });
       const skuCount = draft.skcs.reduce((total, skc) => total + skc.skus.length, 0);
-      const confirmed = window.confirm(
-        [
-          "即将把这件商品直接提交到 Temu 店铺：",
-          "",
-          `标题：${draft.title}`,
-          `类目：${draft.category_ids[draft.category_ids.length - 1]}`,
-          `变种：${skuCount} 个`,
-          "",
-          "提交成功后是真的在店铺里创建商品；接口不支持重试（重复提交可能重复上架）。确认提交？",
-        ].join("\n"),
-      );
-      if (!confirmed) return;
-      setPublishResult(null);
-      try {
-        const published = await temuPublishApi.publish(draft);
-        setPublishResult(published);
-      } catch (cause) {
+      // 确认弹窗把「钱和物流」也列出来：标题/类目之外，用户最后要核的是价、图、运费、仓库
+      const prices = rows
+        .map((row) => Number(row.supplierPrice))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      const priceMin = prices.length ? Math.min(...prices) : 0;
+      const priceMax = prices.length ? Math.max(...prices) : 0;
+      const priceLabel = prices.length
+        ? priceMin === priceMax
+          ? `¥${priceMin}`
+          : `¥${priceMin} – ¥${priceMax}`
+        : "—";
+      const imageLabel = `轮播 ${splitLines(form.carousel).length} · 外包装 ${splitLines(form.outerImages).length} · 详情 ${splitLines(form.detailImages).length}`;
+      const freightLabel =
+        freightTemplates.find((item) => item.freightTemplateId === form.freightId)?.templateName || "—";
+      const warehouseLabel =
+        warehouseGroups
+          .flatMap((group) => group.validWarehouseList ?? [])
+          .find((item) => item.warehouseId === form.warehouseId)?.warehouseName || "—";
+      setPublishConfirm({
+        kind: "submit",
+        draft,
+        skuCount,
+        priceLabel,
+        imageLabel,
+        freightLabel,
+        warehouseLabel,
+      });
+    }).finally(() => {
+      publishingRef.current = false;
+      setPublishing(false);
+    });
+  };
+
+  /** 确认框里点「确认提交」：真正打 Temu 接口。 */
+  const confirmPublish = async () => {
+    const job = publishConfirm;
+    if (!job || publishingRef.current) return;
+    setPublishConfirm(null);
+    publishingRef.current = true;
+    setPublishing(true);
+    try {
+      await run("publish", async () => {
+        const draft = job.draft;
+        setPublishResult(null);
+        try {
+          const published = await temuPublishApi.publish(draft, job.kind === "duplicate");
+          setPublishResult(published);
+        } catch (cause) {
         const text = errorMessage(cause);
         // 后端台账发现 24 小时内提交过同一条：不是失败，是「可能已经在店铺里了」
         if (/重复提交/.test(text)) {
-          const again = window.confirm(
-            [
-              text,
-              "",
-              "确认还要再提交一次吗？确认后店铺里会多出一件相同商品；",
-              "如果只是想改内容，先点取消，回草稿库改完再发。",
-            ].join("\n"),
-          );
-          if (!again) return;
-          const published = await temuPublishApi.publish(draft, true);
-          setPublishResult(published);
+          // 换成应用内「仍然提交」确认框（原生 confirm 在 WebView 里可能被禁）
+          setPublishConfirm({ kind: "duplicate", draft, skuCount: job.skuCount, note: text });
           return;
         }
         // 6000002 = Temu 说「货品类目属性更新」。后端已经把属性缓存清掉了，
@@ -2663,7 +2820,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           priceLabel: `CNY ${draft.skcs[0]?.skus[0]?.supplier_price ?? ""}`,
           at: new Date().toLocaleString("zh-CN"),
           reason: parsed.reason,
-          hint: parsed.hint,
           traceId: parsed.traceId,
           // 带上重试所需的字段：草稿库「发布失败」里点重试可以直接回填
           prefill: {
@@ -2683,10 +2839,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         });
         throw cause;
       }
-    }).finally(() => {
+      });
+    } finally {
       publishingRef.current = false;
       setPublishing(false);
-    });
+    }
   };
 
   const copyPayload = async () => {
@@ -2775,6 +2932,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }));
     setRows([]);
     setError("");
+    setErrorSection("");
     setResult(null);
     setPublishResult(null);
     setMandatory(null);
@@ -2824,19 +2982,26 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const carouselCount = splitLines(form.carousel).length;
 
   // 分区顺序按 Temu 刊登习惯，且只保留「真会提交」的字段：基本信息 → 产品信息 → 变种信息 → 包装信息 → 发布
-  /** 一行变种是否填全（价格/尺寸/重量/货号/仓库都要有） */
-  const rowIncomplete = (row: VariantRow) =>
-    !(
-      row.sizeName.trim() &&
-      row.extCode.trim() &&
-      row.warehouseId &&
-      row.supplierPrice.trim() &&
-      row.weightG.trim() &&
-      row.lengthCm.trim() &&
-      row.widthCm.trim() &&
-      row.heightCm.trim()
-    );
-  const incompleteRows = rows.filter(rowIncomplete).length;
+  /**
+   * 一行变种缺哪些必填列。
+   *
+   * 尺码只在类目有第二销售属性时才算必填 —— 和提交校验（sizeParent 才查尺码）一致。
+   * 以前无条件要求尺码：单维类目（只有颜色）的行永远「没填全」，
+   * 检查清单一直红着，而提交其实能过。
+   */
+  const rowMissingLabels = (row: VariantRow): string[] => {
+    const missing: string[] = [];
+    if (sizeParentId > 0 && !row.sizeName.trim()) missing.push("尺码");
+    if (!row.extCode.trim()) missing.push("货号");
+    if (!row.warehouseId) missing.push("发货仓库");
+    if (!row.supplierPrice.trim()) missing.push("申报价格");
+    if (!row.weightG.trim()) missing.push("重量");
+    if (!row.lengthCm.trim() || !row.widthCm.trim() || !row.heightCm.trim()) missing.push("长宽高");
+    return missing;
+  };
+  const incompleteRows = rows.filter((row) => rowMissingLabels(row).length > 0).length;
+  /** 没填全的行都缺什么（去重）：清单直接说缺哪列，不用用户逐格找 */
+  const missingRowLabels = Array.from(new Set(rows.flatMap(rowMissingLabels)));
   const missingAttrs = requiredProps.length - filledRequired;
 
   /**
@@ -2870,7 +3035,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       hint: "颜色尺码、申报价格、尺寸重量",
       missing: [
         ...(!rows.length ? ["至少一个变种"] : []),
-        ...(rows.length && incompleteRows ? [`${incompleteRows} 行没填全`] : []),
+        ...(rows.length && incompleteRows ? [`${incompleteRows} 行没填全（缺：${missingRowLabels.join("、")}）`] : []),
       ],
     },
     {
@@ -2901,11 +3066,23 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
-  /** 校验没通过时的统一反馈：标红必填项 + 滚到第一个缺口。 */
-  const noteValidationBlocked = () => {
+  /**
+   * 校验没通过时的统一反馈：标红必填项 + 把出错的那块描红并滚过去。
+   *
+   * 能定位到具体区块就跳它 —— 比「第一个没填完的」更准：轮播图不够时变种块
+   * 可能早就填完了，跳第一个缺口只会让人盯着一块全绿的区块发愣。
+   */
+  const noteValidationBlocked = (cause?: unknown) => {
     setShowFieldErrors(true);
-    const firstGap = flowSteps.find((step) => step.id !== "sec-publish" && !step.done);
-    if (firstGap) jumpTo(firstGap.id);
+    const provided = (cause as { section?: unknown } | null)?.section;
+    const section =
+      typeof provided === "string" && provided
+        ? provided
+        : sectionOfValidation(cause ? errorMessage(cause) : "");
+    if (section) setErrorSection(section);
+    const target =
+      section || flowSteps.find((step) => step.id !== "sec-publish" && !step.done)?.id || "";
+    if (target) jumpTo(target);
   };
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
   const ready = !!status?.configured.ready;
@@ -2929,13 +3106,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
-      if (publishing || busy !== "" || !ready) return;
+      if (publishing || busy !== "" || !ready || publishConfirm) return;
       event.preventDefault();
       void publishRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [publishing, busy, ready]);
+  }, [publishing, busy, ready, publishConfirm]);
 
   return (
     <div className="temu-publish-page is-console">
@@ -3041,7 +3218,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             disabled={submitDisabled}
             onClick={() => void publishGoods()}
           >
-            {publishing ? "提交中…" : "提交发布"}
+            {publishing ? (uploadProgress ? `图片上传 ${uploadProgress.done}/${uploadProgress.total}…` : "提交中…") : "提交发布"}
           </button>
         </div>
       </header>
@@ -3073,7 +3250,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <strong>{gatewayReady ? "已由服务器下发（不用管）" : "还没拿到"}</strong>
             </div>
             <div>
-              <span>店铺授权</span>
+              <span>
+                店铺授权
+                {/* 问号放在授权状态旁边：用户是看到「已配置/未绑定」才想问怎么弄，
+                    去个人中心翻文档太远。 */}
+                <button
+                  type="button"
+                  className="temu-help-dot"
+                  title="怎么拿 access_token？点这里看步骤和图"
+                  aria-label="怎么拿 access_token"
+                  onClick={() => setTokenHelpOpen(true)}
+                >
+                  ?
+                </button>
+              </span>
               <strong>{status?.configured.access_token ? "已配置" : "未绑定"}</strong>
             </div>
           </div>
@@ -3170,7 +3360,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       {error && (
         <div className="temu-alert" role="alert">
           <span>{error}</span>
-          <button type="button" onClick={() => setError("")}>关闭</button>
+          <div className="temu-alert-actions">
+            {SECTION_LABELS[errorSection] ? (
+              <button type="button" className="is-primary" onClick={() => jumpTo(errorSection)}>
+                去改{SECTION_LABELS[errorSection]}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                setError("");
+                setErrorSection("");
+              }}
+            >
+              关闭
+            </button>
+          </div>
         </div>
       )}
 
@@ -3194,7 +3399,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 aria-current={activeSectionId === step.id ? "step" : undefined}
                 title={step.done ? `${step.label}：已完成` : `${step.label}：还差 ${step.missing.join("、") || "未开始"}`}
               >
-                <span className="temu-stepbar-num">{step.done ? "✓" : index + 1}</span>
+                <span className="temu-stepbar-num">{step.done ? <CheckGlyph /> : index + 1}</span>
                 <span className="temu-stepbar-label">{step.label}</span>
               </button>
               {/* 连接段从本节点圆点中心画到下一个节点圆点中心（等宽单元格 → 宽度 100%） */}
@@ -3311,7 +3516,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 1 基本信息 */}
           <section
-            className={`temu-sec${stepOf("sec-base").done ? " is-done" : ""}${activeSectionId === "sec-base" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-base").done ? " is-done" : ""}${activeSectionId === "sec-base" ? " is-active" : ""}${errorSection === "sec-base" ? " is-error" : ""}`}
             id="sec-base"
           >
             <SectionHead
@@ -3656,7 +3861,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 2 产品信息 */}
           <section
-            className={`temu-sec${stepOf("sec-info").done ? " is-done" : ""}${activeSectionId === "sec-info" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-info").done ? " is-done" : ""}${activeSectionId === "sec-info" ? " is-active" : ""}${errorSection === "sec-info" ? " is-error" : ""}`}
             id="sec-info"
           >
             <SectionHead
@@ -3845,7 +4050,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     className="temu-input"
                     value={form.material}
                     onChange={(event) => patch({ material: event.target.value })}
-                    placeholder="覆盖素材图地址（可选）"
+                    // 文案要说清「要不要填」：原来的「覆盖素材图地址（可选）」看着像必填，
+                    // 而普通类目其实留空就行（自动用轮播第一张）。
+                    placeholder={
+                      isApparelCategory
+                        ? "必填 · 粘贴 Temu 图片地址，或点右边「上传方图」"
+                        : "可选 · 留空自动用轮播第一张"
+                    }
                   />
                   {/* 手里只有竖图？这里直接裁成 1:1 再传，省得用户自己找工具转 */}
                   <label className="temu-btn is-small" title="选一张图，自动居中裁成 1:1（≥800×800）后上传">
@@ -3929,7 +4140,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 3 变种信息 */}
           <section
-            className={`temu-sec${stepOf("sec-variant").done ? " is-done" : ""}${activeSectionId === "sec-variant" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-variant").done ? " is-done" : ""}${activeSectionId === "sec-variant" ? " is-active" : ""}${errorSection === "sec-variant" ? " is-error" : ""}`}
             id="sec-variant"
           >
             <SectionHead
@@ -4037,6 +4248,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               onPreviewImage={(src, alt) => setImagePreview({ src, alt })}
               singleSku={singleSkuMode}
               presetsReady={attributes !== null}
+              showErrors={showFieldErrors}
             />
             {/* 显示条件用 required（类目要不要），不是 has（店里有没有）：
                 服装类目新店一张表都没有，用 has 判会把整个字段藏掉，
@@ -4047,7 +4259,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   尺码表模板 ID
                   <em className="temu-muted">
                     {sizeChart.has
-                      ? `这个类目需要尺码表（店里已有 ${sizeChart.info?.count ?? 0} 张）：填模板 ID，多个用逗号`
+                      ? `这个类目需要尺码表（店里已有 ${sizeChart.info?.count ?? 0} 张）：点下面的表直接用，也可以手填 ID`
                       : "这个类目必须绑尺码表：先在 Temu 后台建好，再把模板 ID 填这里"}
                   </em>
                 </span>
@@ -4059,6 +4271,35 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       : ""}
                     去卖家后台「商品管理 → 尺码表模板」建一张，再把模板 ID 填到这里
                     （接口建表 sizecharts.create 的参数结构还没打通，暂时只能后台建）。
+                  </p>
+                ) : null}
+                {/* 店里的商品既然带尺码表，就该能直接点选 —— 以前只能去后台抄那串 ID。
+                    后端会把网关返回的行收敛成 {id, name}，认不出 id 的不会出现在这里。 */}
+                {sizeChart.info?.tables?.length ? (
+                  <div className="temu-sizechart-picks">
+                    <span className="temu-muted">用店里已有的尺码表：</span>
+                    {sizeChart.info.tables.map((table) => {
+                      const picked = selectedSizeTemplateIds.includes(table.id);
+                      return (
+                        <button
+                          key={table.id}
+                          type="button"
+                          className={`temu-sizechart-chip${picked ? " is-picked" : ""}`}
+                          onClick={() => toggleSizeTemplate(table.id)}
+                          title={picked ? "再点一下移除" : `填入模板 ID ${table.id}`}
+                        >
+                          {table.name || "尺码表"}
+                          <em>{table.id}</em>
+                          {picked ? <b aria-hidden="true">✓</b> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {sizeChart.has && !sizeChart.info?.tables?.length ? (
+                  <p className="temu-field-note">
+                    店里已有 {sizeChart.info?.count ?? 0} 张尺码表，但网关没返回能用的 ID ——
+                    去卖家后台复制模板 ID 填到下面。
                   </p>
                 ) : null}
                 {sizeChart.info?.sizes?.length ? (
@@ -4081,7 +4322,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
           {/* 4 包装信息 */}
           <section
-            className={`temu-sec${stepOf("sec-pack").done ? " is-done" : ""}${activeSectionId === "sec-pack" ? " is-active" : ""}`}
+            className={`temu-sec${stepOf("sec-pack").done ? " is-done" : ""}${activeSectionId === "sec-pack" ? " is-active" : ""}${errorSection === "sec-pack" ? " is-error" : ""}`}
             id="sec-pack"
           >
             <SectionHead
@@ -4203,7 +4444,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 onClick={() => void publishGoods()}
                 title="不可撤销；快捷键 Ctrl+Enter"
               >
-                {publishing ? "提交中…" : "提交发布"}
+                {publishing ? (uploadProgress ? `图片上传 ${uploadProgress.done}/${uploadProgress.total}…` : "提交中…") : "提交发布"}
               </button>
             </div>
 
@@ -4318,9 +4559,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
             <ol className="temu-rail-list">
               {flowSteps.map((step, index) => (
-                <li key={step.id} className={step.done ? "is-done" : ""}>
+                <li key={step.id} className={`${step.done ? "is-done" : ""}${errorSection === step.id ? " is-error" : ""}`}>
                   <button type="button" onClick={() => jumpTo(step.id)}>
-                    <span className="temu-rail-dot">{step.done ? "✓" : index + 1}</span>
+                    <span className="temu-rail-dot">{step.done ? <CheckGlyph /> : index + 1}</span>
                     <span className="temu-rail-label">
                       {step.label}
                       {/* 没填完就直说差什么；填完了才显示这块包含哪些内容 */}
@@ -4404,7 +4645,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   title="快捷键 Ctrl+Enter"
                 >
                   <BtnIcon path={ICON_SUBMIT} />
-                  {publishing ? "提交中…" : "提交发布"}
+                  {publishing ? (uploadProgress ? `图片上传 ${uploadProgress.done}/${uploadProgress.total}…` : "提交中…") : "提交发布"}
                 </button>
               )}
             </div>
@@ -4427,30 +4668,223 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         </aside>
       </div>
 
-      {imagePreview ? (
-        <div
-          className="temu-image-preview"
-          role="dialog"
-          aria-modal="true"
-          aria-label="图片预览"
-          onClick={() => setImagePreview(null)}
-        >
-          <img
-            src={imagePreview.src}
-            alt={imagePreview.alt || ""}
-            referrerPolicy="no-referrer"
-            onClick={(event) => event.stopPropagation()}
-          />
-          <button
-            type="button"
-            className="temu-image-preview-close"
-            onClick={() => setImagePreview(null)}
-            aria-label="关闭预览"
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
+      {imagePreview
+        ? createPortal(
+            <div
+              className="temu-image-preview"
+              role="dialog"
+              aria-modal="true"
+              aria-label="图片预览"
+              onClick={() => setImagePreview(null)}
+            >
+              <img
+                src={imagePreview.src}
+                alt={imagePreview.alt || ""}
+                referrerPolicy="no-referrer"
+                onClick={(event) => event.stopPropagation()}
+              />
+              <button
+                type="button"
+                className="temu-image-preview-close"
+                onClick={() => setImagePreview(null)}
+                aria-label="关闭预览"
+              >
+                ×
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {publishConfirm
+        ? createPortal(
+            <div className="temu-edit-backdrop" onClick={() => setPublishConfirm(null)}>
+              <div
+                className="temu-edit-dialog temu-confirm-dialog"
+                role="alertdialog"
+                aria-modal="true"
+                aria-label={publishConfirm.kind === "submit" ? "确认提交发布" : "可能重复提交"}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <header className="temu-edit-head">
+                  <div>
+                    <strong>{publishConfirm.kind === "submit" ? "确认提交发布" : "可能重复提交"}</strong>
+                    <span>
+                      {publishConfirm.kind === "submit"
+                        ? "提交后是真的在店铺里创建商品"
+                        : "后端台账发现 24 小时内提交过同一条"}
+                    </span>
+                  </div>
+                  <button type="button" onClick={() => setPublishConfirm(null)} aria-label="关闭">
+                    ×
+                  </button>
+                </header>
+                {publishConfirm.kind === "submit" ? (
+                  <dl className="temu-confirm-summary">
+                    <div>
+                      <dt>标题</dt>
+                      <dd title={publishConfirm.draft.title}>{publishConfirm.draft.title}</dd>
+                    </div>
+                    <div>
+                      <dt>类目</dt>
+                      <dd
+                        title={categoryPath
+                          .map((step) => step.catName)
+                          .filter(Boolean)
+                          .join(" > ")}
+                      >
+                        {categoryPath.map((step) => step.catName).filter(Boolean).join(" > ") ||
+                          publishConfirm.draft.category_ids[publishConfirm.draft.category_ids.length - 1]}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>变种</dt>
+                      <dd>{publishConfirm.skuCount} 个</dd>
+                    </div>
+                    <div>
+                      <dt>价格</dt>
+                      <dd>{publishConfirm.priceLabel || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>图片</dt>
+                      <dd>{publishConfirm.imageLabel || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>运费</dt>
+                      <dd title={publishConfirm.freightLabel}>{publishConfirm.freightLabel || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>仓库</dt>
+                      <dd>{publishConfirm.warehouseLabel || "—"}</dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className="temu-confirm-note">{publishConfirm.note}</p>
+                )}
+                <p className="temu-confirm-note">
+                  {publishConfirm.kind === "submit"
+                    ? "接口不支持重试（连点可能重复上架）；提交成功后商品会出现在店铺里。"
+                    : "确认还要再提交一次吗？确认后店铺里会多出一件相同商品；如果只是想改内容，先取消，回草稿库改完再发。"}
+                </p>
+                <div className="temu-confirm-actions">
+                  <button type="button" className="temu-btn" onClick={() => setPublishConfirm(null)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-primary"
+                    onClick={() => void confirmPublish()}
+                  >
+                    {publishConfirm.kind === "submit" ? "确认提交" : "仍然提交"}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {tokenHelpOpen &&
+        createPortal(
+          <div className="temu-edit-backdrop" onClick={() => setTokenHelpOpen(false)}>
+            <div
+              className="temu-edit-dialog temu-help-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-label="怎么拿店铺 access_token"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <header className="temu-edit-head">
+                <div>
+                  <strong>怎么拿店铺 access_token</strong>
+                  <span>一个店铺一个 token，不能混用</span>
+                </div>
+                <button type="button" onClick={() => setTokenHelpOpen(false)} aria-label="关闭">
+                  ×
+                </button>
+              </header>
+
+              <p className="temu-help-lead">
+                发布商品用的是 <strong>Temu 卖家后台</strong>签发的 access_token，不是你登录工作台的账号。
+                跟着下面三步在自己的店铺后台走一次，之后一直用这个 token 发布，直到它过期。
+              </p>
+
+              <section className="temu-help-step">
+                <div className="temu-help-step-head">
+                  <i>1</i>
+                  <strong>卖家中心 → 服务市场 → 授权管理</strong>
+                </div>
+                <p>登录 Temu 卖家中心，左侧菜单最下面的「服务市场」展开后点「授权管理」。</p>
+                <img
+                  className="temu-help-shot is-narrow"
+                  src="/help/temu-auth-menu.png"
+                  alt="Temu 卖家中心左侧菜单：服务市场 → 授权管理"
+                  title="点击看大图"
+                  onClick={() =>
+                    setImagePreview({
+                      src: "/help/temu-auth-menu.png",
+                      alt: "Temu 卖家中心左侧菜单：服务市场 → 授权管理",
+                    })
+                  }
+                />
+              </section>
+
+              <section className="temu-help-step">
+                <div className="temu-help-step-head">
+                  <i>2</i>
+                  <strong>点「获取授权」→ 选对接系统 → 确认</strong>
+                </div>
+                <p>
+                  点页面里的「获取授权」。弹窗第一步写着「如需使用自研系统对接，请联系对接运营进行对接」：
+                  下拉里显示「无可选系统」时点旁边的「向运营申请」，让对接运营把系统开出来；
+                  开通后在下拉里选上系统，点「确认」。
+                </p>
+                <img
+                  className="temu-help-shot"
+                  src="/help/temu-auth-grant.png"
+                  alt="获取授权弹窗：联系对接运营 → 选择对接系统"
+                  title="点击看大图"
+                  onClick={() =>
+                    setImagePreview({
+                      src: "/help/temu-auth-grant.png",
+                      alt: "获取授权弹窗：联系对接运营 → 选择对接系统",
+                    })
+                  }
+                />
+              </section>
+
+              <section className="temu-help-step">
+                <div className="temu-help-step-head">
+                  <i>3</i>
+                  <strong>「我的授权」里能看到这条授权</strong>
+                </div>
+                <p>
+                  授权成功后，页面下方「我的授权」里会多出这次授权的记录，右边操作列是「取消授权」，
+                  有效期约 90 天；到期前点「取消授权」再重新获取一次就行。
+                </p>
+                <img
+                  className="temu-help-shot"
+                  src="/help/temu-auth-page.png"
+                  alt="授权管理（商品）页的「我的授权」：能看到这次授权记录"
+                  title="点击看大图"
+                  onClick={() =>
+                    setImagePreview({
+                      src: "/help/temu-auth-page.png",
+                      alt: "授权管理（商品）页的「我的授权」：能看到这次授权记录",
+                    })
+                  }
+                />
+              </section>
+
+              <p className="temu-help-note">
+                拿到 access_token 后整串粘到下面「新增店铺」，点「校验并保存为店铺」——注意别把
+                「服务商凭据」和它混了，那是服务器下发的，不用填。找不到 token 就直接问对接运营。
+                截图可以点开看大图。
+              </p>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {pickerSlot ? (
         <DraftImagePicker
