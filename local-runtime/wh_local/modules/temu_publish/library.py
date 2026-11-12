@@ -506,12 +506,17 @@ def _collect_ai_entries(
     *,
     item_limit: int = 20,
     item_offset: int = 0,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     """聚合最近若干个任务里「可导出」的商品。
 
     `item_limit` / `item_offset` 透传给 `task_preview`（它对任务项是真 LIMIT/OFFSET），
     所以「一个任务里有 500 个商品」不再被截成前 20 个 —— 前端点「加载更多」时
     调大 offset 就能把后面的取出来，而成本恒定（每批只取一页）。
+
+    返回 ``(entries, has_more)``：调用方是按二元组解包的，
+    这里**任何一个出口都必须返回两个值** —— 空库时只 return 一个 list 会让
+    草稿库报「not enough values to unpack (expected 2, got 0）」，
+    看起来像 AI 处理出了错，其实只是还没有任何产物。
     """
     history = service.task_history(max(1, task_limit), actor.workspace_id)
     entries: list[dict[str, Any]] = []
@@ -523,7 +528,8 @@ def _collect_ai_entries(
             continue
         finished.append(task)
     if not finished:
-        return entries
+        # 还没有跑完的 AI 处理任务（新装的库就是这样）：正常空态，不是错误
+        return entries, False
 
     # 每个任务的预览是一次独立的只读查询：串行跑 8 个实测约 1 秒，
     # 并发 4 路能压到三分之一（本地库是 WAL，多读互不阻塞）。
