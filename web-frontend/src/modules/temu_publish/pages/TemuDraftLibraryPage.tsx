@@ -7,6 +7,7 @@ import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
+import { DEFAULT_SHIPMENT_DAYS } from "../components/ShipmentDaysPicker";
 import { categorySearchTexts } from "../utils/categoryMatch";
 import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
@@ -21,6 +22,7 @@ import {
   storageScope,
   type DraftAttrPrefill,
 } from "../data/attrPicksStore";
+import { missingRequiredNames, visibleProperties } from "../data/attributeModel";
 import type { AttrPickMap } from "../data/attributeModel";
 import type {
   TemuAttributes,
@@ -29,11 +31,15 @@ import type {
   TemuDraftEntry,
   TemuDraftLibrary,
   TemuPublishPrefill,
+  TemuWarehouseGroup,
 } from "../types";
 import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
 import "../styles/temuPublish.css";
 
 type Filter = "all" | "ai" | "pod";
+
+/** 美国站（批量发布只发这一个站，运费模板/仓库都要按它查） */
+const SITE_ID = 100;
 
 /** 「编辑」「分类」「备注」「隐藏」都只改本机：写 localStorage，刷新后仍生效，但不回写产品处理。 */
 const DRAFT_EDITS_KEY = "temu_draft_edits_v1";
@@ -364,7 +370,13 @@ const AUTO_START_SECONDS = 3;
  * 属性对不上的会失败，属性对得上的就被**发成错类目**——后者比失败更难收拾。
  */
 type BatchGroup = {
-  template: ProductTemplate;
+  /**
+   * 这个类目的产品模板。`null` = 还没存过，等「按草稿自动拼一份」（见 buildAutoTemplate）。
+   * 自动拼也拼不出（必填属性估不全）才整组跳过。
+   */
+  template: ProductTemplate | null;
+  /** 这一组的 Temu 类目路径（自动拼模板要用它拉属性表） */
+  categoryPath: TemuCategory[];
   /** 这类草稿的 Temu 类目路径文案（末级类目一致才在一组） */
   categoryName: string;
   entries: TemuDraftEntry[];
@@ -594,6 +606,8 @@ export function TemuDraftLibraryPage({
       runnable: number;
       /** 被排除的条目说明（没模板 / 没类目），没有就空串 */
       note: string;
+      /** 用了「按草稿临时拼的模板」时的说明（属性是估的，要让人知道） */
+      autoNote: string;
     }
   >(null);
   const autoStartTimerRef = useRef<number | null>(null);
@@ -939,7 +953,7 @@ export function TemuDraftLibraryPage({
     if (missing) {
       return `有 ${missing} 条还没匹配到 Temu 类目，整批没法共用一套属性：先单独「用于发布」把它们选好类目，或分批发。`;
     }
-    return "勾选的草稿不在同一个叶子类目（属性按类目定，不同类目不能共用），请分批发或在下面手动选一个类目。";
+    return "勾选的草稿不在同一个叶子类目（属性按类目定，不同类目不能共用）：关掉弹窗直接点「批量发布」会按类目自动分批跑；要手动配就下面选一个类目、整批按它发。";
   }, [selected, categoryMemo, batchCommonCategory]);
 
   /**
@@ -1085,7 +1099,10 @@ export function TemuDraftLibraryPage({
    */
   const planBatchGroups = (entries: TemuDraftEntry[]) => {
     const memo = localStore.draftCategories();
-    const byLeaf = new Map<string, { categoryName: string; entries: TemuDraftEntry[] }>();
+    const byLeaf = new Map<
+      string,
+      { path: TemuCategory[]; categoryName: string; entries: TemuDraftEntry[] }
+    >();
     let noCategory = 0;
     for (const entry of entries) {
       const path = memo[entry.id]?.path ?? [];
@@ -1099,24 +1116,120 @@ export function TemuDraftLibraryPage({
       if (bucket) bucket.entries.push(entry);
       else
         byLeaf.set(key, {
+          path,
           categoryName: path.map((item) => categoryName(item)).filter(Boolean).join(" > "),
           entries: [entry],
         });
     }
     const groups: BatchGroup[] = [];
-    const withoutTemplate: { categoryName: string; count: number }[] = [];
     for (const [leafCatId, bucket] of byLeaf) {
-      const template = productTemplates.find((item) => {
-        const templatePath = item.categoryPath ?? [];
-        const templateLeaf = templatePath[templatePath.length - 1];
-        return templateLeaf && String(templateLeaf.catId) === leafCatId;
+      const template =
+        productTemplates.find((item) => {
+          const templatePath = item.categoryPath ?? [];
+          const templateLeaf = templatePath[templatePath.length - 1];
+          return templateLeaf && String(templateLeaf.catId) === leafCatId;
+        }) ?? null;
+      // 没有模板也先留着这一组：稍后用草稿自己的属性估填 + 店铺默认运费/仓库拼一份
+      groups.push({
+        template,
+        categoryPath: bucket.path,
+        categoryName: bucket.categoryName,
+        entries: bucket.entries,
       });
-      if (template) groups.push({ template, categoryName: bucket.categoryName, entries: bucket.entries });
-      else withoutTemplate.push({ categoryName: bucket.categoryName, count: bucket.entries.length });
     }
     // 条数多的组先发：先把大头传上去，用户在倒计时里一眼能看出主次
     groups.sort((a, b) => b.entries.length - a.entries.length);
-    return { groups, withoutTemplate, noCategory };
+    return { groups, noCategory };
+  };
+
+  /** 店铺级默认值（运费模板 / 仓库 / 父规格）：一次批量里只取一次 */
+  const batchDefaultsRef = useRef<{
+    freightId: string;
+    warehouseId: string;
+    colorParentId?: number;
+    colorParentName?: string;
+    sizeParentId?: number;
+    sizeParentName?: string;
+  } | null>(null);
+
+  const ensureBatchDefaults = async () => {
+    if (batchDefaultsRef.current) return batchDefaultsRef.current;
+    const [specsR, freightsR, whR] = await Promise.all([
+      temuPublishApi.parentSpecs().catch(() => null),
+      temuPublishApi.freightTemplates([SITE_ID]).catch(() => null),
+      temuPublishApi.warehouses([SITE_ID]).catch(() => null),
+    ]);
+    const specs = specsR?.parentSpecDTOS ?? [];
+    const freights = freightsR?.freightTemplates ?? [];
+    const warehouses = (whR?.warehouseDTOList ?? []).flatMap((group: TemuWarehouseGroup) =>
+      (group.validWarehouseList ?? []).filter((item) => !item.warehouseDisable),
+    );
+    // 仓库：避开 managementType=3（实测发部分商品会被拒），没有别的才退回第一个
+    const warehouse =
+      warehouses.find((item) => item.managementType && item.managementType !== "3") ??
+      warehouses[0] ??
+      null;
+    const colorSpec = specs.find((item) => item.parentSpecName.includes("颜色")) ?? specs[0];
+    const sizeSpec = specs.find((item) => item.parentSpecName.includes("尺码")) ?? specs[1];
+    batchDefaultsRef.current = {
+      freightId: freights[0]?.freightTemplateId ?? "",
+      warehouseId: warehouse?.warehouseId ?? "",
+      colorParentId: colorSpec?.parentSpecId,
+      colorParentName: colorSpec?.parentSpecName,
+      sizeParentId: sizeSpec?.parentSpecId,
+      sizeParentName: sizeSpec?.parentSpecName,
+    };
+    return batchDefaultsRef.current;
+  };
+
+  /**
+   * 没存过模板的类目，按**草稿自己的东西**临时拼一份模板，让「点一下就全上架」在
+   * 第一次用、或者新类目上也能成立：
+   *   类目 = 草稿自动匹配出来的路径 / 属性 = 入草稿库时估的那套 / 运费+仓库 = 店铺默认。
+   *
+   * 拼不出来的唯一情况是「必填属性没估全」——那就返回 null，交给弹窗让人配，
+   * 绝不带着缺属性的模板硬发（每条都会等网关报错，白跑一趟）。
+   */
+  const buildAutoTemplate = async (group: BatchGroup): Promise<ProductTemplate | null> => {
+    const leaf = group.categoryPath[group.categoryPath.length - 1];
+    if (!leaf) return null;
+    const first = group.entries[0];
+    const prefill = first ? attrPrefills[first.id] : undefined;
+    // 估的属性必须是对着这个类目估的；类目变了这份就作废
+    const picks = prefill && Number(prefill.catId) === Number(leaf.catId) ? prefill.picks : {};
+    try {
+      const [attributes, defaults] = await Promise.all([
+        temuPublishApi.attributes(leaf.catId),
+        ensureBatchDefaults(),
+      ]);
+      if (!defaults.freightId || !defaults.warehouseId) return null;
+      const missing = missingRequiredNames(visibleProperties(attributes, picks), picks);
+      if (missing.length) return null;
+      const attrs: Record<string, { vid: number; text: string }> = {};
+      Object.entries(picks).forEach(([pid, pick]) => {
+        if (pick && (pick.vid > 0 || pick.text.trim())) attrs[pid] = { vid: pick.vid, text: pick.text };
+      });
+      return {
+        name: `自动：${categoryName(leaf) || leaf.catName || leaf.catId}`,
+        categoryPath: group.categoryPath,
+        attrs,
+        freightId: defaults.freightId,
+        warehouseId: defaults.warehouseId,
+        shipmentDays: DEFAULT_SHIPMENT_DAYS,
+        origin: "CN",
+        sizeTemplates: "",
+        isCustom: false,
+        isSensitive: false,
+        colorParentId: defaults.colorParentId,
+        colorParentName: defaults.colorParentName,
+        sizeParentId: defaults.sizeParentId,
+        sizeParentName: defaults.sizeParentName,
+        savedAt: new Date().toLocaleString("zh-CN"),
+      };
+    } catch {
+      // 属性表拉不到 / 运费仓库没配：这一组不自动跑，交回弹窗
+      return null;
+    }
   };
 
   /** 收掉自动开跑的倒计时（手动取消 / 组件卸载都要调，否则定时器会打到已卸载的组件上） */
@@ -1160,12 +1273,6 @@ export function TemuDraftLibraryPage({
       setBatchOpen(true);
       return;
     }
-    const first = batchTargets[0];
-    // 一个模板都没存过：只能弹窗让用户现场配
-    if (!first || !productTemplates.length) {
-      setBatchOpen(true);
-      return;
-    }
     setAutoMatching(true);
     setBatchState({ running: false, text: "正在按标题匹配类目…" });
     try {
@@ -1173,25 +1280,44 @@ export function TemuDraftLibraryPage({
       await ensureDraftCategories(batchTargets);
       const plan = planBatchGroups(batchTargets);
       const notes: string[] = [];
-      const templateMiss = plan.withoutTemplate.reduce((sum, item) => sum + item.count, 0);
-      if (templateMiss) notes.push(`${templateMiss} 条所属类目还没存模板`);
+      // 没存过模板的类目：拿草稿自己的类目 + 入草稿库时估好的属性 + 店铺默认运费/仓库
+      // 临时拼一份。这样第一次用、或者遇到新类目也能一键跑，不用每类目先手工建模板。
+      let autoEntries = 0;
+      let autoFailedEntries = 0;
+      for (const group of plan.groups) {
+        if (group.template) continue;
+        const auto = await buildAutoTemplate(group);
+        if (auto) {
+          group.template = auto;
+          autoEntries += group.entries.length;
+        } else {
+          autoFailedEntries += group.entries.length;
+        }
+      }
+      const ready = plan.groups.filter((group) => group.template);
+      if (autoFailedEntries) notes.push(`${autoFailedEntries} 条的类目必填属性没估全，需手动配`);
       if (plan.noCategory) notes.push(`${plan.noCategory} 条没匹配到类目`);
-      if (!plan.groups.length) {
-        setBatchState({ running: false, text: "勾选的草稿都没匹配到可用的产品模板，请手动选" });
+      if (!ready.length) {
+        setBatchState({
+          running: false,
+          text: plan.groups.length
+            ? "这批的类目还没匹配到可用的属性，请手动配或先在发布页存一份模板"
+            : "勾选的草稿都没匹配到 Temu 类目，请手动选",
+        });
         setBatchOpen(true);
         return;
       }
       setBatchState({ running: false, text: "" });
       // 每组用**自己**的模板预检（模板不同，属性/仓库要求也不同）：能发 0 条就先看预检
       const variantForCheck = variantTemplates.find((item) => item.name === variantTpl) ?? null;
-      const runnable = plan.groups.reduce(
+      const runnable = ready.reduce(
         (sum, group) =>
           sum +
           group.entries.filter(
             (entry) =>
               precheckBatchItem(
                 entryPrefill(entry, categoryMemo, attrPrefills),
-                group.template,
+                group.template as ProductTemplate,
                 variantForCheck,
               ).blocked.length === 0,
           ).length,
@@ -1203,10 +1329,14 @@ export function TemuDraftLibraryPage({
         return;
       }
       setAutoStart({
-        groups: plan.groups,
+        groups: ready,
         count: AUTO_START_SECONDS,
         runnable,
         note: notes.join("，"),
+        // 有类目是「临时拼的模板」时必须说明：属性是估的，不是人核过的
+        autoNote: autoEntries
+          ? `${autoEntries} 条没存模板，已按草稿的类目/属性自动填（属性是估的）`
+          : "",
       });
       clearAutoStart();
       let remaining = AUTO_START_SECONDS;
@@ -1248,20 +1378,24 @@ export function TemuDraftLibraryPage({
       overrideTemplate ??
       productTemplates.find((item) => item.name === productTpl) ??
       manualTemplate;
-    const groups: BatchGroup[] = plan?.length
-      ? plan
-      : template
-        ? [
-            {
-              template,
-              categoryName: (template.categoryPath ?? [])
-                .map((item) => item.catName)
-                .filter(Boolean)
-                .join(" > "),
-              entries: batchTargets,
-            },
-          ]
-        : [];
+    // 只跑「有模板」的组：自动拼模板失败的组（必填属性估不全）不在这里硬发
+    const groups: BatchGroup[] = (
+      plan?.length
+        ? plan
+        : template
+          ? [
+              {
+                template,
+                categoryPath: template.categoryPath ?? [],
+                categoryName: (template.categoryPath ?? [])
+                  .map((item) => item.catName)
+                  .filter(Boolean)
+                  .join(" > "),
+                entries: batchTargets,
+              },
+            ]
+          : []
+    ).filter((group) => Boolean(group.template));
     if (!groups.length) {
       setError("先选一个产品模板，或在下面「现场配置」里把类目/属性/运费模板/仓库填完");
       return;
@@ -1270,24 +1404,27 @@ export function TemuDraftLibraryPage({
     // 自动匹配那条路不经过 state，state 里的 runnableTargets 是按「还没选模板」算的，
     // 会把这批全判成阻塞 —— 直接复用就会变成「一条都发不出去」。
     const variant = variantTemplates.find((item) => item.name === variantTpl) ?? null;
-    const tasks: BatchTask[] = groups.flatMap((group, groupIndex) =>
-      (skipBroken
-        ? group.entries.filter(
-            (entry) =>
-              precheckBatchItem(
-                entryPrefill(entry, categoryMemo, attrPrefills),
-                group.template,
-                variant,
-              ).blocked.length === 0,
-          )
-        : group.entries
+    const tasks: BatchTask[] = groups.flatMap((group, groupIndex) => {
+      const groupTemplate = group.template;
+      if (!groupTemplate) return [];
+      return (
+        skipBroken
+          ? group.entries.filter(
+              (entry) =>
+                precheckBatchItem(
+                  entryPrefill(entry, categoryMemo, attrPrefills),
+                  groupTemplate,
+                  variant,
+                ).blocked.length === 0,
+            )
+          : group.entries
       ).map((entry) => ({
         entry,
-        template: group.template,
+        template: groupTemplate,
         categoryLabel: group.categoryName,
         groupIndex,
-      })),
-    );
+      }));
+    });
     const selectedCount = new Set(groups.flatMap((group) => group.entries.map((item) => item.id))).size;
     const blockedCount = selectedCount - tasks.length;
     if (!tasks.length) {
@@ -1724,9 +1861,10 @@ export function TemuDraftLibraryPage({
                     : `按标题匹配到「${autoStart.groups[0].categoryName}」`}
                 </strong>
                 <span>
+                  {autoStart.autoNote ? `${autoStart.autoNote} · ` : ""}
                   {autoStart.groups.length > 1
                     ? `每批用各自类目的模板，共发 ${autoStart.runnable} 条`
-                    : `将用模板「${autoStart.groups[0].template.name}」发 ${autoStart.runnable} 条`}
+                    : `将用模板「${autoStart.groups[0].template?.name ?? "自动"}」发 ${autoStart.runnable} 条`}
                   {autoStart.note ? `；跳过 ${autoStart.note}` : ""} · <b>{autoStart.count}</b> 秒后开始
                 </span>
               </div>

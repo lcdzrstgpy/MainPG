@@ -179,7 +179,7 @@ export function TemuDraftBulkBar({
                   ? "上一批还在提交，等它跑完再发"
                   : canBatchPublish
                     ? "逐条提交到店铺（弹窗里选模板）"
-                    : "点击后在弹窗里选产品模板（批量发布用模板里的类目和属性）"
+                    : "点一下：按每条草稿的类目分组，没存模板的用草稿属性自动拼（属性是估的，倒计时里可取消复核）"
               }
               onClick={onBatchPublish}
             >

@@ -2864,7 +2864,7 @@ test("批量发布：先预检再提交，发不出去的默认跳过", () => {
   assert.match(library, /可发 \{batchTargets\.length - blockedPrecheck\.length\} 条 · 预计失败/);
   // 提交的也是按预检过滤后的 tasks（每条还带着自己那组的模板），不是全部勾选
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
-  assert.match(library, /\).map\(\(entry\) => \(\{\s*\n\s*entry,\s*\n\s*template: group\.template,/);
+  assert.match(library, /\).map\(\(entry\) => \(\{\s*\n\s*entry,\s*\n\s*template: groupTemplate,/);
 });
 
 test("批量发布：跑批途中能停，停下后说清还剩多少条", () => {
@@ -3021,21 +3021,28 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   // 匹配接口抖动不硬发：这条按「没类目」排除，绝不拿猜的类目发
   assert.match(library, /这条按「没类目」排除，绝不拿猜的类目硬发/);
 
-  // 分组：按每条自己的末级 catId 归组，每组找末级 catId 严格相等的模板
+  // 分组：按每条自己的末级 catId 归组，每组找末级 catId 严格相等的模板（没有就是 null，等自动拼）
   assert.match(library, /const planBatchGroups = \(entries: TemuDraftEntry\[\]\) => \{/);
   assert.match(library, /return templateLeaf && String\(templateLeaf\.catId\) === leafCatId;/);
-  assert.match(library, /withoutTemplate\.push\(\{ categoryName: bucket\.categoryName, count: bucket\.entries\.length \}\)/);
-  // 没模板 / 没类目的条数要说出来（别让用户以为整批都发了）
-  assert.match(library, /条所属类目还没存模板/);
+  assert.match(library, /template,\s*\n\s*categoryPath: bucket\.path,/);
+  // 没存模板的类目：用草稿自己的类目 + 估好的属性 + 店铺默认运费/仓库临时拼一份模板
+  assert.match(library, /const buildAutoTemplate = async \(group: BatchGroup\): Promise<ProductTemplate \| null> => \{/);
+  assert.match(library, /const missing = missingRequiredNames\(visibleProperties\(attributes, picks\), picks\);/);
+  assert.match(library, /if \(missing\.length\) return null;/);
+  assert.match(library, /const auto = await buildAutoTemplate\(group\);/);
+  assert.match(library, /已按草稿的类目\/属性自动填（属性是估的）/);
+  // 拼不出模板的条目数要说出来（别让用户以为整批都发了）
   assert.match(library, /条没匹配到类目/);
+  assert.match(library, /条的类目必填属性没估全，需手动配/);
 
-  // 触发条件：没手选模板 / 有模板可套 / 有勾选
+  // 触发条件：没手选模板 / 有勾选；**没有存过模板也照样走自动**（以前直接弹窗，用户被逼着手配）
   assert.match(library, /if \(productTpl \|\| manualTemplate\) \{\s*\n\s*setBatchOpen\(true\);\s*\n\s*return;/);
-  assert.match(library, /if \(!first \|\| !productTemplates\.length\) \{/);
+  assert.doesNotMatch(library, /if \(!first \|\| !productTemplates\.length\) \{/);
+  assert.match(library, /const ready = plan\.groups\.filter\(\(group\) => group\.template\);/);
 
   // 倒计时：3 秒、可取消、可立即开始、按组传计划
   assert.match(library, /const AUTO_START_SECONDS = 3;/);
-  assert.match(library, /setAutoStart\(\{\s*\n\s*groups: plan\.groups,/);
+  assert.match(library, /setAutoStart\(\{\s*\n\s*groups: ready,/);
   assert.match(library, /const cancelAutoStart = \(openDialog = false\) => \{/);
   assert.match(library, /className="temu-batch-autostart"/);
   assert.match(library, /立即开始/);
@@ -3047,7 +3054,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   // 自动跑把「分组计划」直接传进去（state 里没有它），每组用自己的模板组装 + 预检
   assert.match(library, /const runBatchPublish = async \(overrideTemplate\?: ProductTemplate, plan\?: BatchGroup\[\]\) => \{/);
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
-  assert.match(library, /template: group\.template,/);
+  assert.match(library, /template: groupTemplate,/);
   assert.match(library, /const \{ entry, template: itemTemplate \} = task;/);
   assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills\),\s*\n\s*itemTemplate,/);
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
