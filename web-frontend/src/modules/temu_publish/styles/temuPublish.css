@@ -8366,3 +8366,121 @@ textarea.temu-input {
   margin-right: 8px;
   white-space: nowrap;
 }
+
+/* ---- 批量规则弹窗（SKU 高级生成 / 申报价批量修改） ---- */
+/* 整页批量编辑 z-index 900，这两个弹窗必须压在它上面 */
+.temu-edit-backdrop.is-over-batch {
+  z-index: 1000;
+}
+
+.temu-sku-rule,
+.temu-price-rule {
+  width: min(560px, calc(100vw - 40px));
+}
+
+.temu-rule-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.temu-rule-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.temu-rule-grid label > span {
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+}
+
+.temu-rule-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 0 10px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.temu-rule-radio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.temu-rule-radio .temu-input {
+  width: 150px;
+  min-width: 0;
+  height: 32px;
+}
+
+.temu-rule-op {
+  width: 78px !important;
+}
+
+.temu-rule-preview {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px dashed var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+  font-size: 12px;
+}
+
+.temu-rule-preview strong {
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 12px;
+}
+
+.temu-rule-preview code {
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12.5px;
+}
+
+.temu-rule-diff {
+  color: var(--theme-text-secondary, #4a6478);
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-rule-diff em {
+  margin: 0 4px;
+  color: var(--theme-text-muted, #9aa9b8);
+  font-style: normal;
+}
+
+.temu-rule-warn {
+  color: #c2410c;
+  font-style: normal;
+}
+
+/* 列头里的小「规则」入口 */
+.temu-batch-edit-th-rule {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.temu-batch-edit-th-rule:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-batch-edit-th-label {
+  display: inline-flex;
+  align-items: center;
+}

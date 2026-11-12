@@ -3109,3 +3109,32 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
   assert.match(library, /entries=\{entries\.filter\(\(entry\) => selected\.has\(entry\.id\)\)\}/);
   assert.match(library, /saveMap\(scoped\(DRAFT_EDITS_KEY\), next\);/);
 });
+
+test("批量编辑：SKU 按规则生成、申报价按规则改（对齐店小秘）", () => {
+  const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const dialogs = readFileSync(
+    new URL("../components/BatchValueDialogs.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // 列头「规则」入口只给货号和申报价两列
+  assert.match(page, /column\.key === "sku" \? \(/);
+  assert.match(page, /column\.key === "declared_price" \? \(/);
+  assert.match(page, /<BatchSkuRuleDialog/);
+  assert.match(page, /<BatchPriceDialog/);
+
+  // SKU：前缀 + 起始值 + 位数（补零）+ 后缀，可选追加变种属性
+  assert.match(dialogs, /export function buildSkuCode\(/);
+  assert.match(dialogs, /padStart\(Math\.max\(1, rule\.digits\), "0"\)/);
+  assert.match(dialogs, /const seq = String\(rule\.start \+ index\)/);
+  assert.match(dialogs, /添加变种属性（货号后追加「-颜色-尺码」）/);
+  // 撞号不许直接填（Temu 会判 ext_code 重复）
+  assert.match(dialogs, /const dup = new Set\(codes\)\.size !== codes\.length;/);
+  assert.match(dialogs, /disabled=\{!codes\.length \|\| dup\}/);
+
+  // 价格：直接改 / 按现有价加减乘 + 保留两位小数
+  assert.match(dialogs, /直接修改为/);
+  assert.match(dialogs, /按现有申报价格/);
+  assert.match(dialogs, /保留 2 位小数/);
+  assert.match(dialogs, /Math\.round\(n \* 100\) \/ 100/);
+});

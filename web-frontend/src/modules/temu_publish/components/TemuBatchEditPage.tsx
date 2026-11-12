@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { TemuDraftEdit, TemuDraftEntry } from "../types";
+import { BatchPriceDialog, BatchSkuRuleDialog } from "./BatchValueDialogs";
 
 /**
  * 整页批量编辑（对齐 Temu 后台 / 店小秘的「批量编辑」）。
@@ -80,6 +81,9 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
    * 在哪个列头输入，回车就把这一列全填成这个值。
    */
   const [fillMode, setFillMode] = useState(false);
+  /** 两个「按规则批量改」的弹窗：SKU 高级生成 / 申报价格 */
+  const [skuDialog, setSkuDialog] = useState(false);
+  const [priceDialog, setPriceDialog] = useState(false);
   const [headerFill, setHeaderFill] = useState<Partial<Record<BatchEditField, string>>>({});
   /** 上一次填充改前的值：填错了能一键撤回（填充是一大片改动，没有撤销很危险） */
   const [lastFill, setLastFill] = useState<
@@ -134,6 +138,18 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     setDraft(next);
     setLastFill({ key, previous });
     setHeaderFill((current) => ({ ...current, [key]: "" }));
+  };
+
+  /** 一批按行写同一列的通用逻辑：记下改前的值，撤销能整批回退 */
+  const applyColumnValues = (key: BatchEditField, values: string[]) => {
+    const previous: Record<string, string | undefined> = {};
+    const next = { ...draft };
+    rows.forEach((entry, index) => {
+      previous[entry.id] = draft[entry.id]?.[key];
+      next[entry.id] = { ...(next[entry.id] ?? {}), [key]: values[index] ?? "" };
+    });
+    setDraft(next);
+    setLastFill({ key, previous });
   };
 
   const undoFill = () => {
@@ -290,7 +306,29 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
               <th className="col-thumb">产品图片</th>
               {visibleColumns.map((column) => (
                 <th key={column.key} style={{ width: column.width }}>
-                  <span className="temu-batch-edit-th-label">{column.label}</span>
+                  <span className="temu-batch-edit-th-label">
+                    {column.label}
+                    {column.key === "sku" ? (
+                      <button
+                        type="button"
+                        className="temu-batch-edit-th-rule"
+                        title="SKU 高级生成规则（前缀/起始值/位数/后缀）"
+                        onClick={() => setSkuDialog(true)}
+                      >
+                        规则
+                      </button>
+                    ) : null}
+                    {column.key === "declared_price" ? (
+                      <button
+                        type="button"
+                        className="temu-batch-edit-th-rule"
+                        title="批量修改申报价格（直接改 / 按现有价加减乘）"
+                        onClick={() => setPriceDialog(true)}
+                      >
+                        规则
+                      </button>
+                    ) : null}
+                  </span>
                   {fillMode ? (
                     <input
                       className="temu-batch-edit-head-fill"
@@ -380,6 +418,31 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
           </tbody>
         </table>
       </div>
+
+      {skuDialog ? (
+        <BatchSkuRuleDialog
+          rows={rows.map((entry) => ({
+            color: entry.spec_value_1 || entry.variants?.[0]?.color,
+            size: entry.spec_value_2 || entry.variants?.[0]?.size,
+          }))}
+          onApply={(codes) => {
+            applyColumnValues("sku", codes);
+            setSkuDialog(false);
+          }}
+          onClose={() => setSkuDialog(false)}
+        />
+      ) : null}
+
+      {priceDialog ? (
+        <BatchPriceDialog
+          current={rows.map((entry) => valueOf(entry, "declared_price"))}
+          onApply={(prices) => {
+            applyColumnValues("declared_price", prices);
+            setPriceDialog(false);
+          }}
+          onClose={() => setPriceDialog(false)}
+        />
+      ) : null}
     </div>,
     document.body,
   );
