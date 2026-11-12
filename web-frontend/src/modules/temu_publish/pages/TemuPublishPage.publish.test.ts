@@ -3098,11 +3098,15 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
   assert.match(bar, /onClick=\{onBatchEdit\}/);
   assert.doesNotMatch(bar, /openPanel\("fields"\)/);
 
-  // 整页该有的东西：字段勾选、一键填充、移除只影响本页、清空=取消覆盖
+  // 整页该有的东西：字段勾选、列头「批量改」、移除只影响本页、清空=取消覆盖
   assert.match(page, /选择批量编辑的信息/);
-  assert.match(page, /一键填充/);
+  assert.match(page, /onClick=\{\(\) => setActiveColumn\(column\)\}/);
+  assert.match(page, /批量改/);
   assert.match(page, /只是从这张表里去掉，草稿本身不动/);
   assert.match(page, /if \(value === ""\) delete merged\[key\];/);
+  // 表头里绝不放输入框（之前标签+规则+输入框挤一行，糊成一团）
+  assert.doesNotMatch(page, /temu-batch-edit-head-fill/);
+  assert.doesNotMatch(page, /temu-batch-edit-fill/);
 
   // 接线：勾选的行带过去，保存写回本机编辑
   assert.match(library, /<TemuBatchEditPage/);
@@ -3113,15 +3117,15 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
 test("批量编辑：SKU 按规则生成、申报价按规则改（对齐店小秘）", () => {
   const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
   const dialogs = readFileSync(
-    new URL("../components/BatchValueDialogs.tsx", import.meta.url),
+    new URL("../components/BatchColumnDialog.tsx", import.meta.url),
     "utf8",
   );
 
-  // 列头「规则」入口只给货号和申报价两列
-  assert.match(page, /column\.key === "sku" \? \(/);
-  assert.match(page, /column\.key === "declared_price" \? \(/);
-  assert.match(page, /<BatchSkuRuleDialog/);
-  assert.match(page, /<BatchPriceDialog/);
+  // 每个可编辑列的列头都有「批量改」，规则按列的类型走（文字/数值/SKU）
+  assert.match(page, /const \[activeColumn, setActiveColumn\] = useState<Column \| null>\(null\);/);
+  assert.match(page, /<BatchColumnDialog/);
+  assert.match(page, /kind=\{activeColumn\.kind\}/);
+  assert.match(dialogs, /export type ColumnKind = "text" \| "number" \| "sku";/);
 
   // SKU：前缀 + 起始值 + 位数（补零）+ 后缀，可选追加变种属性
   assert.match(dialogs, /export function buildSkuCode\(/);
@@ -3129,12 +3133,13 @@ test("批量编辑：SKU 按规则生成、申报价按规则改（对齐店小�
   assert.match(dialogs, /const seq = String\(rule\.start \+ index\)/);
   assert.match(dialogs, /添加变种属性（货号后追加「-颜色-尺码」）/);
   // 撞号不许直接填（Temu 会判 ext_code 重复）
-  assert.match(dialogs, /const dup = new Set\(codes\)\.size !== codes\.length;/);
-  assert.match(dialogs, /disabled=\{!codes\.length \|\| dup\}/);
+  assert.match(dialogs, /const dupSku = kind === "sku" && new Set\(codes\)\.size !== codes\.length;/);
+  assert.match(dialogs, /disabled=\{disabled\}/);
 
   // 价格：直接改 / 按现有价加减乘 + 保留两位小数
   assert.match(dialogs, /直接修改为/);
-  assert.match(dialogs, /按现有申报价格/);
-  assert.match(dialogs, /保留 2 位小数/);
-  assert.match(dialogs, /Math\.round\(n \* 100\) \/ 100/);
+  // 文案按列名拼（「按现有申报价格(元)」），源码里是模板
+  assert.match(dialogs, /按现有\{label\}/);
+  assert.match(dialogs, /保留 \{decimals\} 位小数/);
+  assert.match(dialogs, /const round = \(n: number\) => \{/);
 });

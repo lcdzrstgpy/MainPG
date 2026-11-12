@@ -2,16 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { TemuDraftEdit, TemuDraftEntry } from "../types";
-import { BatchPriceDialog, BatchSkuRuleDialog } from "./BatchValueDialogs";
+import { BatchColumnDialog, type ColumnKind } from "./BatchColumnDialog";
 
 /**
  * 整页批量编辑（对齐 Temu 后台 / 店小秘的「批量编辑」）。
  *
- * 为什么不是弹窗里的小面板：勾十几天商品时要改的是「表格里逐行核一遍」，
- * 小面板只能给整批填同一个值，看不到每条现在是什么，改完也不知道对不对。
- * 这里是独立整页：上面勾要编辑哪些字段，下面一张表逐行改。
+ * 交互只有两条，别再加第三条：
+ *   1. 单个格子：直接在表格里改；
+ *   2. 整列：点列头上的「批量改」，在弹窗里按规则改（文字 / 数值 / SKU 序列）。
  *
- * 保存只写「真的改过」的字段（dirty），清空等于「取消这条的覆盖」，回落到源数据。
+ * ⚠️ 表头里绝不放输入框。标签 + 规则按钮 + 输入框挤在 `th` 里必然互相压，
+ * 之前那版就是这样糊成一团的。
  */
 
 /** 表格里能编辑的字段（都和 TemuDraftEdit 对齐） */
@@ -31,20 +32,21 @@ type Column = {
   label: string;
   group: "产品信息" | "变种信息";
   width: number;
-  /** 输入框提示（单位） */
-  hint?: string;
+  kind: ColumnKind;
+  /** number 用：保留几位小数 */
+  decimals?: number;
 };
 
 const COLUMNS: Column[] = [
-  { key: "title", label: "产品标题", group: "产品信息", width: 300 },
-  { key: "sku", label: "SKU货号", group: "变种信息", width: 130 },
-  { key: "declared_price", label: "申报价格(元)", group: "变种信息", width: 110 },
-  { key: "suggested_price", label: "建议零售价(元)", group: "变种信息", width: 120 },
-  { key: "stock", label: "库存", group: "变种信息", width: 90 },
-  { key: "length_cm", label: "尺寸长(cm)", group: "变种信息", width: 105 },
-  { key: "width_cm", label: "尺寸宽(cm)", group: "变种信息", width: 105 },
-  { key: "height_cm", label: "尺寸高(cm)", group: "变种信息", width: 105 },
-  { key: "weight_g", label: "重量(g)", group: "变种信息", width: 95 },
+  { key: "title", label: "产品标题", group: "产品信息", width: 320, kind: "text" },
+  { key: "sku", label: "SKU货号", group: "变种信息", width: 130, kind: "sku" },
+  { key: "declared_price", label: "申报价格(元)", group: "变种信息", width: 115, kind: "number", decimals: 2 },
+  { key: "suggested_price", label: "建议零售价(元)", group: "变种信息", width: 125, kind: "number", decimals: 2 },
+  { key: "stock", label: "库存", group: "变种信息", width: 90, kind: "number", decimals: 0 },
+  { key: "length_cm", label: "尺寸长(cm)", group: "变种信息", width: 105, kind: "number", decimals: 1 },
+  { key: "width_cm", label: "尺寸宽(cm)", group: "变种信息", width: 105, kind: "number", decimals: 1 },
+  { key: "height_cm", label: "尺寸高(cm)", group: "变种信息", width: 105, kind: "number", decimals: 1 },
+  { key: "weight_g", label: "重量(g)", group: "变种信息", width: 95, kind: "number", decimals: 0 },
 ];
 
 const DEFAULT_FIELDS: BatchEditField[] = ["title", "sku", "declared_price", "weight_g"];
@@ -73,19 +75,9 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
   const [fields, setFields] = useState<BatchEditField[]>(DEFAULT_FIELDS);
   /** 被「移除」暂时不看的行（只是从这张表里去掉，不动草稿本身） */
   const [removed, setRemoved] = useState<string[]>([]);
-  /**
-   * 一键填充：不弹面板，直接在**列头**出输入框。
-   *
-   * 弹层再怎么放都会盖住表格右上角（用户连着两次指出这个问题），
-   * 而「填哪一列」本来就是列的事：点「一键填充」→ 每个列头出现输入框 →
-   * 在哪个列头输入，回车就把这一列全填成这个值。
-   */
-  const [fillMode, setFillMode] = useState(false);
-  /** 两个「按规则批量改」的弹窗：SKU 高级生成 / 申报价格 */
-  const [skuDialog, setSkuDialog] = useState(false);
-  const [priceDialog, setPriceDialog] = useState(false);
-  const [headerFill, setHeaderFill] = useState<Partial<Record<BatchEditField, string>>>({});
-  /** 上一次填充改前的值：填错了能一键撤回（填充是一大片改动，没有撤销很危险） */
+  /** 正在批量改哪一列（null = 没开弹窗） */
+  const [activeColumn, setActiveColumn] = useState<Column | null>(null);
+  /** 上一次批量改动改前的值：填错了能整批回退 */
   const [lastFill, setLastFill] = useState<
     null | { key: BatchEditField; previous: Record<string, string | undefined> }
   >(null);
@@ -112,35 +104,6 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     });
   };
 
-  /** 改过的行数（保存按钮上要显示，别让人不知道有没有改动） */
-  const dirtyRows = Object.keys(draft).filter((id) =>
-    Object.values(draft[id] ?? {}).some((value) => value !== undefined),
-  ).length;
-
-  const toggleField = (key: BatchEditField) => {
-    setFields((current) =>
-      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
-    );
-  };
-  const groupFields = (group: Column["group"]) =>
-    COLUMNS.filter((column) => column.group === group).map((column) => column.key);
-  const groupAllOn = (group: Column["group"]) =>
-    groupFields(group).every((key) => fields.includes(key));
-
-  const applyColumn = (key: BatchEditField, raw: string) => {
-    const value = raw.trim();
-    const previous: Record<string, string | undefined> = {};
-    const next = { ...draft };
-    rows.forEach((entry) => {
-      previous[entry.id] = draft[entry.id]?.[key];
-      next[entry.id] = { ...(next[entry.id] ?? {}), [key]: value };
-    });
-    setDraft(next);
-    setLastFill({ key, previous });
-    setHeaderFill((current) => ({ ...current, [key]: "" }));
-  };
-
-  /** 一批按行写同一列的通用逻辑：记下改前的值，撤销能整批回退 */
   const applyColumnValues = (key: BatchEditField, values: string[]) => {
     const previous: Record<string, string | undefined> = {};
     const next = { ...draft };
@@ -150,6 +113,7 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     });
     setDraft(next);
     setLastFill({ key, previous });
+    setActiveColumn(null);
   };
 
   const undoFill = () => {
@@ -165,22 +129,17 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     setLastFill(null);
   };
 
-  // Esc 关闭：整页覆盖时必须留一条键盘退路
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const dirtyRows = Object.keys(draft).length;
 
-  // 切页签时自己收掉：整页浮层是 portal 到 body 的，页签只是 hidden，
-  // 不收的话会把别的页签盖住（WorkspaceShell 会发这个事件）
-  useEffect(() => {
-    const onSwitch = () => onClose();
-    window.addEventListener("mainpg:tab-switch", onSwitch);
-    return () => window.removeEventListener("mainpg:tab-switch", onSwitch);
-  }, [onClose]);
+  const toggleField = (key: BatchEditField) => {
+    setFields((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
+    );
+  };
+  const groupFields = (group: Column["group"]) =>
+    COLUMNS.filter((column) => column.group === group).map((column) => column.key);
+  const groupAllOn = (group: Column["group"]) =>
+    groupFields(group).every((key) => fields.includes(key));
 
   const save = () => {
     const next: Record<string, TemuDraftEdit> = { ...edits };
@@ -196,6 +155,22 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
     });
     onSave(next);
   };
+
+  // Esc 关闭：整页覆盖时必须留一条键盘退路（弹窗开着时先关弹窗）
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !activeColumn) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, activeColumn]);
+
+  // 切页签时自己收掉：整页浮层是 portal 到 body 的，页签只是 hidden
+  useEffect(() => {
+    const onSwitch = () => onClose();
+    window.addEventListener("mainpg:tab-switch", onSwitch);
+    return () => window.removeEventListener("mainpg:tab-switch", onSwitch);
+  }, [onClose]);
 
   return createPortal(
     <div className="temu-batch-edit" role="dialog" aria-modal="true" aria-label="批量编辑">
@@ -269,34 +244,14 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
 
       <section className="temu-batch-edit-tools">
         <p className="temu-batch-edit-tip">
-          {fillMode ? (
-            <>
-              在哪一列的列头输入，<b>回车</b>就把这一列全填成这个值；再点一次「退出填充」取消。
-            </>
-          ) : (
-            <>
-              表格里的内容可以直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；输入框留空 = 取消这条的覆盖，回到源数据。
-            </>
-          )}
+          格子直接改；<b className="temu-batch-edit-dirty-legend">黄底</b> = 改过（点保存才生效）；
+          整列改点列头上的「批量改」。输入框留空 = 取消这条的覆盖，回到源数据。
         </p>
-        <div className="temu-batch-edit-fill">
-          {lastFill && !fillMode ? (
-            <button type="button" className="temu-link temu-batch-edit-undo" onClick={undoFill}>
-              撤销上次填充（{COLUMNS.find((column) => column.key === lastFill.key)?.label}）
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className={`temu-btn${fillMode ? " temu-btn-primary" : ""}`}
-            aria-pressed={fillMode}
-            onClick={() => {
-              setFillMode((mode) => !mode);
-              setHeaderFill({});
-            }}
-          >
-            {fillMode ? "退出填充" : "一键填充"}
+        {lastFill ? (
+          <button type="button" className="temu-link" onClick={undoFill}>
+            撤销上次批量改（{COLUMNS.find((column) => column.key === lastFill.key)?.label}）
           </button>
-        </div>
+        ) : null}
       </section>
 
       <div className="temu-batch-edit-table-wrap">
@@ -306,44 +261,21 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
               <th className="col-thumb">产品图片</th>
               {visibleColumns.map((column) => (
                 <th key={column.key} style={{ width: column.width }}>
-                  <span className="temu-batch-edit-th-label">
-                    {column.label}
-                    {column.key === "sku" ? (
-                      <button
-                        type="button"
-                        className="temu-batch-edit-th-rule"
-                        title="SKU 高级生成规则（前缀/起始值/位数/后缀）"
-                        onClick={() => setSkuDialog(true)}
-                      >
-                        规则
-                      </button>
-                    ) : null}
-                    {column.key === "declared_price" ? (
-                      <button
-                        type="button"
-                        className="temu-batch-edit-th-rule"
-                        title="批量修改申报价格（直接改 / 按现有价加减乘）"
-                        onClick={() => setPriceDialog(true)}
-                      >
-                        规则
-                      </button>
-                    ) : null}
-                  </span>
-                  {fillMode ? (
-                    <input
-                      className="temu-batch-edit-head-fill"
-                      value={headerFill[column.key] ?? ""}
-                      placeholder="填整列…"
-                      onChange={(event) =>
-                        setHeaderFill((current) => ({ ...current, [column.key]: event.target.value }))
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter") return;
-                        const value = String(headerFill[column.key] ?? "").trim();
-                        if (value) applyColumn(column.key, value);
-                      }}
-                    />
-                  ) : null}
+                  <span className="temu-batch-edit-th-label">{column.label}</span>
+                  <button
+                    type="button"
+                    className="temu-batch-edit-th-batch"
+                    onClick={() => setActiveColumn(column)}
+                    title={
+                      column.kind === "sku"
+                        ? "按规则批量生成货号（前缀/起始值/位数/后缀）"
+                        : column.kind === "number"
+                          ? "批量改这一列：直接改 / 按现有值加减乘"
+                          : "批量把这一列改成同一段文字"
+                    }
+                  >
+                    批量改
+                  </button>
                 </th>
               ))}
               <th className="col-variants">变种</th>
@@ -419,28 +351,18 @@ export function TemuBatchEditPage({ entries, edits, onSave, onClose }: Props) {
         </table>
       </div>
 
-      {skuDialog ? (
-        <BatchSkuRuleDialog
+      {activeColumn ? (
+        <BatchColumnDialog
+          label={activeColumn.label}
+          kind={activeColumn.kind}
+          decimals={activeColumn.decimals ?? 0}
           rows={rows.map((entry) => ({
+            value: valueOf(entry, activeColumn.key),
             color: entry.spec_value_1 || entry.variants?.[0]?.color,
             size: entry.spec_value_2 || entry.variants?.[0]?.size,
           }))}
-          onApply={(codes) => {
-            applyColumnValues("sku", codes);
-            setSkuDialog(false);
-          }}
-          onClose={() => setSkuDialog(false)}
-        />
-      ) : null}
-
-      {priceDialog ? (
-        <BatchPriceDialog
-          current={rows.map((entry) => valueOf(entry, "declared_price"))}
-          onApply={(prices) => {
-            applyColumnValues("declared_price", prices);
-            setPriceDialog(false);
-          }}
-          onClose={() => setPriceDialog(false)}
+          onApply={(values) => applyColumnValues(activeColumn.key, values)}
+          onClose={() => setActiveColumn(null)}
         />
       ) : null}
     </div>,

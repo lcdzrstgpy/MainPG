@@ -8075,7 +8075,13 @@ textarea.temu-input {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 整页批量编辑（对齐 Temu 后台：勾字段 → 表格逐行改） ---- */
+/* ---- 整页批量编辑（Temu 后台 / 店小秘那套：勾字段 → 表格逐行改） ----
+ *
+ * 布局约定（别推翻）：
+ *   顶部信息条 → 字段勾选卡 → 说明/撤销条 → 表格（表头只放标签 + 「批量改」按钮）
+ * 表头里**不放输入框**：之前把标签、规则按钮、填充输入框挤在同一行，
+ * 结果三者互相压字，糊成一团。
+ */
 .temu-batch-edit {
   position: fixed;
   inset: 0;
@@ -8207,37 +8213,12 @@ textarea.temu-input {
   font-size: 12px;
 }
 
-.temu-batch-edit-fill {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 0 0 auto;
-}
-
-.temu-batch-edit-fill .temu-link {
-  white-space: nowrap;
-}
-
-/* 一键填充：列头就地输入，不弹浮层 */
-.temu-batch-edit-th-label {
-  display: block;
-}
-
-.temu-batch-edit-head-fill {
-  width: 100%;
-  margin-top: 5px;
-  padding: 3px 6px;
-  border: 1px dashed var(--theme-module-primary-strong, #087bf5);
-  border-radius: 5px;
-  background: var(--theme-card-bg-solid, #fff);
-  color: inherit;
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 400;
-}
-
-.temu-batch-edit-head-fill::placeholder {
-  color: var(--theme-text-muted, #9aa9b8);
+.temu-batch-edit-dirty-legend {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #f0a020 18%, transparent);
+  color: #8a5a00;
+  font-weight: 600;
 }
 
 .temu-batch-edit-table-wrap {
@@ -8260,13 +8241,37 @@ textarea.temu-input {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 9px 10px;
+  padding: 7px 10px 6px;
   border-bottom: 1px solid var(--theme-module-border, #d5e2ea);
   background: var(--theme-module-surface-soft, #eef4f9);
   color: var(--theme-text-secondary, #4a6478);
   font-weight: 600;
   text-align: left;
   white-space: nowrap;
+  vertical-align: top;
+}
+
+/* 表头两行：标签一行、按钮一行，谁也不压谁 */
+.temu-batch-edit-th-label {
+  display: block;
+  line-height: 1.3;
+}
+
+.temu-batch-edit-th-batch {
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-module-primary-strong, #087bf5);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.temu-batch-edit-th-batch:hover {
+  text-decoration: underline;
 }
 
 .temu-batch-edit-table tbody td {
@@ -8331,29 +8336,7 @@ textarea.temu-input {
   background: color-mix(in srgb, #f0a020 12%, transparent);
 }
 
-.temu-batch-edit-dirty-legend {
-  padding: 0 4px;
-  border-radius: 4px;
-  background: color-mix(in srgb, #f0a020 18%, transparent);
-  color: #8a5a00;
-  font-weight: 600;
-}
-
-.temu-batch-edit-fill-label {
-  max-width: 220px;
-  overflow: hidden;
-  color: var(--theme-text-secondary, #4a6478);
-  font-size: 12px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.temu-batch-edit-fill .temu-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 长标题用多行框：单行输入只能看到半截，用户以为字被截断了 */
+/* 长标题用多行框：单行输入只能看到半截 */
 .temu-batch-edit-text {
   resize: none;
   padding: 6px 7px;
@@ -8361,51 +8344,24 @@ textarea.temu-input {
   overflow: hidden;
 }
 
-/* 撤销填充：放在弹层外面，填完也能随手点 */
-.temu-batch-edit-undo {
-  margin-right: 8px;
-  white-space: nowrap;
-}
-
-/* ---- 批量规则弹窗（SKU 高级生成 / 申报价批量修改） ---- */
-/* 整页批量编辑 z-index 900，这两个弹窗必须压在它上面 */
+/* ---- 列头的「批量改」弹窗 ---- */
+/* 整页批量编辑 z-index 900，弹窗必须压在它上面 */
 .temu-edit-backdrop.is-over-batch {
   z-index: 1000;
 }
 
-.temu-sku-rule,
-.temu-price-rule {
+.temu-col-dialog {
   width: min(560px, calc(100vw - 40px));
 }
 
-.temu-rule-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px 14px;
-  margin-bottom: 10px;
-}
-
-.temu-rule-grid label {
-  display: grid;
-  gap: 4px;
-}
-
-.temu-rule-grid label > span {
-  color: var(--theme-text-secondary, #4a6478);
+.temu-col-dialog-hint {
+  margin: 0 0 10px;
+  color: var(--theme-text-muted, #7c8fa3);
   font-size: 12px;
 }
 
-.temu-rule-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin: 4px 0 10px;
-  color: var(--theme-text-secondary, #4a6478);
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.temu-rule-radio {
+.temu-col-dialog-line,
+.temu-col-dialog-radio {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -8416,17 +8372,49 @@ textarea.temu-input {
   cursor: pointer;
 }
 
-.temu-rule-radio .temu-input {
+.temu-col-dialog-line .temu-input {
+  width: 240px;
+  min-width: 0;
+}
+
+.temu-col-dialog-radio .temu-input {
   width: 150px;
   min-width: 0;
   height: 32px;
 }
 
-.temu-rule-op {
+.temu-col-dialog-op {
   width: 78px !important;
 }
 
-.temu-rule-preview {
+.temu-col-dialog-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 10px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.temu-col-dialog-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.temu-col-dialog-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.temu-col-dialog-grid label > span {
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+}
+
+.temu-col-dialog-preview {
   display: grid;
   gap: 4px;
   padding: 10px 12px;
@@ -8436,51 +8424,36 @@ textarea.temu-input {
   font-size: 12px;
 }
 
-.temu-rule-preview strong {
+.temu-col-dialog-preview strong {
   color: var(--theme-text-primary, #1f2d3d);
   font-size: 12px;
 }
 
-.temu-rule-preview code {
-  color: var(--theme-module-primary-strong, #087bf5);
-  font-size: 12.5px;
-}
-
-.temu-rule-diff {
+.temu-col-dialog-diff {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   color: var(--theme-text-secondary, #4a6478);
   font-variant-numeric: tabular-nums;
 }
 
-.temu-rule-diff em {
-  margin: 0 4px;
+.temu-col-dialog-diff span {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-col-dialog-diff em {
   color: var(--theme-text-muted, #9aa9b8);
   font-style: normal;
 }
 
-.temu-rule-warn {
+.temu-col-dialog-diff b {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-col-dialog-warn {
   color: #c2410c;
   font-style: normal;
-}
-
-/* 列头里的小「规则」入口 */
-.temu-batch-edit-th-rule {
-  margin-left: 6px;
-  padding: 0 5px;
-  border: 1px solid var(--theme-module-border, #d5e2ea);
-  border-radius: 5px;
-  background: transparent;
-  color: var(--theme-module-primary-strong, #087bf5);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.temu-batch-edit-th-rule:hover {
-  border-color: var(--theme-module-primary-strong, #087bf5);
-}
-
-.temu-batch-edit-th-label {
-  display: inline-flex;
-  align-items: center;
 }
