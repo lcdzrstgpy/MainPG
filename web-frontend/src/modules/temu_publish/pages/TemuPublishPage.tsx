@@ -16,6 +16,7 @@ import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
 import { TemplateLoadDialog, TemplateSaveDialog } from "../components/TemplateDialogs";
+import { resolveSkuPrice, skuKeyOf } from "../data/skuPricing";
 import {
   APPAREL_CAROUSEL_HEIGHT,
   APPAREL_CAROUSEL_SHAPE,
@@ -1231,7 +1232,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       (item) => item && (item.color || item.size || item.sku),
     );
     if (variants.length <= 1) {
-      return [prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill)];
+      const row = prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill);
+      // 单 SKU 也可能被「按变种改价」覆盖过（key 就是草稿里那个规格值）
+      const own = resolveSkuPrice(row.supplierPrice, prefill.skuPrices, skuKeyOf(row.colorName, row.sizeName));
+      return [own ? { ...row, supplierPrice: own } : row];
     }
     const fallbackSize = prefill.specValue2 || "";
     return variants.map((variant, index) => {
@@ -1248,11 +1252,16 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         extCode: variant.sku || merged.extCode,
         colorName: variant.color || merged.colorName,
         sizeName: variant.size || merged.sizeName,
-        // 每个变体自己的申报价（已按导出规则按成本算过）；没有才用草稿主价
+        // 申报价优先级：**人手动设的变种价** > 草稿自带的变体价 > 整条价
+        // （手动改价是最新的决定，不能被导出时的旧价盖掉）
         supplierPrice:
-          typeof variant.price === "number" && variant.price > 0
-            ? String(variant.price)
-            : merged.supplierPrice,
+          resolveSkuPrice(
+            typeof variant.price === "number" && variant.price > 0
+              ? String(variant.price)
+              : merged.supplierPrice,
+            prefill.skuPrices,
+            skuKeyOf(variant.color || merged.colorName, variant.size || merged.sizeName),
+          ) || merged.supplierPrice,
         // 库存 0 是合法值（先建品后补货），不能用 || 兜掉
         stock: typeof variant.stock === "number" ? String(variant.stock) : merged.stock,
         thumbUrl: variant.image || merged.thumbUrl,
