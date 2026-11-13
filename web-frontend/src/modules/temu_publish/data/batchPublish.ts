@@ -3,6 +3,7 @@ import { httpBlob } from "../../../transport/http/client";
 import type { TemuGoodsDraft, TemuPublishPrefill, TemuSkuDraft } from "../types";
 import { matchPresetValue } from "../utils/specMatch";
 import { yuanToCents } from "../utils/price";
+import { resolveSkuField, skuKeyOf } from "./skuPricing";
 import { mapWithConcurrency } from "./concurrency";
 import { positive, splitList } from "./batchPrecheck";
 import {
@@ -156,10 +157,26 @@ export async function buildDraftForPublish(
   // 直接用会在 `Object.keys(undefined)` / `.replace` 上抛 TypeError，
   // 整批每一条都变成「Cannot read properties of undefined」，看不出真实原因。
   const templatePath = productTemplate.categoryPath ?? [];
-  const templateAttrs = productTemplate.attrs ?? {};
   const categoryIds = templatePath.map((item) => item.catId);
   if (!categoryIds.length) throw new Error("产品模板里没有类目");
   const leaf = categoryIds[categoryIds.length - 1];
+
+  /**
+   * 属性值：**这条草稿自己估的那套**优先，模板里的只兜底。
+   *
+   * 自动拼的组模板是按「第一条草稿」的估值生成的一份快照（一次批量里同组十几条
+   * 桌布的材料/风格常常不一样）。整组共用一套 → 后面几条要么被判「属性不合法」，
+   * 要么发出去属性是错的。所以每条都用自己的估值，pid 对不上类目时（pid 是类目维度的）
+   * 一律不铺，退回模板。
+   */
+  const carriedPicks =
+    prefill.attrPicks && Number(prefill.attrPicksCatId ?? 0) === Number(leaf)
+      ? prefill.attrPicks
+      : null;
+  const templateAttrs: Record<string, { vid: number; text: string }> =
+    carriedPicks && Object.keys(carriedPicks).length
+      ? (carriedPicks as Record<string, { vid: number; text: string }>)
+      : productTemplate.attrs ?? {};
 
   const carouselSource = splitList(prefill.images.join("\n"));
   // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」）。提前拦，
@@ -238,16 +255,17 @@ export async function buildDraftForPublish(
   );
   const batch = variantTemplate?.batch;
 
-  // 界面价格是「元」，提交前换成分
-  const priceCents = yuanToCents(
-    batch?.supplierPrice || prefill.supplierPrice || "",
-    "申报价格",
-  );
-  const stock = Number(batch?.stock || prefill.stock || "0");
-  const weightG = positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量");
-  const lengthCm = positive(batch?.lengthCm || prefill.lengthCm || "", "长度");
-  const widthCm = positive(batch?.widthCm || prefill.widthCm || "", "宽度");
-  const heightCm = positive(batch?.heightCm || prefill.heightCm || "", "高度");
+  // 界面价格是「元」，提交前换成分。
+  // 这里是「整条值」，变种没单独设时回落到它；每个 SKU 真正取值在 skuFields 里
+  // 统一走 skuPricing.resolveSkuField（变种值 → 整条值 → 空）。
+  const basePrice = String(batch?.supplierPrice || prefill.supplierPrice || "").trim();
+  yuanToCents(basePrice, "申报价格"); // 整条价先校验一遍，早失败早知道
+  // 整条值（变种没设时回落到它们）；真正取值在 skuFields 里按变种解析
+  const stockBase = Number(batch?.stock || prefill.stock || "0");
+  const weightGBase = positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量");
+  const lengthCmBase = positive(batch?.lengthCm || prefill.lengthCm || "", "长度");
+  const widthCmBase = positive(batch?.widthCm || prefill.widthCm || "", "宽度");
+  const heightCmBase = positive(batch?.heightCm || prefill.heightCm || "", "高度");
   const warehouseId = productTemplate.warehouseId;
   if (!warehouseId) throw new Error("产品模板里没有默认发货仓库");
   if (!productTemplate.freightId) throw new Error("产品模板里没有运费模板");
@@ -379,27 +397,57 @@ export async function buildDraftForPublish(
   });
 
   const skcs: TemuGoodsDraft["skcs"] = [];
-  /** 三个边长降序：Temu 只认「最长 ≥ 次长 ≥ 最短」，用户怎么填都得按这个顺序传 */
-  const sortedDims = [lengthCm, widthCm, heightCm].sort((a, b) => b - a);
-  /** 一个 SKU 的价格/库存/物流字段：单 SKU 与多规格两条路径共用一份。 */
-  const skuFields = (extCode: string, specs: TemuSkuDraft["specs"]): TemuSkuDraft => ({
-    ext_code: extCode,
-    currency_type: "CNY",
-    site_id: SITE_ID,
-    supplier_price: priceCents,
-    suggested_price: null,
-    stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
-    warehouse_id: warehouseId,
-    weight_mg: Math.round(weightG * 1000) < 1 ? 1 : Math.round(weightG * 1000),
+  /**
+   * 一个 SKU 的全部字段：单 SKU 与多规格两条路径共用一份。
+   *
+   * 每个字段都先查变种覆盖（「按变种拆行」改的），没有才回落整条值 ——
+   * 衣服鞋包按尺码、箱包按款式，长宽高重量本来就不同，不能整条一个数。
+   * 取值统一走 skuPricing.resolveSkuField，别在这里再写判断。
+   */
+  const skuFields = (
+    extCode: string,
+    specs: TemuSkuDraft["specs"],
+    color = "",
+    size = "",
+  ): TemuSkuDraft => {
+    const overrides = prefill.skuFields?.[skuKeyOf(color, size)];
+    const field = (
+      key: Parameters<typeof resolveSkuField>[1],
+      base: string | number,
+    ) => resolveSkuField(overrides, key, base);
+
+    const supplierPriceCents = yuanToCents(
+      field("declared_price", basePrice),
+      "申报价格",
+    );
+    const stock = Number(field("stock", stockBase));
+    const weight = positive(field("weight_g", weightGBase), "重量");
     // Temu 体积校验要求「最长边 ≥ 次长边 ≥ 最短边」，顺序不对直接拒；
-    // 体积只看三个边长，跟哪条叫「长」无关，所以这里排好再发。
-    length_mm: Math.max(1, Math.round(sortedDims[0] * 10)),
-    width_mm: Math.max(1, Math.round(sortedDims[1] * 10)),
-    height_mm: Math.max(1, Math.round(sortedDims[2] * 10)),
-    thumb_url: carousel[0] ?? null,
-    is_sensitive: productTemplate.isSensitive,
-    specs,
-  });
+    // 体积只看三个边长，跟哪条叫「长」无关，所以每个变种各自排好再发。
+    const sortedDims = [
+      positive(field("length_cm", lengthCmBase), "长度"),
+      positive(field("width_cm", widthCmBase), "宽度"),
+      positive(field("height_cm", heightCmBase), "高度"),
+    ].sort((a, b) => b - a);
+    const code = field("sku", extCode).slice(0, 120) || extCode;
+
+    return {
+      ext_code: code,
+      currency_type: "CNY",
+      site_id: SITE_ID,
+      supplier_price: supplierPriceCents,
+      suggested_price: null,
+      stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
+      warehouse_id: warehouseId,
+      weight_mg: Math.round(weight * 1000) < 1 ? 1 : Math.round(weight * 1000),
+      length_mm: Math.max(1, Math.round(sortedDims[0] * 10)),
+      width_mm: Math.max(1, Math.round(sortedDims[1] * 10)),
+      height_mm: Math.max(1, Math.round(sortedDims[2] * 10)),
+      thumb_url: carousel[0] ?? null,
+      is_sensitive: productTemplate.isSensitive,
+      specs,
+    };
+  };
 
   /**
    * 规格轴：类目只给颜色（手机壳、毛巾这类）或只给尺码时，另一列不能硬造。
@@ -440,12 +488,13 @@ export async function buildDraftForPublish(
         .filter(Boolean)
         .join("-")
         .slice(0, 120) || "SKU-1";
+    // 单 SKU 也可能被「按变种改价」覆盖过（变种名就是草稿里那个规格值）
     skcs.push({
       ext_code: (safeCode(prefill.sku) || "SKC").slice(0, 120),
       preview_image_urls: [carousel[0]],
       color_image_url: carousel[0],
       main_specs: [],
-      skus: [skuFields(singleCode, [])],
+      skus: [skuFields(singleCode, [], colors[0], sizes[0])],
     });
     return finishDraft();
   }
@@ -472,6 +521,9 @@ export async function buildDraftForPublish(
             .join("-")
             .slice(0, 120) || `SKU-${skus.length + 1}`,
           [colorSpec, sizeSpec].filter(Boolean) as TemuSkuDraft["specs"],
+          // 变种价/库存/尺寸重量按「颜色|尺码」覆盖，没有就回落整条值
+          color,
+          size,
         ),
       );
     }

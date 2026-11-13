@@ -18,6 +18,27 @@ export type BatchPrecheck = {
   warnings: string[];
 };
 
+/**
+ * 预检原因 → 去哪个页面补。
+ *   page "edit"  = 整页批量编辑（字段类问题，field 给出要定位的列）
+ *   page "image" = 批量编辑产品图片（图不够）
+ *   返回 null    = 不归这两个页面管（模板缺类目/仓库/运费、还没选模板），得去改模板
+ */
+export type PrecheckFix =
+  | { page: "edit"; field: "title" | "declared_price" | "weight_g" | "length_cm" | "width_cm" | "height_cm" }
+  | { page: "image" };
+
+export function precheckFixTarget(reason: string): PrecheckFix | null {
+  if (/轮播图|图片/.test(reason)) return { page: "image" };
+  if (/标题/.test(reason)) return { page: "edit", field: "title" };
+  if (/申报价格/.test(reason)) return { page: "edit", field: "declared_price" };
+  if (/重量/.test(reason)) return { page: "edit", field: "weight_g" };
+  if (/长度/.test(reason)) return { page: "edit", field: "length_cm" };
+  if (/宽度/.test(reason)) return { page: "edit", field: "width_cm" };
+  if (/高度/.test(reason)) return { page: "edit", field: "height_cm" };
+  return null;
+}
+
 /** 产品标题长度上限：Temu 官方文档写明 goodsName ≤500 字符。 */
 const TITLE_MAX_CHARS = 500;
 /** 重量（g）范围：实测回执「重量不符合类目2~1000000g限制」里的边界。 */

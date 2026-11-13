@@ -65,3 +65,19 @@ test("归堆 chips 用短标签：剥掉 bg.glo 前缀，能翻译就用人话",
     "神秘的新错误",
   );
 });
+
+test("货号类错误也要说人话（2026-11-12 实测踩到 1000002）", () => {
+  const bad = explainPublishError(
+    "bg.glo.goods.add: 货号不规范，请使用字母、数字和标点符号维护货号！",
+  );
+  assert.ok(bad, "货号不规范必须能翻译");
+  assert.match(bad!.human, /货号/);
+  assert.match(bad!.fix, /字母\/数字/);
+
+  // 只带错误码也要认
+  assert.ok(explainPublishError("提交失败（错误码 1000002）"));
+
+  const dup = explainPublishError("SKU ext_code 重复：PP-000199-C1");
+  assert.ok(dup);
+  assert.match(dup!.fix, /SKU-001/);
+});

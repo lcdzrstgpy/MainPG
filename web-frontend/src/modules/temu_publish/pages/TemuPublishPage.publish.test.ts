@@ -218,7 +218,7 @@ test("属性数值录入：纯数值属性不带 numberInputValue，下拉+数�
   assert.match(apiSrc, /\(attrs\) => normalizeDuplicatePids\(attrs\) \?\? attrs,/);
 });
 
-test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 发布预设", () => {
+test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 模板按钮就地放", () => {
   // 分区名称与顺序完全按ERP Temu 刊登页
   for (const label of ["基本信息", "产品信息", "变种信息", "包装信息", "校验发布"]) {
     assert.ok(page.includes(`label: "${label}"`), `缺少分区 ${label}`);
@@ -232,10 +232,14 @@ test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 发布预�
   assert.match(page, /className="temu-console-rail"/);
   assert.match(page, /onClick=\{\(\) => jumpTo\(step\.id\)\}/);
 
-  // 发布预设：类目 + 运费模板 + 仓库，存本机
-  assert.match(page, /const PRESETS_KEY = "temu_publish_presets_v1";/);
-  assert.match(page, /const applyPreset = \(preset: PublishPreset\) =>/);
-  assert.match(page, /const savePreset = \(\) =>/);
+  // 模板按钮放「就地」：产品模板在产品属性行右侧、变种模板在变种标题行右侧，
+  // 保存与载入各一个按钮（不再有「载入 / 保存 XX 模板」折叠块，也不再有和模板重复的「预设」）
+  assert.match(page, /className="temu-field-head-actions"/);
+  assert.match(page, /载入模板/);
+  assert.match(page, /保存模板/);
+  assert.match(page, /temu-variant-tpl-actions/);
+  assert.doesNotMatch(page, /PRESETS_KEY/);
+  assert.doesNotMatch(page, /存为预设/);
 
   // 一级类目墙默认收起（原来 20 多个分类卡片占半屏）
   assert.match(page, /const \[showCategoryBrowser, setShowCategoryBrowser\] = useState\(false\);/);
@@ -333,17 +337,16 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /status\?\.owner\?\.personal/);
 });
 
-test("本机留档：表单/预设/最近分类按登录账号分开存，换账号不串数据", () => {
-  // 同一台电脑换账号登录时，不能把上一个人的草稿、预设、分类带出来。
+test("本机留档：表单/变种行/最近分类按登录账号分开存，换账号不串数据", () => {
+  // 同一台电脑换账号登录时，不能把上一个人的草稿、变种、分类带出来。
   // storageScope 已抽到 data/attrPicksStore.ts（草稿库也要用同一份账号作用域）
   const store = readFileSync(new URL("../data/attrPicksStore.ts", import.meta.url), "utf8");
   assert.match(store, /export function storageScope\(\): string \{/);
   assert.match(store, /return account\?\.user_id \|\| "local";/);
   assert.match(page, /storageScope,\n\} from "\.\.\/data\/attrPicksStore";/);
   assert.match(page, /const formKey = `\$\{FORM_KEY\}:\$\{storageSuffix\}`;/);
-  assert.match(page, /const presetsKey = `\$\{PRESETS_KEY\}:\$\{storageSuffix\}`;/);
+  assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
-  assert.match(page, /saveJsonLocal\(presetsKey, next\);/);
   // 表单里只保留会提交的字段；唯一留档的备注也是收起的、写清楚不提交
   assert.match(page, /备注（不提交，只留档）/);
   assert.doesNotMatch(page, /function LocalTag/);
@@ -423,7 +426,7 @@ test("价格全链路用「元」，只在提交前换成分", () => {
 
   // 批量发布复用同一份，不许各写一套
   assert.match(batch, /import \{ yuanToCents \} from "\.\.\/utils\/price";/);
-  assert.match(batch, /supplier_price: priceCents,/);
+  assert.match(batch, /supplier_price: supplierPriceCents,/);
   assert.doesNotMatch(batch, /function yuanToCents\(/, "批量发布不该再自己实现一份换算");
 
   // 输入框本身是元：label 与 placeholder 都不能再让人按分填
@@ -490,7 +493,7 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
 
   // 「编辑」直接带这条草稿进发布页（草稿库小弹窗改不了类目/属性/图片）
   assert.match(library, /title="带这条草稿进发布页，改完所有信息后再提交"/);
-  assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills\)\)\}/);
+  assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits, skuFields\)\)\}/);
 
   // 点「用于发布」不再直接带入：先弹确认
   assert.match(library, /onClick=\{\(\) => setConfirmEntry\(entry\)\}/);
@@ -501,7 +504,7 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
   assert.match(library, /申报价格/);
   assert.match(library, /库存/);
   assert.match(library, /const confirmUseDraft = \(\) => \{/);
-  assert.match(library, /onUseDraft\(entryPrefill\(confirmEntry, categoryMemo, attrPrefills\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(confirmEntry, categoryMemo, attrPrefills, imageEdits, skuFields\)\);/);
   assert.match(library, /确定发布/);
   // 库存不可用时要明确提醒（半托管 ≥1）
   assert.match(library, /库存没有可用值：Temu 半托管要求 ≥1/);
@@ -976,7 +979,7 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
   // 变种值发不出去必须报错，不许静默吞成单 SKU
   assert.match(batch, /这些变种会被吞成单个 SKU/);
   assert.match(batch, /这个类目不支持颜色\/尺码规格/);
-  assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\]\)\],/);
+  assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\], colors\[0\], sizes\[0\]\)\],/);
   assert.ok(
     batch.indexOf("if (!colorAxis && !sizeAxis) {") < batch.indexOf("const colorSpec = colorAxis"),
     "单 SKU 分支必须排在规格解析之前",
@@ -1863,16 +1866,25 @@ test("首屏只留必填：低频字段都收进「更多选项」折叠", () =>
     page.match(/onClick=\{(?:\(\) => void )?checkMandatory(?:\(\))?\}/g) ?? [];
   assert.equal(mandatoryButtons.length, 2, "顶栏不该再有第三个「检查必填」");
 
-  // 四处折叠必须在，且内部字段仍被渲染
+  // 折叠必须在，且内部字段仍被渲染
   for (const [summary, keep] of [
     ["更多选项（英文标题、货号、产地、外链）", "站外产品链接"],
-    ["载入 / 保存产品模板", "saveProductTemplate"],
-    ["载入 / 保存变种模板", "saveVariantTemplate"],
     ["每件装数量（多件装才改，默认 1）", "piecesPerPack"],
   ] as const) {
     assert.ok(page.includes(summary), `缺少折叠：${summary}`);
     assert.ok(page.includes(keep), `折叠里把字段弄丢了：${keep}`);
   }
+
+  // 产品模板 / 变种模板不再是「载入 / 保存 XXX 模板」折叠块：
+  // 保存和载入拆成两个按钮，产品在类目行、变种在变种标题行，各弹各的窗
+  assert.ok(!page.includes("载入 / 保存产品模板"), "模板折叠块应改成两个独立按钮");
+  assert.ok(!page.includes("载入 / 保存变种模板"), "变种模板折叠块应改成两个独立按钮");
+  assert.match(page, /载入模板/);
+  assert.match(page, /保存模板/);
+  assert.match(page, /载入变种模板/);
+  assert.match(page, /保存变种模板/);
+  assert.match(page, /<TemplateSaveDialog/);
+  assert.match(page, /<TemplateLoadDialog/);
 
   // 敏感货 / 定制产品是合规项：原来藏在「校验发布」的原始返回折叠里（几乎没人点开），
   // 填错直接被 Temu 拒或判违规，所以挪到产品信息段平铺成两张卡片
@@ -1991,21 +2003,24 @@ test("草稿库改版：批量入口收敛成一个，选中后直接出快捷�
   assert.match(library, /onOpenHistory/);
   assert.match(library, /创建产品\s*<\/button>/);
 
-  // 三个并列下拉（批量操作 / 全属性修改 / 移动分类）合成一个入口：
-  // 它们以前互相嵌套，用户不知道该点哪个
+  // 三个并列下拉（批量操作 / 全属性修改 / 移动分类）合成一个入口，
+  // 后来「更多 ▾」也去掉：引用模板 / 批量改字段全部平铺到条上，不再有两层菜单
   assert.doesNotMatch(bar, /temu-bulk-menu-wrap/);
-  assert.match(bar, /view === "actions"/);
+  assert.doesNotMatch(bar, /更多 ▾/);
+  assert.doesNotMatch(bar, /view === "actions"/);
   assert.match(bar, /view === "fields"/);
   assert.match(bar, /view === "category"/);
 
   // 选中后直接一排动作，常用操作不用再进菜单翻
   assert.match(bar, /has-selection/);
   assert.match(bar, /批量发布/);
-  assert.match(bar, /改字段/);
+  assert.match(bar, /批量改字段/);
+  assert.match(bar, /引用产品模板/);
+  assert.match(bar, /引用变种模板/);
   assert.match(bar, /移分类/);
   assert.match(bar, /取消选择/);
-  // 没勾选时面板要解释为什么按钮是灰的
-  assert.match(bar, /先勾选左侧复选框，下面的批量项才会亮/);
+  // 没勾选时要说清为什么按钮不出现
+  assert.match(bar, /勾选左侧复选框后，可批量发布/);
 });
 
 test("生成变种是「补齐组合」，不是重建表格", () => {
@@ -2621,7 +2636,7 @@ test("长宽高必须按「最长 ≥ 次长 ≥ 最短」提交（Temu 体积�
 
   // 批量发布走同一套规则，否则那条链路还是会踩同一个坑
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
-  assert.match(batch, /const sortedDims = \[lengthCm, widthCm, heightCm\]\.sort\(\(a, b\) => b - a\);/);
+  assert.match(batch, /const sortedDims = \[\s*\n\s*positive\(field\("length_cm", lengthCmBase\)/);
   assert.match(batch, /length_mm: Math\.max\(1, Math\.round\(sortedDims\[0\] \* 10\)\)/);
   assert.match(batch, /height_mm: Math\.max\(1, Math\.round\(sortedDims\[2\] \* 10\)\)/);
 });
@@ -2837,7 +2852,7 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_FOCUS_KEY, item\.draft_id\);/);
   assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
   assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_FOCUS_KEY\)/);
-  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills, imageEdits, skuFields\)\);/);
 });
 
 test("批量发布：先预检再提交，发不出去的默认跳过", () => {
@@ -2864,7 +2879,7 @@ test("批量发布：先预检再提交，发不出去的默认跳过", () => {
   assert.match(library, /可发 \{batchTargets\.length - blockedPrecheck\.length\} 条 · 预计失败/);
   // 提交的也是按预检过滤后的 tasks（每条还带着自己那组的模板），不是全部勾选
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
-  assert.match(library, /\).map\(\(entry\) => \(\{\s*\n\s*entry,\s*\n\s*template: group\.template,/);
+  assert.match(library, /\).map\(\(entry\) => \(\{\s*\n\s*entry,\s*\n\s*template: groupTemplate,/);
 });
 
 test("批量发布：跑批途中能停，停下后说清还剩多少条", () => {
@@ -3021,40 +3036,264 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   // 匹配接口抖动不硬发：这条按「没类目」排除，绝不拿猜的类目发
   assert.match(library, /这条按「没类目」排除，绝不拿猜的类目硬发/);
 
-  // 分组：按每条自己的末级 catId 归组，每组找末级 catId 严格相等的模板
+  // 分组：按每条自己的末级 catId 归组，每组找末级 catId 严格相等的模板（没有就是 null，等自动拼）
   assert.match(library, /const planBatchGroups = \(entries: TemuDraftEntry\[\]\) => \{/);
   assert.match(library, /return templateLeaf && String\(templateLeaf\.catId\) === leafCatId;/);
-  assert.match(library, /withoutTemplate\.push\(\{ categoryName: bucket\.categoryName, count: bucket\.entries\.length \}\)/);
-  // 没模板 / 没类目的条数要说出来（别让用户以为整批都发了）
-  assert.match(library, /条所属类目还没存模板/);
+  assert.match(library, /template,\s*\n\s*categoryPath: bucket\.path,/);
+  // 没存模板的类目：用草稿自己的类目 + 估好的属性 + 店铺默认运费/仓库临时拼一份模板
+  assert.match(
+    library,
+    /const buildAutoTemplate = async \(\s*\n\s*group: BatchGroup,\s*\n\s*\): Promise<\{ template: ProductTemplate \| null; reason: string \}> => \{/,
+  );
+  assert.match(library, /const missing = missingRequiredNames\(visibleProperties\(attributes, picks\), picks\);/);
+  // 拼不出来的原因要能说清（缺属性 / 没运费模板 / 没有可用仓库），别只回一个 null
+  assert.match(library, /必填属性没估全（缺 \$\{missing\.slice\(0, 3\)\.join\("、"\)\}）/);
+  assert.match(library, /这个店没有可用于批量发布的仓库（都被标成类型 3）/);
+  assert.match(library, /const auto = await buildAutoTemplate\(group\);/);
+  assert.match(library, /已按草稿的类目\/属性自动填（属性是估的）/);
+  // 拼不出模板的条目数要说出来（别让用户以为整批都发了）
   assert.match(library, /条没匹配到类目/);
+  assert.match(library, /需手动配/);
 
-  // 触发条件：没手选模板 / 有模板可套 / 有勾选
+  // 触发条件：没手选模板 / 有勾选；**没有存过模板也照样走自动**（以前直接弹窗，用户被逼着手配）
   assert.match(library, /if \(productTpl \|\| manualTemplate\) \{\s*\n\s*setBatchOpen\(true\);\s*\n\s*return;/);
-  assert.match(library, /if \(!first \|\| !productTemplates\.length\) \{/);
+  assert.doesNotMatch(library, /if \(!first \|\| !productTemplates\.length\) \{/);
+  assert.match(library, /const ready = plan\.groups\.filter\(\(group\) => group\.template\);/);
 
-  // 倒计时：3 秒、可取消、可立即开始、按组传计划
-  assert.match(library, /const AUTO_START_SECONDS = 3;/);
-  assert.match(library, /setAutoStart\(\{\s*\n\s*groups: plan\.groups,/);
-  assert.match(library, /const cancelAutoStart = \(openDialog = false\) => \{/);
-  assert.match(library, /className="temu-batch-autostart"/);
-  assert.match(library, /立即开始/);
-  assert.match(library, /取消，手动配/);
-  // 卸载要收掉定时器
-  assert.match(library, /window\.clearInterval\(autoStartTimerRef\.current\)/);
-  assert.match(css, /\.temu-batch-autostart \{/);
+  // 确认单：**必须手点才发**，不再有倒计时自动开跑（点错就上架过，2026-11-12 改掉）
+  assert.match(library, /const \[publishConfirm, setPublishConfirm\] = useState</);
+  assert.match(library, /const cancelPublishConfirm = \(openDialog = false\) => \{/);
+  assert.match(library, /setPublishConfirm\(\{\s*\n\s*groups: ready,/);
+  assert.doesNotMatch(library, /AUTO_START_SECONDS/, "不能再有倒计时自动开跑的常量");
+  assert.doesNotMatch(library, /temu-batch-autostart/, "倒计时条的 DOM/样式要清干净");
+  assert.match(library, /className="temu-edit-dialog temu-batch-confirm"/);
+  // 确认单上要写清发到哪家店、共几条、每组什么模板
+  assert.match(library, /将提交到「\{publishConfirm\.shopName \|\| "当前店铺"\}」/);
+  // 「共发几条」必须等于点下去真会提交的条数（跳过开=只发预检过的；跳过关=组里全发）
+  assert.match(library, /确认发布（\s*\{publishConfirm\.skipBroken \? publishConfirm\.runnable : publishConfirm\.total\} 条）/);
+  assert.match(
+    library,
+    /共发 <b>\{publishConfirm\.skipBroken \? publishConfirm\.runnable : publishConfirm\.total\}<\/b> 条/,
+  );
+  // 被预检拦下的条数两种情况都要说清，分组行也要标「可发 N」，数字不能对不上
+  assert.match(library, /const runnableCounts: number\[\] = \[\];/);
+  assert.match(library, /const blockedItems: \{ id: string; title: string; blocked: string\[\] \}\[\] = \[\];/);
+  assert.match(library, /runnableCounts,/);
+  assert.match(library, /blockedItems,/);
+  assert.match(library, /groupRunnable < group\.entries\.length \? /);
+  assert.match(library, /另有 \{publishConfirm\.total - publishConfirm\.runnable\}/);
+  assert.match(library, /条没过预检也会提交，大概率失败进「发布历史」/);
+  // 「去补」：被拦条目带着原因跳批量编辑（只列这些行、高亮缺的列），图片问题去图片页
+  assert.match(library, /precheckFixTarget/);
+  assert.match(library, /const openFix = \(items: \{ id: string; blocked: string\[\] \}\[\]\) => \{/);
+  assert.match(library, /title="只列这一条去改，缺的列会高亮"/);
+  assert.match(library, /title="被拦的条目只列出来改：缺哪列高亮哪列"/);
+  assert.match(library, /title="只列发不出去的条目去改，缺的列会高亮"/);
+  assert.match(library, /focusFields=\{batchFix\?\.page === "edit" \? batchFix\.fields : undefined\}/);
+  assert.match(library, /批量编辑只列这些行、高亮缺的列/);
+  assert.match(library, /模板「\{group\.template\?\.name \?\? "自动"\}」/);
+  assert.match(css, /\.temu-batch-confirm \{/);
 
   // 自动跑把「分组计划」直接传进去（state 里没有它），每组用自己的模板组装 + 预检
   assert.match(library, /const runBatchPublish = async \(overrideTemplate\?: ProductTemplate, plan\?: BatchGroup\[\]\) => \{/);
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
-  assert.match(library, /template: group\.template,/);
+  assert.match(library, /template: groupTemplate,/);
   assert.match(library, /const \{ entry, template: itemTemplate \} = task;/);
-  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills\),\s*\n\s*itemTemplate,/);
+  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits, skuFields\),\s*\n\s*itemTemplate,/);
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
   assert.ok(
-    library.includes("void runBatchPublish(undefined, plan.groups);"),
-    "倒计时结束要带着分组计划开跑",
+    library.includes("void runBatchPublish(undefined, groups);"),
+    "点「确认发布」要带着分组计划开跑",
   );
-  // 能发 0 条不自动跑（这批有硬伤，先看预检）
+  // 能发 0 条不出确认单（这批有硬伤，先看预检）
   assert.match(library, /if \(!runnable\) \{\s*\n\s*setBatchState\(\{ running: false, text: "这批都有阻塞问题，先看下面的预检" \}\);/);
+});
+
+test("批量发布：属性按每条草稿自己的估值，不整组共用第一条", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+
+  // 自动拼的组模板只是「第一条的快照」；同组十几条材料/风格常常不一样，
+  // 整组共用一套会发成错属性或被判「属性不合法」
+  assert.match(batch, /const carriedPicks =/);
+  assert.match(
+    batch,
+    /prefill\.attrPicks && Number\(prefill\.attrPicksCatId \?\? 0\) === Number\(leaf\)/,
+  );
+  assert.match(batch, /carriedPicks && Object\.keys\(carriedPicks\)\.length/);
+  // 类目对不上就必须退回模板（pid 是类目维度的，套错类目会全废）
+  assert.match(batch, /: productTemplate\.attrs \?\? \{\};/);
+});
+
+test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存改过的）", () => {
+  const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+
+  // 入口：批量条上直接开整页（对齐 Temu 后台 / 店小秘），不再弹小面板
+  assert.match(bar, /onBatchEdit: \(\) => void;/);
+  assert.match(bar, /onClick=\{onBatchEdit\}/);
+  // 「批量编辑」开整页；「批量改字段」是另一个入口（从「更多」摊到条上后仍用它的小面板）
+  assert.match(bar, /openPanel\("fields"\)/);
+  assert.match(bar, /批量改字段/);
+
+  // 整页该有的东西：字段勾选、列头「批量改」、移除只影响本页、清空=取消覆盖
+  assert.match(page, /选择批量编辑的信息/);
+  assert.match(page, /onClick=\{\(\) => setActiveColumn\(column\)\}/);
+  assert.match(page, /批量改/);
+  assert.match(page, /只是从这张表里去掉，草稿本身不动/);
+  assert.match(page, /if \(value === ""\) delete merged\[key\];/);
+  // 表头里绝不放输入框（之前标签+规则+输入框挤一行，糊成一团）
+  assert.doesNotMatch(page, /temu-batch-edit-head-fill/);
+  assert.doesNotMatch(page, /temu-batch-edit-fill/);
+
+  // 接线：勾选的行带过去，保存写回本机编辑
+  assert.match(library, /<TemuBatchEditPage/);
+  // 「去补」进来只列被拦的行；平时还是列勾选的行
+  assert.match(library, /batchFix\?\.page === "edit"\s*\n\s*\? entries\.filter\(\(entry\) => batchFix\.ids\.includes\(entry\.id\)\)/);
+  assert.match(library, /: entries\.filter\(\(entry\) => selected\.has\(entry\.id\)\)/);
+  assert.match(library, /saveMap\(scoped\(DRAFT_EDITS_KEY\), next\);/);
+});
+
+test("批量编辑：SKU 按规则生成、申报价按规则改（对齐店小秘）", () => {
+  const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const dialogs = readFileSync(
+    new URL("../components/BatchColumnDialog.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // 每个可编辑列的列头都有「批量改」，规则按列的类型走（文字/数值/SKU）
+  assert.match(page, /const \[activeColumn, setActiveColumn\] = useState<Column \| null>\(null\);/);
+  assert.match(page, /<BatchColumnDialog/);
+  assert.match(page, /kind=\{activeColumn\.kind\}/);
+  assert.match(dialogs, /export type ColumnKind = "text" \| "number" \| "sku";/);
+
+  // SKU：前缀 + 起始值 + 位数（补零）+ 后缀，可选追加变种属性
+  assert.match(dialogs, /export function buildSkuCode\(/);
+  assert.match(dialogs, /padStart\(Math\.max\(1, rule\.digits\), "0"\)/);
+  assert.match(dialogs, /const seq = String\(rule\.start \+ index\)/);
+  assert.match(dialogs, /添加变种属性（货号后追加「-颜色-尺码」）/);
+  // 撞号不许直接填（Temu 会判 ext_code 重复）
+  assert.match(dialogs, /const dupSku = kind === "sku" && new Set\(codes\)\.size !== codes\.length;/);
+  assert.match(dialogs, /disabled=\{disabled\}/);
+
+  // 价格：直接改 / 按现有价加减乘 + 保留两位小数
+  assert.match(dialogs, /直接修改为/);
+  // 文案按列名拼（「按现有申报价格(元)」），源码里是模板
+  assert.match(dialogs, /按现有\{label\}/);
+  assert.match(dialogs, /保留 \{decimals\} 位小数/);
+  assert.match(dialogs, /const round = \(n: number\) => \{/);
+});
+
+test("批量编辑：字段默认全勾、可勾选行、批量改只动勾选行且是按钮", () => {
+  const page = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 字段默认全勾（默认只勾 4 个时，用户以为字段就这么多）
+  assert.match(page, /const DEFAULT_FIELDS: BatchEditField\[\] = COLUMNS\.map\(\(column\) => column\.key\);/);
+
+  // 行勾选：默认全勾，批量改只作用于勾选行
+  assert.match(page, /const \[picked, setPicked\] = useState<string\[\]>\(\(\) => entries\.map\(\(entry\) => entry\.id\)\);/);
+  assert.match(page, /const pickedRows = useMemo\(\s*\n\s*\(\) => rows\.filter\(\(entry\) => picked\.includes\(entry\.id\)\),/);
+  assert.match(page, /pickedRows\.forEach\(\(entry, index\) => \{/);
+  assert.match(page, /rows=\{pickedRows\.map\(\(entry\) => \(\{/);
+  // 表头全选 + 半选状态 + 每行勾选框
+  assert.match(page, /selectAllRef\.current\.indeterminate = !allPicked && pickedRows\.length > 0;/);
+  assert.match(page, /className="col-pick"/);
+  assert.match(page, /className=\{picked\.includes\(entry\.id\) \? "" : "is-unpicked"\}/);
+  // 一条没勾时批量改禁用，别点了没反应
+  assert.match(page, /disabled=\{!pickedRows\.length\}/);
+
+  // 「批量改」要有按钮外观（之前是纯文字，用户以为只是表头文字）
+  assert.match(css, /\.temu-batch-edit-th-batch \{\s*\n\s*display: inline-flex;/);
+  assert.match(css, /border: 1px solid color-mix\(in srgb, var\(--theme-module-primary-strong, #087bf5\) 42%, transparent\);/);
+  assert.match(css, /\.temu-batch-edit-table \.col-pick \{/);
+  assert.match(css, /\.temu-batch-edit-table tbody tr\.is-unpicked td \{/);
+});
+
+test("批量编辑产品图片：整页抄店小秘，改完真的进发布链路", () => {
+  const page = readFileSync(new URL("../components/TemuBatchImagePage.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const share = readFileSync(new URL("../data/draftImages.ts", import.meta.url), "utf8");
+
+  // 入口：批量条上的「编辑图片」
+  assert.match(bar, /onBatchImages: \(\) => void;/);
+  assert.match(bar, />\s*编辑图片\s*</);
+  assert.match(library, /onBatchImages=\{\(\) => setBatchImageOpen\(true\)\}/);
+  assert.match(library, /<TemuBatchImagePage/);
+
+  // 页面要素（对齐截图）：四种图片类型、四种修改方式、执行、更新
+  assert.match(page, /产品轮播图/);
+  assert.match(page, /产品SKC图/);
+  assert.match(page, /产品素材图/);
+  assert.match(page, /变种预览图/);
+  assert.match(page, /删除图片/);
+  assert.match(page, /切换首图/);
+  assert.match(page, /添加图片/);
+  assert.match(page, /超出移除/);
+  assert.match(page, /执行/);
+  assert.match(page, /更新\{changedCount/);
+
+  // 逐张：× 删单张、+ 补图
+  assert.match(page, /title="删除这张"/);
+  assert.match(page, /\+ 添加图片/);
+
+  // 覆盖语义：删光（[]）也必须生效，不能回落到源图
+  assert.match(share, /if \(override !== undefined\) return override;/);
+  // 存储独立，不能混进 TemuDraftEdit（那边 save 会 String() 掉数组）
+  assert.match(share, /export const DRAFT_IMAGES_KEY = "temu_draft_images_v1";/);
+  assert.match(library, /const \[imageEdits, setImageEdits\] = useState<Record<string, string\[\]>>\(loadDraftImages\)/);
+  assert.match(library, /saveMap\(scoped\(DRAFT_IMAGES_KEY\), next\);/);
+
+  // 三条链路共用同一个取图函数（用于发布 / 批量发布 / 本页）
+  assert.match(library, /images: resolveEntryImages\(entry, imageOverrides\)/);
+  assert.match(page, /resolveEntryImages\(entry, imageEdits\)/);
+});
+
+test("变种级定价：价/库存/尺寸/重量/货号都按变种，取值只走一个函数", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  const pricing = readFileSync(new URL("../data/skuPricing.ts", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+  const publish = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+
+  // 取值逻辑只有 skuPricing 一份：变种值 → 整条值 → 空
+  assert.match(pricing, /export function resolveSkuField\(/);
+  assert.match(pricing, /if \(own !== undefined && String\(own\)\.trim\(\) !== ""\) return String\(own\)\.trim\(\);/);
+  assert.match(pricing, /return String\(baseValue \?\? ""\)\.trim\(\);/);
+  assert.match(pricing, /export const SKU_FIELD_COLUMNS/);
+
+  // 批量组装：每个 SKU 的全部字段都在 skuFields 里按变种解析
+  assert.match(batch, /const skuFields = \(/);
+  assert.match(batch, /const overrides = prefill\.skuFields\?\.\[skuKeyOf\(color, size\)\];/);
+  for (const [field, base] of [
+    ['"declared_price", basePrice'],
+    ['"stock", stockBase'],
+    ['"weight_g", weightGBase'],
+    ['"length_cm", lengthCmBase'],
+    ['"width_cm", widthCmBase'],
+    ['"height_cm", heightCmBase'],
+    ['"sku", extCode'],
+  ] as const) {
+    assert.ok(batch.includes(`field(${field})`), `批量组装要按变种取 ${field}`);
+  }
+  // 单 SKU 分支也走同一个函数
+  assert.match(batch, /skus: \[skuFields\(singleCode, \[\], colors\[0\], sizes\[0\]\)\],/);
+
+  // 页面：变种覆盖进 prefill，并单独存一份
+  assert.match(library, /skuFields: skuPriceOverrides\?\.\[entry\.id\]/);
+  assert.match(library, /const \[skuFields, setSkuFields\] = useState<SkuFieldStore>\(loadDraftSkuFields\)/);
+  assert.match(library, /saveMap\(scoped\(DRAFT_SKU_FIELDS_KEY\), next\);/);
+
+  // 单件发布：每行的价/库存/尺寸/重量/货号都按变种取
+  assert.match(publish, /function skuFieldOf\(/);
+  assert.match(publish, /return resolveSkuField\(prefill\.skuFields\?\.\[skuKeyOf\(colorName, sizeName\)\], field, base\);/);
+
+  // 编辑页：拆行开关 + 多列 + 空值=回落整条
+  assert.match(editor, /按变种拆行（单独定价）/);
+  assert.match(editor, /SKU_FIELD_COLUMNS/);
+  assert.match(editor, /if \(value\.trim\(\) === ""\) delete item\[field\];/);
+  assert.match(editor, /onSaveSkuFields\(nextSku\)/);
+  // 拆行表格：价格/货号/库存/尺寸/重量都可改
+  assert.match(editor, /SKU_COLUMNS\.map\(\(column\) => \(/);
 });

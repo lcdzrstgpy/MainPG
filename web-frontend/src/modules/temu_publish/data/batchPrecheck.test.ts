@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { precheckBatchItem } from "./batchPrecheck.ts";
+import { precheckBatchItem, precheckFixTarget } from "./batchPrecheck.ts";
 import type { ProductTemplate } from "./localStore";
 import type { TemuPublishPrefill } from "../types.ts";
 
@@ -132,4 +132,23 @@ test("预检：重量超出 2~1000000g 要拦（实测回执里的边界）", ()
   // 边界值 2g / 1000000g 合法
   const ok = precheckBatchItem(makePrefill({ weightKg: "0.002" }), makeTemplate(), null);
   assert.deepEqual(ok.blocked, []);
+});
+
+test("去补映射：字段类原因都指向批量编辑的对应列", () => {
+  assert.deepEqual(precheckFixTarget("没有标题"), { page: "edit", field: "title" });
+  assert.deepEqual(precheckFixTarget("标题 501 字符，超过 Temu 上限 500"), { page: "edit", field: "title" });
+  assert.deepEqual(precheckFixTarget("申报价格必须大于 0"), { page: "edit", field: "declared_price" });
+  assert.deepEqual(precheckFixTarget("重量必须大于 0"), { page: "edit", field: "weight_g" });
+  assert.deepEqual(precheckFixTarget("重量 0.5g 超出 Temu 允许范围 2~1000000g"), { page: "edit", field: "weight_g" });
+  assert.deepEqual(precheckFixTarget("长度必须大于 0"), { page: "edit", field: "length_cm" });
+  assert.deepEqual(precheckFixTarget("宽度必须大于 0"), { page: "edit", field: "width_cm" });
+  assert.deepEqual(precheckFixTarget("高度必须大于 0"), { page: "edit", field: "height_cm" });
+});
+
+test("去补映射：图片问题去图片页，模板/配置问题没有入口（要去改模板）", () => {
+  assert.deepEqual(precheckFixTarget("轮播图只有 2 张（Temu 要求至少 3 张）"), { page: "image" });
+  assert.equal(precheckFixTarget("产品模板里没有类目"), null);
+  assert.equal(precheckFixTarget("产品模板里没有默认发货仓库"), null);
+  assert.equal(precheckFixTarget("产品模板里没有运费模板"), null);
+  assert.equal(precheckFixTarget("还没选产品模板（或在下面现场配置完）"), null);
 });

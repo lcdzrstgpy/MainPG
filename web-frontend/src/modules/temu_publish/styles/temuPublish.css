@@ -982,7 +982,6 @@ textarea.temu-input {
   font-size: 0.66rem;
 }
 
-
 /* 缩略图：悬停放大一圈看清，点击开大图 */
 .temu-draft-thumb-button {
   display: inline-block;
@@ -3427,7 +3426,6 @@ textarea.temu-input {
   background: #fff8e8;
 }
 
-
 /* ---------- 草稿库：完整度 / 缺项 / 搜索（结构重排后新增） ---------- */
 
 .temu-draft-search {
@@ -3595,7 +3593,6 @@ textarea.temu-input {
   line-height: 1.45;
   word-break: break-word;
 }
-
 
 /* ================================================================
    发布商品页：视觉与结构打磨（2026-10-29）
@@ -3769,7 +3766,6 @@ textarea.temu-input {
     justify-content: flex-start;
   }
 }
-
 
 /* ================================================================
    按钮体系（2026-10-29）
@@ -5223,7 +5219,6 @@ textarea.temu-input {
 .is-console .temu-field.is-required-empty .temu-input {
   border-color: #d93025;
 }
-
 
 /* ---- 12. 区块标题更醒目 ----
    五个标题（基本信息/产品信息/变种信息/包装信息/校验发布）是这页的主骨架，
@@ -8024,78 +8019,1065 @@ textarea.temu-input {
   font-size: 11.5px;
 }
 
-/* ---- 批量发布：按标题自动匹配后的 3 秒倒计时（可取消） ---- */
-.temu-batch-autostart {
+/* ---- 批量发布：确认单（按类目分组，手点才发） ---- */
+.temu-batch-confirm {
+  max-width: 560px;
+}
+
+.temu-batch-confirm-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  margin: 0 0 10px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.temu-batch-confirm-list li {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-  padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 30%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 7%, transparent);
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, rgba(255, 255, 255, 0.6));
 }
 
-.temu-batch-autostart-text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.temu-batch-autostart-text strong {
-  /* 分批文案会列出每组类目+条数，单行 ellipsis 会把后面的组吃掉 → 允许折行 */
-  overflow-wrap: anywhere;
+.temu-batch-confirm-list b {
   color: var(--theme-text-primary, #1f2d3d);
   font-size: 12.5px;
+}
+
+.temu-batch-confirm-list span {
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-size: 12.5px;
   font-weight: 700;
-  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
 }
 
-.temu-batch-autostart-text span {
+.temu-batch-confirm-list em {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+  font-style: normal;
+}
+
+.temu-batch-confirm-total {
+  margin: 0 0 8px;
   color: var(--theme-text-secondary, #4a6478);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
-.temu-batch-autostart-text b {
+.temu-batch-confirm-total b {
   color: var(--theme-module-primary-strong, #087bf5);
   font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
 
-.temu-batch-autostart-actions {
+/* ---- 整页批量编辑（Temu 后台 / 店小秘那套：勾字段 → 表格逐行改） ----
+ *
+ * 布局约定（别推翻）：
+ *   顶部信息条 → 字段勾选卡 → 说明/撤销条 → 表格（表头只放标签 + 「批量改」按钮）
+ * 表头里**不放输入框**：之前把标签、规则按钮、填充输入框挤在同一行，
+ * 结果三者互相压字，糊成一团。
+ */
+.temu-batch-edit {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 18px;
+  background: var(--theme-card-bg-solid, #f4f7fa);
+  color: var(--theme-text-primary, #1f2d3d);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.temu-batch-edit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 10px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.9));
+}
+
+.temu-batch-edit-head > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.temu-batch-edit-head strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.temu-batch-edit-head span {
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+}
+
+.temu-batch-edit-head-actions {
   display: flex;
   gap: 8px;
 }
 
-.temu-batch-autostart-go {
-  padding: 5px 14px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: var(--theme-module-primary-strong, #087bf5);
-  color: #fff;
-  font: inherit;
-  font-size: 12px;
+.temu-batch-edit-fields {
+  padding: 10px 14px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 10px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.9));
+}
+
+.temu-batch-edit-fields-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.temu-batch-edit-fields-head strong {
+  font-size: 13px;
+}
+
+.temu-batch-edit-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.temu-batch-autostart-go:hover {
-  filter: brightness(1.06);
+.temu-batch-edit-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 28px;
 }
 
-.temu-batch-autostart-cancel {
-  padding: 5px 12px;
-  border: 1px solid var(--theme-module-border, #d5e2ea);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--theme-text-secondary, #4a6478);
-  font: inherit;
-  font-size: 12px;
+.temu-batch-edit-group {
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.temu-batch-edit-group-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
 }
 
-.temu-batch-autostart-cancel:hover {
+.temu-batch-edit-group-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding-left: 20px;
+}
+
+.temu-batch-edit-group-items label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.temu-batch-edit-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-width: 0;
+}
+
+.temu-batch-edit-tip {
+  flex: 1 1 320px;
+  min-width: 0;
+  margin: 0;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+}
+
+.temu-batch-edit-dirty-legend {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, #f0a020 18%, transparent);
+  color: #8a5a00;
+  font-weight: 600;
+}
+
+.temu-batch-edit-table-wrap {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 10px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.9));
+  overflow: auto;
+}
+
+.temu-batch-edit-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+}
+
+.temu-batch-edit-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid var(--theme-module-border, #d5e2ea);
+  background: var(--theme-module-surface-soft, #eef4f9);
+  color: var(--theme-text-secondary, #4a6478);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+/* 表头两行：标签一行、按钮一行，谁也不压谁 */
+.temu-batch-edit-th-label {
+  display: block;
+  line-height: 1.3;
+}
+
+/* 「批量改」要做成看得出来的按钮：之前是纯文字链，用户以为只是标题的一部分 */
+.temu-batch-edit-th-batch {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 42%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 10%, transparent);
+  color: var(--theme-module-primary-strong, #087bf5);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.55;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.temu-batch-edit-th-batch:hover:not(:disabled) {
   border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 20%, transparent);
+}
+
+.temu-batch-edit-th-batch:disabled {
+  border-color: var(--theme-module-border, #d5e2ea);
+  background: transparent;
+  color: var(--theme-text-muted, #9aa9b8);
+  cursor: not-allowed;
+}
+
+/* 行勾选列：批量改只看勾选的行 */
+.temu-batch-edit-table .col-pick {
+  width: 38px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.temu-batch-edit-table .col-pick input {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* 没勾选的行压暗：一眼看出它不会参与批量改 */
+.temu-batch-edit-table tbody tr.is-unpicked td {
+  color: var(--theme-text-muted, #9aa9b8);
+}
+
+.temu-batch-edit-table tbody tr.is-unpicked .temu-batch-edit-input {
+  opacity: 0.65;
+}
+
+.temu-batch-edit-table tbody td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--theme-module-border-soft, rgba(213, 226, 234, 0.6));
+  vertical-align: middle;
+}
+
+.temu-batch-edit-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 4%, transparent);
+}
+
+.temu-batch-edit-table .col-thumb {
+  width: 64px;
+}
+
+.temu-batch-edit-table .col-thumb img {
+  display: block;
+  width: 46px;
+  height: 46px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--theme-module-surface-soft, #eef4f9);
+}
+
+.temu-batch-edit-table .col-variants {
+  max-width: 240px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.temu-batch-edit-table .col-act {
+  width: 60px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.temu-batch-edit-input {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.temu-batch-edit-input:hover {
+  border-color: var(--theme-module-border, #d5e2ea);
+}
+
+.temu-batch-edit-input:focus {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: var(--theme-card-bg-solid, #fff);
+  outline: none;
+}
+
+/* 改过的格子标黄：整页编辑里最怕「不知道哪格动过」 */
+.temu-batch-edit-input.is-dirty {
+  border-color: color-mix(in srgb, #f0a020 55%, transparent);
+  background: color-mix(in srgb, #f0a020 12%, transparent);
+}
+
+/* 「去补」进来的目标列：整列描边高亮，别让人满表找缺的是哪列 */
+.temu-batch-edit-table th.is-focus {
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 10%, transparent);
+}
+
+.temu-batch-edit-table td.is-focus {
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 5%, transparent);
+}
+
+.temu-batch-edit-table td.is-focus .temu-batch-edit-input {
+  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 55%, transparent);
+}
+
+.temu-batch-edit-focus-legend {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+/* 长标题用多行框：单行输入只能看到半截 */
+.temu-batch-edit-text {
+  resize: none;
+  padding: 6px 7px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+
+/* ---- 列头的「批量改」弹窗 ---- */
+/* 整页批量编辑 z-index 900，弹窗必须压在它上面 */
+.temu-edit-backdrop.is-over-batch {
+  z-index: 1000;
+}
+
+.temu-col-dialog {
+  width: min(560px, calc(100vw - 40px));
+}
+
+.temu-col-dialog-hint {
+  margin: 0 0 10px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+}
+
+.temu-col-dialog-line,
+.temu-col-dialog-radio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.temu-col-dialog-line .temu-input {
+  width: 240px;
+  min-width: 0;
+}
+
+.temu-col-dialog-radio .temu-input {
+  width: 150px;
+  min-width: 0;
+  height: 32px;
+}
+
+.temu-col-dialog-op {
+  width: 78px !important;
+}
+
+.temu-col-dialog-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 10px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.temu-col-dialog-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin-bottom: 8px;
+}
+
+.temu-col-dialog-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.temu-col-dialog-grid label > span {
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+}
+
+.temu-col-dialog-preview {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px dashed var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+  font-size: 12px;
+}
+
+.temu-col-dialog-preview strong {
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 12px;
+}
+
+.temu-col-dialog-diff {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-col-dialog-diff span {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-col-dialog-diff em {
+  color: var(--theme-text-muted, #9aa9b8);
+  font-style: normal;
+}
+
+.temu-col-dialog-diff b {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-col-dialog-warn {
+  color: #c2410c;
+  font-style: normal;
+}
+
+/* ---- 整页「批量编辑产品图片」（对齐店小秘） ---- */
+.temu-img-edit {
+  gap: 10px;
+}
+
+.temu-img-edit-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.temu-img-edit-back {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #eef4f9);
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.temu-img-edit-back:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-img-edit-panel {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 10px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.9));
+}
+
+.temu-img-edit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12.5px;
+}
+
+.temu-img-edit-row > span:first-child {
+  flex: 0 0 68px;
+  color: var(--theme-text-muted, #7c8fa3);
+}
+
+.temu-img-edit-gap {
+  margin-left: 6px;
+}
+
+.temu-img-edit-row .temu-input {
+  height: 30px;
+  width: auto;
+  min-width: 0;
+}
+
+.temu-img-edit-search {
+  flex: 1 1 260px;
+  max-width: 360px;
+}
+
+.temu-img-edit-num {
+  width: 76px !important;
+  text-align: center;
+}
+
+.temu-img-edit-url {
+  flex: 1 1 280px;
+  max-width: 420px;
+}
+
+.temu-img-edit-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.temu-img-edit-radio.is-off {
+  color: var(--theme-text-muted, #9aa9b8);
+  cursor: not-allowed;
+}
+
+.temu-img-edit-radio input {
+  width: 13px;
+  height: 13px;
+}
+
+.temu-img-edit-text {
+  color: var(--theme-text-secondary, #4a6478);
+  white-space: nowrap;
+}
+
+.temu-img-edit-result {
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.temu-img-edit-rules {
+  margin: 2px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #16a34a 9%, transparent);
+  color: #166534;
+  font-size: 11.5px;
+  line-height: 1.7;
+  list-style: none;
+}
+
+.temu-img-edit-rules li::before {
+  content: "•";
+  margin-right: 6px;
+}
+
+.temu-img-edit-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 10px;
+  background: var(--theme-module-surface-raised, rgba(255, 255, 255, 0.9));
+}
+
+.temu-img-edit-list-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--theme-module-border, #d5e2ea);
+  background: var(--theme-module-surface-soft, #eef4f9);
+  font-size: 12px;
+}
+
+.temu-img-edit-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.temu-img-edit-item {
+  display: grid;
+  grid-template-columns: 26px minmax(180px, 250px) 1fr;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--theme-module-border-soft, rgba(213, 226, 234, 0.6));
+}
+
+.temu-img-edit-item.is-unpicked {
+  background: color-mix(in srgb, var(--theme-text-muted, #9aa9b8) 6%, transparent);
+}
+
+.temu-img-edit-item-pick {
+  padding-top: 30px;
+}
+
+.temu-img-edit-item-pick input {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.temu-img-edit-meta {
+  display: flex;
+  gap: 9px;
+  min-width: 0;
+}
+
+.temu-img-edit-meta > img {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--theme-module-surface-soft, #eef4f9);
+}
+
+.temu-img-edit-meta > div {
+  min-width: 0;
+}
+
+.temu-img-edit-name {
+  display: -webkit-box;
+  margin: 0 0 5px;
+  overflow: hidden;
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.temu-img-edit-badge {
+  font-size: 11px;
+  color: var(--theme-text-muted, #7c8fa3);
+}
+
+.temu-img-edit-warn {
+  color: #c2410c;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.temu-img-edit-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.temu-img-edit-thumb {
+  position: relative;
+  margin: 0;
+  width: 86px;
+}
+
+.temu-img-edit-thumb img {
+  display: block;
+  width: 86px;
+  height: 86px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--theme-module-surface-soft, #eef4f9);
+}
+
+.temu-img-edit-no {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(15, 30, 45, 0.66);
+  color: #fff;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.temu-img-edit-no.is-cover {
+  background: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-img-edit-del {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 50%;
+  background: var(--theme-card-bg-solid, #fff);
+  color: #c2410c;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.temu-img-edit-del:hover {
+  border-color: #c2410c;
+  background: #fff1e8;
+}
+
+.temu-img-edit-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 86px;
+  height: 86px;
+  border: 1px dashed var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-muted, #7c8fa3);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.temu-img-edit-add:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-img-edit-add.is-open {
+  display: grid;
+  gap: 6px;
+  width: min(280px, 100%);
+  height: auto;
+  padding: 8px;
+  border-style: solid;
+  cursor: default;
+}
+
+.temu-img-edit-add.is-open .temu-input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+}
+
+.temu-img-edit-add.is-open > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.temu-img-edit-empty {
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+}
+
+/* 标题与「当前位置」必须上下两行：.temu-batch-edit-head > div:first-child 的 grid
+   被 .temu-img-edit-title 的 flex 顶掉了，两个文字会并排挤在一起 */
+.temu-img-edit-title > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* ---- 发布页：产品模板 / 变种模板的保存·载入按钮与弹窗 ---- */
+
+/* 小号按钮：类目行、变种标题行右侧，和「更换类目」同一行但不能压过它 */
+.temu-btn.is-mini {
+  min-height: 28px;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.temu-cat-selected-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.temu-variant-tpl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-template-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.temu-template-dialog .temu-field {
+  margin: 10px 2px 4px;
+}
+
+.temu-template-warn {
+  margin: 6px 2px 0;
+  color: #c2410c;
+  font-size: 12px;
+}
+
+.temu-template-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  margin: 12px 0 4px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.temu-template-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temu-template-pick {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 8px;
+  background: var(--theme-module-surface-soft, #f4f9fd);
+  color: var(--theme-text-primary, #1f2d3d);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.temu-template-pick:hover {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 7%, transparent);
+}
+
+.temu-template-pick strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-template-pick span {
+  flex: 0 0 auto;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 11.5px;
+}
+
+.temu-template-del {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 50%;
+  background: transparent;
+  color: #c2410c;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.temu-template-del:hover {
+  border-color: #c2410c;
+  background: #fff1e8;
+}
+
+.temu-template-empty {
+  margin: 16px 2px;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* ---- 产品属性标题行：label + 说明 + 产品模板按钮 ---- */
+/* label/说明包进 .temu-field-head 后，`.temu-field > span` 不再命中，这里补一份等价样式 */
+.temu-field-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.temu-field-head > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.temu-field-head > em {
+  font-style: normal;
+}
+
+.temu-field-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.is-console .temu-field-head > span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--temu-text);
+}
+
+.is-console .temu-sec .temu-field-head > span {
+  font-size: 0.78rem;
+}
+
+/* 模板弹窗头部：标题一行不换行，副标题是灰字说明（.temu-edit-head 的 span 是蓝色胶囊，
+   拿来放长句子会挤在标题旁边、把标题挤断行） */
+.temu-template-dialog .temu-edit-head > div {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.temu-template-dialog .temu-edit-head strong {
+  white-space: nowrap;
+}
+
+.temu-template-dialog .temu-edit-head span {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--theme-text-muted, #7c8fa3);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+}
+
+/* ---- 批量编辑：按变种拆行（单独定价） ---- */
+.temu-batch-edit-tools-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+
+.temu-batch-edit-split {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-module-border, #d5e2ea);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #4a6478);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.temu-batch-edit-split:has(input:checked) {
+  border-color: var(--theme-module-primary-strong, #087bf5);
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 10%, transparent);
+  color: var(--theme-module-primary-strong, #087bf5);
+  font-weight: 600;
+}
+
+.temu-batch-edit-split input {
+  width: 13px;
+  height: 13px;
+}
+
+/* 拆行表格：变种名两行（名称 + 灰字标题） */
+.temu-batch-edit-sku-table td strong {
+  display: block;
+  color: var(--theme-text-primary, #1f2d3d);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.temu-batch-edit-sku-table td .temu-muted {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.temu-batch-edit-sku-table td.col-variants {
+  font-variant-numeric: tabular-nums;
+}
+
+.temu-batch-edit-sku-table td.col-variants b {
   color: var(--theme-module-primary-strong, #087bf5);
 }
