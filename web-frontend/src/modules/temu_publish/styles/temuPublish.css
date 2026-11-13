@@ -793,6 +793,41 @@ textarea.temu-input {
   font-size: 0.72rem;
 }
 
+/* 成功卡：id / 货号 / 规格三样摆明面，别用一坨 JSON 待客 */
+.temu-publish-done-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.temu-publish-done-card > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #b9e0c9;
+  border-radius: 8px;
+  background: var(--theme-card-bg-solid, #fff);
+}
+
+.temu-publish-done-card em {
+  color: var(--theme-text-muted, #7d918a);
+  font-size: 0.7rem;
+  font-style: normal;
+}
+
+.temu-publish-done-card b {
+  color: var(--theme-text-primary, #1c3b2d);
+  font-family: var(--font-number, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 0.82rem;
+  word-break: break-all;
+}
+
+/* 回执 JSON 默认折叠：展开才见 */
+.temu-publish-done .temu-advanced {
+  margin: 0;
+}
+
 /* 草稿库带入后的来源提示：AI 处理 / POD 两种，POD 的价格重量是占位值要人工核对 */
 .temu-prefill-banner {
   display: flex;

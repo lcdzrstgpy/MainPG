@@ -715,6 +715,23 @@ test("发布超时后反查店铺：确认建成了就显示「已在店铺里�
   assert.match(page, /publishResult\.matched_goods\?\.product_id/);
 });
 
+test("成功回执是干净的成功卡，原始 JSON 折叠进「排障用」", () => {
+  // 以前一坨响应 JSON 顶在脸上（用户原话「很丑」）：id/货号/规格摆明面，JSON 要展开才见
+  assert.match(page, /temu-publish-done-card/);
+  assert.match(page, /<em>商品 id<\/em>/);
+  assert.match(page, /<em>货号<\/em>/);
+  assert.match(page, /<em>规格<\/em>/);
+  assert.match(page, /<summary>原始回执 JSON（排障用）<\/summary>/);
+  assert.match(page, /复制回执 JSON/);
+  assert.doesNotMatch(
+    page,
+    /<\/div>\s*\n\s*<pre className="temu-json">\s*\n\s*\{JSON\.stringify\(\s*\n\s*publishResult\.confirmed_by_lookup/,
+    "回执 JSON 不许再裸露在成功卡外面",
+  );
+  const styles = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.match(styles, /\.temu-publish-done-card \{/);
+});
+
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
   assert.match(api, /searchGoods: \(params: \{ extCode\?: string; title\?: string; page\?: number; pageSize\?: number \}\) =>/);
   assert.match(api, /\$\{BASE\}\/goods\$\{query\(\{/);
