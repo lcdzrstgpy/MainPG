@@ -1131,6 +1131,10 @@ export function TemuDraftLibraryPage({
     variantTpl,
     categoryMemo,
     attrPrefills,
+    // 图片批量编辑 / 变种覆盖也影响预检（轮播图不足、变种字段坏值）——
+    // 漏了就会「保存完预检还是旧结果」
+    imageEdits,
+    skuFields,
   ]);
 
   const blockedPrecheck = batchPrecheck.filter((item) => item.blocked.length > 0);

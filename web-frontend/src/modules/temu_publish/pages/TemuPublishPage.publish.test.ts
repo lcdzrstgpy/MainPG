@@ -732,6 +732,31 @@ test("成功回执是干净的成功卡，原始 JSON 折叠进「排障用」",
   assert.match(styles, /\.temu-publish-done-card \{/);
 });
 
+test("别处机器审出的 5 条问题：修复要被守住，不许回退", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  const precheck = readFileSync(new URL("../data/batchPrecheck.ts", import.meta.url), "utf8");
+  const batchEdit = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+
+  // 1. 批量编辑未保存内容不丢：sessionStorage 暂存，保存才清
+  assert.match(batchEdit, /const PENDING_KEY = "temu_batch_edit_pending_v1";/);
+  assert.match(batchEdit, /sessionStorage\.setItem\(PENDING_KEY/);
+  assert.match(batchEdit, /sessionStorage\.removeItem\(PENDING_KEY\)/);
+  assert.match(batchEdit, /已恢复上次未保存的改动/);
+
+  // 2. 图片/变种覆盖保存后预检要重算：依赖数组不能漏
+  assert.match(library, /imageEdits,\s*\n\s*skuFields,/);
+
+  // 3+4. 预检按变种解析校验（和组装同口径），不再只看整条值
+  assert.match(precheck, /const skuRows = hasOverrides/);
+  assert.match(precheck, /resolveSkuField\(overrides, "declared_price", basePrice\)/);
+  assert.match(precheck, /resolveSkuField\(overrides, "weight_g", baseWeightG\)/);
+
+  // 5. 建议售价要进批量发布，不能写死 null
+  assert.doesNotMatch(batch, /suggested_price: null/, "组装不许再把建议售价吞掉");
+  assert.match(batch, /suggested_price: prefill\.suggestedPrice\s*\n\s*\? yuanToCents/);
+});
+
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
   assert.match(api, /searchGoods: \(params: \{ extCode\?: string; title\?: string; page\?: number; pageSize\?: number \}\) =>/);
   assert.match(api, /\$\{BASE\}\/goods\$\{query\(\{/);

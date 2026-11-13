@@ -70,6 +70,26 @@ const COLUMNS: Column[] = [
 /** 默认全部勾上：进来先看到全表，不要的再取消（默认藏着字段反而让人找不到） */
 const DEFAULT_FIELDS: BatchEditField[] = COLUMNS.map((column) => column.key);
 
+/**
+ * 未保存改动的暂存（sessionStorage）。
+ *
+ * 切工作区页签 / 刷新会把整个编辑页连同 state 一起卸载，改到一半的东西全没 ——
+ * 「取消」也只是关页不该丢数据（下次进来接着改，保存才落库并清掉暂存）。
+ */
+const PENDING_KEY = "temu_batch_edit_pending_v1";
+type PendingState = { draft: Record<string, TemuDraftEdit>; skuDraft: SkuFieldStore };
+function loadPending(): PendingState | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingState;
+    if (!parsed || typeof parsed !== "object") return null;
+    return { draft: parsed.draft ?? {}, skuDraft: parsed.skuDraft ?? {} };
+  } catch {
+    return null;
+  }
+}
+
 type Props = {
   /** 勾选的草稿（已合并过本机编辑） */
   entries: TemuDraftEntry[];
@@ -105,7 +125,7 @@ export function TemuBatchEditPage({
   /** 「去补」进来的目标列要整列高亮（表头 + 格子） */
   const isFocus = (key: BatchEditField) => Boolean(focusFields?.includes(key));
   /** 本地待保存的改动：id → 字段 → 值（'' = 清掉覆盖，回落到源数据） */
-  const [draft, setDraft] = useState<Record<string, TemuDraftEdit>>({});
+  const [draft, setDraft] = useState<Record<string, TemuDraftEdit>>(() => loadPending()?.draft ?? {});
   const [fields, setFields] = useState<BatchEditField[]>(DEFAULT_FIELDS);
   /** 被「移除」暂时不看的行（只是从这张表里去掉，不动草稿本身） */
   const [removed, setRemoved] = useState<string[]>([]);
@@ -131,9 +151,25 @@ export function TemuBatchEditPage({
    */
   const [splitSku, setSplitSku] = useState(false);
   /** 变种覆盖草稿：保存时整体提交（空值 = 取消该变种的覆盖，回落整条值） */
-  const [skuDraft, setSkuDraft] = useState<SkuFieldStore>(() =>
-    JSON.parse(JSON.stringify(skuFields)),
+  const [skuDraft, setSkuDraft] = useState<SkuFieldStore>(
+    () => loadPending()?.skuDraft ?? JSON.parse(JSON.stringify(skuFields)),
   );
+  /** 刚才是从暂存里捞回来的：提示一句，免得以为丢了又重改 */
+  const [restoredNote, setRestoredNote] = useState(() => Boolean(loadPending()));
+  /** 改动同步进暂存：切页签/刷新都丢不了；保存时清掉 */
+  useEffect(() => {
+    const hasDraft = Object.keys(draft).length > 0;
+    const hasSku = Object.values(skuDraft).some((map) => Object.keys(map ?? {}).length > 0);
+    try {
+      if (hasDraft || hasSku) {
+        sessionStorage.setItem(PENDING_KEY, JSON.stringify({ draft, skuDraft } satisfies PendingState));
+      } else {
+        sessionStorage.removeItem(PENDING_KEY);
+      }
+    } catch {
+      // 存储满了就当没有暂存，别影响编辑本身
+    }
+  }, [draft, skuDraft]);
   /** 拆行模式下勾选的变种：`草稿id::变种key` */
   const [pickedSku, setPickedSku] = useState<string[]>(() =>
     entries.flatMap((entry) =>
@@ -332,6 +368,13 @@ export function TemuBatchEditPage({
       if (Object.keys(clean).length) nextSku[id] = clean;
     });
     onSaveSkuFields(nextSku);
+    // 落库成功才清暂存；「取消」/切页签不清，下次进来接着改
+    try {
+      sessionStorage.removeItem(PENDING_KEY);
+    } catch {
+      // 清不掉也无妨：下次保存会覆盖
+    }
+    setRestoredNote(false);
   };
 
   // Esc 关闭：整页覆盖时必须留一条键盘退路（弹窗开着时先关弹窗）
@@ -425,6 +468,11 @@ export function TemuBatchEditPage({
 
       <section className="temu-batch-edit-tools">
         <p className="temu-batch-edit-tip">
+          {restoredNote ? (
+            <>
+              <b className="temu-batch-edit-focus-legend">已恢复上次未保存的改动</b>（切页签/刷新不再丢；点保存才生效）。
+            </>
+          ) : null}
           {focusFields?.length ? (
             <>
               <b className="temu-batch-edit-focus-legend">

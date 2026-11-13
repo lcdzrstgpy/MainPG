@@ -152,3 +152,40 @@ test("去补映射：图片问题去图片页，模板/配置问题没有入口�
   assert.equal(precheckFixTarget("产品模板里没有运费模板"), null);
   assert.equal(precheckFixTarget("还没选产品模板（或在下面现场配置完）"), null);
 });
+
+test("预检按变种解析：变种覆盖齐全时，空的整条值不拦（发得出去就别扣）", () => {
+  // 整条价格/重量/尺寸全空，但每个变种都自己填了 —— 组装按变种值走，预检不该替整条值拦人
+  const prefill = makePrefill({
+    supplierPrice: "",
+    weightKg: "",
+    lengthCm: "",
+    widthCm: "",
+    heightCm: "",
+    specValue1: "",
+    specValue2: "",
+    variants: [{ color: "黑色" }, { color: "浅绿" }],
+    skuFields: {
+      黑色: { declared_price: "150", weight_g: "500", length_cm: "30", width_cm: "20", height_cm: "10" },
+      浅绿: { declared_price: "160", weight_g: "600", length_cm: "32", width_cm: "21", height_cm: "11" },
+    },
+  });
+  const result = precheckBatchItem(prefill, makeTemplate(), null);
+  assert.deepEqual(result.blocked, []);
+});
+
+test("预检按变种解析：变种覆盖里的坏值要拦下并指名道姓（不能预检过、提交炸）", () => {
+  const prefill = makePrefill({
+    variants: [{ color: "黑色" }, { color: "浅绿" }],
+    skuFields: {
+      黑色: { declared_price: "150", weight_g: "500", length_cm: "30", width_cm: "20", height_cm: "10" },
+      // 申报价 0 发出去必被 Temu 拒：以前预检只看整条值，这条会「预检过、提交失败」
+      浅绿: { declared_price: "0", weight_g: "600", length_cm: "32", width_cm: "21", height_cm: "11" },
+    },
+  });
+  const result = precheckBatchItem(prefill, makeTemplate(), null);
+  assert.ok(
+    result.blocked.some((item) => /浅绿.*申报价格必须大于 0/.test(item)),
+    `要指名道姓报到变种：${JSON.stringify(result.blocked)}`,
+  );
+  assert.ok(result.blocked.every((item) => !/黑色/.test(item)), "好变种不该被连坐");
+});

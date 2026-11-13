@@ -436,7 +436,11 @@ export async function buildDraftForPublish(
       currency_type: "CNY",
       site_id: SITE_ID,
       supplier_price: supplierPriceCents,
-      suggested_price: null,
+      // 建议售价：界面上能填就得发出去（以前写死 null，批量编辑改了等于白改）；
+      // 没填才是 null，和单件发布同一口径
+      suggested_price: prefill.suggestedPrice
+        ? yuanToCents(prefill.suggestedPrice, "建议售价")
+        : null,
       stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
       warehouse_id: warehouseId,
       weight_mg: Math.round(weight * 1000) < 1 ? 1 : Math.round(weight * 1000),
