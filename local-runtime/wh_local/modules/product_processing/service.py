@@ -12768,7 +12768,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             if re.fullmatch(r"\d+(?:\.\d+)?", text):
                 number = float(text)
                 if 0 < number < (1000 if assume_kg else 100000):
-                    return number * 1000 if assume_kg else number
+                    if assume_kg:
+                        return number * 1000
+                    # 裸数字 < 2 不可能是克（包裹下限 2g），是 kg 残值（0.58 实为 580g）
+                    return number * 1000 if number < 2 else number
             return None
         if isinstance(attributes, list):
             canonical: dict[str, Any] = {}
@@ -12827,7 +12830,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 elif re.fullmatch(r"\d+(?:\.\d+)?", variant_weight_text):
                     number = float(variant_weight_text)
                     if 0 < number < 100000:
-                        variant_weight_values.append(number)
+                        # 裸数字 < 2 不可能是克，按 kg 残值换算（0.23 实为 230g）
+                        variant_weight_values.append(number * 1000 if number < 2 else number)
             elif variant_weight_kg not in (None, ""):
                 variant_kg_text = str(variant_weight_kg).strip()
                 texts.append(variant_kg_text)
@@ -12883,7 +12887,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 # OneBound 1688 item_weight 常为纯数字，按克数约定处理。
                 weight = float(weight_text_value)
                 if 0 < weight < 100000:
-                    weight_values.append(weight)
+                    # 但裸数字 < 2 不可能是克（包裹下限 2g），是 kg 残值（0.58 实为 580g）
+                    weight_values.append(weight * 1000 if weight < 2 else weight)
         for key in ("package_info_text", "title", "product_name"):
             value = raw.get(key)
             if value not in (None, ""):
@@ -13252,6 +13257,19 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             return "".join(translated_parts).strip()
         return None
 
+    @staticmethod
+    def _weight_unit_guard(value: float, estimate: float | None = None) -> float:
+        """weight_g 单位护栏：来源/模型常把 kg 数直接当克存（0.58 实为 580g）。
+
+        真实包裹不可能轻于 2g（Temu 物流下限也是 2g）——小于 2 的「克」必是
+        kg 残值，按 kg→g 换算；2~20g 之间只在估算值同样支持（差 50 倍以上）时换算。
+        """
+        if value < 2:
+            return value * 1000
+        if estimate is not None and 2 <= value < 20 and estimate >= 50 * value:
+            return value * 1000
+        return value
+
     @classmethod
     def _combined_dimensions(
         cls,
@@ -13289,6 +13307,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 number = cls._number(previous_raw_estimate.get(key, raw.get(key)))
             if number is not None and number > 0:
                 resolved = float(number)
+                if key == "weight_g":
+                    resolved = cls._weight_unit_guard(resolved)
                 raw_estimate[key] = resolved
                 policy = template_axis_policy(dimension_template, key) if dimension_template else {}
                 hard_min = cls._number(policy.get("hard_min"))
@@ -13312,7 +13332,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         for key in AXIS_FIELDS:
             source_value = cls._number((known or {}).get(key))
             if source_value is not None and source_value > 0:
-                result[key] = float(source_value)
+                resolved_source = float(source_value)
+                if key == "weight_g":
+                    resolved_source = cls._weight_unit_guard(resolved_source, raw_estimate.get(key))
+                result[key] = resolved_source
                 provenance[key] = "source_confirmed"
                 confidence[key] = "high"
                 resolution_method[key] = "source"
