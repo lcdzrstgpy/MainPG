@@ -242,6 +242,7 @@ class CollectorRunner:
         detail_batch: int = 24,
         detail_http: bool = True,
         store: Any | None = None,
+        temu_workflow: bool = False,
     ) -> None:
         self._dir = Path(data_dir)
         self._profiles = self._dir / "profiles"
@@ -257,6 +258,7 @@ class CollectorRunner:
         self._detail_batch = max(4, min(48, int(detail_batch)))
         self._detail_http = bool(detail_http)
         self._store = store
+        self._temu_workflow = bool(temu_workflow)
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         # 已见过的页面 / 弹窗记录，重复出现时按记录处理。
@@ -337,7 +339,7 @@ class CollectorRunner:
                     job.message = "浏览器页面被关闭：若已登录成功，直接点「采集订单」验证"
                 else:
                     job.message = f"{name}: {error}"
-                on_done(account_id, {"ok": False, "message": job.message})
+                on_done(account_id, {"ok": False, "action": job.action, "message": job.message})
             finally:
                 job.need_code = False
                 job.updated_at = _now()
@@ -369,7 +371,7 @@ class CollectorRunner:
         profile.mkdir(parents=True, exist_ok=True)
         options: dict[str, Any] = {
             "user_data_dir": str(profile),
-            "headless": False,
+            "headless": bool(self._temu_workflow),
             "viewport": {"width": 1440, "height": 900},
             "args": [
                 "--no-sandbox",
@@ -1013,10 +1015,12 @@ class CollectorRunner:
     # ---------- 订单采集 ----------
 
     def capture_worker(self, job: Job) -> dict[str, Any]:
-        playwright = self._launch()
+        workflow_session = getattr(job, "_workflow_session", None)
+        owns_context = workflow_session is None
+        playwright = self._launch() if owns_context else None
         context = None
         try:
-            context = self._context(playwright, job.account_id)
+            context = workflow_session["context"] if workflow_session else self._context(playwright, job.account_id)
             page = context.pages[0] if context.pages else context.new_page()
             job.step = "打开订单列表"
             job.progress = 10
@@ -1135,9 +1139,11 @@ class CollectorRunner:
                 "summary": summary or {},
             }
         finally:
-            if context is not None:
-                context.close()
-            playwright.stop()
+            if owns_context:
+                if context is not None:
+                    context.close()
+                if playwright is not None:
+                    playwright.stop()
 
     @staticmethod
     def _wait_order_state(page: Any, timeout_seconds: int = 25) -> str:
@@ -1455,6 +1461,11 @@ class CollectorRunner:
             if not detail or detail.get("error"):
                 continue
             matched += 1
+            # 详情按父单缓存；只有 SKU 一致时才能把商品级 SPU 回填到该行。
+            if (not row.get("spu_id") and detail.get("spu_id")
+                    and str(row.get("sku_id") or "").strip()
+                    and str(row.get("sku_id")).strip() == str(detail.get("sku_id") or "").strip()):
+                row["spu_id"] = str(detail["spu_id"]).strip()
             for key in DETAIL_BASE_FIELDS:
                 if row.get(key) in (None, "") and detail.get(key) not in (None, ""):
                     row[key] = detail[key]
@@ -1851,14 +1862,61 @@ class CollectorRunner:
             return self._login_with_saved_credentials(page, job, BILL_URL)
         return ""
 
+    def lookup_order_spus(self, account_id: str, items: list[dict[str, Any]], *,
+                          page: Any | None = None, context: Any | None = None) -> dict[str, Any]:
+        """复用店铺登录态，以商品管理 SKU 精确查询同一商品行中的 SPU。
+
+        优先用订单行自带的 SPU，其次读本地精确映射缓存，只有仍未命中的 SKU 才进商品列表查询。
+        """
+        sku_spus: dict[str, str] = {}
+        for item in items:
+            sku = str(item.get("sku_id") or "").strip()
+            spu = str(item.get("spu_id") or "").strip()
+            if sku and (sku not in sku_spus or spu):
+                sku_spus[sku] = spu
+        sku_rows = list(sku_spus.items())
+        resolved = {sku: spu for sku, spu in sku_rows if spu}
+        unresolved = [sku for sku, spu in sku_rows if not spu]
+        if unresolved and self._store is not None:
+            try:
+                resolved.update(self._store.order_spu_mapping(account_id, unresolved))
+            except Exception:  # noqa: BLE001 - 缓存不可用不影响实时查询
+                pass
+            unresolved = [sku for sku in unresolved if not resolved.get(sku)]
+        if not unresolved:
+            return {"ok": True, "spus": sorted(set(resolved.values())),
+                    "matched": len(sku_rows), "sku_count": len(sku_rows), "unmatched": []}
+        if not self._temu_workflow:
+            return {"ok": False, "message": "订单 SPU 缺失，当前任务未启用 TEMU 联动"}
+        try:
+            from ads import lookup_spus_by_sku
+            mapping = lookup_spus_by_sku(self, account_id, unresolved, page=page, context=context)
+        except Exception as error:
+            return {"ok": False, "waiting_human": True,
+                    "message": f"商品管理 SKU→SPU 查询未完成：{type(error).__name__}"}
+        found = mapping.get("mapping", {}) or {}
+        resolved.update(found)
+        if found and self._store is not None:
+            try:
+                self._store.add_order_spu_mapping(account_id, found, source="goods_list")
+            except Exception:  # noqa: BLE001
+                pass
+        missing = [sku for sku in unresolved if not resolved.get(sku)]
+        return {"ok": not missing, "spus": sorted(set(resolved.values())),
+                "matched": len(resolved), "sku_count": len(sku_rows), "unmatched": missing,
+                "waiting_human": bool(mapping.get("waiting_human")),
+                "message": "" if not missing else str(mapping.get("message") or
+                    f"有 {len(missing)} 个出单 SKU 未能精确映射到 SPU")}
+
     def settlement_worker(self, job: Job) -> dict[str, Any]:
         """在对账中心「导出历史」里下载财务明细，解析 PO 级结算与违规扣款。"""
         options = getattr(job, "_settlement", None) or {}
         days = max(1, int(options.get("days") or 30))
-        playwright = self._launch()
-        context = None
+        workflow_session = options.get("workflow_session")
+        owns_context = workflow_session is None
+        playwright = self._launch() if owns_context else None
+        context = self._context(playwright, job.account_id) if owns_context else workflow_session["context"]
         try:
-            context = self._context(playwright, job.account_id)
             page = context.pages[0] if context.pages else context.new_page()
 
             job.step = "打开对账中心"
@@ -1870,6 +1928,10 @@ class CollectorRunner:
             self._safe_wait(page, 3000)
             self._dismiss_popups(page)
             if self._is_login_page(page):
+                if self._temu_workflow:
+                    self._shot(page, job.account_id)
+                    return {"ok": False, "action": "settlement", "need_login": True,
+                            "message": "TEMU联动流程的店铺登录态失效；为保持同店账号流程，不自动切换或重新登录"}
                 # 对账中心在跨境后台，登录失效时先用库里的手机号/密码自动登录。
                 login_error = self._login_with_saved_credentials(page, job, BILL_URL)
                 if login_error:
@@ -1879,6 +1941,10 @@ class CollectorRunner:
                         "action": "settlement",
                         "message": login_error,
                     }
+            if not _on_bill_page(page) and self._temu_workflow:
+                self._shot(page, job.account_id)
+                return {"ok": False, "action": "settlement", "need_login": True,
+                        "message": "未在现有登录态中到达对账中心；TEMU联动流程不会切换账号或发起登录"}
             if not _on_bill_page(page):
                 # 站点授权页 / 授权登录页会挡在对账中心前面，这里补齐授权和自动登录。
                 enter_error = self._enter_bill_center(page, job)
@@ -1954,9 +2020,128 @@ class CollectorRunner:
         except (RuntimeError, ValueError) as error:
             return {"ok": False, "action": "settlement", "message": str(error)}
         finally:
+            if owns_context:
+                if context is not None:
+                    context.close()
+                if playwright is not None:
+                    playwright.stop()
+
+    def temu_workflow_worker(self, job: Job) -> dict[str, Any]:
+        """同一店铺登录态串行跑完 TEMU 全链路：订单 → 对账 → SKU→SPU → 广告。
+
+        Playwright 同步对象只能在创建它的线程里使用，所以整条链路必须放在同一个
+        job 线程内完成，不能把 context 交给其它阶段任务。
+        """
+        from ads import collect_ads
+
+        on_done = getattr(job, "_workflow_on_done", None)
+        stages: list[dict[str, Any]] = []
+
+        def record_step(step: str, status: str, message: str = "") -> None:
+            stages.append({"step": step, "status": status, "message": message, "at": _now()})
+
+        def persist(result: dict[str, Any]) -> dict[str, Any]:
+            """每个阶段都先落库，后续阶段失败不覆盖已成功的数据。"""
+            if on_done is not None:
+                on_done(job.account_id, result)
+            return result
+
+        def stop(step: str, result: dict[str, Any], *, partial: bool) -> dict[str, Any]:
+            message = str(result.get("message") or "阶段未完成")
+            waiting = bool(result.get("need_login") or result.get("waiting_human"))
+            record_step(step, "waiting_human" if waiting else "failed", message)
+            return {"ok": False, "action": "workflow", "need_login": waiting,
+                    "waiting_human": waiting, "partial": partial,
+                    "stages": stages, "message": message}
+
+        playwright = self._launch()
+        context = None
+        try:
+            context = self._context(playwright, job.account_id)
+            job._workflow_session = {"context": context}  # type: ignore[attr-defined]
+
+            job.step = "订单采集"
+            orders = persist(self.capture_worker(job))
+            if not orders.get("ok"):
+                return stop("orders", orders, partial=False)
+            record_step("orders", "succeeded", f"{len(orders.get('items') or [])} 条订单")
+            pending = int(orders.get("pending_details") or 0)
+            if pending:
+                message = f"订单详情仍有 {pending} 单未完成，暂停后续联动步骤"
+                record_step("orders", "partial", message)
+                return {"ok": False, "action": "workflow", "partial": True,
+                        "stages": stages, "message": message}
+
+            job.step = "对账中心采集"
+            job._settlement = {"days": 90, "workflow_session": job._workflow_session}  # type: ignore[attr-defined]
+            settlement = persist(self.settlement_worker(job))
+            if not settlement.get("ok"):
+                return stop("settlement", settlement, partial=True)
+            record_step("settlement", "succeeded", str(settlement.get("message") or "对账采集完成"))
+
+            job.step = "查询出单 SKU 对应 SPU"
+            # 商品列表与推广平台需要完整资源（页面自带 CSP/脚本），解除采集订单时的资源拦截。
+            try:
+                context.unroute("**/*")
+            except Exception:  # noqa: BLE001
+                pass
+            page = context.pages[0] if context.pages else context.new_page()
+            mapping = self.lookup_order_spus(
+                job.account_id, orders.get("items") or [], page=page, context=context
+            )
+            if not mapping.get("ok"):
+                return stop("spu_mapping", mapping, partial=True)
+            record_step("spu_mapping", "succeeded",
+                        f"匹配 {mapping.get('matched', 0)} / {mapping.get('sku_count', 0)} 个 SKU")
+
+            job.step = "按出单 SPU 查询广告费用"
+            ads = persist(collect_ads(self, job, spus=mapping.get("spus") or [],
+                                      page=page, context=context))
+            if not ads.get("ok"):
+                return stop("ads", ads, partial=True)
+            record_step("ads", "succeeded", str(ads.get("message") or "匹配广告费用查询完成"))
+            return {
+                "ok": True,
+                "action": "workflow",
+                "stages": stages,
+                "message": (
+                    f"TEMU 全链路完成：{len(orders.get('items') or [])} 条订单；"
+                    f"{len(mapping.get('spus') or [])} 个出单 SPU；广告只匹配已出单 SPU，未计入利润"
+                ),
+            }
+        except Exception as error:  # noqa: BLE001 - 阶段异常也要给出可恢复结果
+            message = f"TEMU 联动流程中断（{type(error).__name__}）：{error}"
+            record_step("workflow", "failed", message)
+            return {"ok": False, "action": "workflow", "stages": stages, "message": message}
+        finally:
             if context is not None:
                 context.close()
             playwright.stop()
+
+    def run_sync_temu_workflow(
+        self,
+        account_id: str,
+        on_done: Callable[[str, dict[str, Any]], None],
+        poll_seconds: float = 1.0,
+    ) -> dict[str, Any]:
+        holder: dict[str, Any] = {}
+
+        def capture_result(aid: str, result: dict[str, Any]) -> None:
+            holder.update(result)
+            on_done(aid, result)
+
+        def worker(job: Job) -> dict[str, Any]:
+            job._workflow_on_done = on_done  # type: ignore[attr-defined]
+            return self.temu_workflow_worker(job)
+
+        self.start(account_id, "workflow", worker, capture_result)
+        return self._wait(account_id, holder, poll_seconds)
+
+    def run_ads(self, account_id: str, on_done: Callable[[str, dict[str, Any]], None]) -> dict[str, Any]:
+        from ads import collect_ads
+
+        job = self.start(account_id, "ads", lambda job: collect_ads(self, job), on_done)
+        return job.snapshot()
 
     def run_settlement(
         self,

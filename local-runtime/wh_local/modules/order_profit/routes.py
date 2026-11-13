@@ -114,6 +114,20 @@ class TeamSubmitRequest(BaseModel):
     week_start: str = ""
 
 
+class SkuCostRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sku_id: str
+    unit_cost_cny: float | None = None
+
+
+class SkuCostsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shop: str = ""
+    items: list[SkuCostRow] = Field(default_factory=list, max_length=50000)
+
+
 class OrderCostRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -320,6 +334,111 @@ def create_order_profit_router(
                 shop=shop,
                 limit=limit,
                 offset=offset,
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/sku-costs/template")
+    def export_sku_cost_template(
+        shop: str = Query(default="all"),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> Any:
+        try:
+            from io import BytesIO
+            from openpyxl import Workbook
+            from fastapi.responses import StreamingResponse
+
+            rows = service.sku_costs(workspace_id(workspace), shop=shop).get("items", [])
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "SKU成本"
+            sheet.append(["SKU号", "成本"])
+            for row in rows:
+                sheet.append([str(row.get("sku_id") or ""), None])
+                sheet.cell(sheet.max_row, 1).number_format = "@"
+            output = BytesIO()
+            workbook.save(output)
+            output.seek(0)
+            return StreamingResponse(
+                output,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": "attachment; filename=sku-cost-template.xlsx"},
+            )
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.post("/sku-costs/import")
+    async def import_sku_costs(
+        file: UploadFile = File(...),
+        shop: str = Form(default="all"),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            from io import BytesIO
+            import csv
+            import re
+            from openpyxl import load_workbook
+
+            content = await file.read()
+            suffix = (file.filename or "").lower()
+            if suffix.endswith(".xlsx"):
+                workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+                values = list(workbook.active.iter_rows(values_only=True))
+            elif suffix.endswith(".csv"):
+                import io
+                text = content.decode("utf-8-sig")
+                values = list(csv.reader(io.StringIO(text)))
+            else:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "仅支持 XLSX 或 CSV 模板")
+            if not values or [str(value or "").strip() for value in values[0][:2]] != ["SKU号", "成本"]:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "模板首行必须是 SKU号、成本")
+            parsed: list[dict[str, Any]] = []
+            issues: list[dict[str, Any]] = []
+            for index, row in enumerate(values[1:], start=2):
+                if not row or not any(value not in (None, "") for value in row[:2]):
+                    continue
+                sku = str(row[0] or "").strip()
+                raw_cost = row[1] if len(row) > 1 else None
+                if not sku or raw_cost in (None, ""):
+                    issues.append({"row": index, "sku_id": sku, "reason": "SKU 或成本为空，未导入"})
+                    continue
+                try:
+                    cost = float(raw_cost)
+                except (TypeError, ValueError):
+                    issues.append({"row": index, "sku_id": sku, "reason": "成本必须是数字"})
+                    continue
+                if cost < 0 or not re.fullmatch(r"\d+(\.\d+)?", str(raw_cost).strip()):
+                    issues.append({"row": index, "sku_id": sku, "reason": "成本必须为 0 或正数"})
+                    continue
+                parsed.append({"sku_id": sku, "unit_cost_cny": cost})
+            result = service.save_sku_costs(workspace_id(workspace), parsed, shop=shop)
+            return {**result, "issues": issues}
+        except HTTPException:
+            raise
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.get("/sku-costs")
+    def list_sku_costs(
+        shop: str = Query(default="all"),
+        keyword: str = Query(default=""),
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.sku_costs(workspace_id(workspace), shop=shop, keyword=keyword)
+        except BaseException as error:
+            raise _error(error) from error
+
+    @router.put("/sku-costs")
+    def save_sku_costs(
+        request: SkuCostsRequest,
+        workspace: str = Header(default="local", alias="X-Workspace-ID"),
+    ) -> dict[str, Any]:
+        try:
+            return service.save_sku_costs(
+                workspace_id(workspace),
+                [item.model_dump() for item in request.items],
+                shop=request.shop,
             )
         except BaseException as error:
             raise _error(error) from error

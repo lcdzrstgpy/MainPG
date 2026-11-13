@@ -323,7 +323,7 @@
       <a class="nav-item" href="#/collect/orders/info" data-page="orders-info"><span class="ic">≡</span>订单信息</a>
       <a class="nav-item" href="#/collect/bill" data-page="bill"><span class="ic">↓</span>对账中心采集</a>
       <a class="nav-item" href="#/collect/bill/info" data-page="bill-info"><span class="ic">≡</span>对账信息</a>
-      <a class="nav-item" href="#/collect/ads" data-page="ads"><span class="ic">○</span>广告推广费采集<span class="nav-soon">待开发</span></a>
+      <a class="nav-item" href="#/collect/ads" data-page="ads"><span class="ic">○</span>广告推广费采集</a>
     </div>
     <div class="nav-title">运营</div>
     <a class="nav-item" href="#/ranking" data-page="ranking"><span class="ic">↗</span>商品销量排行</a>
@@ -508,7 +508,9 @@
 
     <!-- 广告推广费 -->
     <section class="page" id="page-ads">
-      <div class="placeholder"><b>广告推广费采集</b>功能开发中，后续用于拉取店铺广告消耗与投产数据。</div>
+      <div class="page-head"><div><h2>广告推广费采集</h2><div class="desc">美国区域 · 最近三个月 · 按店铺记录实际可查日期。历史缺口不补零，费用暂不分摊到订单。</div></div></div>
+      <div id="adsCards"></div>
+      <div class="card" id="adsDetail" style="margin-top:16px"><div class="empty">选择店铺查看各广告商品费用明细。</div></div>
     </section>
 
     <!-- 商品销量排行 -->
@@ -904,6 +906,16 @@ function statusBadge(account) {
   return `<span class="badge">未登录</span>`;
 }
 
+function workflowStatusText(account) {
+  const wf = account.temu_workflow || {};
+  if (!wf.status) return "";
+  const label = ({ running: "执行中", completed: "已完成", partial: "部分完成", failed: "失败", waiting_human: "等待人工处理" })[wf.status] || wf.status;
+  const step = String(wf.current_step || "").trim();
+  const failed = (wf.steps || []).filter((item) => item.status === "failed" || item.status === "waiting_human").pop();
+  const tail = step ? `：${step}` : (failed && failed.message ? `：${failed.message}` : "");
+  return ` · TEMU 流程 ${label}${tail}`;
+}
+
 function settleBadge(account) {
   const job = account.job;
   if (job && job.status === "running") {
@@ -1005,6 +1017,7 @@ function render() {
   });
   renderDashboard();
   renderSettleCards();
+  renderAdsCards();
   renderBindList();
   renderOrdersInfoLinks();
   if (currentPage() === "bind-dxm") renderDxmList();
@@ -1035,7 +1048,7 @@ function renderDashboard() {
         return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed #eef2f7">
           <div style="flex:1;min-width:0">
             <div style="font-weight:600;font-size:13px">${escapeHtml(shopName(account))}</div>
-            <div class="account-meta">订单 ${account.order_count || 0} 条 · ${escapeHtml(settleText)} · 更新 ${escapeHtml(formatTime(account.last_captured_at))}</div>
+            <div class="account-meta">订单 ${account.order_count || 0} 条 · ${escapeHtml(settleText)} · 更新 ${escapeHtml(formatTime(account.last_captured_at))}${escapeHtml(workflowStatusText(account))}</div>
           </div>
           ${statusBadge(account)}
           <a class="btn-link" href="settlement.html?account=${encodeURIComponent(account.id)}" target="_blank">结算明细</a>
@@ -1180,6 +1193,71 @@ function renderSettleCards() {
       togglePause(card && card.dataset.id, paused ? 1 : 0);
     });
   });
+}
+
+function renderAdsCards() {
+  const box = document.getElementById("adsCards");
+  const detail = document.getElementById("adsDetail");
+  if (!box || !detail) return;
+  if (detail.dataset.accountId && !visibleAccounts().some((account) => account.id === detail.dataset.accountId)) {
+    detail.dataset.accountId = "";
+    detail.innerHTML = '<div class="empty">选择店铺查看各广告商品费用明细。</div>';
+  }
+  box.innerHTML = visibleAccounts().map((a) => {
+    const d = a.last_ads || {}, attempt = a.ads_attempt || {}, job = a.job || {};
+    const busy = job.status === "running";
+    const coverage = d.fetched_at ? (d.history_limited ? "历史范围受限" : "三个月范围已查询") : "尚未采集";
+    const spendText = d.fetched_at
+      ? escapeHtml(d.currency + " " + d.total_spend) + (d.matched_only ? "（仅已出单 SPU）" : "")
+      : "费用未知";
+    return `<div class="card" style="margin-bottom:12px;padding:18px"><b>${escapeHtml(a.shop_name || a.alias || a.phone_tail)}</b>
+      <p>美国 · ${escapeHtml(coverage)} · ${spendText}</p>
+      ${d.fetched_at ? `<p>请求：${escapeHtml(d.requested_start)} 至 ${escapeHtml(d.requested_end)}<br>实际：${escapeHtml(d.actual_start)} 至 ${escapeHtml(d.actual_end)} · 商品记录 ${Number(d.product_count || 0)} 条（分窗口记录）<br>${d.matched_only ? `已匹配出单 SPU 费用：${escapeHtml(d.currency)} ${escapeHtml(d.total_spend)}；全店广告费：${escapeHtml(d.currency)} ${escapeHtml(d.shop_total_spend || "—")}（仅对照）<br><b>仅展示，暂未计入订单利润</b><br>` : `商品合计核对：${d.reconciled ? "一致" : "存在差异或缺少字段"} · 差额 ${escapeHtml(d.currency)} ${Number(d.difference_minor || 0) / 100}<br>`}采集时间：${escapeHtml(d.fetched_at)}</p>` : ""}
+      <p>${escapeHtml(busy && job.action === "ads" ? job.step : (attempt.message || attempt.error || ""))}</p>
+      ${attempt.ok === false && d.fetched_at ? "<p>最近尝试失败，以上保留上次成功数据。</p>" : ""}
+      <button type="button" data-ads-run="${escapeHtml(a.id)}" ${busy ? "disabled" : ""}>采集近三个月</button>
+      <button type="button" data-ads-detail="${escapeHtml(a.id)}" ${d.fetched_at ? "" : "disabled"}>商品原始明细</button></div>`;
+  }).join("") || '<div class="empty">请先登记或选择店铺</div>';
+  box.querySelectorAll("[data-ads-run]").forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try { await api(`/accounts/${b.dataset.adsRun}/ads`, { method: "POST" }); toast("已启动独立广告采集"); await refresh(); }
+    catch (e) { toast(e.message); b.disabled = false; }
+  });
+  box.querySelectorAll("[data-ads-detail]").forEach((b) => b.onclick = () => showAdsDetail(b.dataset.adsDetail, 1));
+}
+
+let adsDetailRequest = 0;
+async function showAdsDetail(id, page = 1) {
+  const requestId = ++adsDetailRequest;
+  const box = document.getElementById("adsDetail");
+  box.dataset.accountId = id;
+  box.innerHTML = '<div class="empty">正在读取广告商品明细…</div>';
+  try {
+    const d = await api(`/accounts/${encodeURIComponent(id)}/ads?view=products&page=${page}&size=20`);
+    if (requestId !== adsDetailRequest || box.dataset.accountId !== id) return;
+    const items = d.items || [];
+    const reportUrl = "https://ads.temu.com/data-report.html";
+    const missingSpus = d.missing_spus || [];
+    box.innerHTML = `<div style="padding:16px"><b>${escapeHtml(d.shop_name || "商品广告明细")}</b>
+      <p>${escapeHtml(d.region || "美国")} · ${escapeHtml(d.currency || "")} · ${escapeHtml(d.actual_start || "—")} 至 ${escapeHtml(d.actual_end || "—")}</p>
+      ${d.matched_only ? `<p>已匹配出单 SPU 费用：${escapeHtml(d.currency || "")} ${escapeHtml(d.total_spend || "—")} · 全店广告费（仅对照）：${escapeHtml(d.currency || "")} ${escapeHtml(d.shop_total_spend || "—")} · <b>仅展示，暂未计入订单利润</b></p>` : `<p>店铺广告费：${escapeHtml(d.currency || "")} ${escapeHtml(d.total_spend || "—")} · 商品合计：${escapeHtml(d.currency || "")} ${(Number(d.detail_spend_minor || 0) / 100).toFixed(2)} · 差额：${escapeHtml(d.currency || "")} ${(Number(d.difference_minor || 0) / 100).toFixed(2)}</p>`}
+      <p>${d.history_limited ? "平台历史范围受限，" : ""}共 ${Number(d.product_count || 0)} 个已匹配广告商品，${Number(d.raw_record_count || 0)} 条原始广告记录；未匹配出单 SPU ${missingSpus.length} 个。</p>
+      <div style="overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr><th>广告商品</th><th>商品 ID</th><th>SPU ID</th><th>广告费</th><th>广告记录</th><th>平台明细</th></tr></thead><tbody>${items.map((item) => {
+        const goodsId = String(item.goods_id || "");
+        const title = item.title || (item.missing_goods_id ? "未提供商品 ID" : "商品标题未提供");
+        const searchText = goodsId ? `在推广平台数据报表中按商品 ID ${goodsId} 定位` : "打开推广平台数据报表";
+        return `<tr><td>${item.image_url ? `<img src="${escapeHtml(item.image_url)}" alt="" width="44" height="44" style="object-fit:cover;vertical-align:middle;margin-right:8px">` : ""}${escapeHtml(title)}${!item.spend_complete ? "（费用字段不完整）" : ""}</td><td>${goodsId ? `<code>${escapeHtml(goodsId)}</code>` : "未识别"}</td><td>${escapeHtml(item.spu_id || "—")}</td><td>${item.spend_complete ? `${escapeHtml(d.currency || "")} ${escapeHtml(item.spend)}` : "未知"}</td><td>${Number(item.record_count || 0)}</td><td><a href="${reportUrl}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(searchText)}">打开推广平台</a></td></tr>`;
+      }).join("") || '<tr><td colspan="6">当前范围没有商品广告记录</td></tr>'}</tbody></table></div>
+      ${missingSpus.length ? `<div style="padding-top:12px"><b>未匹配到广告费用的出单 SPU</b><p>${missingSpus.map((spu) => `<code>${escapeHtml(spu)}</code>`).join("、")}</p><p>报表没有这些 SPU 的费用记录，未按 0 元计入。</p></div>` : ""}
+      <div style="padding-top:12px"><button id="adsPrev" ${page <= 1 ? "disabled" : ""}>上一页</button> 第 ${page} / ${Math.max(1, Math.ceil(Number(d.total || 0) / 20))} 页 <button id="adsNext" ${page * 20 >= d.total ? "disabled" : ""}>下一页</button></div></div>`;
+    box.querySelector("#adsPrev").onclick = () => showAdsDetail(id, page - 1);
+    box.querySelector("#adsNext").onclick = () => showAdsDetail(id, page + 1);
+  } catch (e) {
+    if (requestId === adsDetailRequest && box.dataset.accountId === id) {
+      box.innerHTML = '<div class="empty">广告商品明细读取失败，请重试。</div>';
+      toast(e.message);
+    }
+  }
 }
 
 async function runSettlement(id) {
@@ -1541,7 +1619,7 @@ async function loadFreightQuotes(force = false) {
     freightSync = data.sync_records || {};
     freightCapabilities = data.capabilities || {};
     freightAt = Date.now();
-    document.getElementById("alignCacheInfo").textContent = `缓存读取时间：${formatTime(freightAt)}；服务器数据更新时间：${data.updated_at ? formatTime(data.updated_at) : "未提供"}。日期仅用于真实抓取；${freightCapabilities.date_range_query === true ? "服务端支持日期查询" : "日期查询待服务端接入"}。`;
+    document.getElementById("alignCacheInfo").textContent = `缓存读取时间：${formatTime(freightAt)}；服务器数据更新时间：${data.updated_at ? formatTime(data.updated_at) : "未提供"}。日期仅用于真实抓取；${freightCapabilities.date_range_query === true ? "服务端支持日期查询" : "日期查询待服务端接入"}；${freightCapabilities.logistics_routing_fallback === true ? "支持物流候选路由及全平台保底" : "物流路由待接入，保留全账号查询"}。`;
     renderAlign();
   } catch (error) {
     document.getElementById("alignCacheInfo").textContent = `缓存读取失败，保留上次数据：${error.message}`;
@@ -1576,6 +1654,46 @@ function freightCell(row) {
     .join("<br>");
 }
 
+function freightRoutePlan(xms) {
+  const accounts = freightAccounts();
+  const normalize = (value) => logisticsChannel(value).normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
+  const history = new Map();
+  const channelsByXm = new Map();
+  alignRowsData().forEach((row) => {
+    const channels = [...new Set((row.logistics || []).map(normalize).filter(Boolean))];
+    // 多物流行缺少逐XM关联，不能把一个平台的成功结果套给其它渠道。
+    (row.xms || []).forEach((xm) => {
+      if (!channelsByXm.has(xm)) channelsByXm.set(xm, new Set());
+      if (channels.length !== 1) channelsByXm.get(xm).add("");
+      else channelsByXm.get(xm).add(channels[0]);
+    });
+  });
+  channelsByXm.forEach((channels, xm) => {
+    if (channels.size !== 1 || channels.has("")) return;
+    const quote = freightQuotes[xm];
+    if (!quote || quote.amount == null || !accounts.some((account) => account.platform === quote.platform)) return;
+    const channel = [...channels][0];
+    if (!history.has(channel)) history.set(channel, new Map());
+    const counts = history.get(channel);
+    counts.set(quote.platform, (counts.get(quote.platform) || 0) + 1);
+  });
+  return xms.map((xm) => {
+    const channels = [...(channelsByXm.get(xm) || [])];
+    if (channels.length !== 1 || !channels[0]) return { xm, channels: channels.filter(Boolean), candidates: [], basis: "unknown", evidence_count: 0 };
+    const channel = channels[0];
+    const evidence = history.get(channel);
+    if (evidence && evidence.size) {
+      const ranked = [...evidence].sort((a, b) => b[1] - a[1]);
+      return { xm, channels, candidates: ranked.map(([platform]) => platform), basis: "history", evidence_count: ranked.reduce((sum, [, count]) => sum + count, 0) };
+    }
+    const candidates = accounts.filter((account) => {
+      const label = normalize(account.label || account.name || "");
+      return label.length >= 2 && (channel.includes(label) || (channel.length >= 2 && label.includes(channel)));
+    }).map((account) => account.platform);
+    return { xm, channels, candidates: [...new Set(candidates)], basis: candidates.length ? "label" : "unknown", evidence_count: 0 };
+  });
+}
+
 async function queryFreight() {
   const accounts = freightAccounts();
   if (!accounts.length) return toast("还没有发货平台账号");
@@ -1587,7 +1705,22 @@ async function queryFreight() {
   if (!all.length) return toast("还没有已对齐的 XM 单号");
   const xms = all.filter((xm) => !freightQuotes[xm] || freightQuotes[xm].amount == null);
   if (!xms.length) return toast("当前筛选结果的 XM 均已有头程金额，无需补抓");
-  if (!confirm(`将真实访问 ${accounts.length} 个平台账号，补抓当前筛选下 ${xms.length} 个缺失 XM（${dateFrom} 至 ${dateTo}，北京时间）。继续？`)) return;
+  const routes = freightRoutePlan(xms);
+  const hinted = routes.filter((route) => route.candidates.length).length;
+  const routed = freightCapabilities.logistics_routing_fallback === true;
+  const strategy = routed ? `物流路由优先（${hinted} 个有候选平台），未命中自动保底查其余账号` : "服务端未支持路由保底，本次仍查全部账号";
+  if (!confirm(`补抓当前筛选下 ${xms.length} 个缺失 XM（${dateFrom} 至 ${dateTo}，北京时间）。${strategy}。继续？`)) return;
+  if (routed) {
+    try {
+      await api("/freight/query", {
+        method: "POST",
+        body: JSON.stringify({ xms, date_from: dateFrom, date_to: dateTo, timezone: "Asia/Shanghai", missing_only: true, routing: { strategy: "logistics_first", fallback: "all_remaining", routes } }),
+      });
+      toast(`已提交 ${xms.length} 个 XM，候选平台优先，未命中由服务器保底补查`);
+      refresh();
+    } catch (error) { toast(`路由任务提交失败：${error.message}；未自动重复提交，请刷新缓存后重试`); }
+    return;
+  }
   let started = 0;
   for (const account of accounts) {
     const job = account.job;

@@ -23,6 +23,7 @@ export type OrderProfitItem = {
   parent_order_sn: string;
   sub_order_sn: string;
   sku_id: string;
+  spu_id: string;
   skc_id: string;
   skc_code?: string;
   ext_code: string;
@@ -54,6 +55,7 @@ export type OrderProfitItem = {
   mall_id: string;
   unit_cost_cny: number | null;
   purchase_cost_cny: number | null;
+  sku_manual_cost_cny?: number | null;
   weight_kg: number | null;
   cost_source: string;
   match_status: string;

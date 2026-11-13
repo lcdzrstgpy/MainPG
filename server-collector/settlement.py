@@ -634,6 +634,49 @@ def _create_bill_export(page: Any) -> bool:
     return _click_button(page, "确认", 8000)
 
 
+HISTORY_VISIBLE_JS = """() => /账务明细生成时间|生成中/.test(document.body.innerText)"""
+
+DOWNLOAD_STATE_JS = """() => Array.from(document.querySelectorAll('button'))
+    .map((b) => ({text: (b.innerText || '').trim(), disabled: !!b.disabled, visible: !!b.offsetParent}))
+    .filter((x) => x.text.indexOf('下载') === 0)"""
+
+CLICK_ENABLED_TEXT_JS = """(word) => {
+  const buttons = Array.from(document.querySelectorAll('button'))
+      .filter((b) => (b.innerText || '').trim() === word && !b.disabled && b.offsetParent);
+  if (!buttons.length) return 'unavailable';
+  buttons[0].click();
+  return 'button';
+}"""
+
+
+def _history_visible(page: Any) -> bool:
+    """导出历史弹层是否已经打开（生成中的报表不出现「下载财务明细」按钮）。"""
+    try:
+        return bool(page.evaluate(HISTORY_VISIBLE_JS))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _detail_download_ready(page: Any) -> bool:
+    """导出历史里已有可点击的「下载财务明细(...)」；生成中/已过期的按钮是禁用的。"""
+    try:
+        states = page.evaluate(DOWNLOAD_STATE_JS)
+    except Exception:  # noqa: BLE001
+        return False
+    return any(
+        (not item.get("disabled")) and item.get("visible")
+        and "财务明细" in str(item.get("text") or "")
+        for item in states
+    )
+
+
+def _click_enabled_text(page: Any, text: str) -> str:
+    try:
+        return str(page.evaluate(CLICK_ENABLED_TEXT_JS, text) or "unavailable")
+    except Exception:  # noqa: BLE001
+        return "unavailable"
+
+
 def _download_bill_label(
     context: Any, page: Any, label: str, timeout: float = 75.0
 ) -> tuple[bytes, str] | None:
@@ -652,7 +695,8 @@ def _download_bill_label(
 
     context.on("download", _on_download)
     try:
-        if _click_text_js(page, label) != "button":
+        # 生成中 / 已过期的报表按钮是禁用的，点了不会触发下载，直接跳过避免白等。
+        if _click_enabled_text(page, label) != "button":
             return None
         deadline = time.time() + timeout
         while time.time() < deadline and not captured.get("path"):
@@ -792,48 +836,57 @@ def export_settle_report(
         on_page(str(page.url))
 
     step("打开导出历史")
-    if not _open_export_history(page):
+    opened = _open_export_history(page)
+    # 旧记录存在但下载按钮禁用（生成中/已过期）时不能直接下载，必须重新发起导出。
+    if not opened or not _detail_download_ready(page):
         step("创建导出任务")
         if not _create_bill_export(page):
             raise RuntimeError("点击「导出」后没有出现导出确认弹窗")
-        deadline = time.time() + 240
+        deadline = time.time() + 300
         while time.time() < deadline:
             try:
                 page.keyboard.press("Escape")
             except Exception:  # noqa: BLE001
                 pass
             wait(3.0)
-            if _open_export_history(page):
+            if not _history_visible(page):
+                _click_text_js(page, "导出历史")
+                page.wait_for_timeout(2500)
+            if _detail_download_ready(page):
                 break
-            wait(8.0)
+            wait(5.0)
         else:
             raise RuntimeError(
-                "导出历史里没有生成报表：请确认该店铺「对账中心 → 导出历史」已有当期数据"
+                "导出任务已创建但报表仍在生成中：请稍后在「对账中心 → 导出历史」确认可下载的财务明细"
             )
 
     step("下载财务明细")
     for label in BILL_DETAIL_LABELS:
-        _open_export_history(page)
+        if not _history_visible(page):
+            _open_export_history(page)
         result = _download_bill_label(context, page, label)
         if result is not None:
             return result
 
-    # 历史里的报表可能已过期，点下载没有任何反应：补建一次当期导出再重试。
-    step("报表已过期，重新导出")
+    # 有可点击按钮但没触发下载（例如弹出授权页）：补建一次当期导出再重试。
+    step("重新导出后重试")
     if _create_bill_export(page):
-        deadline = time.time() + 150
+        deadline = time.time() + 180
         while time.time() < deadline:
             try:
                 page.keyboard.press("Escape")
             except Exception:  # noqa: BLE001
                 pass
             wait(3.0)
-            _open_export_history(page)
-            for label in BILL_DETAIL_LABELS:
-                result = _download_bill_label(context, page, label, timeout=45.0)
-                if result is not None:
-                    return result
-            wait(6.0)
+            if not _history_visible(page):
+                _click_text_js(page, "导出历史")
+                page.wait_for_timeout(2500)
+            if _detail_download_ready(page):
+                for label in BILL_DETAIL_LABELS:
+                    result = _download_bill_label(context, page, label, timeout=30.0)
+                    if result is not None:
+                        return result
+            wait(5.0)
 
     raise RuntimeError(
         "导出历史里没有可下载的财务明细：请在实时画面点一次「对账中心 → 导出历史」确认报表已生成"

@@ -135,14 +135,14 @@ CREATE TABLE {table} (
 
 _ITEM_COLUMNS = (
     "workspace_id", "batch_id", "command_id", "parent_order_sn", "sub_order_sn",
-    "sku_id", "skc_id", "skc_code", "ext_code", "goods_name", "image_url",
+    "sku_id", "spu_id", "skc_id", "skc_code", "ext_code", "goods_name", "image_url",
     "quantity", "declared_price", "declared_currency", "gmv", "gmv_cny",
     "gmv_currency", "sales_payback", "sales_reversal", "freight_payback",
     "freight_reversal", "estimated_income", "order_payment", "second_payment",
     "tail_freight", "tail_currency", "tail_freight_cny", "tracking_no",
     "order_status", "order_status_code", "site", "order_time", "shop_name",
     "mall_id", "unit_cost_cny", "purchase_cost_cny", "weight_kg", "cost_source",
-    "manual_cost_cny",
+    "manual_cost_cny", "sku_manual_cost_cny",
     "match_status", "commission_cny", "head_freight_cny", "profit_estimate_cny",
     "profit_rate", "source", "captured_at",
 )
@@ -224,6 +224,8 @@ class OrderProfitRepository:
                 return
             self._ensure_shop_store_codes(conn)
             self._ensure_item_manual_costs(conn)
+            self._ensure_item_spu(conn)
+            self._ensure_item_sku_cost(conn)
             self._ensure_settlement_fields(conn)
             self._upgrade_shop_scoped_tables(conn)
             # 必须在按店铺重建快照表之后再补列：重建用的是旧 DDL，会丢新增字段。
@@ -333,6 +335,26 @@ class OrderProfitRepository:
         }
         if "manual_cost_cny" not in columns:
             conn.execute("ALTER TABLE order_profit_items ADD COLUMN manual_cost_cny REAL")
+
+    @staticmethod
+    def _ensure_item_spu(conn: sqlite3.Connection) -> None:
+        """订单行保留 TEMU 商品 SPU，用于广告费用按已出单链接匹配。"""
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info('order_profit_items')").fetchall()
+        }
+        if "spu_id" not in columns:
+            conn.execute("ALTER TABLE order_profit_items ADD COLUMN spu_id TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def _ensure_item_sku_cost(conn: sqlite3.Connection) -> None:
+        """按店铺与 SKU 维护的手工单件成本，不参与暂定利润计算。"""
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info('order_profit_items')").fetchall()
+        }
+        if "sku_manual_cost_cny" not in columns:
+            conn.execute("ALTER TABLE order_profit_items ADD COLUMN sku_manual_cost_cny REAL")
 
     @staticmethod
     def _ensure_shop_store_codes(conn: sqlite3.Connection) -> None:
@@ -608,7 +630,7 @@ class OrderProfitRepository:
             "declared_price", "gmv", "gmv_cny", "sales_payback", "sales_reversal",
             "freight_payback", "freight_reversal", "estimated_income", "order_payment",
             "second_payment", "tail_freight", "tail_freight_cny", "unit_cost_cny",
-            "purchase_cost_cny", "weight_kg", "commission_cny", "head_freight_cny",
+            "purchase_cost_cny", "sku_manual_cost_cny", "weight_kg", "commission_cny", "head_freight_cny",
             "profit_estimate_cny", "profit_rate",
         ):
             item[key] = _float(item.get(key))
@@ -658,8 +680,12 @@ class OrderProfitRepository:
         values["sub_order_sn"] = _text(values.get("sub_order_sn"))
         values["parent_order_sn"] = _text(values.get("parent_order_sn"))
         values["sku_id"] = _text(values.get("sku_id"))
+        values["spu_id"] = _text(values.get("spu_id"))
         now = _now()
         existing = self.find_item(workspace_id, values)
+        # 订单列表通常没有 SPU；后续商品管理补齐后再写回，不能被空值覆盖。
+        if existing and not values["spu_id"]:
+            values["spu_id"] = _text(existing.get("spu_id"))
         with self._connect() as conn:
             if existing:
                 item_id = str(existing["id"])
@@ -677,6 +703,67 @@ class OrderProfitRepository:
                 (item_id, *[values.get(key) for key in _ITEM_COLUMNS], now, now),
             )
             return item_id
+
+    def list_distinct_skus(
+        self,
+        workspace_id: str,
+        *,
+        shop: str = "",
+        keyword: str = "",
+    ) -> list[dict[str, Any]]:
+        where = ["workspace_id = ?", "sku_id <> ''"]
+        params: list[Any] = [workspace_id]
+        if shop and shop != "all":
+            where.append("shop_name = ?")
+            params.append(_text(shop))
+        if keyword:
+            pattern = f"%{keyword.strip()}%"
+            where.append("(sku_id LIKE ? OR goods_name LIKE ? OR ext_code LIKE ?)")
+            params.extend([pattern] * 3)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT shop_name, sku_id, MAX(sku_manual_cost_cny) AS sku_manual_cost_cny, "
+                "MAX(skc_id) AS skc_id, MAX(skc_code) AS skc_code, MAX(goods_name) AS goods_name, "
+                "SUM(quantity) AS quantity, COUNT(*) AS order_lines, "
+                "MAX(updated_at) AS updated_at "
+                f"FROM order_profit_items WHERE {' AND '.join(where)} "
+                "GROUP BY shop_name, sku_id ORDER BY shop_name, sku_id",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_sku_manual_costs(
+        self,
+        workspace_id: str,
+        costs: list[Mapping[str, Any]],
+        *,
+        shop: str = "",
+    ) -> dict[str, Any]:
+        now = _now()
+        applied: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        with self._connect() as conn:
+            for item in costs:
+                sku_id = _text(item.get("sku_id"))
+                value = _float(item.get("unit_cost_cny"))
+                if not sku_id or value is None or value < 0:
+                    skipped.append({"sku_id": sku_id, "reason": "SKU 或成本值无效"})
+                    continue
+                where = ["workspace_id = ?", "sku_id = ?"]
+                params: list[Any] = [workspace_id, sku_id]
+                if shop and shop != "all":
+                    where.append("shop_name = ?")
+                    params.append(_text(shop))
+                cursor = conn.execute(
+                    f"UPDATE order_profit_items SET sku_manual_cost_cny = ?, updated_at = ? "
+                    f"WHERE {' AND '.join(where)}",
+                    (value, now, *params),
+                )
+                if cursor.rowcount:
+                    applied.append({"sku_id": sku_id, "unit_cost_cny": value, "rows": cursor.rowcount})
+                else:
+                    skipped.append({"sku_id": sku_id, "reason": "SKU 不在已采订单中"})
+        return {"applied": applied, "skipped": skipped}
 
     def list_items_by_parent(
         self,
@@ -1856,12 +1943,12 @@ class OrderProfitRepository:
 
         with self._connect() as conn:
             for row in conn.execute(
-                "SELECT parent_order_sn, sub_order_sn, sku_id, skc_id, skc_code, ext_code, "
+                "SELECT parent_order_sn, sub_order_sn, sku_id, spu_id, skc_id, skc_code, ext_code, "
                 "goods_name, image_url, quantity, declared_price, gmv, gmv_cny, "
                 "sales_payback, sales_reversal, freight_payback, freight_reversal, "
                 "estimated_income, order_payment, tail_freight, tail_currency, tail_freight_cny, "
                 "tracking_no, order_status, order_status_code, site, order_time, "
-                "unit_cost_cny, purchase_cost_cny, weight_kg, commission_cny, head_freight_cny, "
+                "unit_cost_cny, purchase_cost_cny, sku_manual_cost_cny, weight_kg, commission_cny, head_freight_cny, "
                 "profit_estimate_cny, profit_rate, source, captured_at, updated_at "
                 "FROM order_profit_items WHERE workspace_id = ? AND shop_name = ?",
                 (workspace_id, shop),

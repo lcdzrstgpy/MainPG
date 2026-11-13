@@ -1228,6 +1228,12 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       case "order_profit_binding":
         content = <OrderProfitBindingPage isActive={isActive} />;
         break;
+      case "order_profit_freight":
+        content = <OrderProfitPage view="align" isActive={isActive} />;
+        break;
+      case "order_profit_profit":
+        content = <OrderProfitPage view="profit" isActive={isActive} />;
+        break;
       case "order_profit_costs":
         content = <OrderProfitCostPage isActive={isActive} />;
         break;

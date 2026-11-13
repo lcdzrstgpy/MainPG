@@ -1,4 +1,4 @@
-import { ppRequest, ppUpload } from "../../product_processing/api/client";
+import { ppDownload, ppRequest, ppUpload } from "../../product_processing/api/client";
 import { productProcessingApiContext } from "../../product_processing/api/context";
 import type {
   AfterSaleRow,
@@ -113,6 +113,42 @@ export const orderProfitApi = {
     ppRequest<{ capture: Record<string, unknown> | null }>(context(), `${BASE}/captures/latest`),
   recentCaptures: (limit = 10) =>
     ppRequest<CaptureRunList>(context(), `${BASE}/captures/recent${query({ limit })}`),
+  skuCosts: (params: { shop?: string; keyword?: string } = {}) =>
+    ppRequest<{
+      items: Array<{
+        shop_name: string;
+        sku_id: string;
+        skc_id: string;
+        skc_code: string;
+        goods_name: string;
+        sku_manual_cost_cny: number | null;
+        quantity: number;
+        order_lines: number;
+        updated_at: string;
+      }>;
+      total: number;
+      shop: string;
+    }>(context(), `${BASE}/sku-costs${query({ shop: params.shop || "all", keyword: params.keyword })}`),
+  skuCostTemplate: (shop = "all") =>
+    ppDownload(context(), `${BASE}/sku-costs/template${query({ shop })}`, `sku-cost-template-${encodeURIComponent(shop)}.xlsx`),
+  importSkuCosts: (shop: string, file: File) => {
+    const form = new FormData();
+    form.append("shop", shop);
+    form.append("file", file);
+    return ppUpload<{
+      applied: Array<{ sku_id: string; unit_cost_cny: number; rows: number }>;
+      skipped: Array<{ sku_id: string; reason: string }>;
+      issues: Array<{ row: number; sku_id: string; reason: string }>;
+    }>(context(), `${BASE}/sku-costs/import`, form);
+  },
+  saveSkuCosts: (shop: string, items: Array<{ sku_id: string; unit_cost_cny: number | null }>) =>
+    ppRequest<{
+      applied: Array<{ sku_id: string; unit_cost_cny: number; rows: number }>;
+      skipped: Array<{ sku_id: string; reason: string }>;
+    }>(context(), `${BASE}/sku-costs`, {
+      method: "PUT",
+      body: { shop, items },
+    }),
   orders: (params: {
     month?: string;
     store?: string;

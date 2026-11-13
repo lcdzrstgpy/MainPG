@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { showToast } from "../../../shared/components/toastStore";
 import { orderProfitApi } from "../api/orderProfitApi";
 import { ActiveCaptureBanner } from "../components/ActiveCaptureBanner";
-import { PageHero } from "../components/ShopDataPrimitives";
+import { PageHero, SectionCard } from "../components/ShopDataPrimitives";
 import { OrderProfitAccountsTab } from "./OrderProfitAccountsTab";
 import { OrderProfitCaptureTab } from "./OrderProfitCaptureTab";
 import { OrderProfitFinanceTab } from "./OrderProfitFinanceTab";
@@ -34,9 +34,11 @@ export type OrderProfitView =
   | "traffic"
   | "sales"
   | "recon"
-  | "settlement";
+  | "settlement"
+  | "align"
+  | "profit";
 
-type BoardView = "overview" | "orders" | "funds" | "capture" | "records" | "accounts";
+type BoardView = "overview" | "orders" | "funds" | "capture" | "records" | "accounts" | "align" | "profit";
 
 type SubTab = { key: string; label: string; resource?: string; hint?: string };
 
@@ -68,8 +70,18 @@ const VIEW_META: Record<BoardView, { eyebrow: string; title: string; hint: strin
   },
   accounts: {
     eyebrow: "管账号",
-    title: "店铺账号",
-    hint: "先绑定店铺账号，采集才有明确的写入目标。",
+    title: "账号与采集设置",
+    hint: "TEMU、店小秘与采集平台账号分别绑定管理。",
+  },
+  align: {
+    eyebrow: "运费平台采集",
+    title: "单号数据对齐",
+    hint: "使用店小秘 XM 单号对齐头程记录；当前仅展示已接入的数据能力。",
+  },
+  profit: {
+    eyebrow: "利润核算",
+    title: "利润核算（暂定）",
+    hint: "利润口径待确认，当前不展示核定利润。",
   },
 };
 
@@ -91,6 +103,8 @@ const SUB_TABS: Record<BoardView, SubTab[]> = {
   capture: [],
   records: [],
   accounts: [],
+  align: [],
+  profit: [],
 };
 
 /** 旧版二级入口 → 合并后的板块 + 默认子页签 */
@@ -145,7 +159,14 @@ export function OrderProfitPage({
     ? activeTab.hint || meta.hint
     : meta.hint;
   // 二级专题页用自己的插画，避免“流量/销量”还挂着经营总览的图。
-  const heroArt = board === "overview" && (subView === "traffic" || subView === "sales") ? subView : board;
+  const heroArt =
+    board === "overview" && (subView === "traffic" || subView === "sales")
+      ? subView
+      : board === "align"
+        ? "orders"
+        : board === "profit"
+          ? "sales"
+          : board;
 
   // 从侧栏切到另一个板块时，默认子页签跟着变化。
   useEffect(() => {
@@ -395,6 +416,12 @@ export function OrderProfitPage({
         ) : null}
         {board === "accounts" ? (
           <OrderProfitAccountsTab isActive={isActive} onOpenCapture={onOpenCapture} />
+        ) : null}
+        {board === "align" ? (
+          <OrderProfitRecordsTab isActive={isActive} refreshToken={dataVersion} />
+        ) : null}
+        {board === "profit" ? (
+          <section className="op-stage"><SectionCard title="利润规则待定义" desc="TEMU 订单、对账、头程及成本数据可逐步准备；在费用分摊与核算规则确定前，不展示利润金额。" icon="warning"><p className="op-hint">待确认：广告期间费用归属、头程分配、退货与冲回、币种换算及成本生效期间。</p></SectionCard></section>
         ) : null}
         {board === "records" ? (
           <OrderProfitRecordsTab isActive={isActive} refreshToken={dataVersion} />

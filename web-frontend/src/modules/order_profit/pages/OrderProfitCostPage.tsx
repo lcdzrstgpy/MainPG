@@ -1,624 +1,195 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { showToast } from "../../../shared/components/toastStore";
-import {
-  bridgeApi,
-  type BridgeBinding,
-  type BridgeItem,
-} from "../api/bridgeApi";
-import {
-  EmptyBlock,
-  Metric,
-  MetricBand,
-  PageHero,
-  SectionCard,
-} from "../components/ShopDataPrimitives";
-import { beijingTime, money, numberText } from "../format";
+import { orderProfitApi } from "../api/orderProfitApi";
+import { EmptyBlock, Metric, MetricBand, PageHero, SectionCard } from "../components/ShopDataPrimitives";
+import { money, numberText } from "../format";
 import "../styles/orderProfit.css";
 
-const STATUS_TABS = [
-  { key: "", label: "全部" },
-  { key: "pending", label: "待发货" },
-  { key: "shipped", label: "已发货" },
-  { key: "signed", label: "已签收" },
-  { key: "canceled", label: "已取消" },
-];
+type SkuCostRow = {
+  shop_name: string;
+  sku_id: string;
+  skc_id: string;
+  skc_code: string;
+  goods_name: string;
+  sku_manual_cost_cny: number | null;
+  quantity: number;
+  order_lines: number;
+  updated_at: string;
+};
 
-const PAGE_SIZES = [50, 100, 200];
+const keyOf = (row: SkuCostRow) => `${row.shop_name}|${row.sku_id}`;
 
-const rowKey = (item: BridgeItem) => `${item.account_id}|${item.skc_id}`;
+function parseCost(value: string): number | null {
+  if (!/^\d+(\.\d+)?$/.test(value.trim())) return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
 
-function costValue(text: string): number | null {
-  if (!text.trim()) return null;
-  const value = Number(text);
-  return Number.isFinite(value) && value >= 0 ? value : null;
+function csvEscape(value: string) {
+  return `"${value.split('"').join('""')}"`;
 }
 
 export function OrderProfitCostPage({ isActive = true }: { isActive?: boolean }) {
-  const [configured, setConfigured] = useState(true);
-  const [bindings, setBindings] = useState<BridgeBinding[]>([]);
-  const [synced, setSynced] = useState(false);
-  const [syncedAt, setSyncedAt] = useState("");
-
-  const [items, setItems] = useState<BridgeItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [statusFilter, setStatusFilter] = useState("");
-  const [missingOnly, setMissingOnly] = useState(false);
-  const [shopFilter, setShopFilter] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [keywordInput, setKeywordInput] = useState("");
+  const [rows, setRows] = useState<SkuCostRow[]>([]);
+  const [shop, setShop] = useState("all");
   const [keyword, setKeyword] = useState("");
-  const [reloadTick, setReloadTick] = useState(0);
-
+  const [query, setQuery] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [note, setNote] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
 
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [batchValue, setBatchValue] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const shopFilterKey = shopFilter.join(",");
-  const activeStatusIndex = Math.max(
-    0,
-    STATUS_TABS.findIndex((tab) => tab.key === statusFilter),
-  );
-  const segmentStyle = { "--op-segment-count": STATUS_TABS.length } as CSSProperties;
-
-  const loadBridge = async () => {
-    try {
-      const [statusPayload, bindingPayload] = await Promise.all([
-        bridgeApi.status(),
-        bridgeApi.bindings(),
-      ]);
-      setConfigured(statusPayload.configured);
-      setBindings(bindingPayload.accounts || []);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  useEffect(() => {
-    void loadBridge();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!isActive) return;
-    if (!synced) return;
-    if (!bindings.length) {
-      setItems([]);
-      setTotal(0);
-      return;
-    }
-    let cancelled = false;
+  const refresh = async () => {
     setLoading(true);
     setError("");
-    bridgeApi
-      .items({
-        account_ids: shopFilterKey,
-        status: statusFilter,
-        date_from: dateFrom,
-        date_to: dateTo,
-        keyword,
-        missing_cost: missingOnly ? 1 : undefined,
-        page,
-        page_size: pageSize,
-      })
-      .then((payload) => {
-        if (cancelled) return;
-        setItems(payload.items || []);
-        setTotal(payload.total || 0);
-        setNote(
-          payload.skipped_no_skc
-            ? `已扫描 ${numberText(payload.scanned)} 行订单，其中 ${numberText(
-                payload.skipped_no_skc,
-              )} 行缺少 SKC 已跳过`
-            : "",
-        );
-      })
-      .catch((cause) => {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    isActive,
-    synced,
-    bindings.length,
-    shopFilterKey,
-    statusFilter,
-    missingOnly,
-    dateFrom,
-    dateTo,
-    keyword,
-    page,
-    pageSize,
-    reloadTick,
-  ]);
-
-  const groups = useMemo(() => {
-    const map = new Map<string, { accountId: string; shopName: string; rows: BridgeItem[] }>();
-    for (const item of items) {
-      const group = map.get(item.account_id) || {
-        accountId: item.account_id,
-        shopName: item.shop_name || item.account_id,
-        rows: [],
-      };
-      group.rows.push(item);
-      map.set(item.account_id, group);
-    }
-    return Array.from(map.values());
-  }, [items]);
-
-  const isDirty = (item: BridgeItem) => {
-    const raw = edits[rowKey(item)];
-    if (raw === undefined) return false;
-    const value = costValue(raw);
-    if (value === null) return false;
-    return value !== (item.unit_cost ?? -1);
-  };
-
-  const dirtyRows = items.filter(isDirty);
-  const missingCost = items.filter((item) => item.unit_cost === null).length;
-
-  const toggleShop = (accountId: string) => {
-    setPage(1);
-    setShopFilter((previous) =>
-      previous.includes(accountId)
-        ? previous.filter((id) => id !== accountId)
-        : [...previous, accountId],
-    );
-  };
-
-  const sync = () => {
-    setSynced(true);
-    setSyncedAt(new Date().toISOString());
-    setReloadTick((tick) => tick + 1);
-  };
-
-  const applyBatch = () => {
-    const value = costValue(batchValue);
-    if (value === null) {
-      showToast("批量成本请填 0 或正数", "error");
-      return;
-    }
-    setEdits((previous) => {
-      const next = { ...previous };
-      for (const item of items) next[rowKey(item)] = String(value);
-      return next;
-    });
-  };
-
-  const submit = async () => {
-    const pending: Record<string, { skc_id: string; unit_cost: number; currency: string }[]> = {};
-    let editable = 0;
-    for (const item of items) {
-      if (!isDirty(item)) continue;
-      const value = costValue(edits[rowKey(item)] ?? "");
-      if (value === null) continue;
-      editable += 1;
-      (pending[item.account_id] ||= []).push({
-        skc_id: item.skc_id,
-        unit_cost: value,
-        currency: item.currency || "CNY",
-      });
-    }
-    if (!editable) {
-      showToast("没有可提交的改动（留空或非法值不会被提交）", "error");
-      return;
-    }
-    setSubmitting(true);
     try {
-      const results = await Promise.all(
-        Object.entries(pending).map(([accountId, rows]) =>
-          bridgeApi.saveCosts(accountId, rows),
-        ),
-      );
-      const applied = results.reduce((sum, row) => sum + row.applied, 0);
-      showToast(`已提交 ${applied} 行成本`, "success");
-      setEdits((previous) => {
-        const next = { ...previous };
-        for (const item of items) if (isDirty(item)) delete next[rowKey(item)];
-        return next;
-      });
-      setReloadTick((tick) => tick + 1);
+      const response = await orderProfitApi.skuCosts({ shop, keyword: query });
+      setRows(response.items || []);
+      setDrafts({});
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isActive) void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, shop, query]);
+
+  const isDirty = (row: SkuCostRow) => {
+    const draft = drafts[keyOf(row)];
+    if (draft === undefined) return false;
+    if (draft === "") return false;
+    const parsed = parseCost(draft);
+    return parsed === null || parsed !== row.sku_manual_cost_cny;
+  };
+  const dirtyRows = rows.filter(isDirty);
+  const filledCount = rows.filter((row) => row.sku_manual_cost_cny !== null).length;
+  const totalQuantity = useMemo(() => rows.reduce((sum, row) => sum + Number(row.quantity || 0), 0), [rows]);
+
+  const setValue = (row: SkuCostRow, value: string) => {
+    const key = keyOf(row);
+    setDrafts((previous) => ({ ...previous, [key]: value }));
+    const original = value === "" ? row.sku_manual_cost_cny : parseCost(value);
+    const siblings = rows.filter((item) => item.shop_name === row.shop_name && item.sku_id === row.sku_id);
+    setRows((previous) => previous.map((item) =>
+      siblings.some((sibling) => keyOf(sibling) === keyOf(item))
+        ? { ...item, sku_manual_cost_cny: value === "" ? null : original }
+        : item,
+    ));
+  };
+
+  const save = async () => {
+    const invalid = dirtyRows.find((row) => {
+      const value = drafts[keyOf(row)];
+      return value !== "" && parseCost(value) === null;
+    });
+    if (invalid) {
+      showToast(`SKU ${invalid.sku_id} 成本格式不正确；只接受 0 或正数`, "error");
+      return;
+    }
+    const byShop = new Map<string, Map<string, number | null>>();
+    for (const row of dirtyRows) {
+      const cost = drafts[keyOf(row)] === "" ? null : parseCost(drafts[keyOf(row)]);
+      const perSku = byShop.get(row.shop_name) || new Map<string, number | null>();
+      const previous = perSku.get(row.sku_id);
+      if (previous !== undefined && previous !== cost) {
+        showToast(`同店铺 SKU ${row.sku_id} 存在不一致的成本修改`, "error");
+        return;
+      }
+      perSku.set(row.sku_id, cost);
+      byShop.set(row.shop_name, perSku);
+    }
+    setSaving(true);
+    try {
+      const outcomes = await Promise.all(Array.from(byShop.entries()).map(([shopName, costs]) =>
+        orderProfitApi.saveSkuCosts(shopName, Array.from(costs.entries()).map(([sku_id, unit_cost_cny]) => ({ sku_id, unit_cost_cny }))),
+      ));
+      const applied = outcomes.flatMap((outcome) => outcome.applied);
+      const skipped = outcomes.flatMap((outcome) => outcome.skipped);
+      showToast(`已保存 ${applied.length} 个 SKU${skipped.length ? `；${skipped.length} 个未保存` : ""}`, skipped.length ? "error" : "success");
+      await refresh();
     } catch (cause) {
       showToast(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
-      setSubmitting(false);
+      setSaving(false);
     }
   };
 
-  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const downloadCsvTemplate = () => {
+    const lines = [["SKU号", "成本"], ...rows.map((row) => [row.sku_id, ""])];
+    const csv = `\uFEFF${lines.map((line) => line.map((value) => csvEscape(String(value))).join(",")).join("\r\n")}`;
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "sku-cost-template.csv";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const importCosts = async () => {
+    if (!importFile) {
+      showToast("请选择两列 SKU 成本模板", "error");
+      return;
+    }
+    try {
+      const result = await orderProfitApi.importSkuCosts(shop, importFile);
+      const applied = result.applied?.length || 0;
+      const issues = [...(result.issues || []), ...(result.skipped || [])];
+      showToast(`导入完成：更新 ${applied} 个 SKU，未导入 ${issues.length} 行`, issues.length ? "error" : "success");
+      if (issues.length) setError(issues.slice(0, 8).map((item) => `${"row" in item ? `第 ${item.row} 行 · ` : ""}${item.sku_id || "(空 SKU)"}：${item.reason}`).join("；"));
+      setImportFile(null);
+      await refresh();
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
+    }
+  };
 
   return (
     <div className="op-stage">
       <PageHero
-        eyebrow="店铺数据 · 成本回填"
-        title="链接成本"
-        desc="先在「店铺绑定」校验 Temu 账号并绑定店铺，回来后手动点击「同步」拉取链接数据，逐行填写单件成本并提交。"
+        eyebrow="成本填入"
+        title="订单成本"
+        desc="按店铺与 SKU 维护单件成本，并同步显示到该 SKU 的所有已采订单行。此成本字段当前不参与利润计算。"
         art="funds"
-        aside={
-          <>
-            <span className="op-chip">{bindings.length} 个店铺</span>
-            <span className="op-chip">{numberText(total)} 个链接</span>
-          </>
-        }
+        aside={<><span className="op-chip">{numberText(rows.length)} 个 SKU</span><span className="op-chip">{shop === "all" ? "全部店铺" : shop}</span></>}
       />
-
-      {!configured ? (
-        <SectionCard title="桥接未配置" desc="本地没有配置采集服务器地址或共享密钥。" icon="warning">
-          <EmptyBlock
-            title="无法连接采集服务器"
-            desc="请在本地 runtime 配置 WH_LOCAL_BRIDGE_KEY 后重启工作台。"
-            art="empty"
-            compact
-          />
-        </SectionCard>
-      ) : null}
-
       <MetricBand>
-        <Metric label="已绑定店铺" value={bindings.length} glyph="cloud" />
-        <Metric label="筛选到的链接" value={numberText(total)} glyph="link" />
-        <Metric label="当前页待填成本" value={missingCost} glyph="warning" />
-        <Metric label="待提交改动" value={dirtyRows.length} glyph="money" />
+        <Metric label="筛选 SKU" value={numberText(rows.length)} glyph="link" />
+        <Metric label="已填成本" value={numberText(filledCount)} glyph="money" />
+        <Metric label="待填成本" value={numberText(rows.length - filledCount)} glyph="warning" />
+        <Metric label="订单件数" value={numberText(totalQuantity)} glyph="orders" />
       </MetricBand>
-
-      <SectionCard
-        title="链接成本"
-        desc="按「店铺 → 链接」聚合，成本按链接（SKC）的单件成本提交，只提交改动行。"
-        icon="link"
-        scene="orders"
-        meta={
-          <>
-            <span className="op-chip">{numberText(total)} 个链接</span>
-            {syncedAt ? (
-              <span className="op-chip">上次同步 {beijingTime(syncedAt)}</span>
-            ) : (
-              <span className="op-chip">未同步</span>
-            )}
-          </>
-        }
-        action={
-          <div className="op-filter-actions">
-            <button
-              className="op-btn op-btn-sm"
-              type="button"
-              disabled={loading || !bindings.length}
-              onClick={sync}
-            >
-              {loading ? "同步中…" : "同步"}
-            </button>
-            <button
-              className="op-btn op-btn-primary op-btn-sm"
-              type="button"
-              disabled={submitting || !dirtyRows.length}
-              onClick={() => void submit()}
-            >
-              {submitting ? "提交中…" : `提交改动（${dirtyRows.length}）`}
-            </button>
-          </div>
-        }
-      >
-        {!bindings.length ? (
-          <EmptyBlock
-            title="还没有绑定店铺"
-            desc="先到左侧「店铺绑定」输入 Temu 账号密码完成绑定，再回来同步数据。"
-            art="empty"
-          />
-        ) : !synced ? (
-          <EmptyBlock
-            title="尚未同步店铺数据"
-            desc="绑定完成后，点击上方「同步」从采集服务器拉取链接数据。"
-            art="empty"
-          />
-        ) : (
-          <>
-            <div className="op-filter-card">
-              <div className="op-toolbar">
-                <strong>筛选</strong>
-                <div className="op-segment" style={segmentStyle} role="group" aria-label="订单状态筛选">
-                  <span
-                    className="op-segment-thumb"
-                    aria-hidden="true"
-                    style={{ transform: `translateX(${activeStatusIndex * 100}%)` }}
-                  />
-                  {STATUS_TABS.map((tab) => {
-                    const active = statusFilter === tab.key;
-                    return (
-                      <button
-                        key={tab.key || "all"}
-                        type="button"
-                        className={active ? "is-active" : ""}
-                        aria-pressed={active}
-                        onClick={() => {
-                          setStatusFilter(tab.key);
-                          setPage(1);
-                        }}
-                      >
-                        {tab.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <label className="op-switch">
-                  <input
-                    type="checkbox"
-                    checked={missingOnly}
-                    onChange={(event) => {
-                      setMissingOnly(event.target.checked);
-                      setPage(1);
-                    }}
-                  />
-                  <span className="op-switch-track" aria-hidden="true">
-                    <span className="op-switch-knob" />
-                  </span>
-                  <span className="op-switch-label">只看成本缺失</span>
-                </label>
-              </div>
-              <div className="op-filter-row">
-                <label className="op-field op-field-slim">
-                  <span>下单日期从</span>
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(event) => {
-                      setDateFrom(event.target.value);
-                      setPage(1);
-                    }}
-                  />
-                </label>
-                <label className="op-field op-field-slim">
-                  <span>到</span>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(event) => {
-                      setDateTo(event.target.value);
-                      setPage(1);
-                    }}
-                  />
-                </label>
-                <label className="op-field op-field-wide">
-                  <span>关键字（商品名 / SKC / SKU / 订单号）</span>
-                  <input
-                    type="search"
-                    value={keywordInput}
-                    placeholder="输入后回车查询"
-                    onChange={(event) => setKeywordInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        setKeyword(keywordInput.trim());
-                        setPage(1);
-                      }
-                    }}
-                  />
-                </label>
-                <div className="op-filter-actions">
-                  <button
-                    className="op-btn op-btn-sm"
-                    type="button"
-                    onClick={() => {
-                      setKeyword(keywordInput.trim());
-                      setPage(1);
-                    }}
-                  >
-                    查询
-                  </button>
-                  <button
-                    className="op-btn op-btn-sm"
-                    type="button"
-                    onClick={() => {
-                      setStatusFilter("");
-                      setMissingOnly(false);
-                      setShopFilter([]);
-                      setDateFrom("");
-                      setDateTo("");
-                      setKeywordInput("");
-                      setKeyword("");
-                      setPage(1);
-                    }}
-                  >
-                    清空筛选
-                  </button>
-                  <button
-                    className="op-btn op-btn-sm"
-                    type="button"
-                    onClick={() => setReloadTick((tick) => tick + 1)}
-                  >
-                    刷新数据
-                  </button>
-                </div>
-              </div>
-              <div className="op-toolbar">
-                <strong>店铺</strong>
-                {bindings.map((binding) => (
-                  <button
-                    key={binding.account_id}
-                    type="button"
-                    className={`op-chip${shopFilter.includes(binding.account_id) ? " is-ok" : ""}`}
-                    onClick={() => toggleShop(binding.account_id)}
-                  >
-                    {binding.shop_name || binding.account_id}
-                  </button>
-                ))}
-                {shopFilter.length ? (
-                  <button
-                    type="button"
-                    className="op-chip"
-                    onClick={() => {
-                      setShopFilter([]);
-                      setPage(1);
-                    }}
-                  >
-                    清除店铺选择
-                  </button>
-                ) : null}
-              </div>
-              <div className="op-filter-row">
-                <label className="op-field op-field-slim">
-                  <span>批量填成本（当前页全部链接）</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={batchValue}
-                    onChange={(event) => setBatchValue(event.target.value)}
-                    placeholder="0.00"
-                  />
-                </label>
-                <div className="op-filter-actions">
-                  <button
-                    className="op-btn op-btn-sm"
-                    type="button"
-                    disabled={!items.length}
-                    onClick={applyBatch}
-                  >
-                    填充当前页
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className={`op-table-wrap${loading ? " is-loading" : ""}`}>
-              {error ? <p className="op-hint is-error">{error}</p> : null}
-              {note ? <p className="op-hint">{note}</p> : null}
-              {items.length ? (
-                <table className="op-table op-table-bridge">
-                  <thead>
-                    <tr>
-                      <th>商品 / 链接</th>
-                      <th>最新状态</th>
-                      <th className="op-num">单量</th>
-                      <th className="op-num">申报价</th>
-                      <th className="op-num">回款</th>
-                      <th className="op-num">最近下单</th>
-                      <th className="op-num">单件成本</th>
-                      <th className="op-num">已保存</th>
-                    </tr>
-                  </thead>
-                  {groups.map((group) => (
-                    <tbody key={group.accountId}>
-                      <tr className="op-bridge-group-row">
-                        <td colSpan={8}>
-                          <strong>{group.shopName}</strong>
-                          <span>{group.rows.length} 个链接</span>
-                        </td>
-                      </tr>
-                      {group.rows.map((item) => (
-                        <tr key={rowKey(item)} className={isDirty(item) ? "is-dirty" : ""}>
-                          <td className="op-bridge-name">
-                            <strong title={item.goods_name}>
-                              {item.goods_name || "(未命名商品)"}
-                            </strong>
-                            <span>
-                              {item.skc_id}
-                              {item.sku_count > 1 ? ` · ${item.sku_count} 个 SKU` : ""}
-                            </span>
-                          </td>
-                          <td>
-                            {item.order_status ? (
-                              <span className="op-chip">{item.order_status}</span>
-                            ) : (
-                              "-"
-                            )}
-                          </td>
-                          <td className="op-num">
-                            {numberText(item.order_count)} 单 / {numberText(item.quantity)} 件
-                          </td>
-                          <td className="op-num">{money(item.declared_price, item.currency)}</td>
-                          <td className="op-num">{money(item.gmv, item.currency)}</td>
-                          <td className="op-num">{beijingTime(item.last_order_time) || "-"}</td>
-                          <td className="op-num">
-                            <input
-                              className="op-cost-input"
-                              type="number"
-                              min={0}
-                              step="0.01"
-                              value={
-                                edits[rowKey(item)] ??
-                                (item.unit_cost === null ? "" : String(item.unit_cost))
-                              }
-                              placeholder={item.unit_cost === null ? "待填写" : ""}
-                              onChange={(event) =>
-                                setEdits((previous) => ({
-                                  ...previous,
-                                  [rowKey(item)]: event.target.value,
-                                }))
-                              }
-                            />
-                          </td>
-                          <td className="op-num">
-                            {item.unit_cost === null ? (
-                              <span className="op-chip is-warn">缺成本</span>
-                            ) : (
-                              money(item.unit_cost, item.cost_currency || item.currency)
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  ))}
-                </table>
-              ) : loading ? null : (
-                <EmptyBlock
-                  title="没有符合筛选的数据"
-                  desc="换个状态、日期范围或关键字再试。"
-                  art="empty"
-                  compact
-                />
-              )}
-            </div>
-            <div className="op-pager">
-              <span className="op-pager-info">
-                第 {page} / {pages} 页 · 共 {numberText(total)} 个链接
-              </span>
-              <label className="op-pager-size">
-                每页
-                <select
-                  value={pageSize}
-                  onChange={(event) => {
-                    setPageSize(Number(event.target.value));
-                    setPage(1);
-                  }}
-                >
-                  {PAGE_SIZES.map((size) => (
-                    <option key={size} value={size}>
-                      {size}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="op-pager-actions">
-                <button
-                  className="op-btn op-btn-sm"
-                  type="button"
-                  disabled={page <= 1 || loading}
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
-                >
-                  上一页
-                </button>
-                <button
-                  className="op-btn op-btn-sm"
-                  type="button"
-                  disabled={page >= pages || loading}
-                  onClick={() => setPage((current) => current + 1)}
-                >
-                  下一页
-                </button>
-              </div>
-            </div>
-          </>
-        )}
+      <SectionCard title="SKU 成本模板" desc="模板固定两列 SKU号、成本；导出按当前店铺筛选生成全部 SKU，不受关键字影响。" icon="cost">
+        <div className="op-filter-actions" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="op-btn op-btn-sm" type="button" onClick={() => void orderProfitApi.skuCostTemplate(shop).catch((cause) => showToast(cause instanceof Error ? cause.message : String(cause), "error"))}>下载 XLSX 模板</button>
+          <button className="op-btn op-btn-sm" type="button" onClick={downloadCsvTemplate}>下载 CSV 模板</button>
+          <label className="op-btn op-btn-sm">选择导入文件<input type="file" accept=".xlsx,.csv" onChange={(event) => setImportFile(event.target.files?.[0] || null)} style={{ display: "none" }} /></label>
+          <span className="op-chip">{importFile?.name || "未选择文件"}</span>
+          <button className="op-btn op-btn-primary op-btn-sm" type="button" disabled={!importFile || saving} onClick={() => void importCosts()}>校验并导入</button>
+        </div>
+        <p className="op-hint">空成本跳过、不清除既有值；0 是有效成本；负数、未知 SKU 和重复冲突会列为未导入。推荐使用 XLSX 保留 SKU 文本和前导零。</p>
+      </SectionCard>
+      <SectionCard title="已采订单 SKU" desc="订单商品仍作为成本填写上下文；同一店铺与 SKU 共用单件成本。" icon="orders" action={<button className="op-btn op-btn-primary op-btn-sm" type="button" disabled={saving || !dirtyRows.length} onClick={() => void save()}>{saving ? "保存中…" : `保存改动（${dirtyRows.length}）`}</button>}>
+        <div className="op-filter-row">
+          <label className="op-field op-field-slim"><span>店铺</span><select value={shop} onChange={(event) => setShop(event.target.value)}><option value="all">全部店铺</option>{Array.from(new Set(rows.map((row) => row.shop_name).filter(Boolean))).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+          <label className="op-field op-field-wide"><span>搜索 SKU / PO / 商品</span><input value={keyword} type="search" onChange={(event) => setKeyword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") setQuery(keyword.trim()); }} placeholder="输入后回车" /></label>
+          <button className="op-btn op-btn-sm" type="button" onClick={() => setQuery(keyword.trim())}>查询</button>
+          <button className="op-btn op-btn-sm" type="button" onClick={() => { setKeyword(""); setQuery(""); }}>清除筛选</button>
+        </div>
+        {error ? <p className="op-hint is-error">{error}</p> : null}
+        <div className={`op-table-wrap${loading ? " is-loading" : ""}`}>
+          {rows.length ? <table className="op-table"><thead><tr><th>店铺</th><th>商品</th><th>SKU</th><th className="op-num">件数</th><th className="op-num">关联订单行</th><th className="op-num">单件成本 · CNY</th><th className="op-num">成本小计 · CNY</th></tr></thead><tbody>{rows.map((row) => {
+            const current = drafts[keyOf(row)] ?? (row.sku_manual_cost_cny === null ? "" : String(row.sku_manual_cost_cny));
+            const quantity = Number(row.quantity || 0);
+            const value = current === "" ? null : parseCost(current);
+            return <tr key={keyOf(row)} className={isDirty(row) ? "is-dirty" : ""}><td>{row.shop_name || "—"}</td><td>{row.goods_name || "—"}</td><td><code>{row.sku_id}</code></td><td className="op-num">{numberText(quantity)}</td><td className="op-num">{numberText(row.order_lines)}</td><td className="op-num"><input className="op-cost-input" type="number" min={0} step="0.01" value={current} placeholder="未填写" aria-label={`${row.shop_name} ${row.sku_id} 单件成本`} onChange={(event) => setValue(row, event.target.value)} /></td><td className="op-num">{value === null ? "—" : money(value * quantity, "CNY")}</td></tr>;
+          })}</tbody></table> : loading ? null : <EmptyBlock title="没有符合条件的 SKU" desc="先完成订单数据采集，或调整店铺和关键词筛选。" art="empty" compact />}
+        </div>
       </SectionCard>
     </div>
   );

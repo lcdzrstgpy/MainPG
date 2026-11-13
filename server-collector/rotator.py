@@ -219,64 +219,80 @@ class AutoRotator:
                     continue
 
                 self._current_account = account_id
-                # 不再单独探活：探活+采集要开两次浏览器，账号的登录态更容易被踢。
-                # 直接采集，页面判定未登录时会返回 need_login，再走重新登录。
-                self._current_step = f"{label}：采集"
-                result = self._runner.run_sync_capture(account_id, self._on_done)
+                workflow_id = self._store.create_temu_workflow(account_id)
+                workflow_steps: list[dict[str, Any]] = []
 
-                # 订单多的时候一轮采不完详情：紧接着补，最多 2 轮，避免占着账号太久。
-                passes = 0
-                while (
-                    result.get("ok")
-                    and int(result.get("pending_details") or 0) > 0
-                    and passes < 2
-                    and (not respect_enabled or self._settings.get("enabled"))
-                ):
-                    passes += 1
-                    self._current_step = f"{label}：补详情（第 {passes} 轮）"
-                    time.sleep(5)
-                    result = self._runner.run_sync_capture(account_id, self._on_done)
-                    if result.get("need_login"):
-                        break
-
-                if result.get("need_login"):
-                    if not self._settings.get("auto_relogin"):
-                        self._record(
-                            account_id,
-                            label,
-                            "need_login",
-                            "登录态失效，请手动点「登录」",
-                        )
-                        continue
-                    self._current_step = f"{label}：登录"
-                    login_result = self._runner.run_sync_login(
-                        account_id, credentials, self._on_done
+                def step(name: str, status: str, message: str = "") -> None:
+                    workflow_steps.append({"step": name, "status": status, "message": message, "at": _iso(_now())})
+                    workflow_status = "running" if status in {"running", "succeeded"} else status
+                    self._store.update_temu_workflow(
+                        workflow_id, status=workflow_status, current_step=name,
+                        steps=workflow_steps, error=message if status in {"failed", "waiting_human"} else None,
                     )
-                    if not login_result.get("ok"):
-                        self._record(
-                            account_id,
-                            label,
-                            "login_failed",
-                            str(login_result.get("message") or "登录失败"),
-                        )
-                        self._start_cooldown(account_id)
-                        continue
-                    self._current_step = f"{label}：登录后采集"
-                    result = self._runner.run_sync_capture(account_id, self._on_done)
 
-                if result.get("ok"):
-                    count = len(result.get("items") or [])
-                    pending = int(result.get("pending_details") or 0)
-                    note = f"{count} 条订单" + (f"，{pending} 单详情待补" if pending else "")
-                    self._record(account_id, label, "ok", note)
+                def finish_workflow(status: str, message: str = "") -> None:
+                    self._store.update_temu_workflow(
+                        workflow_id, status=status, current_step="", steps=workflow_steps, error=message,
+                    )
+
+                if getattr(self._runner, "_temu_workflow", False):
+                    # 一个 job 线程、一个店铺登录态跑完整条链路；阶段失败会保留前序结果。
+                    self._current_step = f"{label}：TEMU 全链路（订单→对账→SPU→广告）"
+                    result = self._runner.run_sync_temu_workflow(account_id, self._on_done)
+                    for item in result.get("stages") or []:
+                        step(str(item.get("step") or "workflow"),
+                             str(item.get("status") or "running"),
+                             str(item.get("message") or ""))
+                    if result.get("ok"):
+                        finish_workflow("completed")
+                        self._record(account_id, label, "ok",
+                                     str(result.get("message") or "TEMU 全链路完成"))
+                    else:
+                        message = str(result.get("message") or "TEMU 全链路未完成")
+                        if result.get("waiting_human"):
+                            status = "waiting_human"
+                        elif result.get("partial"):
+                            status = "partial"
+                        else:
+                            status = "failed"
+                        finish_workflow(status, message)
+                        self._record(account_id, label, status, message)
+                        if status != "partial":
+                            self._start_cooldown(account_id)
                 else:
-                    self._record(
-                        account_id,
-                        label,
-                        "failed",
-                        str(result.get("message") or "采集失败"),
-                    )
-                    self._start_cooldown(account_id)
+                    # 旧路径：仅订单采集，登录态失效时可由配置决定是否自动重登。
+                    self._current_step = f"{label}：订单采集"
+                    step("orders", "running")
+                    result = self._runner.run_sync_capture(account_id, self._on_done)
+                    if result.get("ok"):
+                        step("orders", "succeeded", f"{len(result.get('items') or [])} 条订单")
+                    else:
+                        step("orders", "waiting_human" if result.get("need_login") else "failed",
+                             str(result.get("message") or "订单采集失败"))
+                    if result.get("need_login") and self._settings.get("auto_relogin"):
+                        self._current_step = f"{label}：登录"
+                        login_result = self._runner.run_sync_login(
+                            account_id, credentials, self._on_done
+                        )
+                        if not login_result.get("ok"):
+                            message = str(login_result.get("message") or "登录失败")
+                            self._record(account_id, label, "login_failed", message)
+                            self._start_cooldown(account_id)
+                            finish_workflow("failed", message)
+                            continue
+                        self._current_step = f"{label}：登录后采集"
+                        result = self._runner.run_sync_capture(account_id, self._on_done)
+                    if result.get("ok"):
+                        count = len(result.get("items") or [])
+                        pending = int(result.get("pending_details") or 0)
+                        note = f"{count} 条订单" + (f"，{pending} 单详情待补" if pending else "")
+                        finish_workflow("completed")
+                        self._record(account_id, label, "ok", note)
+                    else:
+                        message = str(result.get("message") or "采集失败")
+                        finish_workflow("waiting_human" if result.get("need_login") else "failed", message)
+                        self._record(account_id, label, "need_login" if result.get("need_login") else "failed", message)
+                        self._start_cooldown(account_id)
 
                 gap = random.uniform(
                     float(self._settings.get("gap_min_seconds") or 40),

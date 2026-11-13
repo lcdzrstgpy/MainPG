@@ -1636,6 +1636,8 @@ class OrderProfitService:
             "parent_order_sn": _text(raw.get("parent_order_sn")),
             "sub_order_sn": _text(raw.get("sub_order_sn")),
             "sku_id": _text(raw.get("sku_id")),
+            "spu_id": _text(raw.get("spu_id")),
+            "sku_manual_cost_cny": None,
             "skc_id": _text(raw.get("skc_id")),
             "skc_code": _text(raw.get("skc_code")),
             "ext_code": _text(raw.get("ext_code")),
@@ -1764,6 +1766,52 @@ class OrderProfitService:
         if currency == "USD":
             return _round(amount * rate)
         return None
+
+    # ---------- SKU cost entry ----------
+    def sku_costs(
+        self,
+        workspace_id: str,
+        *,
+        shop: str = "",
+        keyword: str = "",
+    ) -> dict[str, Any]:
+        rows = self._repository.list_distinct_skus(
+            workspace_id, shop=shop, keyword=keyword
+        )
+        return {"items": rows, "total": len(rows), "shop": shop or "all"}
+
+    def save_sku_costs(
+        self,
+        workspace_id: str,
+        items: list[Mapping[str, Any]],
+        *,
+        shop: str = "",
+    ) -> dict[str, Any]:
+        normalized: dict[str, dict[str, Any]] = {}
+        conflicts: list[dict[str, str]] = []
+        for item in items:
+            sku = _text(item.get("sku_id"))
+            raw_cost = item.get("unit_cost_cny")
+            if not sku or raw_cost in (None, ""):
+                continue
+            cost = _float(raw_cost)
+            if cost is None or cost < 0:
+                conflicts.append({"sku_id": sku, "reason": "成本必须为 0 或正数"})
+                continue
+            previous = normalized.get(sku)
+            if previous is not None and previous["unit_cost_cny"] != cost:
+                conflicts.append({"sku_id": sku, "reason": "模板内同 SKU 成本冲突"})
+                normalized.pop(sku, None)
+                continue
+            if not any(row.get("sku_id") == sku and row.get("reason") == "模板内同 SKU 成本冲突" for row in conflicts):
+                normalized[sku] = {"sku_id": sku, "unit_cost_cny": cost}
+        result = self._repository.set_sku_manual_costs(
+            workspace_id, list(normalized.values()), shop=shop
+        )
+        return {
+            "applied": result["applied"],
+            "skipped": [*conflicts, *result["skipped"]],
+        }
 
     # ---------- aggregates ----------
     def orders(

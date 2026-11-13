@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import os
 import re
+import math
+import threading
+from datetime import date, datetime
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -20,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from bridge import create_bridge_router
 from dxm import DxmRunner
 from freight import FreightRunner
+from freight_schedule import FreightSchedule
 from runner import CollectorRunner
 from rotator import AutoRotator
 from store import CollectorStore, now_iso
@@ -70,6 +74,7 @@ runner = CollectorRunner(
     detail_batch=DETAIL_BATCH,
     detail_http=DETAIL_HTTP,
     store=store,
+    temu_workflow=True,
 )
 
 dxm = DxmRunner(data_dir=DATA_DIR, chrome_path=CHROME_PATH, store=store)
@@ -80,6 +85,10 @@ app.include_router(create_bridge_router(store))
 
 
 def _on_done(account_id: str, result: dict[str, Any]) -> None:
+    # 联动流程的各阶段结果已由 worker 逐段落库，这里只跳过汇总结果，避免覆盖账号状态。
+    if result.get("action") == "workflow":
+        return
+
     # 探活只更新登录态，不动采集结果。
     if result.get("action") == "probe":
         if str(result.get("state") or "") == "guest":
@@ -91,6 +100,13 @@ def _on_done(account_id: str, result: dict[str, Any]) -> None:
             if result.get("shop_name"):
                 fields["shop_name"] = result["shop_name"]
             store.update_account(account_id, **fields)
+        return
+
+    if result.get("action") == "ads":
+        attempt = {"ok": bool(result.get("ok")), "message": str(result.get("message") or ""), "fetched_at": now_iso()}
+        if result.get("ok") and result.get("ads"):
+            store.save_snapshot(account_id, "ads", result["ads"])
+        store.save_snapshot(account_id, "ads_attempt", attempt)
         return
 
     if result.get("action") == "settlement":
@@ -286,6 +302,10 @@ def state() -> dict[str, Any]:
         latest_settlement = store.latest_snapshot(account["id"], "settlement")
         account["last_settlement"] = (latest_settlement or {}).get("payload") or {}
         account["settlement_at"] = (latest_settlement or {}).get("captured_at", "")
+        ads = (store.latest_snapshot(account["id"], "ads") or {}).get("payload") or {}
+        account["last_ads"] = {k: v for k, v in ads.items() if k not in ("rows", "source")}
+        account["ads_attempt"] = (store.latest_snapshot(account["id"], "ads_attempt") or {}).get("payload") or {}
+        account["temu_workflow"] = store.latest_temu_workflow(account["id"]) or {}
     return {
         "accounts": accounts,
         "dxm_accounts": _dxm_accounts_with_jobs(),
@@ -602,6 +622,46 @@ def capture(account_id: str) -> dict[str, Any]:
         raise HTTPException(409, str(error)) from error
 
 
+@app.post("/api/accounts/{account_id}/ads")
+def capture_ads(account_id: str) -> dict[str, Any]:
+    if store.get_account(account_id) is None:
+        raise HTTPException(404, "账号不存在")
+    try:
+        return runner.run_ads(account_id, _on_done)
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.get("/api/accounts/{account_id}/ads")
+def ads_result(
+    account_id: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    view: str = Query("raw", pattern="^(raw|products)$"),
+) -> dict[str, Any]:
+    if store.get_account(account_id) is None:
+        raise HTTPException(404, "账号不存在")
+    data = (store.latest_snapshot(account_id, "ads") or {}).get("payload") or {}
+    rows = data.get("rows") or []
+    if view == "products":
+        from ads import aggregate_product_rows
+
+        products, raw_count = aggregate_product_rows(rows)
+        summary = {k: v for k, v in data.items() if k not in ("rows", "source")}
+        summary.update(raw_record_count=raw_count, product_count=len(products))
+        requested = {str(value).strip() for value in (data.get("requested_spus") or []) if str(value).strip()}
+        if requested:
+            found = {str(item.get("spu_id") or "").strip() for item in products}
+            summary["missing_spus"] = sorted(requested - found)
+            summary["matched_spus"] = sorted(requested & found)
+        else:
+            summary.setdefault("missing_spus", [])
+        return {**summary, "items": products[(page - 1) * size:page * size],
+                "total": len(products), "page": page, "size": size}
+    return {**{k: v for k, v in data.items() if k not in ("rows", "source")},
+            "rows": rows[(page - 1) * size:page * size], "total": len(rows), "page": page}
+
+
 @app.post("/api/accounts/{account_id}/settlement")
 def settlement(
     account_id: str, payload: dict[str, Any] | None = Body(default=None)
@@ -813,26 +873,270 @@ def freight_code(
         raise HTTPException(409, str(error)) from error
 
 
+FREIGHT_CAPABILITIES = {"date_range_query": True, "logistics_routing_fallback": True}
+
+
+def _valid_freight_amount(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def submit_freight_sync(data: dict[str, Any], platforms: list[str] | None = None) -> dict[str, Any]:
+    """立即返回 run_id；平台任务及回调等待均在后台线程执行。"""
+    options = {}
+    for key in ("date_from", "date_to"):
+        text = str(data.get(key) or "").strip()
+        if text:
+            try:
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                    raise ValueError
+                date.fromisoformat(text)
+            except ValueError as error:
+                raise HTTPException(400, f"{key} 必须是有效的 YYYY-MM-DD 日期") from error
+        options[key] = text
+    if options["date_from"] and options["date_to"] and options["date_from"] > options["date_to"]:
+        raise HTTPException(400, "date_from 不能晚于 date_to")
+    for key in ("initialize", "missing_only"):
+        if key in data and not isinstance(data[key], bool):
+            raise HTTPException(400, f"{key} 必须是布尔值")
+    initialize = data.get("initialize", False)
+    if data.get("timezone", "Asia/Shanghai") != "Asia/Shanghai":
+        raise HTTPException(400, "timezone 仅支持 Asia/Shanghai")
+    raw = data.get("xms", [])
+    if not isinstance(raw, list):
+        raise HTTPException(400, "xms 必须是数组")
+    xms = list(dict.fromkeys(str(xm).strip() for xm in raw if str(xm).strip()))
+    if "xms" not in data and not initialize:
+        xms = list(dict.fromkeys(row["xm"] for row in store.list_dxm_pairs() if row["xm"]))
+    authorized = sorted(item["platform"] for item in store.list_freight_accounts())
+    selected = authorized if platforms is None else sorted(set(platforms) & set(authorized))
+    if not selected:
+        raise HTTPException(400, "没有可查询的已绑定发货平台")
+    if not xms and not initialize:
+        return {"ok": True, "run_id": "", "status": "noop", "capabilities": dict(FREIGHT_CAPABILITIES)}
+    if data.get("missing_only") and not initialize:
+        cached = {q["xm"] for code in authorized for q in store.list_freight_quotes(code)
+                  if _valid_freight_amount(q.get("amount"))}
+        xms = [xm for xm in xms if xm not in cached]
+        if not xms:
+            return {"ok": True, "run_id": "", "status": "noop", "capabilities": dict(FREIGHT_CAPABILITIES)}
+    # 从持久化对齐数据和报价学习候选；多渠道或跨账号冲突样本不参与。
+    import unicodedata
+    def channel_key(value: str) -> str:
+        value = re.split(r"[（(]?(?:跟踪|追踪|运单)(?:单号|号)?[：:]", value)[0]
+        return "".join(c for c in unicodedata.normalize("NFKC", value).lower()
+                       if c.isalnum())
+    channels_by_xm: dict[str, set[str]] = {}
+    for pair in store.list_dxm_pairs():
+        channels_by_xm.setdefault(pair["xm"], set()).add(channel_key(pair.get("logistics") or ""))
+    platforms_by_xm: dict[str, set[str]] = {}
+    for platform in authorized:
+        for quote in store.list_freight_quotes(platform):
+            if _valid_freight_amount(quote.get("amount")):
+                platforms_by_xm.setdefault(quote["xm"], set()).add(platform)
+    evidence: dict[str, dict[str, int]] = {}
+    for xm, hits in platforms_by_xm.items():
+        channels = channels_by_xm.get(xm, set())
+        if len(hits) == len(channels) == 1 and "" not in channels:
+            counts = evidence.setdefault(next(iter(channels)), {})
+            platform = next(iter(hits))
+            counts[platform] = counts.get(platform, 0) + 1
+    routing = data.get("routing") or {}
+    if not isinstance(routing, dict) or not isinstance(routing.get("routes", []), list):
+        raise HTTPException(400, "routing.routes 必须是数组")
+    candidates: dict[str, list[str]] = {}
+    for route in routing.get("routes", []):
+        if not isinstance(route, dict) or not isinstance(route.get("candidates", []), list):
+            raise HTTPException(400, "路由候选必须是数组")
+        xm = str(route.get("xm") or "").strip()
+        if xm in xms:
+            candidates[xm] = list(dict.fromkeys(p for p in route.get("candidates", [])
+                                                if isinstance(p, str) and p in selected))
+    route_evidence: dict[str, Any] = {}
+    for xm in xms:
+        channels = channels_by_xm.get(xm, set())
+        counts = evidence.get(next(iter(channels)), {}) if len(channels) == 1 and "" not in channels else {}
+        ranked = sorted((p for p in counts if p in selected), key=lambda p: (-counts[p], p))
+        if ranked:
+            candidates[xm] = ranked
+            route_evidence[xm] = {"basis": "server_history", "samples": counts}
+        else:
+            route_evidence[xm] = {"basis": "client_hint" if candidates.get(xm) else "unknown"}
+    payload = {**options, "xms": xms, "platforms": selected, "authorized_platforms": authorized,
+               "route_evidence": route_evidence, "source": str(data.get("source") or "manual"),
+               "candidates": candidates,
+               "initialize": initialize, "missing_only": data.get("missing_only", False),
+               "timezone": str(data.get("timezone") or "Asia/Shanghai")}
+    try:
+        run_id, created = store.create_freight_run(payload)
+    except RuntimeError as error:
+        raise HTTPException(409, str(error)) from error
+    if created:
+        try:
+            threading.Thread(target=_execute_freight_sync, args=(run_id, payload),
+                             name=f"freight-sync-{run_id[:8]}", daemon=True).start()
+        except Exception:
+            store.finish_freight_sync(run_id, {xm: "failed" for xm in xms})
+            store.update_freight_run(run_id, "failed", {"message": "后台任务启动失败"})
+            raise
+    return {"ok": True, "run_id": run_id, "status": "queued" if created else "running",
+            "deduplicated": not created, "capabilities": dict(FREIGHT_CAPABILITIES)}
+
+
+def _execute_freight_sync(run_id: str, payload: dict[str, Any]) -> None:
+    remaining = set(payload["xms"])
+    found: set[str] = set()
+    outcomes: dict[str, dict[str, Any]] = {}
+    details: dict[str, Any] = {"platforms": outcomes, "initialization_complete": False,
+                               "routing_mode": "logistics_first_with_fallback"}
+    plans = {xm: payload.get("candidates", {}).get(xm, []) +
+             [p for p in payload["platforms"] if p not in payload.get("candidates", {}).get(xm, [])]
+             for xm in remaining}
+    pending_initial = list(payload["platforms"]) if payload["initialize"] else []
+    store.update_freight_run(run_id, "running", details)
+    try:
+        while pending_initial or (not payload["initialize"] and any(plans[xm] for xm in remaining)):
+            if payload.get("source") == "daily":
+                from freight_schedule import BEIJING
+                if not 4 <= datetime.now(BEIJING).hour < 6:
+                    details["window_exhausted"] = True
+                    break
+            if payload["missing_only"] and not payload["initialize"]:
+                cached = {q["xm"] for a in store.list_freight_accounts()
+                          for q in store.list_freight_quotes(a["platform"])
+                          if _valid_freight_amount(q.get("amount"))}
+                found.update(remaining & cached)
+                remaining.difference_update(cached)
+                if not remaining:
+                    break
+            if payload["initialize"]:
+                platform = pending_initial.pop(0)
+                requested = []
+            else:
+                platform = next(plans[xm][0] for xm in sorted(remaining) if plans[xm])
+                requested = sorted(xm for xm in remaining if plans[xm] and plans[xm][0] == platform)
+                for xm in requested:
+                    plans[xm].pop(0)
+            # 重新读取绑定账号，routing 不能授权查询未绑定平台。
+            account = store.get_freight_account(platform)
+            if account is None:
+                result = {"ok": False, "message": "平台绑定已移除"}
+            else:
+                event = threading.Event()
+                box: list[dict[str, Any]] = []
+
+                def completed(_platform: str, result: dict[str, Any]) -> None:
+                    box.append(result)
+                    event.set()
+
+                try:
+                    freight.run_query(platform, requested, completed,
+                                      date_from=payload["date_from"], date_to=payload["date_to"],
+                                      initialize=payload["initialize"])
+                    if not details.get("attempt_counted"):
+                        store.mark_freight_attempted(run_id)
+                        details["attempt_counted"] = True
+                    # 不按 TTL 释放互斥：超时并不证明平台线程已经停止。
+                    while not event.wait(30):
+                        store.update_freight_run(run_id, "running", details)
+                    result = box[0]
+                except Exception as error:
+                    result = {"ok": False, "message": f"平台任务提交失败：{type(error).__name__}"}
+            _freight_on_done(platform, {**result, "action": "query"})
+            quotes = [q for q in result.get("quotes", []) if isinstance(q, dict)
+                      and _valid_freight_amount(q.get("amount"))
+                      and (payload["initialize"] or q.get("xm") in remaining)]
+            store.save_freight_quotes(platform, quotes)
+            matched = {str(q["xm"]) for q in quotes if q.get("xm")}
+            details["platform_stages"] = details.get("platform_stages", 0) + 1
+            if not payload["initialize"]:
+                candidate_hits = sum(platform in payload.get("candidates", {}).get(xm, []) for xm in matched)
+                details["candidate_hits"] = details.get("candidate_hits", 0) + candidate_hits
+                details["fallback_hits"] = details.get("fallback_hits", 0) + len(matched) - candidate_hits
+            found.update(matched)
+            remaining.difference_update(matched)
+            # 未声明覆盖完整的结果绝不能作为「全平台未找到」或初始化完成依据。
+            complete = bool(result.get("ok")) and result.get("coverage_complete") is True
+            summary = {"ok": bool(result.get("ok")), "coverage_complete": complete,
+                       "found_xms": sorted(matched), "requested_xms": requested,
+                       "message": str(result.get("message") or "")}
+            previous = outcomes.get(platform)
+            if previous:
+                summary["ok"] = previous["ok"] and summary["ok"]
+                summary["coverage_complete"] = previous["coverage_complete"] and complete
+                summary["found_xms"] = sorted(set(previous["found_xms"]) | matched)
+                summary["requested_xms"] = sorted(set(previous["requested_xms"]) | set(requested))
+            outcomes[platform] = summary
+            store.save_freight_platform_result(run_id, platform, summary)
+            store.update_freight_run(run_id, "running", details)
+        current = sorted(a["platform"] for a in store.list_freight_accounts())
+        full_scope = set(payload["platforms"]) == set(current) == set(payload["authorized_platforms"])
+        all_complete = full_scope and all(outcomes.get(p, {}).get("coverage_complete") for p in current)
+        any_ok = any(item["ok"] for item in outcomes.values())
+        missing_state = "all_not_found" if all_complete else "partial" if any_ok else "failed"
+        cached_found = {q["xm"] for code in current for q in store.list_freight_quotes(code)
+                        if _valid_freight_amount(q.get("amount"))}
+        states = {xm: "found" if xm in found or xm in cached_found else missing_state for xm in payload["xms"]}
+        store.finish_freight_sync(run_id, states)
+        details.update({"states": states, "covered_platforms": sorted(outcomes),
+                        "authorized_platforms": current, "coverage_complete": bool(all_complete),
+                        "initialization_complete": bool(payload["initialize"] and all_complete)})
+        if payload["initialize"]:
+            status = "succeeded" if all_complete else "partial" if any_ok else "failed"
+        else:
+            status = "succeeded" if not remaining or all_complete else "partial" if any_ok else "failed"
+        if details["initialization_complete"]:
+            store.mark_freight_initialized(current, payload["date_from"], payload["date_to"])
+        store.update_freight_run(run_id, status, details)
+    except Exception as error:
+        store.finish_freight_sync(run_id, {xm: "found" if xm in found else "failed" for xm in payload["xms"]})
+        details["message"] = f"同步任务失败：{type(error).__name__}"
+        store.update_freight_run(run_id, "failed", details)
+
+
+@app.post("/api/freight/query")
+def freight_query_all(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    return submit_freight_sync(payload)
+
+
+@app.get("/api/freight/runs/{run_id}")
+def freight_run_status(run_id: str) -> dict[str, Any]:
+    result = store.freight_run(run_id)
+    if result is None:
+        raise HTTPException(404, "头程任务不存在")
+    return result
+
+
+freight_scheduler = FreightSchedule(store, submit_freight_sync)
+
+
+@app.on_event("startup")
+def _start_freight_schedule() -> None:
+    # 单进程部署下启动即视为独占运行器：把上次进程遗留的任务标为中断，避免永久占用互斥。
+    try:
+        recovered = store.recover_interrupted_freight_runs()
+        if recovered:
+            print(f"[collector] recovered {recovered} interrupted freight runs", flush=True)
+    except Exception as error:  # noqa: BLE001 - 恢复失败不应阻止服务启动
+        print(f"[collector] recover freight runs failed: {error}", flush=True)
+    freight_scheduler.start()
+
+
+@app.on_event("shutdown")
+def _stop_freight_schedule() -> None:
+    freight_scheduler.stop()
+
+
+@app.get("/api/freight/schedule/status")
+def freight_schedule_status() -> dict[str, Any]:
+    return {**freight_scheduler.status(), "capabilities": dict(FREIGHT_CAPABILITIES)}
+
+
 @app.post("/api/freight/{platform}/query")
 def freight_query(
     platform: str, payload: dict[str, Any] | None = Body(default=None)
 ) -> dict[str, Any]:
     _freight_account_or_404(platform)
-    data = payload or {}
-    raw = data.get("xms") or []
-    if not isinstance(raw, list):
-        raise HTTPException(400, "xms 必须是数组")
-    xms = [str(item).strip() for item in raw if str(item).strip()]
-    if not xms:
-        # 不传就查店小秘已经对齐出来的全部 XM。
-        xms = [str(row.get("xm") or "").strip() for row in store.list_dxm_pairs()]
-    xms = list(dict.fromkeys(xm for xm in xms if xm))[:2000]
-    if not xms:
-        raise HTTPException(400, "没有需要查询的 XM 单号")
-    try:
-        return freight.run_query(platform, xms, _freight_on_done)
-    except RuntimeError as error:
-        raise HTTPException(409, str(error)) from error
+    return submit_freight_sync(payload or {}, platforms=[platform])
 
 
 @app.get("/api/freight/quotes")
@@ -844,15 +1148,27 @@ def freight_quotes(platform: str = Query(default="")) -> dict[str, Any]:
     else:
         platforms = [item["platform"] for item in store.list_freight_accounts()]
     quotes: dict[str, dict[str, Any]] = {}
-    for code in platforms:
+    updated_at = ""
+    for code in sorted(platforms):
         for quote in store.list_freight_quotes(code):
+            updated_at = max(updated_at, quote.get("updated_at") or "")
+            if not _valid_freight_amount(quote.get("amount")):
+                continue
             quote["platform"] = code
-            quotes.setdefault(str(quote["xm"]), quote)
-    items = list(quotes.values())
+            xm = str(quote["xm"])
+            previous = quotes.get(xm)
+            if previous is None or quote["updated_at"] > previous["updated_at"]:
+                quotes[xm] = quote
+    items = [quotes[xm] for xm in sorted(quotes)]
     return {
         "platform": platform or "all",
         "quotes": items,
         "count": len(items),
+        "updated_at": updated_at,
+        "capabilities": dict(FREIGHT_CAPABILITIES),
+        "sync_records": {record["xm"]: record for record in store.freight_sync_records(
+            [item["platform"] for item in store.list_freight_accounts()]
+        )},
     }
 
 

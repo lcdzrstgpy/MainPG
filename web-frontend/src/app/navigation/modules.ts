@@ -38,6 +38,8 @@ export type WorkspaceModuleId =
   | "order_profit_recon"
   | "order_profit_settlement"
   | "order_profit_records"
+  | "order_profit_freight"
+  | "order_profit_profit"
   | "personal_center";
 
 export type WorkspaceNavigationGroupId =
@@ -48,6 +50,8 @@ export type WorkspaceNavigationGroupId =
   | "data_insights"
   | "sourcing_workflow"
   | "order_profit"
+  | "order_profit_temu_group"
+  | "order_profit_freight_group"
   | "overseas_listing"
   | "personal_center"
   | "system_settings"
@@ -281,18 +285,34 @@ const sourcingLedger: WorkspaceModule = {
  */
 const orderProfitBindingModule: WorkspaceModule = {
   id: "order_profit_binding",
-  label: "店铺绑定",
+  label: "账号与采集设置",
   icon: "",
   iconClass: "iconfont icon-user",
-  description: "输入 Temu 账号密码，校验服务器上的店铺记录并建立绑定",
+  description: "绑定 TEMU、店小秘与采集平台账号",
 };
 
 const orderProfitCostModule: WorkspaceModule = {
   id: "order_profit_costs",
-  label: "链接成本",
+  label: "成本填入",
   icon: "",
   iconClass: "iconfont icon-calculator",
-  description: "手动同步已绑定店铺的链接数据并回填单件成本",
+  description: "按店铺与 SKU 填写、导入及导出单件成本",
+};
+
+const orderProfitFreightModule: WorkspaceModule = {
+  id: "order_profit_freight",
+  label: "单号数据对齐",
+  icon: "",
+  iconClass: "iconfont icon-orderedlist",
+  description: "店小秘 XM 单号与头程金额采集和对齐",
+};
+
+const orderProfitReservedModule: WorkspaceModule = {
+  id: "order_profit_profit",
+  label: "利润核算（暂定）",
+  icon: "",
+  iconClass: "iconfont icon-dashboard",
+  description: "利润口径待业务确认，当前不展示计算结果",
 };
 
 const orderProfitModules: WorkspaceModule[] = [
@@ -506,12 +526,45 @@ const sourcingWorkflow: WorkspaceNavigationGroup = {
 
 const orderProfitWorkflow: WorkspaceNavigationGroup = {
   id: "order_profit",
-  label: "店铺数据管理",
+  label: "数据采集",
   icon: "",
-  iconClass: "iconfont icon-accountbook-fill",
-  description: "校验账号绑定店铺、手动同步链接数据并回填成本",
-  defaultChildId: "order_profit_binding",
-  children: [orderProfitBindingModule, orderProfitCostModule, ...orderProfitModules],
+  iconClass: "iconfont icon-cloud-download",
+  description: "TEMU 订单与对账采集及订单信息查询",
+  defaultChildId: "order_profit_capture",
+  children: [
+    {
+      id: "order_profit_temu_group",
+      label: "TEMU 数据采集",
+      icon: "",
+      iconClass: "iconfont icon-cloud-download",
+      description: "TEMU 订单与对账数据采集",
+      defaultChildId: "order_profit_capture",
+      children: [
+        {
+          ...orderProfitModules.find((module) => module.id === "order_profit_capture")!,
+          label: "订单信息采集",
+          hiddenFromSidebar: false,
+        },
+        {
+          ...orderProfitModules.find((module) => module.id === "order_profit_orders")!,
+          label: "采集数据信息",
+          hiddenFromSidebar: false,
+        },
+      ],
+    },
+    {
+      id: "order_profit_freight_group",
+      label: "运费平台采集",
+      icon: "",
+      iconClass: "iconfont icon-orderedlist",
+      description: "店小秘 XM 单号与头程金额对齐",
+      defaultChildId: "order_profit_freight",
+      children: [orderProfitFreightModule],
+    },
+    orderProfitBindingModule,
+    orderProfitCostModule,
+    orderProfitReservedModule,
+  ],
 };
 
 export const workspaceModules: WorkspaceNavigationItem[] = [

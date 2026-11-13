@@ -81,7 +81,6 @@ export function OrderProfitOrdersTab({
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [reloadToken, setReloadToken] = useState(0);
-  const [busy, setBusy] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [sortKey, setSortKey] = useState<"" | "order_time" | "item_count" | "gmv_total" | "sales_payback" | "profit">("");
@@ -220,16 +219,14 @@ export function OrderProfitOrdersTab({
       { label: "订单数", value: numberText(summary?.order_count), tone: "is-info", hint: "当前月份与筛选条件下", glyph: "orders" as ShopDataGlyphName },
       { label: "销售回款", value: money(summary?.sales_payback), tone: "is-positive", hint: "Temu 已回款的销售额", glyph: "wallet" as ShopDataGlyphName },
       {
-        label: "总利润",
-        value: money(summary?.profit),
-        tone: summary?.profit == null ? "" : summary.profit >= 0 ? "is-positive" : "is-negative",
-        hint: summary?.profit_rate === null || summary?.profit_rate === undefined
-          ? "回款 - 成本 - 费用"
-          : `利润率 ${(summary.profit_rate * 100).toFixed(1)}%`,
-        glyph: "profit" as ShopDataGlyphName,
+        label: "采集件数",
+        value: numberText(orders.reduce((sum, order) => sum + Number(order.item_count || 0), 0)),
+        tone: "is-info",
+        hint: "当前月份与筛选条件下",
+        glyph: "orders" as ShopDataGlyphName,
       },
     ],
-    [summary],
+    [summary, orders],
   );
   const secondaryCards = useMemo(
     () => [
@@ -464,8 +461,8 @@ export function OrderProfitOrdersTab({
 
       <SectionCard
         className="op-section-table"
-        title="订单明细"
-        desc="点行首箭头展开子订单；采购成本可直接点数字修改，改完利润会重算。"
+        title="采集数据信息"
+        desc="筛选历史采集订单；展开可查看订单商品与财务明细。利润核算规则暂未启用。"
         icon="receipt"
         scene="orders"
         meta={
@@ -481,9 +478,6 @@ export function OrderProfitOrdersTab({
         }
         action={
           <div className="op-section-actions">
-            <button type="button" className="op-btn op-btn-sm" disabled={busy} onClick={() => void recalculate()}>
-              {busy ? "计算中…" : "一键计算利润"}
-            </button>
             <button type="button" className="op-btn op-btn-sm" disabled={!visibleOrders.length} onClick={exportCsv}>
               导出
             </button>

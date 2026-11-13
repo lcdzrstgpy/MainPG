@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,29 @@ CREATE TABLE IF NOT EXISTS order_details (
     payload         TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS temu_workflows (
+    id          TEXT PRIMARY KEY,
+    account_id  TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    current_step TEXT NOT NULL DEFAULT '',
+    started_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    finished_at TEXT NOT NULL DEFAULT '',
+    steps       TEXT NOT NULL DEFAULT '[]',
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_temu_workflows_account ON temu_workflows(account_id, started_at);
+
+CREATE TABLE IF NOT EXISTS sku_spu_mappings (
+    account_id TEXT NOT NULL,
+    sku_id TEXT NOT NULL,
+    spu_id TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, sku_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sku_spu_spu ON sku_spu_mappings(account_id, spu_id);
 
 CREATE TABLE IF NOT EXISTS bridge_clients (
     client_id  TEXT PRIMARY KEY,
@@ -140,6 +164,23 @@ CREATE TABLE IF NOT EXISTS freight_quotes (
     PRIMARY KEY (platform, xm)
 );
 CREATE INDEX IF NOT EXISTS idx_freight_quotes_platform ON freight_quotes(platform);
+CREATE TABLE IF NOT EXISTS freight_runs (
+    id TEXT PRIMARY KEY, status TEXT NOT NULL, payload TEXT NOT NULL,
+    started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '',
+    heartbeat_at TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS freight_sync (
+    xm TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'never',
+    attempt_count INTEGER NOT NULL DEFAULT 0, last_synced_at TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL, platforms TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS freight_platform_results (
+    run_id TEXT NOT NULL, platform TEXT NOT NULL, result TEXT NOT NULL,
+    finished_at TEXT NOT NULL, PRIMARY KEY(run_id, platform)
+);
+CREATE TABLE IF NOT EXISTS freight_schedule (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 """
 
 
@@ -177,6 +218,10 @@ class CollectorStore:
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            for table in ("freight_runs", "freight_sync"):
+                names = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if "updated_at" not in names:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
             # 旧库补列：认领账号按登录账号记录，历史行回退到客户端标签。
             columns = {
                 str(row["name"])
@@ -342,6 +387,80 @@ class CollectorStore:
         except ValueError:
             payload = {}
         return {"payload": payload, "captured_at": str(row["captured_at"])}
+
+    def create_temu_workflow(self, account_id: str) -> str:
+        workflow_id = uuid.uuid4().hex
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO temu_workflows (id, account_id, status, started_at, updated_at) "
+                "VALUES (?, ?, 'running', ?, ?)",
+                (workflow_id, account_id, now, now),
+            )
+        return workflow_id
+
+    def update_temu_workflow(self, workflow_id: str, *, status: str | None = None,
+                             current_step: str | None = None, steps: list[dict[str, Any]] | None = None,
+                             error: str | None = None) -> None:
+        values: dict[str, Any] = {"updated_at": now_iso()}
+        if status is not None:
+            values["status"] = status
+            if status in {"completed", "partial", "failed", "waiting_human"}:
+                values["finished_at"] = now_iso()
+        if current_step is not None:
+            values["current_step"] = current_step
+        if steps is not None:
+            values["steps"] = json.dumps(steps, ensure_ascii=False)
+        if error is not None:
+            values["error"] = error
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        with self._connect() as conn:
+            conn.execute(f"UPDATE temu_workflows SET {assignments} WHERE id = ?",
+                         (*values.values(), workflow_id))
+
+    def latest_temu_workflow(self, account_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM temu_workflows WHERE account_id = ? ORDER BY started_at DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["steps"] = json.loads(result.get("steps") or "[]")
+        except ValueError:
+            result["steps"] = []
+        return result
+
+    def add_order_spu_mapping(self, account_id: str, mapping: dict[str, str], source: str = "") -> None:
+        """保存按账号隔离、来自精确 SKU 查询的 SKU→SPU 映射。"""
+        now = now_iso()
+        rows = [(account_id, str(sku).strip(), str(spu).strip(), source, now)
+                for sku, spu in mapping.items() if str(sku).strip() and str(spu).strip()]
+        if not rows:
+            return
+        with self._connect() as conn:
+            conn.executemany(
+                "INSERT INTO sku_spu_mappings (account_id, sku_id, spu_id, source, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id, sku_id) DO UPDATE SET "
+                "spu_id = excluded.spu_id, source = excluded.source, updated_at = excluded.updated_at",
+                rows,
+            )
+
+    def order_spu_mapping(self, account_id: str, sku_ids: list[str]) -> dict[str, str]:
+        ids = list(dict.fromkeys(str(value).strip() for value in sku_ids if str(value).strip()))
+        result: dict[str, str] = {}
+        with self._connect() as conn:
+            for offset in range(0, len(ids), 200):
+                batch = ids[offset:offset + 200]
+                marks = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT sku_id, spu_id FROM sku_spu_mappings WHERE account_id = ? AND sku_id IN ({marks})",
+                    (account_id, *batch),
+                ).fetchall()
+                result.update({str(row["sku_id"]): str(row["spu_id"]) for row in rows})
+        return result
 
     # ---------- 翻译缓存 ----------
 
@@ -953,7 +1072,8 @@ class CollectorStore:
         with self._connect() as conn:
             for item in quotes:
                 xm = str(item.get("xm") or "").strip()
-                if not xm:
+                amount = item.get("amount")
+                if not xm or isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount):
                     continue
                 conn.execute(
                     "INSERT INTO freight_quotes (platform, xm, order_no, weight, amount, "
@@ -1002,6 +1122,156 @@ class CollectorStore:
                 "SELECT COUNT(*) AS n FROM freight_quotes WHERE platform = ?", (platform,)
             ).fetchone()
         return int(row["n"] if row else 0)
+
+    def create_freight_run(self, payload: dict[str, Any]) -> tuple[str, bool]:
+        now = now_iso()
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute(
+                "SELECT id, payload FROM freight_runs WHERE status IN ('queued', 'running') LIMIT 1"
+            ).fetchone()
+            if active:
+                if active["payload"] == encoded:
+                    return str(active["id"]), False
+                raise RuntimeError("已有头程同步任务正在运行，请稍后重试")
+            run_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO freight_runs (id, status, payload, started_at, heartbeat_at, updated_at) "
+                "VALUES (?, 'queued', ?, ?, ?, ?)", (run_id, encoded, now, now, now),
+            )
+            for xm in payload["xms"]:
+                conn.execute(
+                    "INSERT INTO freight_sync (xm, state, attempt_count, run_id, platforms, updated_at) "
+                    "VALUES (?, 'never', 0, ?, ?, ?) ON CONFLICT(xm) DO UPDATE SET "
+                    "run_id = excluded.run_id, "
+                    "platforms = excluded.platforms, updated_at = excluded.updated_at",
+                    (xm, run_id, json.dumps(payload["platforms"]), now),
+                )
+        return run_id, True
+
+    def mark_freight_attempted(self, run_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT details FROM freight_runs WHERE id = ?", (run_id,)).fetchone()
+            details = json.loads(row["details"])
+            if details.get("attempt_counted"):
+                return
+            details["attempt_counted"] = True
+            conn.execute("UPDATE freight_runs SET details = ? WHERE id = ?", (json.dumps(details), run_id))
+            conn.execute("UPDATE freight_sync SET attempt_count = attempt_count + 1 WHERE run_id = ?", (run_id,))
+
+    def mark_freight_initialized(
+        self, platforms: list[str], date_from: str | None = None, date_to: str | None = None
+    ) -> None:
+        value: dict[str, Any] = {"platforms": sorted(platforms)}
+        if date_from is not None or date_to is not None:
+            value.update(date_from=date_from, date_to=date_to)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO freight_schedule (key, value) VALUES ('initialized', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (json.dumps(value, ensure_ascii=False),),
+            )
+
+    def recover_interrupted_freight_runs(self) -> int:
+        """Call only while holding an exclusive process-wide lock for the runner."""
+        now = now_iso()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id, details FROM freight_runs WHERE status IN ('queued', 'running')"
+            ).fetchall()
+            for row in rows:
+                try:
+                    details = json.loads(row["details"] or "{}")
+                except (TypeError, ValueError):
+                    details = {}
+                details["message"] = "interrupted by process restart"
+                conn.execute(
+                    "UPDATE freight_runs SET status='failed', details=?, heartbeat_at=?, "
+                    "updated_at=? WHERE id=?",
+                    (json.dumps(details, ensure_ascii=False), now, now, row["id"]),
+                )
+                conn.execute(
+                    "UPDATE freight_sync SET state='partial', updated_at=? "
+                    "WHERE run_id=? AND state NOT IN ('found', 'partial')",
+                    (now, row["id"]),
+                )
+        return len(rows)
+
+    def update_freight_run(self, run_id: str, status: str, details: dict[str, Any]) -> None:
+        now = now_iso()
+        finished = "" if status in ("queued", "running") else now
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE freight_runs SET status = ?, details = ?, heartbeat_at = ?, "
+                "updated_at = ?, finished_at = ? WHERE id = ?",
+                (status, json.dumps(details, ensure_ascii=False), now, now, finished, run_id),
+            )
+
+    def save_freight_platform_result(self, run_id: str, platform: str, result: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO freight_platform_results (run_id, platform, result, finished_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(run_id, platform) DO UPDATE SET "
+                "result = excluded.result, finished_at = excluded.finished_at",
+                (run_id, platform, json.dumps(result, ensure_ascii=False), now_iso()),
+            )
+
+    def finish_freight_sync(self, run_id: str, states: dict[str, str]) -> None:
+        now = now_iso()
+        with self._connect() as conn:
+            run = conn.execute("SELECT details FROM freight_runs WHERE id = ?", (run_id,)).fetchone()
+            attempted = bool(run and json.loads(run["details"]).get("attempt_counted"))
+            for xm, state in states.items():
+                cached = conn.execute(
+                    "SELECT q.amount FROM freight_quotes q JOIN freight_accounts a ON a.platform = q.platform "
+                    "WHERE q.xm = ?", (xm,),
+                ).fetchall()
+                if any(isinstance(r["amount"], (int, float)) and math.isfinite(r["amount"]) for r in cached):
+                    state = "found"
+                elif not attempted:
+                    continue
+                conn.execute(
+                    "UPDATE freight_sync SET state = ?, "
+                    "last_synced_at = CASE WHEN ? THEN ? ELSE last_synced_at END, updated_at = ? "
+                    "WHERE xm = ? AND run_id = ?", (state, attempted, now, now, xm, run_id),
+                )
+
+    def freight_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM freight_runs WHERE id = ?", (run_id,)).fetchone()
+            results = conn.execute(
+                "SELECT platform, result FROM freight_platform_results WHERE run_id = ? ORDER BY platform",
+                (run_id,),
+            ).fetchall()
+        if row is None:
+            return None
+        result = dict(row)
+        result["run_id"] = result["id"]
+        result["payload"] = json.loads(result["payload"])
+        result["details"] = json.loads(result["details"])
+        result["platform_results"] = {r["platform"]: json.loads(r["result"]) for r in results}
+        return result
+
+    def freight_sync_records(self, platforms: list[str]) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM freight_sync ORDER BY xm").fetchall()
+            cached = conn.execute(
+                "SELECT q.xm, q.amount FROM freight_quotes q JOIN freight_accounts a ON a.platform = q.platform"
+            ).fetchall()
+        found = {r["xm"] for r in cached if isinstance(r["amount"], (int, float)) and math.isfinite(r["amount"])}
+        records = []
+        for row in rows:
+            record = dict(row)
+            record["platforms"] = json.loads(record["platforms"])
+            if record["xm"] in found:
+                record["state"] = "found"
+            if record["state"] == "all_not_found" and set(record["platforms"]) != set(platforms):
+                record["state"] = "partial"
+            records.append(record)
+        return records
 
     # ---------- 行转换 ----------
 

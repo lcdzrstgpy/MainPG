@@ -480,6 +480,7 @@
       skc_id: skcId,
       skc_code: skcCodeFinal,
       sku_id: skuId,
+      spu_id: product.spuId,
       ext_code: extCode,
       goods_name: goodsName,
       image_url: imageUrl,
