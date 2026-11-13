@@ -3076,11 +3076,21 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
     /共发 <b>\{publishConfirm\.skipBroken \? publishConfirm\.runnable : publishConfirm\.total\}<\/b> 条/,
   );
   // 被预检拦下的条数两种情况都要说清，分组行也要标「可发 N」，数字不能对不上
-  assert.match(library, /const runnableCounts = ready\.map\(/);
+  assert.match(library, /const runnableCounts: number\[\] = \[\];/);
+  assert.match(library, /const blockedItems: \{ id: string; title: string; blocked: string\[\] \}\[\] = \[\];/);
   assert.match(library, /runnableCounts,/);
+  assert.match(library, /blockedItems,/);
   assert.match(library, /groupRunnable < group\.entries\.length \? /);
   assert.match(library, /另有 \{publishConfirm\.total - publishConfirm\.runnable\}/);
   assert.match(library, /条没过预检也会提交，大概率失败进「发布历史」/);
+  // 「去补」：被拦条目带着原因跳批量编辑（只列这些行、高亮缺的列），图片问题去图片页
+  assert.match(library, /precheckFixTarget/);
+  assert.match(library, /const openFix = \(items: \{ id: string; blocked: string\[\] \}\[\]\) => \{/);
+  assert.match(library, /title="只列这一条去改，缺的列会高亮"/);
+  assert.match(library, /title="被拦的条目只列出来改：缺哪列高亮哪列"/);
+  assert.match(library, /title="只列发不出去的条目去改，缺的列会高亮"/);
+  assert.match(library, /focusFields=\{batchFix\?\.page === "edit" \? batchFix\.fields : undefined\}/);
+  assert.match(library, /批量编辑只列这些行、高亮缺的列/);
   assert.match(library, /模板「\{group\.template\?\.name \?\? "自动"\}」/);
   assert.match(css, /\.temu-batch-confirm \{/);
 
@@ -3138,7 +3148,9 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
 
   // 接线：勾选的行带过去，保存写回本机编辑
   assert.match(library, /<TemuBatchEditPage/);
-  assert.match(library, /entries=\{entries\.filter\(\(entry\) => selected\.has\(entry\.id\)\)\}/);
+  // 「去补」进来只列被拦的行；平时还是列勾选的行
+  assert.match(library, /batchFix\?\.page === "edit"\s*\n\s*\? entries\.filter\(\(entry\) => batchFix\.ids\.includes\(entry\.id\)\)/);
+  assert.match(library, /: entries\.filter\(\(entry\) => selected\.has\(entry\.id\)\)/);
   assert.match(library, /saveMap\(scoped\(DRAFT_EDITS_KEY\), next\);/);
 });
 

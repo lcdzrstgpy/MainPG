@@ -80,6 +80,8 @@ type Props = {
   onSave: (next: Record<string, TemuDraftEdit>) => void;
   onSaveSkuFields: (next: SkuFieldStore) => void;
   onClose: () => void;
+  /** 从预检的「去补」进来：高亮这几列（用户是带着「缺什么」来的，别让他再满表找） */
+  focusFields?: BatchEditField[];
 };
 
 /** 一条草稿在表格里显示的值：本机编辑 > 源数据 */
@@ -98,7 +100,10 @@ export function TemuBatchEditPage({
   onSave,
   onSaveSkuFields,
   onClose,
+  focusFields,
 }: Props) {
+  /** 「去补」进来的目标列要整列高亮（表头 + 格子） */
+  const isFocus = (key: BatchEditField) => Boolean(focusFields?.includes(key));
   /** 本地待保存的改动：id → 字段 → 值（'' = 清掉覆盖，回落到源数据） */
   const [draft, setDraft] = useState<Record<string, TemuDraftEdit>>({});
   const [fields, setFields] = useState<BatchEditField[]>(DEFAULT_FIELDS);
@@ -420,6 +425,15 @@ export function TemuBatchEditPage({
 
       <section className="temu-batch-edit-tools">
         <p className="temu-batch-edit-tip">
+          {focusFields?.length ? (
+            <>
+              <b className="temu-batch-edit-focus-legend">
+                已定位到：
+                {focusFields.map((key) => COLUMNS.find((column) => column.key === key)?.label ?? key).join("、")}
+              </b>
+              （从预检的「去补」进来，这几列已高亮）。
+            </>
+          ) : null}
           {splitSku ? (
             <>
               一条草稿按变种拆成多行：<b>价格 / 货号 / 库存 / 尺寸 / 重量</b> 都可按变种单独设。
@@ -471,7 +485,11 @@ export function TemuBatchEditPage({
                 <th className="col-thumb">产品图片</th>
                 <th style={{ width: 170 }}>变种</th>
                 {SKU_COLUMNS.map((column) => (
-                  <th key={column.key} style={{ width: column.width }}>
+                  <th
+                    key={column.key}
+                    style={{ width: column.width }}
+                    className={isFocus(column.key) ? "is-focus" : undefined}
+                  >
                     <span className="temu-batch-edit-th-label">{column.label}</span>
                     <button
                       type="button"
@@ -523,7 +541,7 @@ export function TemuBatchEditPage({
                     const base = skuBaseOf(entry, variant, field);
                     const own = skuDraft[entry.id]?.[variant.key]?.[field] ?? "";
                     return (
-                      <td key={column.key}>
+                      <td key={column.key} className={isFocus(column.key) ? "is-focus" : undefined}>
                         <input
                           className={`temu-batch-edit-input${own ? " is-dirty" : ""}`}
                           value={own}
@@ -564,7 +582,11 @@ export function TemuBatchEditPage({
               </th>
               <th className="col-thumb">产品图片</th>
               {visibleColumns.map((column) => (
-                <th key={column.key} style={{ width: column.width }}>
+                <th
+                  key={column.key}
+                  style={{ width: column.width }}
+                  className={isFocus(column.key) ? "is-focus" : undefined}
+                >
                   <span className="temu-batch-edit-th-label">{column.label}</span>
                   <button
                     type="button"
@@ -613,7 +635,7 @@ export function TemuBatchEditPage({
                   // 标题很长：单行输入只能看到半截，用会自动长高的多行框
                   if (column.key === "title") {
                     return (
-                      <td key={column.key}>
+                      <td key={column.key} className={isFocus(column.key) ? "is-focus" : undefined}>
                         <textarea
                           className={`temu-batch-edit-input temu-batch-edit-text${dirty ? " is-dirty" : ""}`}
                           value={value}
@@ -625,7 +647,7 @@ export function TemuBatchEditPage({
                     );
                   }
                   return (
-                    <td key={column.key}>
+                    <td key={column.key} className={isFocus(column.key) ? "is-focus" : undefined}>
                       <input
                         className={`temu-batch-edit-input${dirty ? " is-dirty" : ""}`}
                         value={value}

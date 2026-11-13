@@ -8371,6 +8371,23 @@ textarea.temu-input {
   background: color-mix(in srgb, #f0a020 12%, transparent);
 }
 
+/* 「去补」进来的目标列：整列描边高亮，别让人满表找缺的是哪列 */
+.temu-batch-edit-table th.is-focus {
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 10%, transparent);
+}
+
+.temu-batch-edit-table td.is-focus {
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 5%, transparent);
+}
+
+.temu-batch-edit-table td.is-focus .temu-batch-edit-input {
+  border-color: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 55%, transparent);
+}
+
+.temu-batch-edit-focus-legend {
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
 /* 长标题用多行框：单行输入只能看到半截 */
 .temu-batch-edit-text {
   resize: none;

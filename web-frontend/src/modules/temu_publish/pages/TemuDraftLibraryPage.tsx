@@ -7,7 +7,7 @@ import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
-import { TemuBatchEditPage } from "../components/TemuBatchEditPage";
+import { TemuBatchEditPage, type BatchEditField } from "../components/TemuBatchEditPage";
 import { TemuBatchImagePage } from "../components/TemuBatchImagePage";
 import { DEFAULT_SHIPMENT_DAYS } from "../components/ShipmentDaysPicker";
 import { categorySearchTexts } from "../utils/categoryMatch";
@@ -15,7 +15,7 @@ import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
 import { DRAFT_IMAGES_KEY, resolveEntryImages } from "../data/draftImages";
 import { DRAFT_SKU_FIELDS_KEY, type SkuFieldStore } from "../data/skuPricing";
-import { precheckBatchItem } from "../data/batchPrecheck";
+import { precheckBatchItem, precheckFixTarget } from "../data/batchPrecheck";
 import { autoFillSourceTexts } from "../data/attrAutofill";
 import { estimateAttributePicks } from "../data/attrEstimate";
 import {
@@ -623,6 +623,45 @@ export function TemuDraftLibraryPage({
   const [batchEditOpen, setBatchEditOpen] = useState(false);
   /** 整页批量编辑产品图片（对齐店小秘：选类型/方式 → 执行 → 更新） */
   const [batchImageOpen, setBatchImageOpen] = useState(false);
+  /**
+   * 「去补」目标：预检/确认单上被拦的条目带着原因跳过来，
+   * 批量编辑只列这些行、高亮缺的列（不然几十条里找那几条又是满表扫）。
+   */
+  const [batchFix, setBatchFix] = useState<{
+    ids: string[];
+    fields: BatchEditField[];
+    page: "edit" | "image";
+  } | null>(null);
+
+  /**
+   * 「去补」：把被拦条目的原因翻译成「去哪个页面改哪个字段」，只列这些行。
+   * 字段问题 → 批量编辑（高亮缺的列）；只有图片问题 → 批量图片编辑；
+   * 原因全是模板/配置（没类目没仓库）→ 没得补，不给按钮。
+   */
+  const openFix = (items: { id: string; blocked: string[] }[]) => {
+    const fields = new Set<BatchEditField>();
+    let wantsImage = false;
+    let hasField = false;
+    for (const item of items) {
+      for (const reason of item.blocked) {
+        const fix = precheckFixTarget(reason);
+        if (!fix) continue;
+        if (fix.page === "image") wantsImage = true;
+        else {
+          fields.add(fix.field);
+          hasField = true;
+        }
+      }
+    }
+    const ids = items.map((item) => item.id);
+    if (hasField) {
+      setBatchFix({ ids, fields: Array.from(fields), page: "edit" });
+      setBatchEditOpen(true);
+    } else if (wantsImage) {
+      setBatchFix({ ids, fields: [], page: "image" });
+      setBatchImageOpen(true);
+    }
+  };
   // 批量发布「现场配置」出来的临时产品模板（不落盘）：没选产品模板时用它
   const [manualTemplate, setManualTemplate] = useState<ProductTemplate | null>(null);
   // 批量发布里被「24 小时内重复提交」挡下的条目：不算失败，单独列出来
@@ -649,6 +688,8 @@ export function TemuDraftLibraryPage({
       runnable: number;
       /** 各组里预检能发的条数（和 groups 顺序对齐；组行要显示「可发 N」） */
       runnableCounts: number[];
+      /** 被预检拦下的条目明细（确认单上「去补」要拿它跳到批量编辑对应列） */
+      blockedItems: { id: string; title: string; blocked: string[] }[];
       /** 这批勾选进来的总条数（含预检不过的；确认单数字要和实际提交对得上） */
       total: number;
       /** 开确认单时「跳过发不出去的」开关状态——决定实际会提交几条 */
@@ -1356,16 +1397,29 @@ export function TemuDraftLibraryPage({
       setBatchState({ running: false, text: "" });
       // 每组用**自己**的模板预检（模板不同，属性/仓库要求也不同）：能发 0 条就先看预检
       const variantForCheck = variantTemplates.find((item) => item.name === variantTpl) ?? null;
-      const runnableCounts = ready.map((group) =>
-        group.entries.filter(
-          (entry) =>
-            precheckBatchItem(
-              entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
-              group.template as ProductTemplate,
-              variantForCheck,
-            ).blocked.length === 0,
-        ).length,
-      );
+      // 一次遍历：各组可发条数 + 被拦明细（确认单上要能「去补」，得知道是谁、缺什么）
+      const runnableCounts: number[] = [];
+      const blockedItems: { id: string; title: string; blocked: string[] }[] = [];
+      for (const group of ready) {
+        let count = 0;
+        for (const entry of group.entries) {
+          const result = precheckBatchItem(
+            entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
+            group.template as ProductTemplate,
+            variantForCheck,
+          );
+          if (result.blocked.length) {
+            blockedItems.push({
+              id: entry.id,
+              title: entry.title || entry.sku || "（无标题）",
+              blocked: result.blocked,
+            });
+          } else {
+            count += 1;
+          }
+        }
+        runnableCounts.push(count);
+      }
       const runnable = runnableCounts.reduce((sum, n) => sum + n, 0);
       const total = ready.reduce((sum, group) => sum + group.entries.length, 0);
       if (!runnable) {
@@ -1383,6 +1437,7 @@ export function TemuDraftLibraryPage({
         groups: ready,
         runnable,
         runnableCounts,
+        blockedItems,
         total,
         skipBroken,
         note: notes.join("，"),
@@ -1949,6 +2004,22 @@ export function TemuDraftLibraryPage({
                         <p className="temu-muted">
                           另有 {publishConfirm.total - publishConfirm.runnable}{" "}
                           条没过预检，会跳过不发（原因看上面的预检）
+                          {publishConfirm.blockedItems.some((item) =>
+                            item.blocked.some((reason) => precheckFixTarget(reason)),
+                          ) ? (
+                            <button
+                              type="button"
+                              className="temu-link"
+                              onClick={() => {
+                                const items = publishConfirm.blockedItems;
+                                setPublishConfirm(null);
+                                openFix(items);
+                              }}
+                              title="只列发不出去的条目去改，缺的列会高亮"
+                            >
+                              去补
+                            </button>
+                          ) : null}
                         </p>
                       ) : (
                         <p className="temu-confirm-warn">
@@ -2384,9 +2455,14 @@ export function TemuDraftLibraryPage({
 
       {batchEditOpen && (
         <TemuBatchEditPage
-          entries={entries.filter((entry) => selected.has(entry.id))}
+          entries={
+            batchFix?.page === "edit"
+              ? entries.filter((entry) => batchFix.ids.includes(entry.id))
+              : entries.filter((entry) => selected.has(entry.id))
+          }
           edits={edits}
           skuFields={skuFields}
+          focusFields={batchFix?.page === "edit" ? batchFix.fields : undefined}
           onSave={(next) => {
             setEdits(next);
             saveMap(scoped(DRAFT_EDITS_KEY), next);
@@ -2395,21 +2471,33 @@ export function TemuDraftLibraryPage({
             setSkuFields(next);
             saveMap(scoped(DRAFT_SKU_FIELDS_KEY), next);
             setBatchEditOpen(false);
+            setBatchFix(null);
           }}
-          onClose={() => setBatchEditOpen(false)}
+          onClose={() => {
+            setBatchEditOpen(false);
+            setBatchFix(null);
+          }}
         />
       )}
 
       {batchImageOpen && (
         <TemuBatchImagePage
-          entries={entries.filter((entry) => selected.has(entry.id))}
+          entries={
+            batchFix?.page === "image"
+              ? entries.filter((entry) => batchFix.ids.includes(entry.id))
+              : entries.filter((entry) => selected.has(entry.id))
+          }
           imageEdits={imageEdits}
           onSave={(next) => {
             setImageEdits(next);
             saveMap(scoped(DRAFT_IMAGES_KEY), next);
             setBatchImageOpen(false);
+            setBatchFix(null);
           }}
-          onClose={() => setBatchImageOpen(false)}
+          onClose={() => {
+            setBatchImageOpen(false);
+            setBatchFix(null);
+          }}
         />
       )}
 
@@ -2499,6 +2587,16 @@ export function TemuDraftLibraryPage({
                       <span className="temu-batch-precheck-bad">
                         可发 {batchTargets.length - blockedPrecheck.length} 条 · 预计失败{" "}
                         {blockedPrecheck.length} 条
+                        {blockedPrecheck.some((item) => item.blocked.some((reason) => precheckFixTarget(reason))) ? (
+                          <button
+                            type="button"
+                            className="temu-link"
+                            onClick={() => openFix(blockedPrecheck)}
+                            title="被拦的条目只列出来改：缺哪列高亮哪列"
+                          >
+                            一起去补
+                          </button>
+                        ) : null}
                       </span>
                     ) : (
                       <span className="temu-batch-precheck-ok">
@@ -2522,6 +2620,16 @@ export function TemuDraftLibraryPage({
                         <li key={item.id}>
                           <span>{item.title}</span>
                           <em>{item.blocked.join("；")}</em>
+                          {item.blocked.some((reason) => precheckFixTarget(reason)) ? (
+                            <button
+                              type="button"
+                              className="temu-link"
+                              onClick={() => openFix([item])}
+                              title="只列这一条去改，缺的列会高亮"
+                            >
+                              去补
+                            </button>
+                          ) : null}
                         </li>
                       ))}
                       {blockedPrecheck.length > 5 ? (
