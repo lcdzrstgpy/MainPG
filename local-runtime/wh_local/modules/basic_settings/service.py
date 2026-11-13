@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from typing import Any
 
 from ...db import transaction
 from .schemas import SystemConfigUpdate
+
+logger = logging.getLogger(__name__)
 
 
 CONFIG_KEY = "system_config"
@@ -401,11 +404,21 @@ class SystemConfigService:
 
     def _load_secret_values(self) -> dict[tuple[str, str], str]:
         # 只给后端运行时使用；前端 GET 接口仍然只能看到配置状态。
+        # 解不开的密文（密钥来源变化/跨用户拷贝）跳过并告警，绝不能拖死 create_app：
+        # 那会让用户表现为「程序莫名掉线/起不来」。
         with transaction(self.database_path) as conn:
             rows = conn.execute("SELECT scope, name, ciphertext FROM secret_values").fetchall()
         values: dict[tuple[str, str], str] = {}
         for row in rows:
-            values[(row["scope"], row["name"])] = decrypt_secret(row["ciphertext"])
+            try:
+                values[(row["scope"], row["name"])] = decrypt_secret(row["ciphertext"])
+            except Exception as exc:  # noqa: BLE001 - 单条坏密钥不影响整机启动
+                logger.warning(
+                    "skip undecryptable secret %s/%s: %s",
+                    row["scope"],
+                    row["name"],
+                    exc,
+                )
         return values
 
     def _load_cos_secret_values(self) -> dict[str, str]:
@@ -418,7 +431,13 @@ class SystemConfigService:
                 ORDER BY name
                 """
             ).fetchall()
-        return {str(row["name"]): decrypt_secret(row["ciphertext"]) for row in rows}
+        values: dict[str, str] = {}
+        for row in rows:
+            try:
+                values[str(row["name"])] = decrypt_secret(row["ciphertext"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("skip undecryptable cos secret %s: %s", row["name"], exc)
+        return values
 
     def _merge_public_fields(self, current: dict[str, Any], payload: SystemConfigUpdate) -> dict[str, Any]:
         return {

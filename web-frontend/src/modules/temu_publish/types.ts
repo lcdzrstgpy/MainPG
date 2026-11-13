@@ -399,6 +399,15 @@ export type TemuPublishPrefill = {
   sourceKind?: "ai" | "pod";
   /** 申报价（单位：元，如 "12.99"；提交时由发布页换算成接口要的「分」） */
   supplierPrice?: string;
+  /**
+   * 变种级 SKU 覆盖（变种 key「颜色|尺码」→ 改过的字段）。
+   *
+   * 可按变种设：申报价 / 库存 / 重量 / 长宽高 / 货号 ——
+   * 衣服鞋包按尺码、箱包按款式，长宽高重量本来就不同，不能整条一个数。
+   * 只存改过的字段；没设的回落到整条值（supplierPrice / stock / weightKg…）。
+   * 取值一律走 data/skuPricing.ts 的 resolveSkuField，别在别处再写一遍。
+   */
+  skuFields?: Record<string, Record<string, string>>;
   /** 建议售价（单位：元） */
   suggestedPrice?: string;
   stock?: string;

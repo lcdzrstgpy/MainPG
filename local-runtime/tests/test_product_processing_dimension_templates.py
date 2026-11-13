@@ -128,6 +128,36 @@ def test_combined_dimensions_clamps_estimates_but_never_source_measurements() ->
     assert "length_cm" not in source["clamped_fields"]
 
 
+def test_weight_kg_residue_is_converted_to_grams_not_stored_as_grams() -> None:
+    """来源/模型常把 kg 数当克返回（0.58 实为 580g）：小于 2g 的「克」一律换算。
+
+    实测线上数据：托特包 weight_g=0.58 覆盖掉 raw_estimate=580，13 条成品
+    全被 Temu 预检拦（低于 2g 物流下限）。护栏必须在解析咽喉处换算。
+    """
+    database = create_database("sqlite:///:memory:")
+    template = DimensionTemplateRepository(database).resolve(
+        {"category_path": "配件 > 数据线"}, "USB 数据线", workspace_id="local"
+    )
+    assert template is not None
+
+    # 来源值 0.58（kg 残值）+ 估算 580：来源赢，但必须换算成 580 克
+    resolved = ProductProcessingService._combined_dimensions(
+        {"weight_g": 580}, {"weight_g": 0.58}, template
+    )
+    assert resolved["weight_g"] == 580
+
+    # 估算本身也是 kg 残值（模型吐 0.1）：第一遍就要换算成 100 克
+    estimated = ProductProcessingService._combined_dimensions({"weight_g": 0.1}, {}, template)
+    assert estimated["weight_g"] == 100
+    assert estimated["raw_estimate"]["weight_g"] == 100
+
+    # 正常克重不能误伤：350g 原样保留，5g 小件没有估算证据也不动
+    normal = ProductProcessingService._combined_dimensions({"weight_g": 350}, {}, template)
+    assert normal["weight_g"] == 350
+    tiny = ProductProcessingService._combined_dimensions({}, {"weight_g": 5}, template)
+    assert tiny["weight_g"] == 5
+
+
 def test_learned_percentiles_require_twenty_values_per_axis_before_default_switches() -> None:
     database = create_database("sqlite:///:memory:")
     repository = DimensionTemplateRepository(database)

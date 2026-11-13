@@ -8,6 +8,7 @@
  * 「预检说能发、结果还是失败」或者反过来「预检拦了、其实能发」。
  */
 import { yuanToCents } from "../utils/price.ts";
+import { resolveSkuField, variantKeysOf, type SkuField } from "./skuPricing.ts";
 import type { TemuPublishPrefill } from "../types";
 import type { ProductTemplate, VariantTemplate } from "./localStore";
 
@@ -17,6 +18,27 @@ export type BatchPrecheck = {
   /** 提醒项：能发，但结果可能不是用户想要的（库存 0、只有单 SKU…） */
   warnings: string[];
 };
+
+/**
+ * 预检原因 → 去哪个页面补。
+ *   page "edit"  = 整页批量编辑（字段类问题，field 给出要定位的列）
+ *   page "image" = 批量编辑产品图片（图不够）
+ *   返回 null    = 不归这两个页面管（模板缺类目/仓库/运费、还没选模板），得去改模板
+ */
+export type PrecheckFix =
+  | { page: "edit"; field: "title" | "declared_price" | "weight_g" | "length_cm" | "width_cm" | "height_cm" }
+  | { page: "image" };
+
+export function precheckFixTarget(reason: string): PrecheckFix | null {
+  if (/轮播图|图片/.test(reason)) return { page: "image" };
+  if (/标题/.test(reason)) return { page: "edit", field: "title" };
+  if (/申报价格/.test(reason)) return { page: "edit", field: "declared_price" };
+  if (/重量/.test(reason)) return { page: "edit", field: "weight_g" };
+  if (/长度/.test(reason)) return { page: "edit", field: "length_cm" };
+  if (/宽度/.test(reason)) return { page: "edit", field: "width_cm" };
+  if (/高度/.test(reason)) return { page: "edit", field: "height_cm" };
+  return null;
+}
 
 /** 产品标题长度上限：Temu 官方文档写明 goodsName ≤500 字符。 */
 const TITLE_MAX_CHARS = 500;
@@ -75,26 +97,58 @@ export function precheckBatchItem(
   if (carousel.length < 3) blocked.push(`轮播图只有 ${carousel.length} 张（Temu 要求至少 3 张）`);
 
   const batch = variantTemplate?.batch;
-  const priceError = checkError(() =>
-    yuanToCents(batch?.supplierPrice || prefill.supplierPrice || "", "申报价格"),
-  );
-  if (priceError) blocked.push(priceError);
 
-  const weightG = Number(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000));
-  const weightError = checkError(() =>
-    positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量"),
-  );
-  if (weightError) blocked.push(weightError);
-  else if (weightG < WEIGHT_MIN_G || weightG > WEIGHT_MAX_G) {
-    blocked.push(`重量 ${weightG}g 超出 Temu 允许范围 ${WEIGHT_MIN_G}~${WEIGHT_MAX_G}g`);
-  }
-  for (const [label, value] of [
-    ["长度", batch?.lengthCm || prefill.lengthCm || ""],
-    ["宽度", batch?.widthCm || prefill.widthCm || ""],
-    ["高度", batch?.heightCm || prefill.heightCm || ""],
-  ] as const) {
-    const error = checkError(() => positive(value, label));
-    if (error) blocked.push(error);
+  /*
+   * 价格/重量/三边按 **SKU 逐行** 校验，口径和发布组装完全一致
+   * （变种覆盖值 → 整条值，走同一个 resolveSkuField）：
+   *   - 只查整条值会两头错：变种全填了还被空整条拦（发得出去却被预检扣下）；
+   *     整条过了但某个变种覆盖填了坏值，又会「预检过、提交炸」。
+   *   - 没有任何变种覆盖时保持整条口径（错误文案不变，省得一式 N 份）。
+   */
+  const basePrice = batch?.supplierPrice || prefill.supplierPrice || "";
+  const baseWeightG = batch?.weightG || String(Number(prefill.weightKg || 0) * 1000);
+  const baseDims: Array<[string, SkuField, string]> = [
+    ["长度", "length_cm", batch?.lengthCm || prefill.lengthCm || ""],
+    ["宽度", "width_cm", batch?.widthCm || prefill.widthCm || ""],
+    ["高度", "height_cm", batch?.heightCm || prefill.heightCm || ""],
+  ];
+  const overridesMap = prefill.skuFields ?? {};
+  const hasOverrides = Object.keys(overridesMap).length > 0;
+  // variantKeysOf 吃草稿字段名（snake_case），prefill 是 camelCase，对一下再喂
+  const skuRows = hasOverrides
+    ? variantKeysOf({
+        variants: prefill.variants,
+        spec_values_1: prefill.specValues1,
+        spec_values_2: prefill.specValues2,
+        spec_value_1: prefill.specValue1,
+        spec_value_2: prefill.specValue2,
+      })
+    : [{ key: "", label: "", color: "", size: "" }];
+
+  for (const row of skuRows) {
+    const overrides = overridesMap[row.key];
+    // 多个 SKU 时错误文案带上变种名，不然不知道该去改哪一行
+    const at = skuRows.length > 1 ? `${row.label} 的` : "";
+
+    const priceError = checkError(() =>
+      yuanToCents(resolveSkuField(overrides, "declared_price", basePrice), "申报价格"),
+    );
+    if (priceError) blocked.push(at + priceError);
+
+    const weightValue = resolveSkuField(overrides, "weight_g", baseWeightG);
+    const weightError = checkError(() => positive(weightValue, "重量"));
+    if (weightError) blocked.push(at + weightError);
+    else {
+      const weightG = Number(weightValue);
+      if (weightG < WEIGHT_MIN_G || weightG > WEIGHT_MAX_G) {
+        blocked.push(at + `重量 ${weightG}g 超出 Temu 允许范围 ${WEIGHT_MIN_G}~${WEIGHT_MAX_G}g`);
+      }
+    }
+
+    for (const [label, key, base] of baseDims) {
+      const error = checkError(() => positive(resolveSkuField(overrides, key, base), label));
+      if (error) blocked.push(at + error);
+    }
   }
 
   const colors = splitList(

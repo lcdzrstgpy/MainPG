@@ -5,7 +5,7 @@ import type { TemuDraftEdit } from "../types";
 export type BulkField = keyof TemuDraftEdit;
 
 type MenuKey = "panel" | null;
-type View = "actions" | "fields" | "category";
+type View = "fields" | "category";
 
 /**
  * 批量改字段：只列草稿真的有的字段。
@@ -59,6 +59,10 @@ type Props = {
   hiddenCount: number;
   categories: string[];
   onApplyField: (field: BulkField, value: string) => void;
+  /** 打开整页批量编辑（勾选的会带过去逐行改） */
+  onBatchEdit: () => void;
+  /** 打开整页批量编辑产品图片（对齐店小秘：删图/换首图/加图/超量移除） */
+  onBatchImages: () => void;
   onRemark: () => void;
   onDelete: () => void;
   onMoveCategory: (category: string) => void;
@@ -90,6 +94,8 @@ export function TemuDraftBulkBar({
   hiddenCount,
   categories,
   onApplyField,
+  onBatchEdit,
+  onBatchImages,
   onRemark,
   onDelete,
   onMoveCategory,
@@ -103,7 +109,7 @@ export function TemuDraftBulkBar({
   onClearSelection,
 }: Props) {
   const [menu, setMenu] = useState<MenuKey>(null);
-  const [view, setView] = useState<View>("actions");
+  const [view, setView] = useState<View>("fields");
   const [field, setField] = useState<BulkField | null>(null);
   const [value, setValue] = useState("");
   const [categoryQuery, setCategoryQuery] = useState("");
@@ -136,14 +142,9 @@ export function TemuDraftBulkBar({
 
   const closePanel = () => {
     setMenu(null);
-    setView("actions");
+    setView("fields");
     setField(null);
     setValue("");
-  };
-
-  const togglePanel = () => {
-    if (menu) closePanel();
-    else openPanel("actions");
   };
 
   const apply = () => {
@@ -179,14 +180,62 @@ export function TemuDraftBulkBar({
                   ? "上一批还在提交，等它跑完再发"
                   : canBatchPublish
                     ? "逐条提交到店铺（弹窗里选模板）"
-                    : "点击后在弹窗里选产品模板（批量发布用模板里的类目和属性）"
+                    : "点一下：按每条草稿的类目分组，没存模板的用草稿属性自动拼（属性是估的，倒计时里可取消复核）"
               }
               onClick={onBatchPublish}
             >
               {batchRunning ? "发布中…" : "批量发布"}
             </button>
-            <button type="button" className="temu-bulk-action" onClick={() => openPanel("fields")}>
-              改字段
+            <button
+              type="button"
+              className="temu-bulk-action"
+              title="打开整页批量编辑：勾上要改的字段，逐行改完保存"
+              onClick={onBatchEdit}
+            >
+              批量编辑
+            </button>
+            <button
+              type="button"
+              className="temu-bulk-action"
+              title="批量编辑产品图片：删图 / 换首图 / 加图 / 超量移除"
+              onClick={onBatchImages}
+            >
+              编辑图片
+            </button>
+            <button
+              type="button"
+              className="temu-bulk-action"
+              disabled={batchRunning || disabledNoSelection}
+              title={
+                templateCount === 0
+                  ? "还没有产品模板：去发布页「保存产品模板」"
+                  : "套用已保存的产品模板（分类+属性+物流）"
+              }
+              onClick={() => onPickTemplate("product")}
+            >
+              引用产品模板
+            </button>
+            <button
+              type="button"
+              className="temu-bulk-action"
+              disabled={batchRunning || disabledNoSelection}
+              title={
+                templateCount === 0
+                  ? "还没有变种模板：去发布页「保存变种模板」"
+                  : "套用已保存的变种模板（规格轴+价格+尺寸）"
+              }
+              onClick={() => onPickTemplate("variant")}
+            >
+              引用变种模板
+            </button>
+            <button
+              type="button"
+              className="temu-bulk-action"
+              disabled={disabledNoSelection}
+              title="选字段 → 填一个值 → 批量应用到勾选的草稿"
+              onClick={() => openPanel("fields")}
+            >
+              批量改字段
             </button>
             <button type="button" className="temu-bulk-action" onClick={() => openPanel("category")}>
               移分类
@@ -202,14 +251,6 @@ export function TemuDraftBulkBar({
             >
               删除
             </button>
-            <button
-              type="button"
-              className="temu-bulk-action is-ghost"
-              title="引用模板 / 更多批量项"
-              onClick={togglePanel}
-            >
-              更多 ▾
-            </button>
             {onClearSelection ? (
               <button type="button" className="temu-bulk-link" onClick={onClearSelection}>
                 取消选择
@@ -217,16 +258,7 @@ export function TemuDraftBulkBar({
             ) : null}
           </>
         ) : (
-          <>
-            <button
-              type="button"
-              className={`temu-bulk-trigger${menu ? " is-open" : ""}`}
-              onClick={togglePanel}
-            >
-              批量操作 <span aria-hidden="true">▾</span>
-            </button>
-            <span className="temu-bulk-hint">勾选左侧复选框后，可批量发布 / 改字段 / 移分类</span>
-          </>
+          <span className="temu-bulk-hint">勾选左侧复选框后，可批量发布 / 改字段 / 移分类</span>
         )}
 
         {hiddenCount > 0 && (
@@ -238,97 +270,6 @@ export function TemuDraftBulkBar({
 
       {menu === "panel" && (
         <div className="temu-bulk-panel">
-          {view !== "actions" ? (
-            <button type="button" className="temu-bulk-back" onClick={() => setView("actions")}>
-              ‹ 返回
-            </button>
-          ) : null}
-
-          {view === "actions" && (
-            <>
-              <p className="temu-bulk-tip is-top">
-                {hasSelection ? `已选 ${selectedCount} / ${totalCount} 条` : "先勾选左侧复选框，下面的批量项才会亮"}
-              </p>
-              <div className="temu-bulk-section">
-                <p>发布</p>
-                <div className="temu-bulk-items">
-                  <button
-                    type="button"
-                    disabled={batchRunning || disabledNoSelection}
-                    title={
-                      disabledNoSelection
-                        ? "先勾选左侧复选框"
-                        : batchRunning
-                          ? "上一批还在提交，等它跑完再发"
-                          : "弹窗里选产品模板/变种模板后开始"
-                    }
-                    onClick={onBatchPublish}
-                  >
-                    批量发布
-                  </button>
-                  <button
-                    type="button"
-                    disabled={disabledNoSelection}
-                    title={
-                      templateCount === 0
-                        ? "还没有模板：去发布页「存为产品模板」"
-                        : "套用已保存的产品模板"
-                    }
-                    onClick={() => onPickTemplate("product")}
-                  >
-                    引用产品模板
-                  </button>
-                  <button
-                    type="button"
-                    disabled={disabledNoSelection}
-                    title={
-                      templateCount === 0
-                        ? "还没有模板：去发布页「存为变种模板」"
-                        : "套用已保存的变种模板"
-                    }
-                    onClick={() => onPickTemplate("variant")}
-                  >
-                    引用变种模板
-                  </button>
-                </div>
-              </div>
-
-              <div className="temu-bulk-section">
-                <p>修改内容</p>
-                <div className="temu-bulk-items">
-                  <button type="button" disabled={disabledNoSelection} onClick={() => setView("fields")}>
-                    批量改字段
-                  </button>
-                  <button type="button" disabled={disabledNoSelection} onClick={onRemark}>
-                    批量备注
-                  </button>
-                </div>
-              </div>
-
-              <div className="temu-bulk-section">
-                <p>整理</p>
-                <div className="temu-bulk-items">
-                  <button
-                    type="button"
-                    disabled={disabledNoSelection}
-                    onClick={() => setView("category")}
-                  >
-                    移动分类
-                  </button>
-                  <button
-                    type="button"
-                    disabled={disabledNoSelection}
-                    className="is-danger"
-                    onClick={onDelete}
-                  >
-                    批量删除
-                  </button>
-                </div>
-              </div>
-
-            </>
-          )}
-
           {view === "fields" && (
             <>
               {FIELD_GROUPS.map((group) => (

@@ -358,6 +358,41 @@ def test_draft_library_aggregates_ai_and_pod_entries() -> None:
     assert pod["images"][0] == "https://cos.example.com/pod.jpg"
 
 
+class EmptyAiService:
+    """刚装好的库：AI 处理一个批次都没有（不是出错，是还没跑过）。"""
+
+    def task_history(self, limit: int, workspace_id: str) -> dict[str, Any]:
+        return {"tasks": [], "total": 0}
+
+
+class EmptyPodService:
+    def list_batches(self, actor: Any, limit: int = 20) -> dict[str, Any]:
+        return {"batches": []}
+
+
+def test_draft_library_empty_ai_library_is_not_an_error() -> None:
+    """空库必须是正常空态：既不能抛异常，也不能挂一条「读取失败」的警告。
+
+    回归：``_collect_ai_entries`` 的空库早退曾 ``return entries``（少返回 has_more），
+    调用方二元组解包直接炸成
+    「AI 处理结果读取失败：not enough values to unpack (expected 2, got 0)」，
+    用户看到红字以为 AI 处理坏了，其实只是还没有产物。
+    """
+    from wh_local.modules.temu_publish.library import collect_all_draft_entries
+    from wh_local.session import Actor
+
+    payload = collect_all_draft_entries(
+        product_processing=EmptyAiService(),
+        pod_service=EmptyPodService(),
+        actor=Actor(id="u1", username="u1", role="admin", workspace_id="default"),
+    )
+
+    assert payload["entries"] == []
+    assert payload["warnings"] == [], f"空库不该有警告：{payload['warnings']}"
+    assert payload["has_more"] is False
+    assert payload["counts"] == {"ai": 0, "pod": 0, "total": 0}
+
+
 def test_upload_url_validation_rejects_non_https_and_private_hosts() -> None:
     from wh_local.modules.temu_publish.service import _assert_public_https_url
 

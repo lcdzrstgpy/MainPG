@@ -15,6 +15,8 @@ import { DraftImagePicker } from "../components/DraftImagePicker";
 import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
+import { TemplateLoadDialog, TemplateSaveDialog } from "../components/TemplateDialogs";
+import { resolveSkuField, skuKeyOf, type SkuField } from "../data/skuPricing";
 import {
   APPAREL_CAROUSEL_HEIGHT,
   APPAREL_CAROUSEL_SHAPE,
@@ -184,7 +186,6 @@ type PublishForm = {
 };
 
 const FORM_KEY = "temu_publish_form_v2";
-const PRESETS_KEY = "temu_publish_presets_v1";
 /** 变种行（价格/库存/尺寸/重量都是手填的）也要落盘，刷新后不能只剩颜色尺码文本。 */
 const ROWS_KEY = "temu_publish_rows_v1";
 // 变种模板存在 data/localStore.ts（VARIANT_KEY），key 必须保持一致
@@ -282,13 +283,6 @@ const EMPTY_FORM: PublishForm = {
   shipmentDays: DEFAULT_SHIPMENT_DAYS,
   piecesPerPack: "1",
   description: "",
-};
-
-type PublishPreset = {
-  name: string;
-  categoryPath: TemuCategory[];
-  freightId: string;
-  warehouseId: string;
 };
 
 function errorMessage(error: unknown): string {
@@ -646,7 +640,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const storageSuffix = useMemo(() => storageScope(), []);
   const formKey = `${FORM_KEY}:${storageSuffix}`;
-  const presetsKey = `${PRESETS_KEY}:${storageSuffix}`;
   const recentCategoryKey = `${RECENT_CATEGORY_KEY}:${storageSuffix}`;
   const rowsKey = `${ROWS_KEY}:${storageSuffix}`;
 
@@ -716,10 +709,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const [freightTemplates, setFreightTemplates] = useState<TemuFreightTemplate[]>([]);
   const [warehouseGroups, setWarehouseGroups] = useState<TemuWarehouseGroup[]>([]);
-  const [presets, setPresets] = useState<PublishPreset[]>(() =>
-    loadJsonLocal<PublishPreset[]>(`${PRESETS_KEY}:${storageScope()}`, []),
-  );
-  const [presetName, setPresetName] = useState("");
   const [showCategoryBrowser, setShowCategoryBrowser] = useState(false);
 
   const [parentSpecs, setParentSpecs] = useState<TemuParentSpec[]>([]);
@@ -772,10 +761,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [variantTemplates, setVariantTemplates] = useState<VariantTemplate[]>(() =>
     localStore.variantTemplates(),
   );
-  const [templateName, setTemplateName] = useState("");
+  /**
+   * 模板弹窗：保存/载入各自独立，产品模板和变种模板也分开。
+   *
+   * 以前两块折叠里各有一个输入框共用同一个 templateName，保存和载入混在一行，
+   * 分不清点的是哪一个。
+   */
+  const [templateDialog, setTemplateDialog] = useState<
+    null | { kind: "product" | "variant"; mode: "save" | "load" }
+  >(null);
 
   const [result, setResult] = useState<TemuBuildPayloadResult | null>(null);
   const [copied, setCopied] = useState(false);
+  /** 成功回执 JSON 的复制反馈 */
+  const [receiptCopied, setReceiptCopied] = useState(false);
   const [publishResult, setPublishResult] = useState<TemuPublishResult | null>(null);
   // 发布后在店铺里核对（按 SKC 货号查商品列表）
   const [shopCheck, setShopCheck] = useState<{ loading: boolean; error: string; items: TemuGoodsItem[] }>({
@@ -807,6 +806,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const prefillRef = useRef<TemuPublishPrefill | null>(null);
   // 当前表单来自哪条草稿：选完类目回写给草稿库，下次不用重选
   const prefillDraftId = useRef("");
+  /** 最近一次带入的草稿：切店铺重取规格表后要按它重新对一次父规格 */
+  const lastPrefillRef = useRef<TemuPublishPrefill | null>(null);
 
   const warehouses = useMemo(
     () =>
@@ -1115,6 +1116,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         // 第二次就拿到 null，草稿的尺码/价格全部落不到变种行上。
         const prefill = prefillRef.current;
         prefillRef.current = null;
+        // 草稿只有颜色时别默认占着「尺码」父规格（否则每行都判缺尺码）
+        if (prefill) alignSpecParents(prefill);
         const seedRows = prefill ? buildRowsFromPrefill(prefill, whId) : null;
         setRows((current) => {
           // 带草稿进来：整表按这条草稿重建，别把上一条的颜色/价格/尺寸留在后面几行。
@@ -1143,6 +1146,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   function applyPrefillMeta(prefill: TemuPublishPrefill) {
     prefillDraftId.current = prefill.draftId || "";
+    lastPrefillRef.current = prefill;
     // 草稿自带颜色/尺码 → 说明这条是多规格商品，直接按多规格发。
     // 不然「默认单 SKU」会把草稿里的颜色吞掉（用户看到填了，发出去却没有），
     // 那才是真正的卡点。占位值「默认」不算（那是单 SKU 的占位符）。
@@ -1199,6 +1203,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     };
   }
 
+  /**
+   * 一个变种某个字段的值：**人手设的变种覆盖** > 草稿自带 > 整条值。
+   * 和批量组装（batchPublish.skuFields）同一个取值函数，别写第二份。
+   */
+  function skuFieldOf(
+    prefill: TemuPublishPrefill,
+    colorName: string,
+    sizeName: string,
+    field: SkuField,
+    base: string | number | undefined,
+  ): string {
+    return resolveSkuField(prefill.skuFields?.[skuKeyOf(colorName, sizeName)], field, base);
+  }
+
   /** 草稿值铺到某一变种行：kg→g，价格/库存/尺寸直接搬。 */
   function prefillToRow(row: VariantRow, prefill: TemuPublishPrefill): VariantRow {
     const weightKg = Number(prefill.weightKg);
@@ -1230,7 +1248,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       (item) => item && (item.color || item.size || item.sku),
     );
     if (variants.length <= 1) {
-      return [prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill)];
+      const row = prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill);
+      // 单 SKU 也可能被「按变种改」覆盖过（key 就是草稿里那个规格值）
+      return [
+        {
+          ...row,
+          extCode: skuFieldOf(prefill, row.colorName, row.sizeName, "sku", row.extCode) || row.extCode,
+          supplierPrice:
+            skuFieldOf(prefill, row.colorName, row.sizeName, "declared_price", row.supplierPrice) ||
+            row.supplierPrice,
+          stock: skuFieldOf(prefill, row.colorName, row.sizeName, "stock", row.stock),
+          weightG: skuFieldOf(prefill, row.colorName, row.sizeName, "weight_g", row.weightG),
+          lengthCm: skuFieldOf(prefill, row.colorName, row.sizeName, "length_cm", row.lengthCm),
+          widthCm: skuFieldOf(prefill, row.colorName, row.sizeName, "width_cm", row.widthCm),
+          heightCm: skuFieldOf(prefill, row.colorName, row.sizeName, "height_cm", row.heightCm),
+        },
+      ];
     }
     const fallbackSize = prefill.specValue2 || "";
     return variants.map((variant, index) => {
@@ -1242,21 +1275,53 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         index,
       );
       const merged = prefillToRow(base, prefill);
+      const color = variant.color || merged.colorName;
+      const size = variant.size || merged.sizeName;
       return {
         ...merged,
-        extCode: variant.sku || merged.extCode,
-        colorName: variant.color || merged.colorName,
-        sizeName: variant.size || merged.sizeName,
-        // 每个变体自己的申报价（已按导出规则按成本算过）；没有才用草稿主价
-        supplierPrice:
-          typeof variant.price === "number" && variant.price > 0
-            ? String(variant.price)
-            : merged.supplierPrice,
+        colorName: color,
+        sizeName: size,
+        // 每个字段都按「人手设的变种覆盖 > 草稿自带 > 整条值」取（同 batchPublish）；
         // 库存 0 是合法值（先建品后补货），不能用 || 兜掉
-        stock: typeof variant.stock === "number" ? String(variant.stock) : merged.stock,
+        extCode: skuFieldOf(prefill, color, size, "sku", variant.sku || merged.extCode) || merged.extCode,
+        supplierPrice:
+          skuFieldOf(
+            prefill,
+            color,
+            size,
+            "declared_price",
+            typeof variant.price === "number" && variant.price > 0
+              ? String(variant.price)
+              : merged.supplierPrice,
+          ) || merged.supplierPrice,
+        stock: skuFieldOf(
+          prefill,
+          color,
+          size,
+          "stock",
+          typeof variant.stock === "number" ? String(variant.stock) : merged.stock,
+        ),
+        weightG: skuFieldOf(prefill, color, size, "weight_g", merged.weightG),
+        lengthCm: skuFieldOf(prefill, color, size, "length_cm", merged.lengthCm),
+        widthCm: skuFieldOf(prefill, color, size, "width_cm", merged.widthCm),
+        heightCm: skuFieldOf(prefill, color, size, "height_cm", merged.heightCm),
         thumbUrl: variant.image || merged.thumbUrl,
       };
     });
+  }
+
+  /**
+   * 父规格按草稿**实际带的维度**来选。
+   *
+   * `pickSpecPair` 无条件给出「颜色 + 尺码」，可草稿经常只有颜色（单维商品）。
+   * 尺码槽位空着也照样算「缺尺码」：每个变种行都被判没填全，顶部一直「还差 1 项」，
+   * 用户只能自己去把「变种属性二」改成「不选」—— 明明草稿里就没有尺码这回事。
+   */
+  function alignSpecParents(prefill: TemuPublishPrefill) {
+    const hasColors = (prefill.specValues1?.length ?? 0) > 0 || !!prefill.specValue1?.trim();
+    const hasSizes = (prefill.specValues2?.length ?? 0) > 0 || !!prefill.specValue2?.trim();
+    if (!hasColors) setColorParentId(0);
+    if (!hasSizes) setSizeParentId(0);
   }
 
   /** 把草稿库带入的数据直接铺到表单（用于「页签已打开」的情况）。 */
@@ -1264,6 +1329,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 同一条草稿再点一次（改了价格回来）→ 保留手改；换了一条 → 整表重建
     const sameDraft = !!prefill.draftId && prefill.draftId === prefillDraftId.current;
     applyPrefillMeta(prefill);
+    alignSpecParents(prefill);
     setForm((current) => ({ ...current, ...prefillToForm(current, prefill) }));
     setRows((current) => {
       if (!current.length) {
@@ -1571,38 +1637,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return () => clearTimeout(timer);
   }, [form.title, status?.configured.ready, matchSeq]);
 
-  const savePreset = () => {
-    if (!categoryPath.length) {
-      setError("先选好类目，再保存预设");
-      return;
-    }
-    const fallbackName = categoryPath[categoryPath.length - 1].catName.slice(0, 20);
-    const name = presetName.trim() || fallbackName;
-    const next = [
-      { name, categoryPath, freightId: form.freightId, warehouseId: form.warehouseId },
-      ...presets.filter((item) => item.name !== name),
-    ].slice(0, 6);
-    setPresets(next);
-    saveJsonLocal(presetsKey, next);
-    setPresetName("");
-  };
-
-  const applyPreset = (preset: PublishPreset) => {
-    patch({ freightId: preset.freightId || form.freightId, warehouseId: preset.warehouseId || form.warehouseId });
-    if (preset.warehouseId) {
-      setRows((current) => current.map((row) => ({ ...row, warehouseId: preset.warehouseId })));
-    }
-    void applyCategory(preset.categoryPath);
-  };
-
-  const removePreset = (name: string) => {
-    const next = presets.filter((item) => item.name !== name);
-    setPresets(next);
-    saveJsonLocal(presetsKey, next);
-  };
-
   /** 存成产品模板：分类 + 属性 + 运费/仓库/时效/产地/尺码表/开关，都是「每款一样」的东西。 */
-  const saveProductTemplate = () => {
+  const saveProductTemplate = (name: string) => {
     if (!categoryPath.length) {
       setError("先选好类目，再存产品模板");
       return;
@@ -1612,7 +1648,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (pick && (pick.vid > 0 || pick.text.trim())) attrs[pid] = { vid: pick.vid, text: pick.text };
     });
     localStore.saveProductTemplate({
-      name: templateName.trim() || categoryName(categoryPath[categoryPath.length - 1]),
+      name: name.trim() || categoryName(categoryPath[categoryPath.length - 1]),
       categoryPath,
       attrs,
       freightId: form.freightId,
@@ -1629,7 +1665,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       savedAt: new Date().toLocaleString("zh-CN"),
     });
     setProductTemplates(localStore.productTemplates());
-    setTemplateName("");
   };
 
   /** 套用产品模板：只补空字段，已经填过的不动。 */
@@ -1669,10 +1704,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   /** 存成变种模板：颜色×尺码 + 第一行的批量值。 */
-  const saveVariantTemplate = () => {
+  const saveVariantTemplate = (name: string) => {
     const base = rows[0];
     localStore.saveVariantTemplate({
-      name: templateName.trim() || `${form.colorsText || "颜色"} × ${form.sizesText || "尺码"}`,
+      name: name.trim() || `${form.colorsText || "颜色"} × ${form.sizesText || "尺码"}`,
       colorsText: form.colorsText,
       sizesText: form.sizesText,
       batch: {
@@ -1687,7 +1722,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       savedAt: new Date().toLocaleString("zh-CN"),
     });
     setVariantTemplates(localStore.variantTemplates());
-    setTemplateName("");
   };
 
   /** 套用变种模板：填颜色/尺码列表，并把批量值铺到现有行。 */
@@ -1759,6 +1793,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const pair = pickSpecPair(specItems);
       setColorParentId(pair.color);
       setSizeParentId(pair.size);
+      // 切店铺会重取规格表：还按当前草稿的维度对一次，别把「尺码」又占回去
+      if (lastPrefillRef.current) alignSpecParents(lastPrefillRef.current);
     }
     // 旧店的值一律丢掉，换成新店的默认值（没有就让用户自己选，别带着旧 id 发出去）
     const nextFreight = templates[0]?.freightTemplateId ?? "";
@@ -2960,6 +2996,42 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       : goodsIdOf(publishResult.result)
     : "";
   /**
+   * 成功回执的「人看的部分」：发完最想看的是 id / 货号 / 规格，
+   * 不该让一坨原始 JSON 顶在脸上（要排障再展开）。响应结构：
+   * `{ productSkuList: [{ productSkuId, extCode, skuSpecList: [{ specName }] }] }`
+   */
+  const receiptBody = (publishResult?.confirmed_by_lookup
+    ? publishResult.matched_goods
+    : publishResult?.result) as
+    | {
+        productSkuList?: Array<{
+          extCode?: string;
+          skuSpecList?: Array<{ specName?: string; parentSpecName?: string }>;
+        }>;
+      }
+    | undefined;
+  const receiptFirstSku = receiptBody?.productSkuList?.[0];
+  const receiptExtCode = String(receiptFirstSku?.extCode ?? "");
+  const receiptSpecText = (receiptFirstSku?.skuSpecList ?? [])
+    .map((item) => item?.specName)
+    .filter(Boolean)
+    .join(" / ");
+  const receiptJson = publishResult
+    ? JSON.stringify(
+        publishResult.confirmed_by_lookup ? publishResult.matched_goods : publishResult.result,
+        null,
+        2,
+      )
+    : "";
+  const copyReceipt = async () => {
+    try {
+      await navigator.clipboard.writeText(receiptJson);
+      setReceiptCopied(true);
+    } catch {
+      setError("复制失败，请手动选中 JSON 复制");
+    }
+  };
+  /**
    * 当前选择下「适用」的属性（Temu 属性联动）。
    *
    * 子属性带 templatePropertyValueParentList，parentTemplatePid 指向父属性的 templatePid：
@@ -3321,8 +3393,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <span>
               新增店铺：粘贴 access_token
               <em className="temu-muted">
-                Temu 后台：系统管理 → 授权管理 → 获取授权，复制 access_token 后面的整串。
-                保存前会先打一次网关校验，通过才存进列表
+                Temu 后台：系统管理 → 授权管理 → 获取授权（对接系统选「启邦国际跨境分销运营管理系统」），
+                复制 access_token 后面的整串。保存前会先打一次网关校验，通过才存进列表
               </em>
             </span>
             <textarea
@@ -3564,31 +3636,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   现在按状态分两副面孔：已选类目 → 一条摘要条；未选 → 只留搜索与推荐。
                   刷新/浏览全部/存预设属于低频操作，收进「高级」折叠里。 */}
               <div className="temu-cat-picker">
-                {presets.length > 0 && (
-                  <div className="temu-preset-bar">
-                    <span className="temu-preset-title">预设</span>
-                    {presets.map((preset) => (
-                      <span key={preset.name} className="temu-preset-chip">
-                        <button
-                          type="button"
-                          onClick={() => applyPreset(preset)}
-                          title={preset.categoryPath.map((item) => item.catName).join(" / ")}
-                        >
-                          {preset.name}
-                        </button>
-                        <button
-                          type="button"
-                          className="temu-preset-del"
-                          onClick={() => removePreset(preset.name)}
-                          aria-label={`删除预设 ${preset.name}`}
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-
                 {leaf?.isLeaf ? (
                   <div className="temu-cat-selected">
                     <div className="temu-cat-selected-main">
@@ -3677,7 +3724,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 )}
 
                 <details className="temu-cat-advanced">
-                  <summary>高级：刷新类目树 · 浏览全部 · 存为预设</summary>
+                  <summary>高级：刷新类目树 · 浏览全部</summary>
                   <div className="temu-cat-advanced-body">
                     <div className="temu-cat-refresh">
                       <button
@@ -3721,74 +3768,44 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       </>
                     )}
 
-                    <div className="temu-preset-save">
-                      <input
-                        className="temu-input"
-                        value={presetName}
-                        onChange={(event) => setPresetName(event.target.value)}
-                        placeholder="预设名（只记分类+运费+仓库，随手切换用）"
-                        title="预设 = 分类 + 运费模板 + 发货仓库，最多存 6 个，用来快速换品"
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") savePreset();
-                        }}
-                      />
-                      <button type="button" className="temu-btn" onClick={savePreset} disabled={!categoryPath.length}>
-                        存为预设
-                      </button>
-                    </div>
                   </div>
                 </details>
               </div>
             </div>
 
-            {/* 产品模板是「同类商品重复发」才用得上，收到折叠里，首屏不占位 */}
-            <details className="temu-more">
-              <summary>载入 / 保存产品模板</summary>
-              <div className="temu-template-row">
-                <input
-                  className="temu-input"
-                  value={templateName}
-                  onChange={(event) => setTemplateName(event.target.value)}
-                  placeholder="模板名（记分类+属性+物流+开关，批量发布用）"
-                  title="产品模板比预设多记了已填属性、尺码表、定制/敏感开关，草稿库批量发布时要套它"
-                />
-                <button
-                  type="button"
-                  className="temu-btn"
-                  onClick={saveProductTemplate}
-                  disabled={!categoryPath.length}
-                >
-                  存为产品模板
-                </button>
-                <select
-                  className="temu-input"
-                  value=""
-                  onChange={(event) => applyProductTemplate(event.target.value)}
-                  disabled={!productTemplates.length}
-                >
-                  <option value="">{productTemplates.length ? "引用产品模板…" : "还没有产品模板"}</option>
-                  {productTemplates.map((item) => (
-                    <option key={item.name} value={item.name}>
-                      {item.name}（{item.savedAt}）
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </details>
-
             {/* 属性是「填完类目之后」的第二步，和上面的类目选择不是同一件事。
                 加一条分隔线 + 把说明挪到标题下面单独一行，
                 否则标题、说明、9 个下拉挤在一起，看不出这里是新的一段。 */}
             <div className="temu-field temu-field-attrs">
-              <span>
-                产品属性<em className="temu-required">*</em>
-              </span>
-              <em className="temu-field-note">
-                带 * 必填；不带的收在下面，不填也能发布
-                {attributes && attributes.properties.length > visibleProperties.length
-                  ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
-                  : ""}
-              </em>
+              <div className="temu-field-head">
+                <span>
+                  产品属性<em className="temu-required">*</em>
+                </span>
+                <em className="temu-field-note">
+                  带 * 必填；不带的收在下面，不填也能发布
+                  {attributes && attributes.properties.length > visibleProperties.length
+                    ? `（已按上一级选择隐藏 ${attributes.properties.length - visibleProperties.length} 项不适用属性）`
+                    : ""}
+                </em>
+                <div className="temu-field-head-actions">
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="载入已保存的产品模板（分类 + 属性 + 物流）"
+                    onClick={() => setTemplateDialog({ kind: "product", mode: "load" })}
+                  >
+                    载入模板
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="把当前分类 + 属性 + 物流存成产品模板"
+                    onClick={() => setTemplateDialog({ kind: "product", mode: "save" })}
+                  >
+                    保存模板
+                  </button>
+                </div>
+              </div>
               {!attributes ? (
                 <p className="temu-empty">选到叶子分类后自动加载属性。</p>
               ) : (
@@ -4154,30 +4171,28 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               }}
               active={activeSectionId === "sec-variant"}
               index={2}
-              extra={<span className="temu-muted">{rows.length} 个变种</span>}
+              extra={
+                <div className="temu-variant-tpl-actions">
+                  <span className="temu-muted">{rows.length} 个变种</span>
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="载入已保存的变种模板（规格轴 + 价格 + 尺寸重量）"
+                    onClick={() => setTemplateDialog({ kind: "variant", mode: "load" })}
+                  >
+                    载入变种模板
+                  </button>
+                  <button
+                    type="button"
+                    className="temu-btn is-mini"
+                    title="把当前颜色/尺码 + 第一行价格尺寸存成变种模板"
+                    onClick={() => setTemplateDialog({ kind: "variant", mode: "save" })}
+                  >
+                    保存变种模板
+                  </button>
+                </div>
+              }
             />
-            {/* 变种模板同样是重复发同款时才用，收起来 */}
-            <details className="temu-more">
-              <summary>载入 / 保存变种模板</summary>
-              <div className="temu-template-row">
-                <button type="button" className="temu-btn" onClick={saveVariantTemplate}>
-                  存为变种模板
-                </button>
-                <select
-                  className="temu-input"
-                  value=""
-                  onChange={(event) => applyVariantTemplate(event.target.value)}
-                  disabled={!variantTemplates.length}
-                >
-                  <option value="">{variantTemplates.length ? "引用变种模板…" : "还没有变种模板"}</option>
-                  {variantTemplates.map((item) => (
-                    <option key={item.name} value={item.name}>
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </details>
             {activeSpecMismatch.length > 0 && (
               <div className="temu-spec-mismatch" role="status">
                 <div className="temu-spec-mismatch-head">
@@ -4454,23 +4469,41 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <strong>
                     {publishResult.confirmed_by_lookup
                       ? "已在店铺里查到（提交时网络中断）"
-                      : "已提交到 Temu"}
+                      : "✓ 已提交到 Temu"}
                   </strong>
                   <span>
                     {publishResult.api_type} · {publishResult.summary.skc_count} 个 SKC /{" "}
                     {publishResult.summary.sku_count} 个变种
-                    {publishedGoodsId ? ` · 商品 id ${publishedGoodsId}` : ""}
                   </span>
                 </div>
-                <pre className="temu-json">
-                  {JSON.stringify(
-                    publishResult.confirmed_by_lookup
-                      ? publishResult.matched_goods
-                      : publishResult.result,
-                    null,
-                    2,
-                  )}
-                </pre>
+                {/*
+                  成功卡：发完最想看的三样（id / 货号 / 规格）摆明面上，
+                  原始回执 JSON 折叠到下面排障用 —— 以前一坨 JSON 顶在脸上，像开发者界面。
+                */}
+                <div className="temu-publish-done-card">
+                  {publishedGoodsId ? (
+                    <div>
+                      <em>商品 id</em>
+                      <b>{publishedGoodsId}</b>
+                    </div>
+                  ) : null}
+                  {receiptExtCode ? (
+                    <div>
+                      <em>货号</em>
+                      <b>{receiptExtCode}</b>
+                    </div>
+                  ) : null}
+                  {receiptSpecText ? (
+                    <div>
+                      <em>规格</em>
+                      <b>{receiptSpecText}</b>
+                    </div>
+                  ) : null}
+                </div>
+                <details className="temu-advanced">
+                  <summary>原始回执 JSON（排障用）</summary>
+                  <pre className="temu-json">{receiptJson}</pre>
+                </details>
                 <div className="temu-inline-actions">
                   <button
                     type="button"
@@ -4488,6 +4521,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   {/* 发完一条最常接的动作就是发下一条：同款同批，只换图/货号/变种 */}
                   <button type="button" className="temu-btn temu-btn-sm temu-btn-primary" onClick={startNextItem}>
                     发下一条
+                  </button>
+                  <button type="button" className="temu-btn temu-btn-sm" onClick={() => void copyReceipt()}>
+                    {receiptCopied ? "已复制" : "复制回执 JSON"}
                   </button>
                 </div>
                 {shopCheck.error && <p className="temu-confirm-warn">查询失败：{shopCheck.error}</p>}
@@ -4832,22 +4868,22 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <section className="temu-help-step">
                 <div className="temu-help-step-head">
                   <i>2</i>
-                  <strong>点「获取授权」→ 选对接系统 → 确认</strong>
+                  <strong>点「获取授权」→ 选「启邦国际跨境分销运营管理系统」→ 确认</strong>
                 </div>
                 <p>
-                  点页面里的「获取授权」。弹窗第一步写着「如需使用自研系统对接，请联系对接运营进行对接」：
-                  下拉里显示「无可选系统」时点旁边的「向运营申请」，让对接运营把系统开出来；
-                  开通后在下拉里选上系统，点「确认」。
+                  点页面里的「获取授权」。弹窗里「请选择对接系统」的下拉<strong>可以直接打字</strong>：
+                  输入<strong>「启邦国际跨境分销运营管理系统」</strong>并选中它（我们的对接系统，别选成别的），
+                  再点「确认」。
                 </p>
                 <img
                   className="temu-help-shot"
                   src="/help/temu-auth-grant.png"
-                  alt="获取授权弹窗：联系对接运营 → 选择对接系统"
+                  alt="获取授权弹窗：在下拉里输入并选中「启邦国际跨境分销运营管理系统」，再点确认"
                   title="点击看大图"
                   onClick={() =>
                     setImagePreview({
                       src: "/help/temu-auth-grant.png",
-                      alt: "获取授权弹窗：联系对接运营 → 选择对接系统",
+                      alt: "获取授权弹窗：在下拉里输入并选中「启邦国际跨境分销运营管理系统」，再点确认",
                     })
                   }
                 />
@@ -4877,14 +4913,70 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </section>
 
               <p className="temu-help-note">
-                拿到 access_token 后整串粘到下面「新增店铺」，点「校验并保存为店铺」——注意别把
-                「服务商凭据」和它混了，那是服务器下发的，不用填。找不到 token 就直接问对接运营。
-                截图可以点开看大图。
+                拿到 access_token 后整串粘到下面「新增店铺」，点「校验并保存为店铺」。
               </p>
             </div>
           </div>,
           document.body,
         )}
+
+      {templateDialog?.mode === "save" ? (
+        <TemplateSaveDialog
+          title={templateDialog.kind === "product" ? "保存产品模板" : "保存变种模板"}
+          hint={
+            templateDialog.kind === "product"
+              ? "记分类 + 属性 + 运费仓库 + 时效产地 + 开关；批量发布套它"
+              : "记颜色/尺码列表 + 第一行的价格、库存、尺寸重量"
+          }
+          defaultName={
+            templateDialog.kind === "product"
+              ? categoryName(categoryPath[categoryPath.length - 1]) || ""
+              : `${form.colorsText || "颜色"} × ${form.sizesText || "尺码"}`
+          }
+          existing={
+            templateDialog.kind === "product"
+              ? productTemplates.map((item) => item.name)
+              : variantTemplates.map((item) => item.name)
+          }
+          onSave={(name) => {
+            if (templateDialog.kind === "product") saveProductTemplate(name);
+            else saveVariantTemplate(name);
+            setTemplateDialog(null);
+          }}
+          onClose={() => setTemplateDialog(null)}
+        />
+      ) : null}
+
+      {templateDialog?.mode === "load" ? (
+        <TemplateLoadDialog
+          title={templateDialog.kind === "product" ? "载入产品模板" : "载入变种模板"}
+          items={
+            templateDialog.kind === "product"
+              ? productTemplates.map((item) => ({ name: item.name, savedAt: item.savedAt }))
+              : variantTemplates.map((item) => ({ name: item.name, savedAt: item.savedAt }))
+          }
+          emptyHint={
+            templateDialog.kind === "product"
+              ? "还没有产品模板：先在「已选类目」右边点「保存模板」。"
+              : "还没有变种模板：先在变种信息右上角点「保存变种模板」。"
+          }
+          onPick={(name) => {
+            if (templateDialog.kind === "product") void applyProductTemplate(name);
+            else applyVariantTemplate(name);
+            setTemplateDialog(null);
+          }}
+          onRemove={(name) => {
+            if (templateDialog.kind === "product") {
+              localStore.removeProductTemplate(name);
+              setProductTemplates(localStore.productTemplates());
+            } else {
+              localStore.removeVariantTemplate(name);
+              setVariantTemplates(localStore.variantTemplates());
+            }
+          }}
+          onClose={() => setTemplateDialog(null)}
+        />
+      ) : null}
 
       {pickerSlot ? (
         <DraftImagePicker
