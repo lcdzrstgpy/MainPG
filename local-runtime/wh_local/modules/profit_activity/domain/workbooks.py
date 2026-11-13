@@ -47,7 +47,13 @@ _HEADER_ALIASES = {
     "activity_price": {"活动申报价", "活动申报价格", "活动报价", "最低活动价", "activity price", "campaign price"},
     "activity_name": {"活动类型(活动主题)", "活动类型", "活动主题", "activity", "activity name"},
     "site": {"站点", "site", "site code"},
+    "currency": {"币种", "货币", "货币类型", "币别", "currency", "currency code"},
 }
+
+# 活动模板的价格列必须是人民币：利润口径（成本、头程、尾程、补贴）全部按 CNY 配置，
+# 外币价格直接代入会被当人民币计算，利润严重失真。Temu 导出的活动表一般都带“币种”列
+# 且为 CNY；空值按 CNY 处理（老模板没有这一列也能照常过滤）。
+_CNY_CURRENCY_CODES = {"CNY", "RMB", "CNH", "人民币", "元", "¥", "￥"}
 
 # 核价审核表的国内成本被拆成第二行子表头；存在这些子列时，成本按子列求和而非只取“国内成本”合并单元格。
 _COST_COMPONENT_HEADERS = {"单价", "运输损耗", "耗材", "运输头程"}
@@ -339,6 +345,20 @@ def _normalize_site_value(value: str) -> str:
 _SITE_CODES = {"US", "CO", "EC", "MX", "BR", "CA"}
 
 
+def _currency_code(value: object) -> str:
+    """“币种”单元格归一化：人民币的各种写法统一成 ``CNY``，空值返回 ""。
+
+    空值表示模板没填/没这一列，调用方按 CNY 继续过滤；非空且归一化后不是 ``CNY``
+    的行会被剔除（``unsupported_currency``），避免外币申报价被当成人民币算利润。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text in _CNY_CURRENCY_CODES or text.upper() in _CNY_CURRENCY_CODES:
+        return "CNY"
+    return text.upper()
+
+
 def _worksheet_site(worksheet, header_map: dict[str, int], fallback: str) -> str:
     """自动识别工作表对应的站点，优先级：sheet 标题 → “站点”列首个非空值 → 兜底默认站点。"""
     title_site = _normalize_site_value(worksheet.title)
@@ -388,11 +408,14 @@ def filter_activity_workbook(
         price_index = headers.get("activity_price")
         activity_index = headers.get("activity_name")
         site_index = headers.get("site")
+        currency_index = headers.get("currency")
         spu_index = headers.get("spu")
         groups: dict[tuple[str, str], list[tuple[int, Decimal | None, list[str]]]] = {}
         spu_by_row: dict[int, str] = {}
         removed_rows: list[dict[str, Any]] = []
         site_mismatch_rows: set[int] = set()
+        currency_rows: set[int] = set()
+        currency_counts: Counter[str] = Counter()
 
         for row_number, cells in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
             candidate_ids = _cell_identifiers(cells, product_id_indices)
@@ -403,6 +426,13 @@ def filter_activity_workbook(
                 site_mismatch_rows.add(row_number)
                 removed_rows.append(_removed_row(worksheet, row_number, "site_mismatch", None, column_count))
                 continue
+            # 币种守卫：利润口径全按人民币配置，非 CNY 的申报价不能直接代入计算。
+            currency = _currency_code(_cell(cells, currency_index)) if currency_index is not None else ""
+            currency_counts[currency or "CNY"] += 1
+            if currency and currency != "CNY":
+                currency_rows.add(row_number)
+                removed_rows.append(_removed_row(worksheet, row_number, "unsupported_currency", None, column_count))
+                continue
             activity_name = str(_cell(cells, activity_index) or "").strip() if activity_index is not None else ""
             price = _decimal(_cell(cells, price_index)) if price_index is not None else None
             primary_id = candidate_ids[0]
@@ -412,7 +442,7 @@ def filter_activity_workbook(
 
         decisions: list[dict[str, Any]] = []
         kept_rows: set[int] = set()
-        removed_row_numbers: set[int] = set(site_mismatch_rows)
+        removed_row_numbers: set[int] = set(site_mismatch_rows) | currency_rows
         qualification_counts: Counter[str] = Counter()
         kept_skcs: set[str] = set()
         removed_skcs: set[str] = set()
@@ -483,8 +513,9 @@ def filter_activity_workbook(
             "removed_activity_count": len(removed_activity_keys),
             "qualification_counts": dict(qualification_counts), "removed_rows": removed_rows,
             "activity_decisions": decisions,
+            "currency_counts": dict(currency_counts),
             "template_site_summary": {
-                "total_price_rows": sum(len(entries) for entries in groups.values()) + len(site_mismatch_rows),
+                "total_price_rows": sum(len(entries) for entries in groups.values()) + len(site_mismatch_rows) + len(currency_rows),
                 "site_counts": {site: sum(len(entries) for entries in groups.values())},
                 "unique_skc_count_by_site": {site: len({key[0] for key in groups})},
             },

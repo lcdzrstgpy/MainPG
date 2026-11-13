@@ -169,7 +169,10 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
   const [storeFilter, setStoreFilter] = useState("");
   const [storeOptions, setStoreOptions] = useState<string[]>([]);
   const [storeChoices, setStoreChoices] = useState<string[]>([]);
+  // keyword 是「已生效」的检索词，keywordDraft 是输入框内容：点查询 / Ctrl+Enter 时才生效，
+  // 避免每敲一个字就重发一次列表请求、页码来回跳。
   const [keyword, setKeyword] = useState("");
+  const [keywordDraft, setKeywordDraft] = useState("");
   const [sites, setSites] = useState<Array<{ site_code: string; display_name: string }>>([]);
   const [detail, setDetail] = useState<LedgerItemDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
@@ -230,6 +233,20 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
 
   const reload = useCallback(() => {
     setReloadToken((value) => value + 1);
+  }, []);
+
+  // 关键词查询：点「查询」或 Ctrl/Cmd+Enter 才下发；检索词没变时也重拉一次，当作手动刷新。
+  const applyKeyword = useCallback(() => {
+    const next = keywordDraft.trim();
+    setKeyword(next);
+    setPage(1);
+    setReloadToken((value) => value + 1);
+  }, [keywordDraft]);
+
+  const clearKeyword = useCallback(() => {
+    setKeywordDraft("");
+    setKeyword("");
+    setPage(1);
   }, []);
 
   useEffect(() => {
@@ -753,24 +770,37 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
             ))}
           </select>
         </label>
-        <label className="ledger-keyword">
+        <div className="ledger-keyword">
           <span>关键词</span>
-          <textarea
-            value={keyword}
-            rows={1}
-            placeholder="货号 / SKC / 标题，可换行批量粘贴"
-            onChange={(event) => {
-              setKeyword(event.target.value);
-              setPage(1);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                event.preventDefault();
-                reload();
-              }
-            }}
-          />
-        </label>
+          <div className="ledger-keyword-box">
+            <textarea
+              value={keywordDraft}
+              rows={1}
+              placeholder="货号 / SKC / 完整标题（精确匹配），可换行批量"
+              onChange={(event) => setKeywordDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  applyKeyword();
+                }
+              }}
+            />
+            <div className="ledger-keyword-actions">
+              <button type="button" className="ledger-keyword-btn is-primary" onClick={applyKeyword}>
+                查询
+              </button>
+              <button
+                type="button"
+                className="ledger-keyword-btn"
+                title="清空关键词"
+                disabled={!keywordDraft && !keyword}
+                onClick={clearKeyword}
+              >
+                清空
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
       {notice && <p className="ledger-notice">{notice}</p>}

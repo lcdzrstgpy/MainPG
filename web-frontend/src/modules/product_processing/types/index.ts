@@ -725,6 +725,10 @@ export interface TaskOutputsResponse {
 export type TaskHistoryItem = {
   task_id: number;
   title: string;
+  /** 这批处理来自哪些采集批次（与「采集批次」下拉同一套命名），商品数多的排前面。 */
+  batch_names?: string[];
+  /** 批次里前几个商品的标题（后端最多给 3 个），用来在悬停时认出处理的是什么。 */
+  sample_items?: Array<{ skc: string; title: string }>;
   status: TaskStatus;
   created_at: string;
   updated_at: string;

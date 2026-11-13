@@ -63,9 +63,23 @@ _KEYWORD_SEPARATORS = re.compile(r"[\s,，、;；|]+")
 
 
 def _keyword_terms(keyword: Any) -> list[str]:
-    """把关键词拆成去重后的检索词；任意一个命中即保留该商品。"""
+    """把关键词拆成去重后的检索词；任意一个精准命中即保留该商品。"""
     parts = (part.casefold() for part in _KEYWORD_SEPARATORS.split(_text(keyword)) if part)
     return list(dict.fromkeys(parts))
+
+
+def _keyword_keys(item: Mapping[str, Any]) -> set[str]:
+    """精准查询的可命中字段：货号 / SKC / 平台 SKC，以及完全相同的标题。
+
+    2026-11-12 从子串模糊改成整串相等：模糊匹配会把标题里带同一个词的
+    无关商品一起带出来，货号查询反而找不到目标。
+    """
+    return {
+        _text(item.get("skc")).casefold(),
+        _text(item.get("market_skc_id")).casefold(),
+        _text(item.get("market_skc_code")).casefold(),
+        _text(item.get("title")).casefold(),
+    }
 
 
 def _clean_source_title(value: Any) -> str:
@@ -751,16 +765,7 @@ class SourcingLedgerService:
             items = [
                 item
                 for item in items
-                if any(
-                    term in value.casefold()
-                    for term in keyword_terms
-                    for value in (
-                        item["skc"],
-                        item["title"],
-                        item["market_skc_code"],
-                        item["market_skc_id"],
-                    )
-                )
+                if any(term in _keyword_keys(item) for term in keyword_terms)
             ]
         counts = {key: 0 for key in _STATUS_ORDER}
         for item in items:

@@ -4900,6 +4900,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             limit, workspace_id, offset=offset, date_from=date_from, date_to=date_to
         )
         history = []
+        # 历史标题统一是「产品处理任务」，用采集批次名（选品·1688·狗衣服·11-12 14:08）
+        # 代替，命名规则与采集批次下拉一致，一眼能对上批次。
+        batch_names = self.repository.task_batch_names(task["id"] for task in tasks)
         for task in tasks:
             downloadable = {
                 "dxm": bool(task["output_file"]),
@@ -4907,10 +4910,21 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "video_manifest": bool(task["video_manifest_file"]),
             }
             settings = task["settings"]
+            # 附带前几个商品的标题，前端悬停时列出「货号 + 标题」。
+            sample_items = [
+                {
+                    "skc": str(item.get("skc") or ""),
+                    "title": str(item.get("title") or "").strip(),
+                }
+                for item in (task.get("items") or [])
+                if str(item.get("title") or "").strip()
+            ][:3]
             history.append(
                 {
                     "task_id": task["id"],
                     "title": task["title"],
+                    "batch_names": batch_names.get(task["id"], []),
+                    "sample_items": sample_items,
                     "status": task["status"],
                     "created_at": task["created_at"],
                     "updated_at": task["updated_at"],

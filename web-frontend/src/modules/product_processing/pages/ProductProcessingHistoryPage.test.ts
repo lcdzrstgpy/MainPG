@@ -22,6 +22,14 @@ test("history filters use one compact date-range control with secondary actions"
   assert.match(styles, /\.processing-history-toolbar \.verify-actions button\.primary/);
 });
 
+test("history rows name the batch and its products instead of a generic title", () => {
+  // 每行都叫「产品处理任务」时既认不出批次也看不出处理了什么。
+  assert.match(source, /`#\$\{task\.task_id\} · \$\{names\[0\]\}/);
+  assert.match(source, /batch_names/);
+  assert.match(source, /sample_items/);
+  assert.doesNotMatch(source, /<strong title=\{task\.title\}>/);
+});
+
 test("history date inputs omit visible start and end labels", () => {
   assert.doesNotMatch(source, /<span>开始<\/span>/);
   assert.doesNotMatch(source, /<span>结束<\/span>/);

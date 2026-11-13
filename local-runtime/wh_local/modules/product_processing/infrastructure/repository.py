@@ -923,6 +923,50 @@ class ProductProcessingRepository:
                             resolved[batch_id] = display_name
         return resolved
 
+    def task_batch_names(self, task_ids: Iterable[int]) -> dict[int, list[str]]:
+        """统计每个处理任务的子项来自哪些采集批次，返回 task_id → 批次展示名。
+
+        历史列表的标题统一是「产品处理任务」，看不出这批处理的是哪个采集批次；
+        这里按子项草稿的 ``selection_run_id`` 反查采集批次名（与采集批次下拉同一套命名），
+        商品数多的批次排在前面。手工采集的草稿没有批次，不会出现在结果里。
+        """
+        ids = [int(item) for item in task_ids]
+        if not ids:
+            return {}
+        params = {f"task_id_{index}": item for index, item in enumerate(ids)}
+        placeholders = ", ".join(f":{name}" for name in params)
+        with self.database.sessions() as session:
+            rows = (
+                session.execute(
+                    text(
+                        "SELECT i.task_id AS task_id, d.selection_run_id AS batch_id, "
+                        "COUNT(*) AS item_count "
+                        "FROM product_processing_task_items i "
+                        "JOIN product_processing_drafts d ON d.id = i.product_draft_id "
+                        f"WHERE i.task_id IN ({placeholders}) "
+                        "AND d.selection_run_id IS NOT NULL AND d.selection_run_id != '' "
+                        "GROUP BY i.task_id, d.selection_run_id"
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+        grouped: dict[int, list[tuple[int, str]]] = {}
+        for row in rows:
+            grouped.setdefault(int(row["task_id"]), []).append(
+                (int(row["item_count"]), str(row["batch_id"]))
+            )
+        resolved = self.collection_batch_display_names(
+            batch_id for entries in grouped.values() for _, batch_id in entries
+        )
+        result: dict[int, list[str]] = {}
+        for task_id, entries in grouped.items():
+            entries.sort(key=lambda entry: (-entry[0], entry[1]))
+            names = [resolved[batch_id] for _, batch_id in entries if batch_id in resolved]
+            result[task_id] = list(dict.fromkeys(names))
+        return result
+
     def list_draft_batches(
         self,
         limit: int,

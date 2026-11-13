@@ -94,7 +94,8 @@
   background-color: var(--theme-module-surface, #fff);
 }
 
-.ledger-filters label {
+.ledger-filters label,
+.ledger-filters .ledger-keyword {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -119,6 +120,12 @@
   flex: 1 1 260px;
 }
 
+.ledger-keyword-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .ledger-keyword textarea {
   width: 100%;
   min-width: 240px;
@@ -134,6 +141,47 @@
   font-size: 13px;
   line-height: 1.4;
   resize: vertical;
+}
+
+.ledger-keyword-actions {
+  display: flex;
+  gap: 6px;
+  padding-bottom: 1px;
+}
+
+/* 关键词框上的小按钮：比 .ledger-btn 矮一档，跟随主题色 */
+.ledger-keyword-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--theme-module-border-strong, #82c9ef);
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-text-secondary, #526a82);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ledger-keyword-btn:hover:not(:disabled) {
+  border-color: var(--theme-primary, #0a8fca);
+  color: var(--theme-primary, #0a8fca);
+}
+
+.ledger-keyword-btn.is-primary {
+  border-color: var(--theme-primary, #0a8fca);
+  background: var(--theme-primary, #0a8fca);
+  color: #fff;
+}
+
+.ledger-keyword-btn.is-primary:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.05);
+}
+
+.ledger-keyword-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .ledger-batch-filter select {
