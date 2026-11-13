@@ -74,6 +74,29 @@ if _ms_templates.is_dir():
 else:
     print("[workbench.spec] WARNING: 妙手导入模板目录不存在")
 
+# 模块目录里按 Path(__file__) 同目录读取的数据文件（product_processing/domain/
+# scene_props.json、content_reference_sources.json 等）。以前只收 data/ 和 templates/，
+# 这些 json 会被漏掉，冻结版一用到品类场景就 FileNotFoundError。
+# *.local.json 是本地凭据，永远不进包。
+_secret_json = re.compile(r"\.local\.json$")
+_module_data_files = [
+    path for path in (ROOT / "wh_local" / "modules").rglob("*")
+    if path.is_file()
+    and path.suffix.lower() in {".json", ".csv"}
+    and not _secret_json.search(path.name)
+]
+for _f in _module_data_files:
+    datas.append((str(_f), _f.relative_to(ROOT).as_posix().rsplit("/", 1)[0]))
+print(f"[workbench.spec] bundled {len(_module_data_files)} module data files")
+
+# 麻将 3D 渲染依赖 tools/（render_tile.py 与 presets/ 素材），
+# mahjong_render 按 parents[4]/tools 定位；不收就会静默退化成无牌面素材。
+_tools_dir = ROOT / "tools"
+if _tools_dir.is_dir():
+    datas.append((str(_tools_dir), "tools"))
+else:
+    print("[workbench.spec] WARNING: 缺失 tools/（麻将渲染与牌面素材将不可用）")
+
 # 浏览器插件源码目录：店铺账号 →「打开独立浏览器」会用 --load-extension 加载它，
 # 实现多账号并行。以前只认仓库根目录的 W-H-browser-extension-v*，冻结版里根本没有
 # 这个目录，用户点开浏览器就报「没有找到已解压的浏览器插件目录」。

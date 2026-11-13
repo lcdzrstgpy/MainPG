@@ -201,10 +201,23 @@ Get-ChildItem -Path (Join-Path $PSScriptRoot "wh_local\modules\product_processin
             $missing += $rel
         }
     }
+# 4b. 模块目录里的运行期数据文件（scene_props.json、content_reference_sources.json 等）
+# 与 tools/ 素材：漏掉不会让打包失败，但会让功能在客户机上直接崩或退化。
+Get-ChildItem -Path (Join-Path $PSScriptRoot "wh_local\modules") -Recurse -File |
+    Where-Object { $_.Extension -in @(".json", ".csv") -and $_.Name -notlike "*.local.json" } |
+    ForEach-Object {
+        $rel = $_.FullName.Substring($PSScriptRoot.Length + 1)
+        if (-not (Test-Path -LiteralPath (Join-Path $dist ("_internal\" + $rel)) -PathType Leaf)) {
+            $missing += $rel
+        }
+    }
+if (-not (Test-Path -LiteralPath (Join-Path $dist "_internal\tools\presets") -PathType Container)) {
+    $missing += "_internal\tools\presets"
+}
 if ($missing.Count -gt 0) {
     throw "bundle is missing required assets: $($missing -join ', ')"
 }
-Write-Host "[build] verified bundled assets (frontend, extension, migrations, templates, splash, data)"
+Write-Host "[build] verified bundled assets (frontend, extension, migrations, templates, module data, tools, splash, data)"
 
 # Ship the verified, immutable artifact plus the exact Node executable that built
 # it. This is intentionally a copied build artifact, not a Git submodule/reference
