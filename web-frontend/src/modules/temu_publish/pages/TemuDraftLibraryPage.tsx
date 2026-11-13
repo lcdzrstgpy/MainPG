@@ -647,6 +647,12 @@ export function TemuDraftLibraryPage({
       groups: BatchGroup[];
       /** 按各组模板预检后能发的总条数（确认单上要显示真实数字） */
       runnable: number;
+      /** 各组里预检能发的条数（和 groups 顺序对齐；组行要显示「可发 N」） */
+      runnableCounts: number[];
+      /** 这批勾选进来的总条数（含预检不过的；确认单数字要和实际提交对得上） */
+      total: number;
+      /** 开确认单时「跳过发不出去的」开关状态——决定实际会提交几条 */
+      skipBroken: boolean;
       /** 被排除的条目说明（没模板 / 没类目），没有就空串 */
       note: string;
       /** 用了「按草稿临时拼的模板」时的说明（属性是估的，要让人知道） */
@@ -1350,19 +1356,18 @@ export function TemuDraftLibraryPage({
       setBatchState({ running: false, text: "" });
       // 每组用**自己**的模板预检（模板不同，属性/仓库要求也不同）：能发 0 条就先看预检
       const variantForCheck = variantTemplates.find((item) => item.name === variantTpl) ?? null;
-      const runnable = ready.reduce(
-        (sum, group) =>
-          sum +
-          group.entries.filter(
-            (entry) =>
-              precheckBatchItem(
-                entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
-                group.template as ProductTemplate,
-                variantForCheck,
-              ).blocked.length === 0,
-          ).length,
-        0,
+      const runnableCounts = ready.map((group) =>
+        group.entries.filter(
+          (entry) =>
+            precheckBatchItem(
+              entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
+              group.template as ProductTemplate,
+              variantForCheck,
+            ).blocked.length === 0,
+        ).length,
       );
+      const runnable = runnableCounts.reduce((sum, n) => sum + n, 0);
+      const total = ready.reduce((sum, group) => sum + group.entries.length, 0);
       if (!runnable) {
         setBatchState({ running: false, text: "这批都有阻塞问题，先看下面的预检" });
         setBatchOpen(true);
@@ -1377,6 +1382,9 @@ export function TemuDraftLibraryPage({
       setPublishConfirm({
         groups: ready,
         runnable,
+        runnableCounts,
+        total,
+        skipBroken,
         note: notes.join("，"),
         // 有类目是「临时拼的模板」时必须说明：属性是估的，不是人核过的
         autoNote: autoEntries
@@ -1910,23 +1918,45 @@ export function TemuDraftLibraryPage({
 
                   <div className="temu-batch-body">
                     <ul className="temu-batch-confirm-list">
-                      {publishConfirm.groups.map((group) => {
+                      {publishConfirm.groups.map((group, groupIndex) => {
                         const leafName = group.categoryName.split(" > ").pop() || group.categoryName;
+                        const groupRunnable = publishConfirm.runnableCounts[groupIndex] ?? group.entries.length;
                         return (
                           <li key={group.categoryName}>
                             <b>{leafName}</b>
-                            <span>{group.entries.length} 条</span>
+                            <span>
+                              {group.entries.length} 条
+                              {groupRunnable < group.entries.length ? `（可发 ${groupRunnable}）` : ""}
+                            </span>
                             <em>模板「{group.template?.name ?? "自动"}」</em>
                           </li>
                         );
                       })}
                     </ul>
+                    {/*
+                      数字必须和「点下去真会提交几条」一致：
+                      跳过发不出去的=只发预检过的；关掉开关=组里全部硬发。
+                      被预检拦下的条数无论哪种情况都要说清，不然分组行加起来对不上总数。
+                    */}
                     <p className="temu-batch-confirm-total">
-                      共发 <b>{publishConfirm.runnable}</b> 条
+                      共发 <b>{publishConfirm.skipBroken ? publishConfirm.runnable : publishConfirm.total}</b> 条
                       {publishConfirm.groups.length > 1
                         ? `，按类目分 ${publishConfirm.groups.length} 批依次提交`
                         : ""}
                     </p>
+                    {publishConfirm.total > publishConfirm.runnable ? (
+                      publishConfirm.skipBroken ? (
+                        <p className="temu-muted">
+                          另有 {publishConfirm.total - publishConfirm.runnable}{" "}
+                          条没过预检，会跳过不发（原因看上面的预检）
+                        </p>
+                      ) : (
+                        <p className="temu-confirm-warn">
+                          其中 {publishConfirm.total - publishConfirm.runnable}{" "}
+                          条没过预检也会提交，大概率失败进「发布历史」
+                        </p>
+                      )
+                    ) : null}
                     {publishConfirm.autoNote ? (
                       <p className="temu-confirm-warn">{publishConfirm.autoNote}</p>
                     ) : null}
@@ -1963,7 +1993,8 @@ export function TemuDraftLibraryPage({
                           void runBatchPublish(undefined, groups);
                         }}
                       >
-                        确认发布（{publishConfirm.runnable} 条）
+                        确认发布（
+                        {publishConfirm.skipBroken ? publishConfirm.runnable : publishConfirm.total} 条）
                       </button>
                     </div>
                   </footer>

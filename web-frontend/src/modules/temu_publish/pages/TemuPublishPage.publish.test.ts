@@ -3069,7 +3069,18 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /className="temu-edit-dialog temu-batch-confirm"/);
   // 确认单上要写清发到哪家店、共几条、每组什么模板
   assert.match(library, /将提交到「\{publishConfirm\.shopName \|\| "当前店铺"\}」/);
-  assert.match(library, /确认发布（\{publishConfirm\.runnable\} 条）/);
+  // 「共发几条」必须等于点下去真会提交的条数（跳过开=只发预检过的；跳过关=组里全发）
+  assert.match(library, /确认发布（\s*\{publishConfirm\.skipBroken \? publishConfirm\.runnable : publishConfirm\.total\} 条）/);
+  assert.match(
+    library,
+    /共发 <b>\{publishConfirm\.skipBroken \? publishConfirm\.runnable : publishConfirm\.total\}<\/b> 条/,
+  );
+  // 被预检拦下的条数两种情况都要说清，分组行也要标「可发 N」，数字不能对不上
+  assert.match(library, /const runnableCounts = ready\.map\(/);
+  assert.match(library, /runnableCounts,/);
+  assert.match(library, /groupRunnable < group\.entries\.length \? /);
+  assert.match(library, /另有 \{publishConfirm\.total - publishConfirm\.runnable\}/);
+  assert.match(library, /条没过预检也会提交，大概率失败进「发布历史」/);
   assert.match(library, /模板「\{group\.template\?\.name \?\? "自动"\}」/);
   assert.match(css, /\.temu-batch-confirm \{/);
 
