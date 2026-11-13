@@ -4,11 +4,12 @@ import { createPortal } from "react-dom";
 import type { TemuDraftEdit, TemuDraftEntry } from "../types";
 import { BatchColumnDialog, type ColumnKind } from "./BatchColumnDialog";
 import {
-  resolveSkuPrice,
-  skuKeyOf,
+  SKU_FIELD_COLUMNS,
+  resolveSkuField,
   variantKeysOf,
-  variantLabel,
-  type SkuPriceStore,
+  type SkuField,
+  type SkuFieldMap,
+  type SkuFieldStore,
 } from "../data/skuPricing";
 
 /**
@@ -44,9 +45,15 @@ type Column = {
   decimals?: number;
 };
 
-/** 拆行模式唯一可批量改的列：申报价格 */
-const PRICE_COLUMN: Column =
-  { key: "declared_price", label: "申报价格(元)", group: "变种信息", width: 150, kind: "number", decimals: 2 };
+/** 拆行模式可改的列（价/货号/库存/尺寸/重量），复用同一套批量改弹窗 */
+const SKU_COLUMNS: Column[] = SKU_FIELD_COLUMNS.map((item) => ({
+  key: item.key,
+  label: item.label,
+  group: "变种信息",
+  width: item.width,
+  kind: item.kind,
+  decimals: item.decimals,
+}));
 
 const COLUMNS: Column[] = [
   { key: "title", label: "产品标题", group: "产品信息", width: 320, kind: "text" },
@@ -68,10 +75,10 @@ type Props = {
   entries: TemuDraftEntry[];
   /** 现有编辑（保存时在它上面合并） */
   edits: Record<string, TemuDraftEdit>;
-  /** 现有变种价（草稿 id → 变种 key → 元） */
-  skuPrices: SkuPriceStore;
+  /** 现有变种覆盖（草稿 id → 变种 key → 改过的字段） */
+  skuFields: SkuFieldStore;
   onSave: (next: Record<string, TemuDraftEdit>) => void;
-  onSaveSkuPrices: (next: SkuPriceStore) => void;
+  onSaveSkuFields: (next: SkuFieldStore) => void;
   onClose: () => void;
 };
 
@@ -87,9 +94,9 @@ function cellValue(entry: TemuDraftEntry, edit: TemuDraftEdit | undefined, key: 
 export function TemuBatchEditPage({
   entries,
   edits,
-  skuPrices,
+  skuFields,
   onSave,
-  onSaveSkuPrices,
+  onSaveSkuFields,
   onClose,
 }: Props) {
   /** 本地待保存的改动：id → 字段 → 值（'' = 清掉覆盖，回落到源数据） */
@@ -118,8 +125,10 @@ export function TemuBatchEditPage({
    * 图片 / 变种 / 申报价 / 库存(只读) 四列。
    */
   const [splitSku, setSplitSku] = useState(false);
-  /** 变种价草稿：保存时整体提交（空值 = 取消该变种的覆盖，回落整条价） */
-  const [skuDraft, setSkuDraft] = useState<SkuPriceStore>(() => ({ ...skuPrices }));
+  /** 变种覆盖草稿：保存时整体提交（空值 = 取消该变种的覆盖，回落整条值） */
+  const [skuDraft, setSkuDraft] = useState<SkuFieldStore>(() =>
+    JSON.parse(JSON.stringify(skuFields)),
+  );
   /** 拆行模式下勾选的变种：`草稿id::变种key` */
   const [pickedSku, setPickedSku] = useState<string[]>(() =>
     entries.flatMap((entry) =>
@@ -184,30 +193,58 @@ export function TemuBatchEditPage({
     });
   };
 
-  /** 改一个变种的价：空串 = 取消覆盖（回落整条价） */
-  const setSkuPrice = (entryId: string, variantKey: string, value: string) => {
+  /** 改一个变种的某个字段：空串 = 取消覆盖（回落整条值） */
+  const setSkuField = (entryId: string, variantKey: string, field: SkuField, value: string) => {
     setSkuDraft((current) => {
       const map = { ...(current[entryId] ?? {}) };
-      if (value.trim() === "") delete map[variantKey];
-      else map[variantKey] = value;
+      const item = { ...(map[variantKey] ?? {}) };
+      if (value.trim() === "") delete item[field];
+      else item[field] = value;
+      if (Object.keys(item).length) map[variantKey] = item;
+      else delete map[variantKey];
       return { ...current, [entryId]: map };
     });
   };
 
-  /** 拆行模式的批量改：按顺序写回勾选的变种 */
-  const applySkuPrices = (values: string[]) => {
+  /** 拆行模式的批量改：按顺序写回勾选的变种（某一个字段） */
+  const applySkuValues = (field: SkuField, values: string[]) => {
     setSkuDraft((current) => {
       const next = { ...current };
       pickedSkuRows.forEach(({ entry, variant }, index) => {
         const map = { ...(next[entry.id] ?? {}) };
+        const item = { ...(map[variant.key] ?? {}) };
         const value = String(values[index] ?? "").trim();
-        if (value === "") delete map[variant.key];
-        else map[variant.key] = value;
+        if (value === "") delete item[field];
+        else item[field] = value;
+        if (Object.keys(item).length) map[variant.key] = item;
+        else delete map[variant.key];
         next[entry.id] = map;
       });
       return next;
     });
     setActiveColumn(null);
+  };
+
+  /**
+   * 拆行模式某格的「回落值」：草稿自带的变体值优先于整条值
+   * （和发布链路一致：人设的变种覆盖 > 草稿变体值 > 整条值）。
+   */
+  const skuBaseOf = (
+    entry: TemuDraftEntry,
+    variant: { color: string; size: string },
+    field: SkuField,
+  ): string => {
+    const found = (entry.variants ?? []).find(
+      (item) => String(item.color ?? "").trim() === variant.color && String(item.size ?? "").trim() === variant.size,
+    );
+    if (found) {
+      if (field === "declared_price" && typeof found.price === "number" && found.price > 0) {
+        return String(found.price);
+      }
+      if (field === "stock" && typeof found.stock === "number") return String(found.stock);
+      if (field === "sku" && found.sku) return found.sku;
+    }
+    return valueOf(entry, field);
   };
 
   const applyColumnValues = (key: BatchEditField, values: string[]) => {
@@ -236,14 +273,19 @@ export function TemuBatchEditPage({
   };
 
   const dirtyRows = Object.keys(draft).length;
-  /** 变种价改过几条（和进来时比） */
+  /** 变种覆盖改过几条（和进来时比） */
   const dirtySkuRows = entries.filter((entry) => {
-    const before = skuPrices[entry.id] ?? {};
+    const before = skuFields[entry.id] ?? {};
     const after = skuDraft[entry.id] ?? {};
     const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
-    return Array.from(keys).some(
-      (key) => String(before[key] ?? "").trim() !== String(after[key] ?? "").trim(),
-    );
+    return Array.from(keys).some((key) => {
+      const a = after[key] ?? {};
+      const b = before[key] ?? {};
+      const fields = new Set([...Object.keys(a), ...Object.keys(b)]);
+      return Array.from(fields).some(
+        (field) => String(a[field as SkuField] ?? "").trim() !== String(b[field as SkuField] ?? "").trim(),
+      );
+    });
   }).length;
 
   const toggleField = (key: BatchEditField) => {
@@ -270,17 +312,21 @@ export function TemuBatchEditPage({
     });
     onSave(next);
 
-    // 变种价：只留非空值；一条草稿一个变种都没设就整条删掉
-    const nextSku: SkuPriceStore = {};
+    // 变种覆盖：只留非空值；一条草稿一个变种都没设就整条删掉
+    const nextSku: SkuFieldStore = {};
     Object.entries(skuDraft).forEach(([id, map]) => {
-      const clean: Record<string, string> = {};
-      Object.entries(map).forEach(([key, value]) => {
-        const text = String(value ?? "").trim();
-        if (text) clean[key] = text;
+      const clean: SkuFieldMap = {};
+      Object.entries(map ?? {}).forEach(([key, fields]) => {
+        const item: Record<string, string> = {};
+        Object.entries(fields ?? {}).forEach(([field, value]) => {
+          const text = String(value ?? "").trim();
+          if (text) item[field] = text;
+        });
+        if (Object.keys(item).length) clean[key] = item;
       });
       if (Object.keys(clean).length) nextSku[id] = clean;
     });
-    onSaveSkuPrices(nextSku);
+    onSaveSkuFields(nextSku);
   };
 
   // Esc 关闭：整页覆盖时必须留一条键盘退路（弹窗开着时先关弹窗）
@@ -316,7 +362,7 @@ export function TemuBatchEditPage({
           <button type="button" className="temu-btn temu-btn-primary" onClick={save}>
             保存
             {dirtyRows || dirtySkuRows
-              ? `（改了 ${dirtyRows} 条${dirtySkuRows ? ` / ${dirtySkuRows} 条变种价` : ""}）`
+              ? `（改了 ${dirtyRows} 条${dirtySkuRows ? ` / ${dirtySkuRows} 条变种` : ""}）`
               : ""}
           </button>
         </div>
@@ -376,8 +422,8 @@ export function TemuBatchEditPage({
         <p className="temu-batch-edit-tip">
           {splitSku ? (
             <>
-              一条草稿按变种拆成多行，<b>只放开申报价</b>（其余字段整条共用）。
-              变种价留空 = 跟随整条价；批量改只动勾选的变种（{pickedSkuRows.length}/{skuRows.length}）。
+              一条草稿按变种拆成多行：<b>价格 / 货号 / 库存 / 尺寸 / 重量</b> 都可按变种单独设。
+              输入框留空 = 跟随整条值；批量改只动勾选的变种（{pickedSkuRows.length}/{skuRows.length}）。
             </>
           ) : (
             <>
@@ -423,79 +469,79 @@ export function TemuBatchEditPage({
                   />
                 </th>
                 <th className="col-thumb">产品图片</th>
-                <th style={{ width: 200 }}>变种</th>
-                <th style={{ width: 160 }}>
-                  <span className="temu-batch-edit-th-label">申报价格(元)</span>
-                  <button
-                    type="button"
-                    className="temu-batch-edit-th-batch"
-                    disabled={!pickedSkuRows.length}
-                    onClick={() => setActiveColumn(PRICE_COLUMN)}
-                    title={
-                      pickedSkuRows.length
-                        ? `批量改勾选的 ${pickedSkuRows.length} 个变种价`
-                        : "先勾选要改的变种"
-                    }
-                  >
-                    批量改
-                  </button>
-                </th>
-                <th style={{ width: 100 }}>库存</th>
-                <th className="col-variants">定价</th>
+                <th style={{ width: 170 }}>变种</th>
+                {SKU_COLUMNS.map((column) => (
+                  <th key={column.key} style={{ width: column.width }}>
+                    <span className="temu-batch-edit-th-label">{column.label}</span>
+                    <button
+                      type="button"
+                      className="temu-batch-edit-th-batch"
+                      disabled={!pickedSkuRows.length}
+                      onClick={() => setActiveColumn(column)}
+                      title={
+                        pickedSkuRows.length
+                          ? `批量改勾选的 ${pickedSkuRows.length} 个变种的${column.label}`
+                          : "先勾选要改的变种"
+                      }
+                    >
+                      批量改
+                    </button>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {skuRows.map(({ entry, variant, rowKey }) => {
-                const base = valueOf(entry, "declared_price");
-                const own = skuDraft[entry.id]?.[variant.key] ?? "";
-                const effective = resolveSkuPrice(base, skuDraft[entry.id], variant.key);
-                return (
-                  <tr key={rowKey} className={pickedSku.includes(rowKey) ? "" : "is-unpicked"}>
-                    <td className="col-pick">
-                      <input
-                        type="checkbox"
-                        checked={pickedSku.includes(rowKey)}
-                        onChange={() =>
-                          setPickedSku((current) =>
-                            current.includes(rowKey)
-                              ? current.filter((item) => item !== rowKey)
-                              : [...current, rowKey],
-                          )
-                        }
-                        title="勾上的变种才会被「批量改」改到"
-                      />
-                    </td>
-                    <td className="col-thumb">
-                      {entry.main_image || entry.images?.[0] ? (
-                        <img src={entry.main_image || entry.images[0]} alt="" />
-                      ) : (
-                        <span className="temu-muted">无图</span>
-                      )}
-                    </td>
-                    <td>
-                      <strong>{variant.label}</strong>
-                      <span className="temu-muted">{(entry.title || "").slice(0, 18)}</span>
-                    </td>
-                    <td>
-                      <input
-                        className={`temu-batch-edit-input${own ? " is-dirty" : ""}`}
-                        value={own}
-                        placeholder={base || "—"}
-                        title={`留空 = 用整条价 ${base || "（未设）"}；当前生效 ${effective || "—"}`}
-                        onChange={(event) => setSkuPrice(entry.id, variant.key, event.target.value)}
-                      />
-                    </td>
-                    <td className="temu-muted">{valueOf(entry, "stock") || "—"}</td>
-                    <td className="col-variants">
-                      {own ? <b>¥{effective}</b> : "跟随整条"}
-                    </td>
-                  </tr>
-                );
-              })}
+              {skuRows.map(({ entry, variant, rowKey }) => (
+                <tr key={rowKey} className={pickedSku.includes(rowKey) ? "" : "is-unpicked"}>
+                  <td className="col-pick">
+                    <input
+                      type="checkbox"
+                      checked={pickedSku.includes(rowKey)}
+                      onChange={() =>
+                        setPickedSku((current) =>
+                          current.includes(rowKey)
+                            ? current.filter((item) => item !== rowKey)
+                            : [...current, rowKey],
+                        )
+                      }
+                      title="勾上的变种才会被「批量改」改到"
+                    />
+                  </td>
+                  <td className="col-thumb">
+                    {entry.main_image || entry.images?.[0] ? (
+                      <img src={entry.main_image || entry.images[0]} alt="" />
+                    ) : (
+                      <span className="temu-muted">无图</span>
+                    )}
+                  </td>
+                  <td>
+                    <strong>{variant.label}</strong>
+                    <span className="temu-muted">{(entry.title || "").slice(0, 18)}</span>
+                  </td>
+                  {SKU_COLUMNS.map((column) => {
+                    const field = column.key as SkuField;
+                    const base = skuBaseOf(entry, variant, field);
+                    const own = skuDraft[entry.id]?.[variant.key]?.[field] ?? "";
+                    return (
+                      <td key={column.key}>
+                        <input
+                          className={`temu-batch-edit-input${own ? " is-dirty" : ""}`}
+                          value={own}
+                          placeholder={base || "—"}
+                          title={`留空 = 用整条值 ${base || "（未设）"}${base ? `；当前生效 ${own || base}` : ""}`}
+                          onChange={(event) =>
+                            setSkuField(entry.id, variant.key, field, event.target.value)
+                          }
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
               {!skuRows.length ? (
                 <tr>
-                  <td className="temu-muted" colSpan={6}>
-                    勾选的草稿没有变种（单 SKU）——关掉「按变种拆行」直接改整条价即可。
+                  <td className="temu-muted" colSpan={SKU_COLUMNS.length + 3}>
+                    勾选的草稿没有变种（单 SKU）——关掉「按变种拆行」直接改整条值即可。
                   </td>
                 </tr>
               ) : null}
@@ -621,21 +667,21 @@ export function TemuBatchEditPage({
       </div>
 
       {activeColumn ? (
-        splitSku && activeColumn.key === "declared_price" ? (
+        splitSku ? (
           <BatchColumnDialog
-            label="申报价格(元)"
-            kind="number"
-            decimals={2}
+            label={activeColumn.label}
+            kind={activeColumn.kind}
+            decimals={activeColumn.decimals ?? 0}
             rows={pickedSkuRows.map(({ entry, variant }) => ({
-              value: resolveSkuPrice(
-                valueOf(entry, "declared_price"),
-                skuDraft[entry.id],
-                variant.key,
+              value: resolveSkuField(
+                skuDraft[entry.id]?.[variant.key],
+                activeColumn.key as SkuField,
+                skuBaseOf(entry, variant, activeColumn.key as SkuField),
               ),
               color: variant.color,
               size: variant.size,
             }))}
-            onApply={(values) => applySkuPrices(values)}
+            onApply={(values) => applySkuValues(activeColumn.key as SkuField, values)}
             onClose={() => setActiveColumn(null)}
           />
         ) : (

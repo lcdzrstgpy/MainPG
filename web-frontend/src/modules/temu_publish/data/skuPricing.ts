@@ -2,27 +2,57 @@ import type { TemuDraftEntry } from "../types";
 import { yuanToCents } from "../utils/price.ts";
 
 /**
- * 变种级申报价：一条草稿里按变种单独定价。
+ * 变种级 SKU 字段：一条草稿里按变种单独定价 / 定库存 / 定尺寸重量 / 定货号。
  *
- * 背景：一条草稿 4 个颜色，以前只能整条一个价（¥150 全卖 150）。
- * 想「黑色 169、其他 150」做不到 —— 只能整条同价。
+ * 背景：衣服鞋包按尺码、箱包按款式，长宽高重量本来就不同；不同颜色库存也不同。
+ * 「整条一个价、一个尺寸」只能应付单 SKU 商品。
  *
- * 存储：`{ 草稿id: { 变种key: 价格(元) } }`，只存**改过价**的变种；
- * 没设的变种回落整条价，所以不用每个都填。
+ * 存储：`{ 草稿id: { 变种key: {字段: 值} } }`，只存**改过**的字段；
+ * 没设的字段回落整条值，所以不用每个都填。
  *
- * ⚠️ 取价只走 `resolveSkuPrice` 这一个函数（批量组装 / 单件预填 / 批量编辑显示
+ * ⚠️ 取值只走 `resolveSkuField` 这一个函数（批量组装 / 单件预填 / 批量编辑显示
  * 全部用它）。价格是唯一算错就直接亏钱的字段，散着写迟早出现
  * 「界面显示 169、发出去 150」。
  */
 
-/** 一条草稿的变种价：变种 key → 价格（元，字符串，和表单一致） */
-export type SkuPriceMap = Record<string, string>;
+/** 能按变种单独设的字段（都和 TemuDraftEdit / VariantRow 对齐） */
+export type SkuField =
+  | "declared_price"
+  | "stock"
+  | "weight_g"
+  | "length_cm"
+  | "width_cm"
+  | "height_cm"
+  | "sku";
 
-/** 所有草稿的变种价：草稿 id → 变种价 */
-export type SkuPriceStore = Record<string, SkuPriceMap>;
+/** 一个变种改过的字段：字段 → 值（空串 = 取消覆盖，回落整条） */
+export type SkuVariantFields = Partial<Record<SkuField, string>>;
+
+/** 一条草稿的变种覆盖：变种 key → 改过的字段 */
+export type SkuFieldMap = Record<string, SkuVariantFields>;
+
+/** 所有草稿的变种覆盖：草稿 id → 变种覆盖 */
+export type SkuFieldStore = Record<string, SkuFieldMap>;
 
 /** 本机存储 key（按账号 scope 后使用） */
-export const DRAFT_SKU_PRICES_KEY = "temu_draft_sku_prices_v1";
+export const DRAFT_SKU_FIELDS_KEY = "temu_draft_sku_fields_v1";
+
+/** 按变种拆行时可改的列（顺序 = 表格列序） */
+export const SKU_FIELD_COLUMNS: Array<{
+  key: SkuField;
+  label: string;
+  width: number;
+  kind: "text" | "number" | "sku";
+  decimals?: number;
+}> = [
+  { key: "declared_price", label: "申报价格(元)", width: 112, kind: "number", decimals: 2 },
+  { key: "sku", label: "SKU货号", width: 132, kind: "sku" },
+  { key: "stock", label: "库存", width: 86, kind: "number", decimals: 0 },
+  { key: "weight_g", label: "重量(g)", width: 92, kind: "number", decimals: 0 },
+  { key: "length_cm", label: "长(cm)", width: 88, kind: "number", decimals: 1 },
+  { key: "width_cm", label: "宽(cm)", width: 88, kind: "number", decimals: 1 },
+  { key: "height_cm", label: "高(cm)", width: 88, kind: "number", decimals: 1 },
+];
 
 /**
  * 变种 key：颜色 + 尺码。
@@ -38,26 +68,35 @@ export function skuKeyOf(color?: string | null, size?: string | null): string {
 }
 
 /**
- * 取一个变种的申报价（元）。
+ * 取一个变种某个字段的值。
  *
- * 顺序：变种价 → 整条价 → 空串。
- * 「变种价」只在**非空**时才算数：界面上把输入框清空表示「取消这个变种的覆盖」，
- * 要回落到整条价，不能当成 0 元发出去。
+ * 顺序：变种值 → 整条值 → 空串。
+ * 「变种值」只在**非空**时才算数：界面上把输入框清空表示「取消这个变种的覆盖」，
+ * 要回落到整条值，不能当成 0 / 空发出去。
  */
-export function resolveSkuPrice(
-  basePrice: string | undefined,
-  overrides: SkuPriceMap | undefined,
-  key: string,
+export function resolveSkuField(
+  variant: SkuVariantFields | undefined,
+  field: SkuField,
+  baseValue: string | number | undefined | null,
 ): string {
-  const own = overrides?.[key];
-  if (own !== undefined && own.trim() !== "") return own.trim();
-  return String(basePrice ?? "").trim();
+  const own = variant?.[field];
+  if (own !== undefined && String(own).trim() !== "") return String(own).trim();
+  return String(baseValue ?? "").trim();
 }
 
-/** 同上，但直接给「分」：批量组装 payload 用这个，避免两处各转一次单位 */
+/** 申报价（元）：便捷写法 */
+export function resolveSkuPrice(
+  basePrice: string | undefined,
+  overrides: SkuFieldMap | undefined,
+  key: string,
+): string {
+  return resolveSkuField(overrides?.[key], "declared_price", basePrice);
+}
+
+/** 申报价（分）：批量组装 payload 用，避免两处各转一次单位 */
 export function resolveSkuPriceCents(
   basePrice: string | undefined,
-  overrides: SkuPriceMap | undefined,
+  overrides: SkuFieldMap | undefined,
   key: string,
   label = "申报价格",
 ): number {
@@ -77,7 +116,7 @@ export function variantLabel(color?: string | null, size?: string | null): strin
  *
  * 优先用 `variants`（AI/POD 导出的真实变种列表）；没有就按
  * `spec_values_1 × spec_values_2` 铺组合；再没有就用单值字段。
- * 全都没有 → 返回一个空 key 的「单 SKU」项，调用方按整条价处理。
+ * 全都没有 → 返回一个空 key 的「单 SKU」项，调用方按整条值处理。
  */
 export function variantKeysOf(
   entry: Pick<TemuDraftEntry, "variants" | "spec_values_1" | "spec_values_2" | "spec_value_1" | "spec_value_2">,

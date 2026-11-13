@@ -16,7 +16,7 @@ import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
 import { TemplateLoadDialog, TemplateSaveDialog } from "../components/TemplateDialogs";
-import { resolveSkuPrice, skuKeyOf } from "../data/skuPricing";
+import { resolveSkuField, skuKeyOf, type SkuField } from "../data/skuPricing";
 import {
   APPAREL_CAROUSEL_HEIGHT,
   APPAREL_CAROUSEL_SHAPE,
@@ -1201,6 +1201,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     };
   }
 
+  /**
+   * 一个变种某个字段的值：**人手设的变种覆盖** > 草稿自带 > 整条值。
+   * 和批量组装（batchPublish.skuFields）同一个取值函数，别写第二份。
+   */
+  function skuFieldOf(
+    prefill: TemuPublishPrefill,
+    colorName: string,
+    sizeName: string,
+    field: SkuField,
+    base: string | number | undefined,
+  ): string {
+    return resolveSkuField(prefill.skuFields?.[skuKeyOf(colorName, sizeName)], field, base);
+  }
+
   /** 草稿值铺到某一变种行：kg→g，价格/库存/尺寸直接搬。 */
   function prefillToRow(row: VariantRow, prefill: TemuPublishPrefill): VariantRow {
     const weightKg = Number(prefill.weightKg);
@@ -1233,9 +1247,21 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     );
     if (variants.length <= 1) {
       const row = prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill);
-      // 单 SKU 也可能被「按变种改价」覆盖过（key 就是草稿里那个规格值）
-      const own = resolveSkuPrice(row.supplierPrice, prefill.skuPrices, skuKeyOf(row.colorName, row.sizeName));
-      return [own ? { ...row, supplierPrice: own } : row];
+      // 单 SKU 也可能被「按变种改」覆盖过（key 就是草稿里那个规格值）
+      return [
+        {
+          ...row,
+          extCode: skuFieldOf(prefill, row.colorName, row.sizeName, "sku", row.extCode) || row.extCode,
+          supplierPrice:
+            skuFieldOf(prefill, row.colorName, row.sizeName, "declared_price", row.supplierPrice) ||
+            row.supplierPrice,
+          stock: skuFieldOf(prefill, row.colorName, row.sizeName, "stock", row.stock),
+          weightG: skuFieldOf(prefill, row.colorName, row.sizeName, "weight_g", row.weightG),
+          lengthCm: skuFieldOf(prefill, row.colorName, row.sizeName, "length_cm", row.lengthCm),
+          widthCm: skuFieldOf(prefill, row.colorName, row.sizeName, "width_cm", row.widthCm),
+          heightCm: skuFieldOf(prefill, row.colorName, row.sizeName, "height_cm", row.heightCm),
+        },
+      ];
     }
     const fallbackSize = prefill.specValue2 || "";
     return variants.map((variant, index) => {
@@ -1247,23 +1273,36 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         index,
       );
       const merged = prefillToRow(base, prefill);
+      const color = variant.color || merged.colorName;
+      const size = variant.size || merged.sizeName;
       return {
         ...merged,
-        extCode: variant.sku || merged.extCode,
-        colorName: variant.color || merged.colorName,
-        sizeName: variant.size || merged.sizeName,
-        // 申报价优先级：**人手动设的变种价** > 草稿自带的变体价 > 整条价
-        // （手动改价是最新的决定，不能被导出时的旧价盖掉）
+        colorName: color,
+        sizeName: size,
+        // 每个字段都按「人手设的变种覆盖 > 草稿自带 > 整条值」取（同 batchPublish）；
+        // 库存 0 是合法值（先建品后补货），不能用 || 兜掉
+        extCode: skuFieldOf(prefill, color, size, "sku", variant.sku || merged.extCode) || merged.extCode,
         supplierPrice:
-          resolveSkuPrice(
+          skuFieldOf(
+            prefill,
+            color,
+            size,
+            "declared_price",
             typeof variant.price === "number" && variant.price > 0
               ? String(variant.price)
               : merged.supplierPrice,
-            prefill.skuPrices,
-            skuKeyOf(variant.color || merged.colorName, variant.size || merged.sizeName),
           ) || merged.supplierPrice,
-        // 库存 0 是合法值（先建品后补货），不能用 || 兜掉
-        stock: typeof variant.stock === "number" ? String(variant.stock) : merged.stock,
+        stock: skuFieldOf(
+          prefill,
+          color,
+          size,
+          "stock",
+          typeof variant.stock === "number" ? String(variant.stock) : merged.stock,
+        ),
+        weightG: skuFieldOf(prefill, color, size, "weight_g", merged.weightG),
+        lengthCm: skuFieldOf(prefill, color, size, "length_cm", merged.lengthCm),
+        widthCm: skuFieldOf(prefill, color, size, "width_cm", merged.widthCm),
+        heightCm: skuFieldOf(prefill, color, size, "height_cm", merged.heightCm),
         thumbUrl: variant.image || merged.thumbUrl,
       };
     });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  resolveSkuField,
   resolveSkuPrice,
   resolveSkuPriceCents,
   skuKeyOf,
@@ -25,16 +26,28 @@ test("skuKeyOf：颜色 / 颜色|尺码，值里的 | 会被替换避免撞键",
   assert.equal(skuKeyOf(undefined, undefined), "");
 });
 
-test("resolveSkuPrice：变种价优先，空/未设回落整条价", () => {
-  const overrides = { "黑色": "169", "棕色": "158.5" };
+test("resolveSkuField：变种值优先，空/未设回落整条值（价/库存/尺寸同一套规则）", () => {
+  const overrides = {
+    "黑色": { declared_price: "169", stock: "7", weight_g: "620" },
+    "棕色": { declared_price: "158.5" },
+  };
   assert.equal(resolveSkuPrice("150", overrides, "黑色"), "169");
   assert.equal(resolveSkuPrice("150", overrides, "棕色"), "158.5");
+  // 同一套规则对库存/重量也成立
+  assert.equal(resolveSkuField(overrides["黑色"], "stock", "1"), "7");
+  assert.equal(resolveSkuField(overrides["黑色"], "weight_g", "500"), "620");
+  assert.equal(resolveSkuField(overrides["棕色"], "stock", "1"), "1", "没设的字段回落整条");
   // 没设过的变种
   assert.equal(resolveSkuPrice("150", overrides, "泥色"), "150");
-  // 整条价也没有 → 空（交给后面的校验报错，不能悄悄变成 0）
+  // 整条值也没有 → 空（交给后面的校验报错，不能悄悄变成 0）
   assert.equal(resolveSkuPrice(undefined, overrides, "泥色"), "");
   // 覆盖值是空串 = 取消覆盖
-  assert.equal(resolveSkuPrice("150", { "黑色": "  " }, "黑色"), "150");
+  assert.equal(resolveSkuPrice("150", { "黑色": { declared_price: "  " } }, "黑色"), "150");
+  // 尺寸这类数字字段也能按变种设
+  assert.equal(
+    resolveSkuField({ "黑色|M": { length_cm: "42" } }["黑色|M"], "length_cm", "35"),
+    "42",
+  );
   // 前后空格要裁掉（用户粘贴常见）
   assert.equal(resolveSkuPrice(" 150 ", overrides, "泥色"), "150");
   // 没有 override map 也不能炸
@@ -42,12 +55,12 @@ test("resolveSkuPrice：变种价优先，空/未设回落整条价", () => {
 });
 
 test("resolveSkuPriceCents：换算成分，非法值直接抛（不许静默成 0）", () => {
-  const overrides = { "黑色": "169" };
+  const overrides = { "黑色": { declared_price: "169" } };
   assert.equal(resolveSkuPriceCents("150", overrides, "黑色"), 16900);
   assert.equal(resolveSkuPriceCents("150", overrides, "泥色"), 15000);
   assert.throws(() => resolveSkuPriceCents("", overrides, "泥色"), /申报价格必须填/);
-  assert.throws(() => resolveSkuPriceCents("150", { "黑色": "abc" }, "黑色"), /申报价格请按/);
-  assert.throws(() => resolveSkuPriceCents("150", { "黑色": "0" }, "黑色"), /大于 0/);
+  assert.throws(() => resolveSkuPriceCents("150", { "黑色": { declared_price: "abc" } }, "黑色"), /申报价格请按/);
+  assert.throws(() => resolveSkuPriceCents("150", { "黑色": { declared_price: "0" } }, "黑色"), /大于 0/);
 });
 
 test("variantLabel：有尺码才拼竖线", () => {

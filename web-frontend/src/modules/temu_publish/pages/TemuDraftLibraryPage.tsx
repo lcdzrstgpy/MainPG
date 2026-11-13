@@ -14,11 +14,7 @@ import { categorySearchTexts } from "../utils/categoryMatch";
 import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
 import { DRAFT_IMAGES_KEY, resolveEntryImages } from "../data/draftImages";
-import {
-  DRAFT_SKU_PRICES_KEY,
-  resolveSkuPrice,
-  type SkuPriceStore,
-} from "../data/skuPricing";
+import { DRAFT_SKU_FIELDS_KEY, type SkuFieldStore } from "../data/skuPricing";
 import { precheckBatchItem } from "../data/batchPrecheck";
 import { autoFillSourceTexts } from "../data/attrAutofill";
 import { estimateAttributePicks } from "../data/attrEstimate";
@@ -112,12 +108,12 @@ function loadDraftEdits(): Record<string, TemuDraftEdit> {
   }
 }
 
-/** 「按变种改价」的结果：草稿 id → 变种 key → 元（只存改过的变种） */
-function loadDraftSkuPrices(): SkuPriceStore {
+/** 「按变种改」的结果：草稿 id → 变种 key → 改过的字段（只存改过的） */
+function loadDraftSkuFields(): SkuFieldStore {
   try {
-    const raw = window.localStorage.getItem(scoped(DRAFT_SKU_PRICES_KEY));
+    const raw = window.localStorage.getItem(scoped(DRAFT_SKU_FIELDS_KEY));
     const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? (parsed as SkuPriceStore) : {};
+    return parsed && typeof parsed === "object" ? (parsed as SkuFieldStore) : {};
   } catch {
     return {};
   }
@@ -495,8 +491,8 @@ function entryPrefill(
   attrPrefills?: Record<string, DraftAttrPrefill>,
   /** 「批量编辑产品图片」改过的图；不传就用草稿自带的轮播图 */
   imageOverrides?: Record<string, string[]>,
-  /** 「按变种改价」的覆盖：草稿 id → 变种 key → 元 */
-  skuPriceOverrides?: SkuPriceStore,
+  /** 「按变种改」的覆盖：草稿 id → 变种 key → 改过的字段 */
+  skuPriceOverrides?: SkuFieldStore,
 ): TemuPublishPrefill {
   const weightG = numericText(entry.weight_g);
   const length = numericText(entry.length_cm);
@@ -515,8 +511,8 @@ function entryPrefill(
     sourceKind: entry.source,
     // 草稿和发布页现在都用「元」，原样带过去；换算成「分」是提交前的事
     supplierPrice: moneyText(entry.declared_price),
-    // 变种价：只带这条草稿自己的；取价统一走 resolveSkuPrice
-    skuPrices: skuPriceOverrides?.[entry.id],
+    // 变种覆盖：只带这条草稿自己的；取值统一走 resolveSkuField
+    skuFields: skuPriceOverrides?.[entry.id],
     suggestedPrice: moneyText(entry.suggested_price),
     // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
     stock: numericText(entry.stock),
@@ -570,8 +566,8 @@ export function TemuDraftLibraryPage({
    * save 时统一 String()，数组进去会被拍成 "[object Object]"。
    */
   const [imageEdits, setImageEdits] = useState<Record<string, string[]>>(loadDraftImages);
-  /** 变种级申报价：草稿 id → 变种 key → 元（只存单独定过价的变种） */
-  const [skuPrices, setSkuPrices] = useState<SkuPriceStore>(loadDraftSkuPrices);
+  /** 变种级 SKU 覆盖：草稿 id → 变种 key → 改过的字段（价/库存/尺寸/重量/货号） */
+  const [skuFields, setSkuFields] = useState<SkuFieldStore>(loadDraftSkuFields);
   const [categories, setCategories] = useState<string[]>(() =>
     loadMap<string[]>(scoped(DRAFT_CATS_KEY), []),
   );
@@ -803,7 +799,7 @@ export function TemuDraftLibraryPage({
       // 清不掉也无所谓：标记只消费一次
     }
     const target = entries.find((entry) => entry.id === focusId);
-    if (target) onUseDraft(entryPrefill(target, categoryMemo, attrPrefills, imageEdits, skuPrices));
+    if (target) onUseDraft(entryPrefill(target, categoryMemo, attrPrefills, imageEdits, skuFields));
   }, [entries, categoryMemo, attrPrefills, onUseDraft]);
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
@@ -1024,7 +1020,7 @@ export function TemuDraftLibraryPage({
   /** 「用于发布」二次确认：确认后才把这条草稿带进发布页。 */
   const confirmUseDraft = () => {
     if (!confirmEntry) return;
-    onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills, imageEdits, skuPrices));
+    onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills, imageEdits, skuFields));
     setConfirmEntry(null);
   };
 
@@ -1071,7 +1067,7 @@ export function TemuDraftLibraryPage({
       }));
     }
     return batchTargets.map((entry) => {
-      const precheck = precheckBatchItem(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuPrices), template, variant);
+      const precheck = precheckBatchItem(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields), template, variant);
       return {
         id: entry.id,
         title: entry.title || entry.sku || "（无标题）",
@@ -1360,7 +1356,7 @@ export function TemuDraftLibraryPage({
           group.entries.filter(
             (entry) =>
               precheckBatchItem(
-                entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuPrices),
+                entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
                 group.template as ProductTemplate,
                 variantForCheck,
               ).blocked.length === 0,
@@ -1450,7 +1446,7 @@ export function TemuDraftLibraryPage({
           ? group.entries.filter(
               (entry) =>
                 precheckBatchItem(
-                  entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuPrices),
+                  entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
                   groupTemplate,
                   variant,
                 ).blocked.length === 0,
@@ -1512,7 +1508,7 @@ export function TemuDraftLibraryPage({
         });
         try {
           const draft = await buildDraftForPublish(
-            entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuPrices),
+            entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
             itemTemplate,
             variant,
           );
@@ -1554,7 +1550,7 @@ export function TemuDraftLibraryPage({
             traceId: parsed.traceId,
             // 带上重试要用的字段 + 批量用的类目，否则「重试」回填不出类目，只会再失败一次
             prefill: {
-              ...entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuPrices),
+              ...entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
               categoryPath: categoryMemo?.[entry.id]?.path ?? itemTemplate.categoryPath,
             },
           });
@@ -2272,7 +2268,7 @@ export function TemuDraftLibraryPage({
                         type="button"
                         className="temu-btn"
                         title="带这条草稿进发布页，改完所有信息后再提交"
-                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuPrices))}
+                        onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields))}
                       >
                         编辑
                       </button>
@@ -2359,14 +2355,14 @@ export function TemuDraftLibraryPage({
         <TemuBatchEditPage
           entries={entries.filter((entry) => selected.has(entry.id))}
           edits={edits}
-          skuPrices={skuPrices}
+          skuFields={skuFields}
           onSave={(next) => {
             setEdits(next);
             saveMap(scoped(DRAFT_EDITS_KEY), next);
           }}
-          onSaveSkuPrices={(next) => {
-            setSkuPrices(next);
-            saveMap(scoped(DRAFT_SKU_PRICES_KEY), next);
+          onSaveSkuFields={(next) => {
+            setSkuFields(next);
+            saveMap(scoped(DRAFT_SKU_FIELDS_KEY), next);
             setBatchEditOpen(false);
           }}
           onClose={() => setBatchEditOpen(false)}
