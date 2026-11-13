@@ -399,6 +399,13 @@ export type TemuPublishPrefill = {
   sourceKind?: "ai" | "pod";
   /** 申报价（单位：元，如 "12.99"；提交时由发布页换算成接口要的「分」） */
   supplierPrice?: string;
+  /**
+   * 变种级申报价（变种 key「颜色|尺码」→ 元）。
+   *
+   * 只存单独定过价的变种；没设的回落到 supplierPrice。
+   * 取价一律走 data/skuPricing.ts 的 resolveSkuPrice，别在别处再写一遍。
+   */
+  skuPrices?: Record<string, string>;
   /** 建议售价（单位：元） */
   suggestedPrice?: string;
   stock?: string;

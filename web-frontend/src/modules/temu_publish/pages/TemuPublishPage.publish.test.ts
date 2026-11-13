@@ -426,7 +426,7 @@ test("价格全链路用「元」，只在提交前换成分", () => {
 
   // 批量发布复用同一份，不许各写一套
   assert.match(batch, /import \{ yuanToCents \} from "\.\.\/utils\/price";/);
-  assert.match(batch, /supplier_price: priceCents,/);
+  assert.match(batch, /supplier_price: supplierPriceCents,/);
   assert.doesNotMatch(batch, /function yuanToCents\(/, "批量发布不该再自己实现一份换算");
 
   // 输入框本身是元：label 与 placeholder 都不能再让人按分填
@@ -493,7 +493,7 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
 
   // 「编辑」直接带这条草稿进发布页（草稿库小弹窗改不了类目/属性/图片）
   assert.match(library, /title="带这条草稿进发布页，改完所有信息后再提交"/);
-  assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits\)\)\}/);
+  assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits, skuPrices\)\)\}/);
 
   // 点「用于发布」不再直接带入：先弹确认
   assert.match(library, /onClick=\{\(\) => setConfirmEntry\(entry\)\}/);
@@ -504,7 +504,7 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
   assert.match(library, /申报价格/);
   assert.match(library, /库存/);
   assert.match(library, /const confirmUseDraft = \(\) => \{/);
-  assert.match(library, /onUseDraft\(entryPrefill\(confirmEntry, categoryMemo, attrPrefills, imageEdits\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(confirmEntry, categoryMemo, attrPrefills, imageEdits, skuPrices\)\);/);
   assert.match(library, /确定发布/);
   // 库存不可用时要明确提醒（半托管 ≥1）
   assert.match(library, /库存没有可用值：Temu 半托管要求 ≥1/);
@@ -979,7 +979,7 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
   // 变种值发不出去必须报错，不许静默吞成单 SKU
   assert.match(batch, /这些变种会被吞成单个 SKU/);
   assert.match(batch, /这个类目不支持颜色\/尺码规格/);
-  assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\]\)\],/);
+  assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\], singleCents\)\],/);
   assert.ok(
     batch.indexOf("if (!colorAxis && !sizeAxis) {") < batch.indexOf("const colorSpec = colorAxis"),
     "单 SKU 分支必须排在规格解析之前",
@@ -2852,7 +2852,7 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_FOCUS_KEY, item\.draft_id\);/);
   assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
   assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_FOCUS_KEY\)/);
-  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills, imageEdits\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills, imageEdits, skuPrices\)\);/);
 });
 
 test("批量发布：先预检再提交，发不出去的默认跳过", () => {
@@ -3078,7 +3078,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
   assert.match(library, /template: groupTemplate,/);
   assert.match(library, /const \{ entry, template: itemTemplate \} = task;/);
-  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits\),\s*\n\s*itemTemplate,/);
+  assert.match(library, /await buildDraftForPublish\(\s*\n\s*entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits, skuPrices\),\s*\n\s*itemTemplate,/);
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
   assert.ok(
     library.includes("void runBatchPublish(undefined, groups);"),
@@ -3225,4 +3225,34 @@ test("批量编辑产品图片：整页抄店小秘，改完真的进发布链�
   // 三条链路共用同一个取图函数（用于发布 / 批量发布 / 本页）
   assert.match(library, /images: resolveEntryImages\(entry, imageOverrides\)/);
   assert.match(page, /resolveEntryImages\(entry, imageEdits\)/);
+});
+
+test("变种级定价：按 SKU 改价，取价只走一个函数", () => {
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  const pricing = readFileSync(new URL("../data/skuPricing.ts", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const editor = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+
+  // 取价逻辑只有 skuPricing 一份：变种价 → 整条价 → 空
+  assert.match(pricing, /export function resolveSkuPrice\(/);
+  assert.match(pricing, /if \(own !== undefined && own\.trim\(\) !== ""\) return own\.trim\(\);/);
+  assert.match(pricing, /return String\(basePrice \?\? ""\)\.trim\(\);/);
+
+  // 批量组装：多 SKU 与单 SKU 两条路都按变种 key 取价
+  assert.match(batch, /resolveSkuPriceCents\(basePrice, prefill\.skuPrices, skuKeyOf\(color, size\)\)/);
+  assert.match(batch, /resolveSkuPriceCents\(\s*\n\s*basePrice,\s*\n\s*prefill\.skuPrices,\s*\n\s*skuKeyOf\(colors\[0\], sizes\[0\]\),\s*\n\s*\)/);
+  // skuFields 的价格必须是参数（否则又变回整条同价）
+  assert.match(batch, /supplierPriceCents = priceCents,/);
+  assert.match(batch, /supplier_price: supplierPriceCents,/);
+
+  // 页面：变种价进 prefill，并且单独存一份
+  assert.match(library, /skuPrices: skuPriceOverrides\?\.\[entry\.id\]/);
+  assert.match(library, /const \[skuPrices, setSkuPrices\] = useState<SkuPriceStore>\(loadDraftSkuPrices\)/);
+  assert.match(library, /saveMap\(scoped\(DRAFT_SKU_PRICES_KEY\), next\);/);
+
+  // 编辑页：拆行开关 + 只放开申报价 + 空值=取消覆盖
+  assert.match(editor, /按变种拆行（单独定价）/);
+  assert.match(editor, /const PRICE_COLUMN: Column =/);
+  assert.match(editor, /if \(value\.trim\(\) === ""\) delete map\[variantKey\];/);
+  assert.match(editor, /onSaveSkuPrices\(nextSku\)/);
 });

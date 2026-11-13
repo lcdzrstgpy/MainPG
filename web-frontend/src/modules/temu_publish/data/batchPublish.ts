@@ -3,6 +3,7 @@ import { httpBlob } from "../../../transport/http/client";
 import type { TemuGoodsDraft, TemuPublishPrefill, TemuSkuDraft } from "../types";
 import { matchPresetValue } from "../utils/specMatch";
 import { yuanToCents } from "../utils/price";
+import { resolveSkuPriceCents, skuKeyOf } from "./skuPricing";
 import { mapWithConcurrency } from "./concurrency";
 import { positive, splitList } from "./batchPrecheck";
 import {
@@ -254,11 +255,10 @@ export async function buildDraftForPublish(
   );
   const batch = variantTemplate?.batch;
 
-  // 界面价格是「元」，提交前换成分
-  const priceCents = yuanToCents(
-    batch?.supplierPrice || prefill.supplierPrice || "",
-    "申报价格",
-  );
+  // 界面价格是「元」，提交前换成分。
+  // basePrice 是「整条价」：变种没单独定价时回落到它（取价见 skuPricing.resolveSkuPrice）。
+  const basePrice = String(batch?.supplierPrice || prefill.supplierPrice || "").trim();
+  const priceCents = yuanToCents(basePrice, "申报价格");
   const stock = Number(batch?.stock || prefill.stock || "0");
   const weightG = positive(batch?.weightG || String(Number(prefill.weightKg || 0) * 1000), "重量");
   const lengthCm = positive(batch?.lengthCm || prefill.lengthCm || "", "长度");
@@ -398,11 +398,16 @@ export async function buildDraftForPublish(
   /** 三个边长降序：Temu 只认「最长 ≥ 次长 ≥ 最短」，用户怎么填都得按这个顺序传 */
   const sortedDims = [lengthCm, widthCm, heightCm].sort((a, b) => b - a);
   /** 一个 SKU 的价格/库存/物流字段：单 SKU 与多规格两条路径共用一份。 */
-  const skuFields = (extCode: string, specs: TemuSkuDraft["specs"]): TemuSkuDraft => ({
+  const skuFields = (
+    extCode: string,
+    specs: TemuSkuDraft["specs"],
+    /** 这个 SKU 的申报价（分）：变种价优先，没设就整条价（由调用方按 resolveSkuPrice 算好） */
+    supplierPriceCents = priceCents,
+  ): TemuSkuDraft => ({
     ext_code: extCode,
     currency_type: "CNY",
     site_id: SITE_ID,
-    supplier_price: priceCents,
+    supplier_price: supplierPriceCents,
     suggested_price: null,
     stock: Number.isFinite(stock) ? Math.max(0, Math.round(stock)) : 0,
     warehouse_id: warehouseId,
@@ -456,12 +461,18 @@ export async function buildDraftForPublish(
         .filter(Boolean)
         .join("-")
         .slice(0, 120) || "SKU-1";
+    // 单 SKU 也可能被「按变种改价」覆盖过（变种名就是草稿里那个值）
+    const singleCents = resolveSkuPriceCents(
+      basePrice,
+      prefill.skuPrices,
+      skuKeyOf(colors[0], sizes[0]),
+    );
     skcs.push({
       ext_code: (safeCode(prefill.sku) || "SKC").slice(0, 120),
       preview_image_urls: [carousel[0]],
       color_image_url: carousel[0],
       main_specs: [],
-      skus: [skuFields(singleCode, [])],
+      skus: [skuFields(singleCode, [], singleCents)],
     });
     return finishDraft();
   }
@@ -488,6 +499,8 @@ export async function buildDraftForPublish(
             .join("-")
             .slice(0, 120) || `SKU-${skus.length + 1}`,
           [colorSpec, sizeSpec].filter(Boolean) as TemuSkuDraft["specs"],
+          // 变种价：key 和「按变种改价」存的一致（颜色|尺码）
+          resolveSkuPriceCents(basePrice, prefill.skuPrices, skuKeyOf(color, size)),
         ),
       );
     }
