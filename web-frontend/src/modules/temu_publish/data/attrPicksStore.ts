@@ -43,6 +43,10 @@ export type DraftAttrPrefill = {
   guessed?: number;
   /** 哪些 pid 是猜的（没有依据、取的是第一个可用选项） */
   guessedPids?: number[];
+  /** 猜了什么（发布前透明化用）：[{name: 属性名, value: 填的值}] */
+  guessedItems?: Array<{ name: string; value: string }>;
+  /** 必填但估不出来的属性名（进「待人工」清单） */
+  manualNames?: string[];
   /**
    * 估这一份时「同类目历史」的版本（时间戳）。
    * 之后用户在发布页把属性改对了，历史会变新 —— 这里对不上就说明该重估，
@@ -198,4 +202,55 @@ export function saveDraftAttrPrefills(
     all[id] = prefill;
   }
   writeJson(key, Object.fromEntries(Object.entries(all).slice(-DRAFT_ATTR_PREFILL_MAX)));
+}
+
+/** 删掉某条草稿的估填结果（类目属性变了要重估时用）。 */
+export function deleteDraftAttrPrefill(scope: string, draftId: string): void {
+  if (!draftId) return;
+  const key = `${DRAFT_ATTR_PREFILL_KEY}:${scope}`;
+  const all = readJson<Record<string, DraftAttrPrefill>>(key, {});
+  if (!(draftId in all)) return;
+  delete all[draftId];
+  writeJson(key, all);
+}
+
+/**
+ * 失败教训黑名单：被 Temu 判「不是有效值」的 (属性名, 值)。
+ *
+ * 「属性[颜色]…关键词属性 默认 不是有效值」这种被拒过一次的组合，
+ * 估填/自动填永远不该再给 —— 否则同一个坑反复踩。
+ */
+export const ATTR_VALUE_BLACKLIST_KEY = "temu_publish_attr_value_blacklist_v1";
+/** 每个属性名留多少个坏值：够挡住常见坑，又不把存储撑大 */
+const ATTR_BAD_VALUES_MAX = 20;
+
+export function rememberBadAttrValue(scope: string, attrName: string, value: string): void {
+  const name = String(attrName ?? "").trim();
+  const bad = String(value ?? "").trim();
+  if (!name || !bad) return;
+  const key = `${ATTR_VALUE_BLACKLIST_KEY}:${scope}`;
+  const all = readJson<Record<string, string[]>>(key, {});
+  const values = all[name] ?? [];
+  if (values.includes(bad)) return;
+  values.push(bad);
+  all[name] = values.slice(-ATTR_BAD_VALUES_MAX);
+  writeJson(key, all);
+}
+
+/** 读黑名单：属性名 → 坏值列表。 */
+export function readAttrValueBlacklist(scope: string): Record<string, string[]> {
+  const all = readJson<Record<string, string[]>>(
+    `${ATTR_VALUE_BLACKLIST_KEY}:${scope}`,
+    {},
+  );
+  return all && typeof all === "object" ? all : {};
+}
+
+/** 建一个 (属性名, 值) → 是否拉黑 的判定（估填/自动填共用）。 */
+export function badAttrValuePredicate(
+  scope: string,
+): (name: string, value: string) => boolean {
+  const blacklist = readAttrValueBlacklist(scope);
+  return (name, value) =>
+    (blacklist[String(name ?? "").trim()] ?? []).includes(String(value ?? "").trim());
 }

@@ -277,3 +277,22 @@ test("选填的数值属性没真实数不编造，必填的才兜底", () => {
   assert.equal(result.picks[110], undefined);
   assert.equal(result.items.length, 0);
 });
+
+test("失败教训黑名单：被拒过的值不再给（默认/常规 这类坑只踩一次）", () => {
+  const style = prop({
+    pid: 111,
+    name: "颜色",
+    values: [
+      { vid: 71, value: "默认" },
+      { vid: 72, value: "红色" },
+    ],
+  });
+  const bad = (name: string, value: string) => name === "颜色" && value === "红色";
+  const result = estimateAttributePicks({
+    attributes: attrs([style]),
+    texts: ["红色连衣裙"],
+    badValue: bad,
+  });
+  // 红色被拉黑 → 文本命中的红色不能选，兜底只能给「默认」之外剩下的
+  assert.notEqual(result.picks[111]?.vid, 72);
+});

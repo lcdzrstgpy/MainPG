@@ -4,7 +4,7 @@ import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
 import type { TemuPublishHistoryItem } from "../types";
 import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
-import { explainPublishError, shortReasonLabel } from "../data/errorExplain";
+import { explainPublishError, isStaleAttributeError, shortReasonLabel } from "../data/errorExplain";
 import {
   copyText,
   dayLabelOf,
@@ -494,30 +494,52 @@ export function TemuPublishHistoryPage({
                         >
                           {copied === `err-${item.id}` ? "已复制" : "复制原因"}
                         </button>
-                        {onOpenDraftLibrary ? (
-                          <button
-                            type="button"
-                            className="temu-history-retry"
-                            title={
-                              item.draft_id
-                                ? "回成品库自动打开这条草稿，改完再发"
-                                : "手填的商品没有来源草稿，回成品库重新挑一条"
-                            }
-                            onClick={() => {
-                              // 记了来源草稿 id → 草稿库自动打开那条；没记就只切过去
-                              if (item.draft_id) {
-                                try {
-                                  window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, item.draft_id);
-                                } catch {
-                                  // 隐私模式写不进 storage：退回普通跳转
-                                }
-                              }
-                              onOpenDraftLibrary();
-                            }}
-                          >
-                            {item.draft_id ? "去修这条" : "去成品库重发"}
-                          </button>
-                        ) : null}
+        {onOpenDraftLibrary ? (
+          <>
+            {isStaleAttributeError(item.error || reason) ? (
+              <button
+                type="button"
+                className="temu-history-retry"
+                title="类目属性模板变了：清掉这条估好的属性，打开草稿重新选一遍（自动填会按新模板重跑）"
+                onClick={() => {
+                  // 带 reselect: 前缀：库页定位到草稿后先清估填再打开。
+                  // 没有来源草稿 id 的老数据按标题找（失败台账记的就是标题）
+                  const target = item.draft_id || `title:${item.title}`;
+                  try {
+                    window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, `reselect:${target}`);
+                  } catch {
+                    // 隐私模式写不进 storage：退回普通跳转
+                  }
+                  onOpenDraftLibrary();
+                }}
+              >
+                重选属性
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="temu-history-retry"
+              title={
+                item.draft_id
+                  ? "回成品库自动打开这条草稿，改完再发"
+                  : "手填的商品没有来源草稿，回成品库重新挑一条"
+              }
+              onClick={() => {
+                // 记了来源草稿 id → 草稿库自动打开那条；没记就只切过去
+                if (item.draft_id) {
+                  try {
+                    window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, item.draft_id);
+                  } catch {
+                    // 隐私模式写不进 storage：退回普通跳转
+                  }
+                }
+                onOpenDraftLibrary();
+              }}
+            >
+              {item.draft_id ? "去修这条" : "去成品库重发"}
+            </button>
+          </>
+        ) : null}
                       </div>
                     </div>
                   )}

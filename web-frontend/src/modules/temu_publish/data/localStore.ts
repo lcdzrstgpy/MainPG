@@ -1,4 +1,6 @@
 import type { TemuCategory } from "../types";
+import { parseRejectedAttrValue } from "./errorExplain";
+import { rememberBadAttrValue, storageScope } from "./attrPicksStore";
 
 /**
  * 发布页的本机数据：模板 + 发布失败记录。
@@ -165,6 +167,11 @@ export const localStore = {
   addFailure: (failure: PublishFailure) => {
     const next = [failure, ...localStore.failures()].slice(0, MAX_FAILURES);
     write(FAILURE_KEY, next);
+    // 失败教训进黑名单：被 Temu 判「不是有效值」的 (属性, 值) 以后不再估
+    const rejected = parseRejectedAttrValue(failure.reason || "");
+    if (rejected) {
+      rememberBadAttrValue(storageScope(), rejected.name, rejected.value);
+    }
     return next;
   },
   removeFailure: (id: string) => {

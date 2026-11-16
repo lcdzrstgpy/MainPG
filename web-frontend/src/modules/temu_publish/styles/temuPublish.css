@@ -8110,6 +8110,40 @@ textarea.temu-input {
   font-variant-numeric: tabular-nums;
 }
 
+/* 确认单「属性纯猜」透明化：默认折叠，展开是逐条名单 + 去核对 */
+.temu-batch-confirm-guess {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--theme-text-secondary, #4a6478);
+}
+
+.temu-batch-confirm-guess summary {
+  cursor: pointer;
+  color: var(--theme-module-primary-strong, #087bf5);
+}
+
+.temu-batch-confirm-guess ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 4px;
+}
+
+.temu-batch-confirm-guess li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.temu-batch-confirm-guess-title {
+  color: var(--theme-text-primary, #20364d);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---- 整页批量编辑（Temu 后台 / 店小秘那套：勾字段 → 表格逐行改） ----
  *
  * 布局约定（别推翻）：

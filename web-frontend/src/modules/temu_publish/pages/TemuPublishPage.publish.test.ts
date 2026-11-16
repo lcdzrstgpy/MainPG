@@ -343,7 +343,7 @@ test("本机留档：表单/变种行/最近分类按登录账号分开存，换
   const store = readFileSync(new URL("../data/attrPicksStore.ts", import.meta.url), "utf8");
   assert.match(store, /export function storageScope\(\): string \{/);
   assert.match(store, /return account\?\.user_id \|\| "local";/);
-  assert.match(page, /storageScope,\n\} from "\.\.\/data\/attrPicksStore";/);
+  assert.match(page, /storageScope,\n  badAttrValuePredicate,\n\} from "\.\.\/data\/attrPicksStore";/);
   assert.match(page, /const formKey = `\$\{FORM_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
@@ -755,6 +755,39 @@ test("别处机器审出的 5 条问题：修复要被守住，不许回退", ()
   // 5. 建议售价要进批量发布，不能写死 null
   assert.doesNotMatch(batch, /suggested_price: null/, "组装不许再把建议售价吞掉");
   assert.match(batch, /suggested_price: prefill\.suggestedPrice\s*\n\s*\? yuanToCents/);
+});
+
+test("瞎填治理四件套：黑名单 / 重选属性 / 猜值透明化 / 待人工清单", () => {
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const precheck = readFileSync(new URL("../data/batchPrecheck.ts", import.meta.url), "utf8");
+  const store = readFileSync(new URL("../data/attrPicksStore.ts", import.meta.url), "utf8");
+  const explain = readFileSync(new URL("../data/errorExplain.ts", import.meta.url), "utf8");
+
+  // ① 失败教训黑名单：被拒过的 (属性, 值) 进黑名单，估填不再给
+  assert.match(store, /export function rememberBadAttrValue\(/);
+  assert.match(store, /export function badAttrValuePredicate\(/);
+  assert.match(explain, /export function parseRejectedAttrValue\(/);
+
+  // ②「类目属性更新」失败一键重选属性：发历史标 reselect: → 库页清估填再打开
+  //    （老失败记录没 draft_id 的按标题定位）
+  assert.match(history, /isStaleAttributeError/);
+  assert.match(history, /`reselect:\$\{target\}`/);
+  assert.match(history, /重选属性/);
+  assert.match(library, /deleteDraftAttrPrefill\(storageScope\(\), target\.id\)/);
+  assert.match(library, /focusId\.startsWith\("reselect:"\)/);
+
+  // ③ 发布前纯猜透明化：确认单亮名单 + 去核对入口
+  assert.match(library, /temu-batch-confirm-guess/);
+  assert.match(library, /guessedAttrs/);
+  assert.match(library, /去核对/);
+  assert.match(library, /guessedItems/);
+  assert.match(library, /manualNames: result\.manual/);
+
+  // ④ 待人工清单：类目没配上 / 必填估不出来的集中一筛
+  assert.match(library, /待人工 \{manualIds\.size\}/);
+  assert.match(library, /if \(onlyManual && !manualIds\.has\(entry\.id\)\) return false;/);
+  void precheck;
 });
 
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
@@ -2896,7 +2929,7 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_FOCUS_KEY, item\.draft_id\);/);
   assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
   assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_FOCUS_KEY\)/);
-  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrPrefills, imageEdits, skuFields\)\);/);
+  assert.match(library, /onUseDraft\(entryPrefill\(target, categoryMemo, attrMap, imageEdits, skuFields\)\);/);
 });
 
 test("批量发布：先预检再提交，发不出去的默认跳过", () => {

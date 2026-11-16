@@ -130,3 +130,30 @@ export function shortReasonLabel(text: string): string {
   const label = explained ? explained.human : String(text ?? "");
   return label.replace(/^bg\.[\w.]+:\s*/, "").trim();
 }
+
+/**
+ * 「属性[颜色]校验错误:关键词属性 默认 不是有效值」→ { name: "颜色", value: "默认" }。
+ *
+ * 被 Temu 判「不是有效值」的 (属性, 值) 组合进黑名单，估填永远不再给。
+ * 解析不出来返回 null（宁可不记，不能记错）。
+ */
+export function parseRejectedAttrValue(
+  reason: string,
+): { name: string; value: string } | null {
+  const raw = String(reason ?? "");
+  const name = raw.match(/属性\[([^\]]+)\]/)?.[1]?.trim();
+  const value = raw.match(/(\S+)\s*不是有效值/)?.[1]?.trim();
+  if (!name || !value) return null;
+  // 值前面可能粘着提示词（「关键词属性 默认」里的「关键词属性」），取最后一段
+  const cleanValue = value.split(/[\s:：]+/).pop() ?? value;
+  return { name, value: cleanValue };
+}
+
+/**
+ * 这个失败是不是「属性/规格跟类目模板对不上」类（重选属性就能修好）。
+ * 实测最大失败类：「货品类目属性更新，请刷新页面后重新创建货品」。
+ */
+export function isStaleAttributeError(reason: string): boolean {
+  const raw = String(reason ?? "");
+  return /货品类目属性更新|不是有效值|请重置规格模版|属性\[.*校验错误|规格属性/.test(raw);
+}

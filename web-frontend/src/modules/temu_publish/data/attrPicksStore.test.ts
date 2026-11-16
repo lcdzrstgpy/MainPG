@@ -146,3 +146,38 @@ test("清空后刷新不能被历史填回来：空选择返回 {} 而不是 nul
   // 页面用 `current ?? history` 才分得清：{} 不会触发回退，null 才会
   assert.notEqual(current, null);
 });
+
+test("失败教训黑名单：被拒过的 (属性, 值) 判定器能挡掉", () => {
+  const {
+    rememberBadAttrValue,
+    readAttrValueBlacklist,
+    badAttrValuePredicate,
+    deleteDraftAttrPrefill,
+    saveDraftAttrPrefills,
+    readDraftAttrPrefills,
+  } = store as typeof import("./attrPicksStore.ts");
+
+  rememberBadAttrValue("u1", "颜色", "默认");
+  rememberBadAttrValue("u1", "颜色", "默认"); // 幂等
+  rememberBadAttrValue("u1", "颜色", "常规");
+  const blacklist = readAttrValueBlacklist("u1");
+  assert.deepEqual(blacklist["颜色"], ["默认", "常规"]);
+
+  const bad = badAttrValuePredicate("u1");
+  assert.equal(bad("颜色", "默认"), true, "被拒过的值不能再给");
+  assert.equal(bad("颜色", "红色"), false);
+  assert.equal(bad("材质", "默认"), false, "属性名要对得上才拦");
+});
+
+test("删掉某条草稿的估填（类目属性变了要重估）", () => {
+  const { saveDraftAttrPrefills, readDraftAttrPrefills, deleteDraftAttrPrefill } =
+    store as typeof import("./attrPicksStore.ts");
+  saveDraftAttrPrefills("u1", {
+    d1: { catId: 1, picks: { 1: { vid: 1, text: "" } }, at: 1 },
+    d2: { catId: 1, picks: { 2: { vid: 2, text: "" } }, at: 2 },
+  });
+  deleteDraftAttrPrefill("u1", "d1");
+  const all = readDraftAttrPrefills("u1");
+  assert.equal(all.d1, undefined);
+  assert.ok(all.d2, "别的草稿不能被误删");
+});

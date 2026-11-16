@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { explainPublishError, shortReasonLabel } from "./errorExplain.ts";
+import {
+  explainPublishError,
+  isStaleAttributeError,
+  parseRejectedAttrValue,
+  shortReasonLabel,
+} from "./errorExplain.ts";
 
 test("失败原因翻译：真实台账里的 8 类都要说人话 + 修法", () => {
   const cases: Array<[string, RegExp, RegExp]> = [
@@ -80,4 +85,18 @@ test("货号类错误也要说人话（2026-11-12 实测踩到 1000002）", () =
   const dup = explainPublishError("SKU ext_code 重复：PP-000199-C1");
   assert.ok(dup);
   assert.match(dup!.fix, /SKU-001/);
+});
+
+test("解析被拒的属性值：「属性[颜色]…默认 不是有效值」→ 颜色/默认", () => {
+  const parsed = parseRejectedAttrValue(
+    "bg.glo.goods.add: 属性[颜色]校验错误:关键词属性 默认 不是有效值。",
+  );
+  assert.deepEqual(parsed, { name: "颜色", value: "默认" });
+  assert.equal(parseRejectedAttrValue("重量不符合类目限制"), null);
+});
+
+test("属性/规格对不上类目的失败能被识别（重选属性就能修好）", () => {
+  assert.equal(isStaleAttributeError("货品类目属性更新，请刷新页面后重新创建货品"), true);
+  assert.equal(isStaleAttributeError("属性[颜色]校验错误:关键词属性 默认 不是有效值"), true);
+  assert.equal(isStaleAttributeError("重量不符合类目2~1000000g限制"), false);
 });

@@ -23,6 +23,8 @@ import { precheckBatchItem, precheckFixTarget } from "../data/batchPrecheck";
 import { autoFillSourceTexts } from "../data/attrAutofill";
 import { estimateAttributePicks } from "../data/attrEstimate";
 import {
+  badAttrValuePredicate,
+  deleteDraftAttrPrefill,
   readAttrPicksHistory,
   readAttrPicksHistoryAt,
   readAttrPicksHistoryLatest,
@@ -589,6 +591,8 @@ export function TemuDraftLibraryPage({
   const [filter, setFilter] = useState<Filter>("all");
   /** 只看「发布失败过」的草稿（按本机失败台账的标题匹配） */
   const [onlyFailed, setOnlyFailed] = useState(false);
+  /** 只看「待人工」的草稿：类目没配上、或必填属性估不出来的 */
+  const [onlyManual, setOnlyManual] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -733,6 +737,14 @@ export function TemuDraftLibraryPage({
       note: string;
       /** 用了「按草稿临时拼的模板」时的说明（属性是估的，要让人知道） */
       autoNote: string;
+      /** 纯猜属性明细（发布前透明化）：只含有猜值的条目 */
+      guessedAttrs: {
+        id: string;
+        title: string;
+        items: Array<{ name: string; value: string }>;
+      }[];
+      /** 必填但估不出来的属性名（发之前必须人工补） */
+      manualAttrNames: string[];
       /** 会发到哪家店：认错店是这行最贵的错误，必须写在确认单上 */
       shopName: string;
     }
@@ -856,9 +868,21 @@ export function TemuDraftLibraryPage({
     localStore.failures().map((item) => item.draftTitle.trim()).filter(Boolean),
   );
   const failedCount = entries.filter((entry) => failedTitles.has(entry.title.trim())).length;
-  const visibleEntries = onlyFailed
-    ? entries.filter((entry) => failedTitles.has(entry.title.trim()))
-    : entries;
+  /**
+   * 「待人工」清单：类目没配上的（自动匹配也没结论）或必填属性估不出来的
+   * （估填只能标 manual，填不了）。这两类发之前必须人动手，集中亮出来。
+   */
+  const manualIds = new Set<string>();
+  for (const entry of entries) {
+    const hasCategory = Boolean(categoryMemo[entry.id]?.path?.length);
+    const manualNames = attrPrefills[entry.id]?.manualNames ?? [];
+    if (!hasCategory || manualNames.length) manualIds.add(entry.id);
+  }
+  const visibleEntries = entries.filter((entry) => {
+    if (onlyFailed && !failedTitles.has(entry.title.trim())) return false;
+    if (onlyManual && !manualIds.has(entry.id)) return false;
+    return true;
+  });
 
   /**
    * 发布历史点「去修这条」过来：找到那条草稿自动打开（=整表预填进发布页）。
@@ -880,8 +904,24 @@ export function TemuDraftLibraryPage({
     } catch {
       // 清不掉也无所谓：标记只消费一次
     }
-    const target = entries.find((entry) => entry.id === focusId);
-    if (target) onUseDraft(entryPrefill(target, categoryMemo, attrPrefills, imageEdits, skuFields));
+    // reselect: 前缀 = 发布历史「重选属性」：旧模板估的属性只会害人，先清掉再打开
+    const reselect = focusId.startsWith("reselect:");
+    const wanted = reselect ? focusId.slice("reselect:".length) : focusId;
+    // 没有来源草稿 id 的老失败记录按标题找（失败台账记的就是标题）
+    const target = wanted.startsWith("title:")
+      ? entries.find(
+          (entry) => (entry.title || "").trim() === wanted.slice("title:".length).trim(),
+        )
+      : entries.find((entry) => entry.id === wanted);
+    if (!target) return;
+    const attrMap = reselect
+      ? Object.fromEntries(Object.entries(attrPrefills).filter(([id]) => id !== target.id))
+      : attrPrefills;
+    if (reselect) {
+      deleteDraftAttrPrefill(storageScope(), target.id);
+      setAttrPrefills(attrMap);
+    }
+    onUseDraft(entryPrefill(target, categoryMemo, attrMap, imageEdits, skuFields));
   }, [entries, categoryMemo, attrPrefills, onUseDraft]);
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
@@ -1010,7 +1050,12 @@ export function TemuDraftLibraryPage({
                 variant.size ?? "",
               ]),
             ],
+            // 失败教训：被 Temu 拒过的 (属性, 值) 不再给
+            badValue: badAttrValuePredicate(scope),
           });
+          const guessedItems = result.items
+            .filter((item) => item.source === "guess" || item.source === "number-guess")
+            .map((item) => ({ name: item.name, value: item.value }));
           next[entry.id] = {
             catId: leaf,
             picks: result.picks,
@@ -1019,6 +1064,10 @@ export function TemuDraftLibraryPage({
             guessedPids: result.items
               .filter((item) => item.source === "guess" || item.source === "number-guess")
               .map((item) => item.pid),
+            // 发布前透明化：猜了什么名字什么值，确认单里亮出来
+            guessedItems,
+            // 必填但估不出来：进「待人工」清单
+            manualNames: result.manual,
             // 记下这次用的是哪一版历史：历史变新了就说明该重估
             historyAt: readAttrPicksHistoryAt(scope, leaf),
           };
@@ -1470,6 +1519,27 @@ export function TemuDraftLibraryPage({
         setBatchOpen(true);
         return;
       }
+      // 纯猜属性（发布前透明化）+ 必填估不出来的（待人工）：
+      // 全自动估填下用户得知道哪些值是编的，发之前扫一眼
+      const guessedAttrs: {
+        id: string;
+        title: string;
+        items: Array<{ name: string; value: string }>;
+      }[] = [];
+      const manualNames = new Set<string>();
+      for (const group of ready) {
+        for (const entry of group.entries) {
+          const prefill = attrPrefills[entry.id];
+          for (const name of prefill?.manualNames ?? []) manualNames.add(name);
+          if (prefill?.guessedItems?.length) {
+            guessedAttrs.push({
+              id: entry.id,
+              title: entry.title || entry.sku || "（无标题）",
+              items: prefill.guessedItems,
+            });
+          }
+        }
+      }
       // 认错店是这行最贵的错误：确认单上必须写清发到哪家
       if (!shopNameRef.current) {
         const status = await temuPublishApi.settings().catch(() => null);
@@ -1488,6 +1558,8 @@ export function TemuDraftLibraryPage({
         autoNote: autoEntries
           ? `${autoEntries} 条没存模板，已按草稿的类目/属性自动填（属性是估的）`
           : "",
+        guessedAttrs,
+        manualAttrNames: [...manualNames],
         shopName: shopNameRef.current,
       });
     } finally {
@@ -1883,6 +1955,19 @@ export function TemuDraftLibraryPage({
           失败过 {failedCount}
         </button>
 
+        <button
+          type="button"
+          className={`temu-library-failed-toggle${onlyManual ? " is-active" : ""}`}
+          aria-pressed={onlyManual}
+          title="待人工处理：类目没配上、或必填属性估不出来的 —— 发之前必须人动手"
+          onClick={() => {
+            setOnlyManual((current) => !current);
+            setSelected(new Set());
+          }}
+        >
+          待人工 {manualIds.size}
+        </button>
+
         <div className="temu-library-head-actions">
           {onOpenHistory ? (
             <button type="button" className="temu-btn" onClick={onOpenHistory}>
@@ -2073,6 +2158,62 @@ export function TemuDraftLibraryPage({
                     ) : null}
                     {publishConfirm.autoNote ? (
                       <p className="temu-confirm-warn">{publishConfirm.autoNote}</p>
+                    ) : null}
+                    {/*
+                      全自动估填的透明化：哪些属性是编的，发之前亮出来。
+                      不拦截（全自动语义），但「去核对」一键能把那条打开发布页核对。
+                    */}
+                    {publishConfirm.guessedAttrs.length > 0 ? (
+                      <details className="temu-batch-confirm-guess">
+                        <summary>
+                          属性纯猜{" "}
+                          {publishConfirm.guessedAttrs.reduce(
+                            (sum, item) => sum + item.items.length,
+                            0,
+                          )}{" "}
+                          项（{publishConfirm.guessedAttrs.length} 条）—— 发之前扫一眼
+                        </summary>
+                        <ul>
+                          {publishConfirm.guessedAttrs.map((row) => (
+                            <li key={row.id}>
+                              <span className="temu-batch-confirm-guess-title">{row.title}</span>
+                              <span className="temu-muted">
+                                {row.items.map((item) => `${item.name}=${item.value}`).join("、")}
+                              </span>
+                              <button
+                                type="button"
+                                className="temu-link"
+                                title="打开发布页核对这条的属性，改完再回来发"
+                                onClick={() => {
+                                  const target = entries.find((entry) => entry.id === row.id);
+                                  setPublishConfirm(null);
+                                  if (target) {
+                                    onUseDraft(
+                                      entryPrefill(
+                                        target,
+                                        categoryMemo,
+                                        attrPrefills,
+                                        imageEdits,
+                                        skuFields,
+                                      ),
+                                    );
+                                  }
+                                }}
+                              >
+                                去核对
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                    {publishConfirm.manualAttrNames.length > 0 ? (
+                      <p className="temu-confirm-warn">
+                        有必填属性估不出来（
+                        {publishConfirm.manualAttrNames.slice(0, 3).join("、")}
+                        {publishConfirm.manualAttrNames.length > 3 ? "…" : ""}
+                        ），发会被拒 —— 先「去核对」补上
+                      </p>
                     ) : null}
                     {publishConfirm.note ? (
                       <p className="temu-muted">已跳过：{publishConfirm.note}</p>

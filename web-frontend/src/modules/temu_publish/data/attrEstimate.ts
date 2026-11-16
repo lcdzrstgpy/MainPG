@@ -94,6 +94,8 @@ export function estimateAttributePicks(options: {
   history?: AttrPickMap;
   /** 跨类目同 pid 的最近一次真实选择（同类目历史没命中时的下一级证据） */
   historyByPid?: AttrPickMap;
+  /** 失败教训黑名单：被 Temu 拒过的 (属性名, 值) 不再给 */
+  badValue?: (name: string, value: string) => boolean;
   /** 已经填好的（用户手填 / 带入的）：绝不覆盖 */
   keep?: AttrPickMap;
   rounds?: number;
@@ -138,7 +140,9 @@ export function estimateAttributePicks(options: {
       const evidenceOnly = !prop.required;
       const usable = (prop.values ?? []).filter((value) => {
         const text = String(value.value ?? "").trim();
-        return !!text && !PLACEHOLDER_VALUE.test(text) && hasMatchableText(text);
+        if (!text || PLACEHOLDER_VALUE.test(text) || !hasMatchableText(text)) return false;
+        // 被 Temu 拒过的值不再给（失败教训黑名单）
+        return !(options.badValue && options.badValue(name, text));
       });
 
       // ① 有可选值：证据链按强度排，能命中就不猜

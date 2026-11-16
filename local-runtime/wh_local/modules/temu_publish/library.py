@@ -92,7 +92,8 @@ def collect_all_draft_entries(
 
     if pod_service is not None:
         try:
-            pod_entries = _collect_pod_entries(pod_service, actor, batch_limit)
+            # 一次取全（批次便宜）：条目和 tab 计数共用，别为计数再扫一遍
+            pod_entries = _collect_pod_entries(pod_service, actor, max(20, batch_limit))
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"POD 结果读取失败：{exc}")
 
@@ -107,18 +108,58 @@ def collect_all_draft_entries(
         extras.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         selected.extend(extras[: cap - len(selected)])
     entries = sorted(selected, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    # tab 数字要「真全量」：元数据扫描数出来的，不跟切片/偏移/配额漂；
+    # 扫描不可用时退回切片计数（口径旧一点，但不能数成 0）
+    counts = collect_draft_counts(
+        product_processing=product_processing,
+        actor=actor,
+        pod_count=sum(1 for item in pod_entries if item.get("source") == "pod"),
+    ) or {
+        "ai": sum(1 for item in entries if item["source"] == "ai"),
+        "pod": sum(1 for item in entries if item["source"] == "pod"),
+        "total": len(entries),
+    }
     return {
         "entries": entries,
         "warnings": warnings,
         # 还有没取出来的商品（某个任务的 item_count > offset + limit）→ 前端给「加载更多」
         "has_more": ai_has_more,
         "item_offset": max(0, int(item_offset)),
-        "counts": {
-            "ai": sum(1 for item in entries if item["source"] == "ai"),
-            "pod": sum(1 for item in entries if item["source"] == "pod"),
-            "total": len(entries),
-        },
+        "counts": counts,
     }
+
+
+def collect_draft_counts(
+    *,
+    product_processing: Any,
+    actor: Actor,
+    pod_count: int,
+) -> dict[str, int] | None:
+    """真全量计数（AI 侧元数据扫描，不投影图片）。
+
+    以前 counts 数的是「聚合切片」的条数（每任务只取前 20 条、还有半配额截断），
+    翻页 / 加载更多 / 缓存重建都会让 tab 上的数字漂（实测「全部 77」vs 真数 147）。
+    这里按搜索那条路的口径全量扫一遍只数数 —— 数字和切片无关才稳。
+    POD 侧条目本来就是一次取全（批次便宜），计数直接用调用方数好的 ``pod_count``。
+
+    扫描能力不可用（测试桩 / 旧服务）时返回 None，调用方退回切片计数：
+    宁可数字口径旧一点，也不能数成 0 或把列表搞挂。
+    """
+    if product_processing is None:
+        return {"ai": 0, "pod": pod_count, "total": pod_count}
+    # 能力探测：没有全量扫描接口（测试桩 / 旧服务）直接降级，
+    # 不能靠异常 —— _scan_ai_matches 内部把单条失败都吞了，会数成 0
+    if not callable(getattr(product_processing, "task_search_preview", None)) or not callable(
+        getattr(getattr(product_processing, "repository", None), "search_task_items_bulk", None)
+    ):
+        return None
+    try:
+        ai_count = len(
+            _scan_ai_matches(product_processing, actor, SEARCH_TASK_LIMIT, "", [])
+        )
+    except Exception:  # noqa: BLE001 - 扫描不可用 → 整体降级
+        return None
+    return {"ai": ai_count, "pod": pod_count, "total": ai_count + pod_count}
 
 
 def _matches_query(item: dict[str, Any], needle: str) -> bool:

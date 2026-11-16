@@ -52,6 +52,7 @@ import {
   saveAttrPicksHistory,
   saveCurrentAttrPicks,
   storageScope,
+  badAttrValuePredicate,
 } from "../data/attrPicksStore";
 import { categorySearchTexts, dedupeCategoryPaths } from "../utils/categoryMatch";
 import { categoryName, categoryPathFromDto } from "../utils/categoryPath";
@@ -937,6 +938,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const result = autoFillAttributePicks({
       attributes,
       picks: basePicks,
+      badValue: badAttrValuePredicate(storageSuffix),
       texts: autoFillSourceTexts({
         title: form.title,
         titleEn: form.titleEn,

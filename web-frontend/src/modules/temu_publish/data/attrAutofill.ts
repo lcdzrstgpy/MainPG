@@ -177,6 +177,8 @@ export function autoFillAttributePicks(options: {
   picks: AttrPickMap;
   texts: string[];
   history?: AttrPickMap;
+  /** 失败教训黑名单：被 Temu 拒过的 (属性名, 值) 不再给 */
+  badValue?: (name: string, value: string) => boolean;
 }): AutoFillResult {
   const picks: AttrPickMap = { ...options.picks };
   const hits: AutoFillHit[] = [];
@@ -217,6 +219,8 @@ export function autoFillAttributePicks(options: {
     const matched = values.filter((value) => {
       const text = String(value.value ?? "").trim();
       if (!text || PLACEHOLDER_VALUE.test(text) || !hasMatchableText(text)) return false;
+      // 被 Temu 拒过的值不再给（失败教训黑名单）
+      if (options.badValue && options.badValue(propertyLabel(item), text)) return false;
       return containsText(haystack, text);
     });
     if (matched.length === 1) {
