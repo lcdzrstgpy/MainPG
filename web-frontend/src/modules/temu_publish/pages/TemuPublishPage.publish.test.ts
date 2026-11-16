@@ -1674,7 +1674,7 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   assert.match(autofill, /if \(!values\.length\) continue;/);
   assert.match(autofill, /if \(matched\.length === 1\) \{/);
   assert.match(autofill, /else if \(matched\.length > 1\) \{/);
-  assert.match(autofill, /const PLACEHOLDER_VALUE = /);
+  assert.match(autofill, /const PLACEHOLDER_VALUE =/);
 });
 
 test("草稿库不能标「可发」：产品属性草稿库不存，只能在发布页填", () => {

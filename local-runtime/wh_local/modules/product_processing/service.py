@@ -7640,6 +7640,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 for record in (result.get("source_variant_records") or [])
                 if isinstance(record, dict)
             ],
+            # 采集属性（1688 等来源的真实属性：材质=PU、风格=跨境风潮…）：
+            # 估产品属性时当证据用，只透 name/value 短文本。可能是 list 或 dict 两种形状。
+            "source_attributes": [
+                {"name": str(record.get("name") or record.get("key") or ""), "value": str(record.get("value") or record.get("value_name_en") or "")}
+                for record in (result.get("source_attributes") or [])
+                if isinstance(record, dict)
+            ]
+            if isinstance(result.get("source_attributes"), list)
+            else [
+                {"name": str(key), "value": str(value)}
+                for key, value in (result.get("source_attributes") or {}).items()
+            ]
+            if isinstance(result.get("source_attributes"), dict)
+            else [],
             # 变种网格缺口：店小秘要求「属性值一 × 属性值二」组合齐全，缺口会导致
             # 整单拒收。预检页据此提示「导出时会自动补齐 N 组」，与导出补齐同口径。
             # 不适用时必须是 None：空对象是 truthy，前端会当有缺口去读 missing 字段。

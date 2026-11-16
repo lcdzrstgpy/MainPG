@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PLACEHOLDER_VALUE,
+  attrNameToken,
   autoFillAttributePicks,
   autoFillSourceTexts,
   describeAutoFill,
+  valueMatchScore,
 } from "./attrAutofill.ts";
 import type { AttrPickMap } from "./attributeModel.ts";
 import type { TemuAttributes, TemuProperty } from "../types.ts";
@@ -198,4 +201,26 @@ test("文本来源去空去重", () => {
     autoFillSourceTexts({ title: " 窗帘 ", titleEn: "", description: "窗帘", categoryNames: ["", "家纺"] }),
     ["窗帘", "家纺"],
   );
+});
+
+test("「默认」这类占位值进黑名单（Temu 判「不是有效值」的坑）", () => {
+  for (const junk of ["默认", "默认项", "常规", "通用", "standard", "自定义"]) {
+    assert.equal(PLACEHOLDER_VALUE.test(junk), true, junk);
+  }
+  assert.equal(PLACEHOLDER_VALUE.test("棉"), false);
+  assert.equal(PLACEHOLDER_VALUE.test("复古"), false);
+});
+
+test("valueMatchScore：直接命中 3、同义命中 2、没命中 0", () => {
+  assert.equal(valueMatchScore("涤纶窗帘", "涤纶"), 3);
+  assert.equal(valueMatchScore("polyester curtain", "涤纶"), 2);
+  assert.equal(valueMatchScore("棉窗帘", "涤纶"), 0);
+  assert.equal(valueMatchScore("cotton curtain", "纯棉"), 2);
+});
+
+test("attrNameToken：材质/材料/material 归一到同一个令牌", () => {
+  assert.equal(attrNameToken("材质"), attrNameToken("material"));
+  assert.equal(attrNameToken("材料"), attrNameToken("材质"));
+  assert.equal(attrNameToken("品牌"), "brand");
+  assert.equal(attrNameToken("莫名其妙"), "");
 });

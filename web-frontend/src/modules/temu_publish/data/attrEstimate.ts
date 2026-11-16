@@ -1,25 +1,31 @@
 import type { TemuAttributes } from "../types";
-import { PLACEHOLDER_VALUE, containsText, hasMatchableText } from "./attrAutofill.ts";
+import {
+  PLACEHOLDER_VALUE,
+  attrNameToken,
+  hasMatchableText,
+  valueMatchScore,
+} from "./attrAutofill.ts";
 import { visibleProperties, type AttrPickMap } from "./attributeModel.ts";
 
 /**
- * 产品属性的「估填」：在入草稿库时把**每个**必填属性都给一个值。
+ * 产品属性的「估填」：在入草稿库时把**每个**必填属性都给一个值（全自动）。
  *
- * 和发布页的 {@link ../data/attrAutofill} 不同：那边「判断不了就留空」，
- * 这边是用户明确要求「全都要填上，给估计的」，所以增加了兜底：
+ * 关键是「猜」的质量：瞎填第一个选项被 Temu 拒过（「默认」不是有效值），
+ * 也把商品数据弄脏。所以证据链按强度排，能命中就不用猜：
  *
  * ```
- * 同类目上次填的 → 标题/描述里点名的 → **第一个可用选项**（这一档就是猜的）
+ * 同类目历史 → 采集属性名对齐（材质=PU→材质）→ 变种规格值 → 文本同义打分
+ *   → 跨类目同属性历史 → 第一个非占位选项（兜底，标 guess）
  * ```
  *
- * 猜的必须能被认出来：每一项都带 `source`，界面按来源显示不同标记，
- * 用户看了一眼就知道哪些要自己核对。
+ * 猜的必须能被认出来：每一项都带 `source`，界面按来源显示不同标记。
  *
- * 纯数值属性（厚度 mm、平方克重 g/㎡）没有可选值，只能按属性名给常见默认值
- * （见 {@link NUMBER_DEFAULT_RULES}），全部标 `number-guess`。
+ * 纯数值属性（厚度 mm、平方克重 g/㎡）优先从采集属性里取真实数
+ * （`attr`），取不到才按属性名给常见默认值（{@link NUMBER_DEFAULT_RULES}，标
+ * `number-guess`）。
  */
 
-export type EstimateSource = "history" | "text" | "guess" | "number-guess";
+export type EstimateSource = "history" | "attr" | "spec" | "text" | "guess" | "number-guess";
 
 export type EstimateItem = {
   pid: number;
@@ -63,6 +69,14 @@ export function defaultNumberValue(name: string): number {
   return 1;
 }
 
+/** 从文本里抠第一个数字（「65%」→65、「0.5mm」→0.5）；抠不到返回 undefined */
+export function numberFromText(text: string): number | undefined {
+  const matched = String(text ?? "").match(/-?\d+(?:\.\d+)?/);
+  if (!matched) return undefined;
+  const value = Number(matched[0]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
 /**
  * 把每个可见必填属性都填上值（含联动子属性）。
  *
@@ -72,8 +86,14 @@ export function defaultNumberValue(name: string): number {
 export function estimateAttributePicks(options: {
   attributes: TemuAttributes | null;
   texts: string[];
+  /** 采集属性（1688 等来源的真实属性）：[{name, value}]，按属性名对齐当最强证据 */
+  sourceAttrs?: Array<{ name: string; value: string }>;
+  /** 变种规格值（颜色/尺码列表）：喂给对应属性当证据 */
+  specTexts?: string[];
   /** 同类目上次在发布页填的（最可信） */
   history?: AttrPickMap;
+  /** 跨类目同 pid 的最近一次真实选择（同类目历史没命中时的下一级证据） */
+  historyByPid?: AttrPickMap;
   /** 已经填好的（用户手填 / 带入的）：绝不覆盖 */
   keep?: AttrPickMap;
   rounds?: number;
@@ -81,7 +101,19 @@ export function estimateAttributePicks(options: {
   const picks: AttrPickMap = { ...(options.keep ?? {}) };
   const items: EstimateItem[] = [];
   const manual: string[] = [];
-  const haystack = options.texts.filter(Boolean).join("\n").toLowerCase();
+  const sourceAttrs = (options.sourceAttrs ?? []).filter(
+    (attr) => attr?.name && attr?.value,
+  );
+  const specHay = (options.specTexts ?? []).filter(Boolean).join("\n").toLowerCase();
+  // 通用文本：标题/描述/类目名 + 采集属性值 + 变种值（全部证据都进池子）
+  const haystack = [
+    ...options.texts,
+    ...sourceAttrs.map((attr) => attr.value),
+    ...(options.specTexts ?? []),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
   const rounds = Math.max(1, options.rounds ?? 4);
 
   const push = (item: EstimateItem) => {
@@ -107,18 +139,68 @@ export function estimateAttributePicks(options: {
         return !!text && !PLACEHOLDER_VALUE.test(text) && hasMatchableText(text);
       });
 
-      // ① 有可选值：历史 → 文本唯一命中 → 第一个（猜）
+      // ① 有可选值：证据链按强度排，能命中就不猜
       if (usable.length) {
+        // 可选值里的「最合适者」：分高者赢、同分取更长（更具体的值）
+        const bestOf = (hay: string) => {
+          let best: { option: (typeof usable)[number]; score: number } | undefined;
+          for (const option of usable) {
+            const score = hay ? valueMatchScore(hay, String(option.value ?? "")) : 0;
+            if (!score) continue;
+            const len = String(option.value ?? "").length;
+            const bestLen = String(best?.option.value ?? "").length;
+            if (!best || score > best.score || (score === best.score && len > bestLen)) {
+              best = { option, score };
+            }
+          }
+          return best;
+        };
         const historyVid = Number(options.history?.[pid]?.vid ?? 0);
         const kept =
           historyVid > 0 ? usable.find((value) => Number(value.vid) === historyVid) : undefined;
-        const matched = haystack
-          ? usable.filter((value) => containsText(haystack, String(value.value ?? "")))
-          : [];
-        const chosen = kept ?? (matched.length === 1 ? matched[0] : usable[0]);
-        const source: EstimateSource = kept ? "history" : matched.length === 1 ? "text" : "guess";
-        // 带单位的属性（成分比例 %）除了下拉还要一个数值，否则必填校验照样拦
-        const text = unit ? String(defaultNumberValue(name)) : "";
+        // 采集属性名对齐（材质=PU → 属性「材质」）：最硬的外部证据
+        const nameToken = attrNameToken(name);
+        const alignedHay = nameToken
+          ? sourceAttrs
+              .filter((attr) => attrNameToken(attr.name) === nameToken)
+              .map((attr) => attr.value)
+              .join("\n")
+              .toLowerCase()
+          : "";
+        const byAttr = bestOf(alignedHay);
+        const bySpec = bestOf(specHay);
+        const byText = bestOf(haystack);
+        // 跨类目同 pid 历史（换类目遇到同一个属性，上次怎么填的照样有用）
+        const pidHistoryVid = Number(options.historyByPid?.[pid]?.vid ?? 0);
+        const keptByPid =
+          pidHistoryVid > 0
+            ? usable.find((value) => Number(value.vid) === pidHistoryVid)
+            : undefined;
+        // 全自动兜底：第一个**非占位**选项（「默认/其他」当答案必被 Temu 拒）
+        const fallback =
+          usable.find(
+            (value) => !PLACEHOLDER_VALUE.test(String(value.value ?? "").trim()),
+          ) ?? usable[0];
+        const [chosen, source]: [(typeof usable)[number], EstimateSource] = kept
+          ? [kept, "history"]
+          : byAttr
+            ? [byAttr.option, "attr"]
+            : bySpec
+              ? [bySpec.option, "spec"]
+              : byText
+                ? [byText.option, "text"]
+                : keptByPid
+                  ? [keptByPid, "history"]
+                  : [fallback, "guess"];
+        // 带单位的属性（成分比例 %）除了下拉还要一个数值，否则必填校验照样拦：
+        // 能从采集属性里抠到真实数就用真实数
+        const numberFromAttr = nameToken
+          ? sourceAttrs
+              .filter((attr) => attrNameToken(attr.name) === nameToken)
+              .map((attr) => numberFromText(attr.value))
+              .find((value) => value !== undefined)
+          : undefined;
+        const text = unit ? String(numberFromAttr ?? defaultNumberValue(name)) : "";
         push({
           pid,
           name,
@@ -131,16 +213,23 @@ export function estimateAttributePicks(options: {
         continue;
       }
 
-      // ② 没有可选值但有单位：纯数值，按属性名给常见默认值
+      // ② 没有可选值但有单位：纯数值，优先采集属性里的真实数，否则按属性名给常见默认值
       if (unit) {
-        const value = defaultNumberValue(name);
+        const nameToken = attrNameToken(name);
+        const numberFromAttr = nameToken
+          ? sourceAttrs
+              .filter((attr) => attrNameToken(attr.name) === nameToken)
+              .map((attr) => numberFromText(attr.value))
+              .find((value) => value !== undefined)
+          : undefined;
+        const value = numberFromAttr ?? defaultNumberValue(name);
         push({
           pid,
           name,
           vid: 0,
           text: String(value),
           value: `${value}${unit}`,
-          source: "number-guess",
+          source: numberFromAttr !== undefined ? "attr" : "number-guess",
         });
         changed = true;
         continue;

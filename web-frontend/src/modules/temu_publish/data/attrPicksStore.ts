@@ -105,6 +105,28 @@ export function readAttrPicksHistory(scope: string, catId: number): AttrPickMap 
  * 按 at 排序会变成「保留最旧的、丢掉刚写的」。先 delete 再赋值，让 key 落到
  * 对象末尾，`slice(-N)` 拿到的就是最近写入的。
  */
+/**
+ * 跨类目按 pid 收集「最近一次真实选择」。
+ *
+ * pid 是 Temu 的全局属性 id：换类目遇到同一个属性（品牌/材质这类通用属性），
+ * 用户上次在**别的类目**怎么填的同样有参考价值 —— 这是同类目历史没有命中时的
+ * 下一级证据。只收历史（= 用户确认过的值），自动估填的本来就不进历史。
+ */
+export function readAttrPicksHistoryLatest(scope: string): AttrPickMap {
+  const all = readJson<AttrPicksHistory>(`${ATTR_PICKS_KEY}:${scope}`, {});
+  const merged: AttrPickMap = {};
+  // 按 at 从旧到新遍历，后写的覆盖先写的 = 每个 pid 留最近一次
+  const entries = Object.values(all ?? {}).sort((a, b) => (a?.at ?? 0) - (b?.at ?? 0));
+  for (const entry of entries) {
+    for (const [pid, pick] of Object.entries(entry?.picks ?? {})) {
+      if (pick && (Number(pick.vid) > 0 || String(pick.text ?? "").trim())) {
+        merged[Number(pid)] = pick;
+      }
+    }
+  }
+  return merged;
+}
+
 export function saveAttrPicksHistory(scope: string, catId: number, picks: AttrPickMap): void {
   if (!catId) return;
   const key = `${ATTR_PICKS_KEY}:${scope}`;

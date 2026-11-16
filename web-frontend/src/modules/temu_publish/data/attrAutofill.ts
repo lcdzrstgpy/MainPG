@@ -34,8 +34,79 @@ export type AutoFillResult = {
   ambiguous: string[];
 };
 
-/** 「其他 / 无 / N/A」这类兜底值不能靠文本命中，否则每个属性都会选中它。 */
-export const PLACEHOLDER_VALUE = /^(其他|其它|other|others|无|none|n\/a|na|不适用|not applicable|未知|unknown)$/i;
+/**
+ * 「其他 / 无 / N/A / 默认」这类兜底值不能靠文本命中，更不能当猜测值填出去。
+ * 「默认」是实测踩过的坑：关键词属性填「默认」直接被 Temu 拒（不是有效值）。
+ */
+export const PLACEHOLDER_VALUE =
+  /^(其他|其它|other|others|无|none|n\/a|na|不适用|not applicable|未知|unknown|默认|默认项|常规|通用|标准|standard|default|自定义|custom|待定|暂无|敬请期待)$/i;
+
+/**
+ * 同义词归一：「涤纶」和「聚酯纤维」是同一个东西，文本里出现哪个都该算命中。
+ * 只收 ≥2 字的词组（单字「麻」会命中「芝麻」，宁可漏不可错）。
+ */
+const SYNONYM_GROUPS: string[][] = [
+  ["涤纶", "聚酯纤维", "polyester"],
+  ["锦纶", "尼龙", "nylon"],
+  ["纯棉", "全棉", "cotton"],
+  ["亚麻", "linen", "flax"],
+  ["pu", "聚氨酯", "人造革"],
+  ["真皮", "头层牛皮", "leather"],
+  ["不锈钢", "stainless"],
+  ["玻璃", "glass"],
+  ["实木", "原木", "solid wood"],
+  ["塑料", "plastic"],
+];
+
+/** 一个值的同义词（不含自己）；不在表里返回空。 */
+export function synonymsOf(value: string): string[] {
+  const raw = value.trim().toLowerCase();
+  for (const group of SYNONYM_GROUPS) {
+    if (group.some((item) => item.toLowerCase() === raw)) {
+      return group.filter((item) => item.toLowerCase() !== raw);
+    }
+  }
+  return [];
+}
+
+/**
+ * 值对文本的命中强度：0 = 没命中，2 = 同义词命中，3 = 值本身命中（最硬）。
+ * 多个值都命中时调用方按「分高者赢、同分取更长（更具体）」裁决。
+ */
+export function valueMatchScore(haystack: string, value: string): 0 | 2 | 3 {
+  const text = String(value ?? "").trim();
+  if (!text || !hasMatchableText(text)) return 0;
+  if (containsText(haystack, text)) return 3;
+  if (synonymsOf(text).some((syn) => containsText(haystack, syn))) return 2;
+  return 0;
+}
+
+/**
+ * 属性名的归一化令牌：不同写法指同一个属性时令牌相同
+ * （材质↔material、品牌↔brand…）。对不上返回空串。
+ */
+const NAME_ALIAS_RULES: Array<[RegExp, string]> = [
+  [/材质|材料|面料|布料|主料|material/i, "material"],
+  [/品牌|brand/i, "brand"],
+  [/风格|style/i, "style"],
+  [/颜色|色彩|color|colour/i, "color"],
+  [/尺码|尺寸规格|size/i, "size"],
+  [/厚度|thickness/i, "thickness"],
+  [/克重|平方克|gsm/i, "gsm"],
+  [/成分|含量|composition|content/i, "composition"],
+  [/适用人群|人群|department|audience/i, "audience"],
+  [/产地|原产地|origin/i, "origin"],
+  [/款式|造型|style type|shape/i, "shape"],
+  [/图案|花纹|pattern/i, "pattern"],
+];
+
+export function attrNameToken(name: string): string {
+  const raw = String(name ?? "").trim();
+  for (const [pattern, token] of NAME_ALIAS_RULES) {
+    if (pattern.test(raw)) return token;
+  }
+  return "";
+}
 
 function propertyLabel(item: TemuProperty): string {
   return item.name || item.propertyName || `pid=${item.pid}`;

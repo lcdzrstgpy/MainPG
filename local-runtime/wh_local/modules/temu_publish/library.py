@@ -661,6 +661,12 @@ def _build_ai_entry(
         "length_cm": core.get("length_cm"),
         "width_cm": core.get("width_cm"),
         "height_cm": core.get("height_cm"),
+        # 采集属性（1688 等来源的真实属性）：估产品属性时当证据用（[{name, value}]）
+        "source_attributes": [
+            {"name": str(attr.get("name") or ""), "value": str(attr.get("value") or "")}
+            for attr in (item.get("source_attributes") or [])
+            if isinstance(attr, dict) and (attr.get("name") or attr.get("value"))
+        ],
         **_draft_extra_fields(draft_row or None),
     }
 

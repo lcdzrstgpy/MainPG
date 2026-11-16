@@ -330,6 +330,8 @@ export type TemuDraftEntry = {
   spec_values_2?: string[];
   /** 每个 SKU 一行：颜色/尺码/申报价(元)/库存/自己的主图 */
   variants?: TemuDraftVariant[];
+  /** 采集属性（1688 等来源的真实属性：材质=PU、风格=跨境风潮…）——估产品属性时当证据用 */
+  source_attributes?: Array<{ name: string; value: string }>;
   /** 申报价（单位：元）。没有显式填过时按导出规则测算，见 declared_price_estimated */
   declared_price: number | string | null;
   /** true = 该价格是按成本算出来的（成本 × 4，下限 ¥150），不是人工填的 */

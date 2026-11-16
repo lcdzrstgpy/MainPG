@@ -148,3 +148,95 @@ test("属性名默认值规则：对不上时给 1，别给 0（0 会被当成�
   assert.equal(defaultNumberValue("层数"), 1);
   assert.equal(defaultNumberValue("莫名字段"), 1);
 });
+
+test("采集属性名对齐是最硬证据：材料=涤纶 直接当选，不用看标题", () => {
+  const result = estimateAttributePicks({
+    attributes: attrs([MATERIAL]),
+    texts: ["可爱抱枕套"],
+    sourceAttrs: [{ name: "材质", value: "涤纶" }],
+  });
+  assert.equal(result.picks[102]?.vid, 13);
+  assert.equal(result.items[0]?.source, "attr");
+});
+
+test("变种规格值当证据：颜色列表喂给对应属性，source=spec", () => {
+  const mainColor = prop({
+    pid: 106,
+    name: "主色",
+    values: [
+      { vid: 31, value: "红色" },
+      { vid: 32, value: "黑色" },
+      { vid: 33, value: "蓝色" },
+    ],
+  });
+  const result = estimateAttributePicks({
+    attributes: attrs([mainColor]),
+    texts: ["时尚单肩包"],
+    specTexts: ["黑色", "紫色"],
+  });
+  assert.equal(result.picks[106]?.vid, 32, "变种里只有黑色对得上选项");
+  assert.equal(result.items[0]?.source, "spec");
+});
+
+test("同义词归一：标题写 polyester，选项「涤纶」也算命中", () => {
+  const result = estimateAttributePicks({
+    attributes: attrs([MATERIAL]),
+    texts: ["polyester curtain"],
+  });
+  assert.equal(result.picks[102]?.vid, 13);
+  assert.equal(result.items[0]?.source, "text");
+});
+
+test("多值命中取更具体：「棉麻窗帘」在 [棉, 棉麻, 涤纶] 里选「棉麻」", () => {
+  const composition = prop({
+    pid: 107,
+    name: "成分",
+    values: [
+      { vid: 41, value: "棉" },
+      { vid: 42, value: "棉麻" },
+      { vid: 43, value: "涤纶" },
+    ],
+  });
+  const result = estimateAttributePicks({
+    attributes: attrs([composition]),
+    texts: ["棉麻窗帘"],
+  });
+  assert.equal(result.picks[107]?.vid, 42);
+  assert.equal(result.items[0]?.source, "text");
+});
+
+test("跨类目同 pid 历史：同类目没历史、文本没命中，用别的类目上次的选择", () => {
+  const result = estimateAttributePicks({
+    attributes: attrs([MATERIAL]),
+    texts: [],
+    historyByPid: { 102: { vid: 13, text: "" } },
+  });
+  assert.equal(result.picks[102]?.vid, 13);
+  assert.equal(result.items[0]?.source, "history");
+});
+
+test("兜底猜跳过「默认」这类占位值（Temu 判「不是有效值」的坑）", () => {
+  const style = prop({
+    pid: 108,
+    name: "风格",
+    values: [
+      { vid: 51, value: "默认" },
+      { vid: 52, value: "复古" },
+      { vid: 53, value: "简约" },
+    ],
+  });
+  const result = estimateAttributePicks({ attributes: attrs([style]), texts: [] });
+  assert.equal(result.picks[108]?.vid, 52, "「默认」不能当答案");
+  assert.equal(result.items[0]?.source, "guess");
+});
+
+test("数值属性优先取采集属性的真实数，取不到才编默认", () => {
+  const result = estimateAttributePicks({
+    attributes: attrs([THICKNESS, GSM]),
+    texts: [],
+    sourceAttrs: [{ name: "厚度", value: "0.5mm" }],
+  });
+  assert.equal(result.picks[103]?.text, "0.5", "厚度 0.5mm 是真实数");
+  assert.equal(result.items.find((item) => item.pid === 103)?.source, "attr");
+  assert.equal(result.items.find((item) => item.pid === 104)?.source, "number-guess");
+});

@@ -21,6 +21,7 @@ import { estimateAttributePicks } from "../data/attrEstimate";
 import {
   readAttrPicksHistory,
   readAttrPicksHistoryAt,
+  readAttrPicksHistoryLatest,
   readDraftAttrPrefills,
   saveDraftAttrPrefills,
   storageScope,
@@ -967,6 +968,18 @@ export function TemuDraftLibraryPage({
               categoryNames: [entry.category_name ?? ""],
             }),
             history: readAttrPicksHistory(scope, leaf),
+            // 换类目遇到同一个属性（品牌/材质），上次怎么填的照样是证据
+            historyByPid: readAttrPicksHistoryLatest(scope),
+            // 采集属性（材质=PU…）+ 变种规格值：真实事实，比标题字符串硬得多
+            sourceAttrs: entry.source_attributes ?? [],
+            specTexts: [
+              ...(entry.spec_values_1 ?? []),
+              ...(entry.spec_values_2 ?? []),
+              ...(entry.variants ?? []).flatMap((variant) => [
+                variant.color ?? "",
+                variant.size ?? "",
+              ]),
+            ],
           });
           next[entry.id] = {
             catId: leaf,
