@@ -29,7 +29,7 @@ test("top level navigation groups image services, overseas listing, data and set
     "dashboard",
     "ai_image_service",
     "overseas_listing",
-    "data_insights",
+    "sourcing_workflow",
     "personal_center",
     "system_settings",
   ]);
@@ -37,7 +37,7 @@ test("top level navigation groups image services, overseas listing, data and set
     "工作台",
     "图像服务",
     "海外上架",
-    "数据信息",
+    "商品核价及利润",
     "个人中心",
     "系统设置",
   ]);
@@ -134,14 +134,13 @@ test("overseas listing keeps the publish page and draft library side by side", (
   ]);
 });
 
-test("data insights groups sourcing profit and store data management", () => {
-  const dataInsights = findGroup("data_insights");
-
-  assert.equal(dataInsights?.label, "数据信息");
-  assert.deepEqual(dataInsights?.children.map((child) => child.id), ["sourcing_workflow", "order_profit"]);
-  assert.deepEqual(dataInsights?.children.map((child) => child.label), ["商品核价及利润", "店铺数据管理"]);
+test("sourcing profit is a top-level group without retired store data", () => {
+  // 「数据信息」外壳已拆；订单利润已下架不再出现在导航里
+  assert.equal(findGroup("data_insights"), undefined);
+  assert.equal(findGroup("order_profit"), undefined);
 
   const sourcingWorkflow = findGroup("sourcing_workflow");
+  assert.equal(sourcingWorkflow?.label, "商品核价及利润");
   assert.equal(sourcingWorkflow?.defaultChildId, "sourcing_ledger");
   assert.deepEqual(sourcingWorkflow?.children.map((child) => child.id), [
     "sourcing_ledger",
@@ -150,21 +149,11 @@ test("data insights groups sourcing profit and store data management", () => {
     "profit_activity_products",
   ]);
 
-  const storeData = findGroup("order_profit");
-  assert.equal(storeData?.defaultChildId, "order_profit_overview");
-  assert.deepEqual(
-    storeData?.children.filter((child) => !isWorkspaceNavigationGroup(child) && !child.hiddenFromSidebar).map((child) => child.id),
-    [
-      "order_profit_overview",
-      "order_profit_orders",
-      "order_profit_funds",
-      "order_profit_capture",
-      "order_profit_records",
-      "order_profit_accounts",
-    ],
-  );
-  // 合并前的单页入口仍保留在页面路由里，避免浏览器已保存的旧页签失效。
+  // 已下架/合并前的旧页签仍保留在页面模块注册里，避免浏览器已保存的旧页签失效。
   for (const legacyId of [
+    "order_profit_overview",
+    "order_profit_orders",
+    "order_profit_capture",
     "order_profit_home",
     "order_profit_traffic",
     "order_profit_recon",

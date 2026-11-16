@@ -43,7 +43,6 @@ export type WorkspaceNavigationGroupId =
   | "product_workflow"
   | "combo_workflow"
   | "pod_workflow"
-  | "data_insights"
   | "sourcing_workflow"
   | "order_profit"
   | "overseas_listing"
@@ -467,7 +466,7 @@ const aiVideoWorkflow: WorkspaceNavigationGroup = {
   panels: aiVideoPanels,
 };
 
-/** 数据信息下的二级分组：商品核价及利润、店铺数据管理。 */
+/** 商品核价及利润一级分组（原「数据信息」外壳已拆，订单利润已下架移除）。 */
 const sourcingWorkflow: WorkspaceNavigationGroup = {
   id: "sourcing_workflow",
   label: "商品核价及利润",
@@ -476,16 +475,6 @@ const sourcingWorkflow: WorkspaceNavigationGroup = {
   description: "核价、利润与货源产品管理",
   defaultChildId: "sourcing_ledger",
   children: [sourcingLedger, priceVerification, profitActivity, productLibrary],
-};
-
-const orderProfitWorkflow: WorkspaceNavigationGroup = {
-  id: "order_profit",
-  label: "店铺数据管理",
-  icon: "",
-  iconClass: "iconfont icon-accountbook-fill",
-  description: "Temu 店铺指标、订单与账户资金",
-  defaultChildId: "order_profit_overview",
-  children: orderProfitModules,
 };
 
 export const workspaceModules: WorkspaceNavigationItem[] = [
@@ -511,15 +500,7 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     defaultChildId: "temu_draft_library",
     children: [temuDraftLibrary, temuPublish, temuPublishHistory],
   },
-  {
-    id: "data_insights",
-    label: "数据信息",
-    icon: "",
-    iconClass: "iconfont icon-reconciliation",
-    description: "商品核价及利润、店铺数据管理",
-    defaultChildId: "sourcing_ledger",
-    children: [sourcingWorkflow, orderProfitWorkflow],
-  },
+  sourcingWorkflow,
   {
     // 个人中心仍是单个页签模块，但侧栏里按分组展开二级面板。
     id: "personal_center",

@@ -1224,7 +1224,7 @@ test("发布检查：每一项都说清「还差什么」，被拦时自动定�
   // 点发布被拦：标红必填项 + 滚到「出错的那一块」（定位不到才退回第一个缺口）
   assert.match(page, /const draft = await composeDraft\(\)\.catch\(\(cause: unknown\) => \{/);
   assert.match(page, /setShowFieldErrors\(true\);/);
-  assert.ok(page.includes("section || flowSteps.find((step) => step.id !== \"sec-publish\" && !step.done)?.id"));
+  assert.ok(page.includes("section || flowSteps.find((step) => !step.done)?.id"));
 
   // 必填项只在「被拦过之后」标红，且属性/标题都覆盖
   assert.match(page, /const \[showFieldErrors, setShowFieldErrors\] = useState\(false\);/);
@@ -1905,10 +1905,10 @@ test("首屏只留必填：低频字段都收进「更多选项」折叠", () =>
   // 用带标签的完整片段判断：注释里提到这两个词是允许的，字段本身不能还在
   assert.ok(!page.includes("<span>店铺账号</span>"), "只读的「店铺账号」不该占一行");
   assert.ok(!page.includes("<span>经营站点</span>"), "禁用的「经营站点」下拉不该占一行");
-  // 「检查必填」只留两处：发布区块一处、右侧检查栏一处。顶栏那份重复的删掉了
+  // 「检查必填」只留一处：右侧检查栏。顶栏和发布区块那两份重复的都删了
   const mandatoryButtons =
     page.match(/onClick=\{(?:\(\) => void )?checkMandatory(?:\(\))?\}/g) ?? [];
-  assert.equal(mandatoryButtons.length, 2, "顶栏不该再有第三个「检查必填」");
+  assert.equal(mandatoryButtons.length, 1, "重复的「检查必填」不该再出现");
 
   // 折叠必须在，且内部字段仍被渲染
   for (const [summary, keep] of [

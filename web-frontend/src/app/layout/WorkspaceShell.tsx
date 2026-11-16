@@ -904,8 +904,8 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
 
   // 从「商品货源及成本展示」的 SKU 明细跳转到「利润活动」单品利润表单，并预填成本与货源链接。
   const openProfitActivity = (prefill: ProfitActivityPrefill) => {
-    setExpandedGroupId("data_insights");
-    setExpandedSubgroupId("sourcing_workflow");
+    setExpandedGroupId("sourcing_workflow");
+    setExpandedSubgroupId(null);
     setTabs((current) => {
       const existing = current.find((tab) => tab.moduleId === "profit_activity");
       if (existing) {

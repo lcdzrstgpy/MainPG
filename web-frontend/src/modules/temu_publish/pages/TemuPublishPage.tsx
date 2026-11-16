@@ -3119,23 +3119,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         ...(!form.warehouseId ? ["发货仓库"] : []),
       ],
     },
-    {
-      id: "sec-publish",
-      label: "校验发布",
-      hint: "检查必填 → 提交",
-      missing: [],
-    },
   ];
-  const flowSteps = flowBase.map((step) =>
-    step.id === "sec-publish"
-      ? { ...step, done: !!publishResult }
-      : { ...step, done: step.missing.length === 0 },
-  );
-  // 「校验发布」是动作不是内容，统计剩余项时不算它
-  const remainingContentSteps = flowSteps.filter((step) => step.id !== "sec-publish" && !step.done);
+  // 「校验发布」是动作不是内容步骤（操作统一在右侧检查栏），不再占步骤条一格
+  const flowSteps = flowBase.map((step) => ({ ...step, done: step.missing.length === 0 }));
+  const remainingContentSteps = flowSteps.filter((step) => !step.done);
   /** 第一个没填完的区块：给左侧状态条和区块头上色，让人一眼知道该填哪 */
   const activeSectionId = remainingContentSteps[0]?.id ?? "";
-  const doneCount = flowSteps.filter((step) => step.done).length;
   const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   /**
@@ -3153,7 +3142,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         : sectionOfValidation(cause ? errorMessage(cause) : "");
     if (section) setErrorSection(section);
     const target =
-      section || flowSteps.find((step) => step.id !== "sec-publish" && !step.done)?.id || "";
+      section || flowSteps.find((step) => !step.done)?.id || "";
     if (target) jumpTo(target);
   };
   const stepOf = (id: string) => flowSteps.find((item) => item.id === id) ?? flowSteps[0];
@@ -4423,21 +4412,15 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </details>
           </section>
 
-          {/* 5 校验发布 */}
+          {/* 校验发布：动作区（检查/预览/提交），不再算内容步骤一格 */}
           <section className="temu-sec temu-sec-last" id="sec-publish">
             <SectionHead
-              step={stepOf("sec-publish")}
+              step={{ label: "校验发布", hint: "检查必填 → 提交", done: false }}
               index={4}
-              extra={
-                <span className="temu-muted">
-                  {doneCount}/{flowSteps.length} 项就绪
-                </span>
-              }
             />
             <div className="temu-publish-actions">
-              <button type="button" className="temu-btn" onClick={checkMandatory} disabled={busy !== ""}>
-                {busy === "mandatory" ? "校验中…" : "检查必填"}
-              </button>
+              {/* 检查必填/提交发布统一走右侧检查栏（顶部也留了一个提交），
+                  这里只留排障用的请求体预览/复制，别摆第三份按钮 */}
               <button type="button" className="temu-btn" onClick={buildPayload} disabled={busy !== ""}>
                 {busy === "build" ? "生成中…" : "预览请求体"}
               </button>
@@ -4452,15 +4435,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   </button>
                 </>
               )}
-              <button
-                type="button"
-                className="temu-btn temu-btn-primary"
-                disabled={submitDisabled}
-                onClick={() => void publishGoods()}
-                title="不可撤销；快捷键 Ctrl+Enter"
-              >
-                {publishing ? (uploadProgress ? `图片上传 ${uploadProgress.done}/${uploadProgress.total}…` : "提交中…") : "提交发布"}
-              </button>
             </div>
 
             {publishResult && (
@@ -4601,7 +4575,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     <span className="temu-rail-label">
                       {step.label}
                       {/* 没填完就直说差什么；填完了才显示这块包含哪些内容 */}
-                      <em>{step.done || step.id === "sec-publish" ? step.hint : `还差：${step.missing.join("、")}`}</em>
+                      <em>{step.done ? step.hint : `还差：${step.missing.join("、")}`}</em>
                     </span>
                   </button>
                 </li>
