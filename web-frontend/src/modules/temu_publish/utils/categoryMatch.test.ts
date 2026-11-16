@@ -138,3 +138,41 @@ test("裁决：只有一个查询有结果时认领（维持原有覆盖率）",
   ];
   assert.equal(decideCategoryPath(results)?.[0]?.catId, 1);
 });
+
+test("查询计划：词典品类词插在锚定和标题之间", () => {
+  const plan = categoryQueryPlan({ title: "Clear Magnetic Protective Phone Case for iPhone 18" });
+  assert.equal(plan[0]?.kind, "dict");
+  assert.equal(plan[0]?.text, "手机壳");
+  assert.ok(plan.some((item) => item.kind === "title"));
+});
+
+test("裁决：词典 top1 压过标题原文的字符串猜测（磁吸手机壳实测场景）", () => {
+  const phone = [cat(301, "手机壳")];
+  const jacket = [cat(302, "女士休闲夹克")];
+  const results: CategoryQueryResult[] = [
+    { kind: "dict", paths: [phone] },
+    { kind: "title", paths: [jacket] },
+    { kind: "title", paths: [jacket] },
+  ];
+  assert.equal(decideCategoryPath(results)?.[0]?.catId, 301);
+});
+
+test("裁决：词典与标题互证是跨证据源共识", () => {
+  const phone = [cat(301, "手机壳")];
+  const results: CategoryQueryResult[] = [
+    { kind: "dict", paths: [phone] },
+    { kind: "title", paths: [phone] },
+    { kind: "title", paths: [[cat(303, "夹克")]] },
+  ];
+  assert.equal(decideCategoryPath(results)?.[0]?.catId, 301);
+});
+
+test("裁决：锚定压过词典（真实采集属性 > 标题翻译）", () => {
+  const bag = [cat(29164, "手提包")];
+  const results: CategoryQueryResult[] = [
+    { kind: "anchor", paths: [bag] },
+    { kind: "dict", paths: [[cat(304, "化妆包")]] },
+    { kind: "title", paths: [[cat(305, "工具包")]] },
+  ];
+  assert.equal(decideCategoryPath(results)?.[0]?.catId, 29164);
+});

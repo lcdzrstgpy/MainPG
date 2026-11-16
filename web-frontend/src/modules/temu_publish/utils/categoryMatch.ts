@@ -19,6 +19,7 @@
 
 import { PLACEHOLDER_VALUE } from "../data/attrAutofill.ts";
 import type { TemuCategory } from "../types.ts";
+import { productNounTexts } from "./productNouns.ts";
 
 const HEAD_CUT = /[,，;；|]/;
 const FOR_CUT = /\s+for\s+/i;
@@ -98,37 +99,52 @@ export function categoryAnchorTexts(
   return out.slice(0, 2);
 }
 
-export type CategoryQuery = { text: string; kind: "anchor" | "title" };
+export type CategoryQuery = { text: string; kind: "anchor" | "dict" | "title" };
 
-/** 一条草稿的查询计划：锚定词优先（中文品类词），标题兜底，最多 3 个查询。 */
+/** 一条草稿的查询计划：锚定词 → 词典品类词 → 标题原文，三档轮转保底各一个，最多 3 个查询。 */
 export function categoryQueryPlan(input: {
   title?: string;
   sourceAttributes?: Array<{ name: string; value: string }>;
 }): CategoryQuery[] {
   const plan: CategoryQuery[] = [];
   const seen = new Set<string>();
-  const push = (raw: string, kind: "anchor" | "title") => {
+  const push = (raw: string, kind: CategoryQuery["kind"]) => {
     const text = raw.trim().slice(0, MAX_QUERY_CHARS);
     if (text.length < 2 || seen.has(text)) return;
     seen.add(text);
     plan.push({ text, kind });
   };
-  for (const anchor of categoryAnchorTexts(input.sourceAttributes)) push(anchor, "anchor");
-  for (const text of categorySearchTexts(input.title ?? "")) push(text, "title");
-  return plan.slice(0, 3);
+  const anchors = categoryAnchorTexts(input.sourceAttributes);
+  // 英文标题翻成品类词（静态词典）：比英文原文更对网关胃口
+  const nouns = productNounTexts(input.title ?? "");
+  const titles = categorySearchTexts(input.title ?? "");
+  // 三档轮转：每档先保一个名额（锚定→词典→标题），多出来的按序补位，
+  // 免得某一档把 3 个查询名额抢满、把标题兜底挤没
+  const rounds = Math.max(anchors.length, nouns.length, titles.length);
+  for (let index = 0; index < rounds && plan.length < 3; index += 1) {
+    if (anchors[index]) push(anchors[index], "anchor");
+    if (plan.length >= 3) break;
+    if (nouns[index]) push(nouns[index], "dict");
+    if (plan.length >= 3) break;
+    if (titles[index]) push(titles[index], "title");
+  }
+  return plan;
 }
 
-export type CategoryQueryResult = { kind: "anchor" | "title"; paths: TemuCategory[][] };
+export type CategoryQueryResult = {
+  kind: CategoryQuery["kind"];
+  paths: TemuCategory[][];
+};
 
 /**
  * 多查询结果裁决（纯函数），按证据强度排：
  *
- * 1. **跨证据源共识**（锚定 + 标题指向同一叶子）：最硬，认领；
- * 2. **锚定 top1**：中文品类词 > 英文标题的猜测 —— 同一条标题切出来的多个查询
- *    是同源自查，一致了也不算互证，压不过采集属性里的品类词；
- * 3. 标题查询内部 ≥2 一致：认领；
- * 4. 只有一个查询有结果：认领（维持原有覆盖率）；
- * 5. 冲突且没有锚定 → **不认领**（宁缺勿错，绝不硬塞）。
+ * 1. **跨证据源共识**（任意两个不同来源指向同一叶子：锚定/词典/标题互证）：最硬；
+ * 2. **锚定 top1**：采集属性里的中文品类词最可信；
+ * 3. **词典 top1**：标题名词的语义翻译，压过标题原文的字符串猜测；
+ * 4. 标题查询内部 ≥2 一致（注意：同条标题切出的查询是同源自查）；
+ * 5. 只有一个查询有结果：认领（维持原有覆盖率）；
+ * 6. 冲突且没有锚定/词典 → **不认领**（宁缺勿错，绝不硬塞）。
  *
  * 隐藏类目一律不当候选：实测 29158 连类目树都不在，认领它等于答错问卷。
  */
@@ -140,36 +156,47 @@ export function decideCategoryPath(results: CategoryQueryResult[]): TemuCategory
       return Boolean(leaf?.isLeaf && !leaf.isHidden);
     }),
   }));
-  const counts = new Map<string, { path: TemuCategory[]; anchor: number; title: number }>();
+  const counts = new Map<
+    string,
+    { path: TemuCategory[]; anchor: number; dict: number; title: number; kinds: Set<string> }
+  >();
   for (const result of usable) {
     for (const path of result.paths) {
       const key = String(path[path.length - 1].catId);
       const hit = counts.get(key);
       if (hit) {
-        if (result.kind === "anchor") hit.anchor += 1;
-        else hit.title += 1;
+        hit[result.kind] += 1;
+        hit.kinds.add(result.kind);
       } else {
         counts.set(key, {
           path,
           anchor: result.kind === "anchor" ? 1 : 0,
+          dict: result.kind === "dict" ? 1 : 0,
           title: result.kind === "title" ? 1 : 0,
+          kinds: new Set([result.kind]),
         });
       }
     }
   }
-  // ① 跨证据源共识：锚定 + 标题都指向同一个叶子
-  const cross = [...counts.values()].find((item) => item.anchor > 0 && item.title > 0);
+  // ① 跨证据源共识：任意两个不同来源都指向同一个叶子
+  const cross = [...counts.values()]
+    .filter((item) => item.kinds.size >= 2)
+    .sort((a, b) => a.anchor + a.dict + a.title - (b.anchor + b.dict + b.title))
+    .pop();
   if (cross) return cross.path;
-  // ② 锚定 top1（中文品类词 > 英文标题的猜测）
+  // ② 锚定 top1（采集属性里的品类词最可信）
   const anchorTop = usable.find((result) => result.kind === "anchor")?.paths[0];
   if (anchorTop) return anchorTop;
-  // ③ 标题查询内部 ≥2 一致
+  // ③ 词典 top1（标题名词的语义翻译 > 标题原文猜测）
+  const dictTop = usable.find((result) => result.kind === "dict")?.paths[0];
+  if (dictTop) return dictTop;
+  // ④ 标题查询内部 ≥2 一致
   const majority = [...counts.values()].find((item) => item.title >= 2);
   if (majority) return majority.path;
-  // ④ 只有一个查询有结果：认领（维持原有覆盖率）
+  // ⑤ 只有一个查询有结果：认领（维持原有覆盖率）
   const withResults = usable.filter((result) => result.paths.length > 0);
   if (withResults.length === 1) return withResults[0].paths[0];
-  // ⑤ 冲突且没有锚定：不硬认领
+  // ⑥ 冲突且没有锚定/词典：不硬认领
   return null;
 }
 
