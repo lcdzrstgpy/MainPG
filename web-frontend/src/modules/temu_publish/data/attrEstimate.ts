@@ -134,6 +134,8 @@ export function estimateAttributePicks(options: {
       const name = prop.name || prop.propertyName || `pid=${pid}`;
       const units = prop.valueUnit ?? [];
       const unit = units.length ? String(units[0] ?? "") : "";
+      // 选填属性只在有证据时填：空着合法，瞎填只会弄脏数据（给 PU 包编「木材类型」这种）
+      const evidenceOnly = !prop.required;
       const usable = (prop.values ?? []).filter((value) => {
         const text = String(value.value ?? "").trim();
         return !!text && !PLACEHOLDER_VALUE.test(text) && hasMatchableText(text);
@@ -192,6 +194,8 @@ export function estimateAttributePicks(options: {
                 : keptByPid
                   ? [keptByPid, "history"]
                   : [fallback, "guess"];
+        // 选填属性没证据就留空，别猜（只有必填才用兜底）
+        if (evidenceOnly && source === "guess") continue;
         // 带单位的属性（成分比例 %）除了下拉还要一个数值，否则必填校验照样拦：
         // 能从采集属性里抠到真实数就用真实数
         const numberFromAttr = nameToken
@@ -223,6 +227,8 @@ export function estimateAttributePicks(options: {
               .find((value) => value !== undefined)
           : undefined;
         const value = numberFromAttr ?? defaultNumberValue(name);
+        // 选填的数值属性没真实数就别编（厚度=1mm 这种是自找麻烦）
+        if (numberFromAttr === undefined && evidenceOnly) continue;
         push({
           pid,
           name,
@@ -235,8 +241,8 @@ export function estimateAttributePicks(options: {
         continue;
       }
 
-      // ③ 既没有可选值也没有单位（自由文本型）：估不出来，必须人工
-      if (!manual.includes(name)) manual.push(name);
+      // ③ 既没有可选值也没有单位（自由文本型）：估不出来，必填才进人工清单
+      if (prop.required && !manual.includes(name)) manual.push(name);
     }
     if (!changed) break;
   }

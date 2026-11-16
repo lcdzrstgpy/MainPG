@@ -240,3 +240,40 @@ test("数值属性优先取采集属性的真实数，取不到才编默认", ()
   assert.equal(result.items.find((item) => item.pid === 103)?.source, "attr");
   assert.equal(result.items.find((item) => item.pid === 104)?.source, "number-guess");
 });
+
+test("选填属性没证据就留空，不猜（给 PU 包编「木材类型」就是这么来的）", () => {
+  const optional = prop({
+    pid: 109,
+    name: "木材类型",
+    required: false,
+    values: [
+      { vid: 61, value: "橡木" },
+      { vid: 62, value: "再生木" },
+    ],
+  });
+  const result = estimateAttributePicks({ attributes: attrs([optional]), texts: [] });
+  assert.equal(result.picks[109], undefined, "选填没证据不该填");
+  assert.equal(result.items.length, 0);
+
+  // 但有证据照样填（选填≠禁填）
+  const withEvidence = estimateAttributePicks({
+    attributes: attrs([optional]),
+    texts: ["oak wooden bowl"],
+    sourceAttrs: [{ name: "木材类型", value: "橡木" }],
+  });
+  assert.equal(withEvidence.picks[109]?.vid, 61);
+  assert.equal(withEvidence.items[0]?.source, "attr");
+});
+
+test("选填的数值属性没真实数不编造，必填的才兜底", () => {
+  const optionalThickness = prop({
+    pid: 110,
+    name: "厚度",
+    required: false,
+    values: [],
+    valueUnit: ["mm"],
+  });
+  const result = estimateAttributePicks({ attributes: attrs([optionalThickness]), texts: [] });
+  assert.equal(result.picks[110], undefined);
+  assert.equal(result.items.length, 0);
+});

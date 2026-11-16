@@ -56,6 +56,18 @@ const SYNONYM_GROUPS: string[][] = [
   ["玻璃", "glass"],
   ["实木", "原木", "solid wood"],
   ["塑料", "plastic"],
+  // 常见图案/面料的英中对照：标题是英文、选项是中文时也能命中
+  ["印花", "printed", "print"],
+  ["纯色", "solid"],
+  ["碎花", "花卉", "floral"],
+  ["条纹", "striped", "stripe"],
+  ["格子", "格纹", "plaid", "check"],
+  ["豹纹", "leopard"],
+  ["迷彩", "camouflage"],
+  ["牛仔", "denim"],
+  ["丝绒", "天鹅绒", "velvet"],
+  ["雪纺", "chiffon"],
+  ["缎面", "satin"],
 ];
 
 /** 一个值的同义词（不含自己）；不在表里返回空。 */
@@ -98,6 +110,7 @@ const NAME_ALIAS_RULES: Array<[RegExp, string]> = [
   [/产地|原产地|origin/i, "origin"],
   [/款式|造型|style type|shape/i, "shape"],
   [/图案|花纹|pattern/i, "pattern"],
+  [/木材|木种|木质|wood/i, "wood"],
 ];
 
 export function attrNameToken(name: string): string {
