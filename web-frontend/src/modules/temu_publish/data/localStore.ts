@@ -107,12 +107,31 @@ export type DraftCategoryMemo = {
   auto?: boolean;
 };
 
-const DRAFT_CATEGORY_KEY = "temu_draft_category_v1";
+/**
+ * v2：v1 的**自动**认领被证实会中毒（英文标题 → 隐藏类目 29158 → 错误属性问卷 →
+ * 满屏瞎填），升级时只保留人工选过的；自动的拿新逻辑（属性锚定 + 互验）重配。
+ */
+const DRAFT_CATEGORY_KEY = "temu_draft_category_v2";
+const DRAFT_CATEGORY_KEY_V1 = "temu_draft_category_v1";
 
 export const localStore = {
   /** 当前登录账号的本机存储后缀（别处自己拼 key 时用）。 */
   storageScope: scope,
-  draftCategories: (): Record<string, DraftCategoryMemo> => read(DRAFT_CATEGORY_KEY, {}),
+  draftCategories: (): Record<string, DraftCategoryMemo> => {
+    try {
+      const raw = window.localStorage.getItem(`${DRAFT_CATEGORY_KEY}:${scope()}`);
+      if (raw != null) return JSON.parse(raw) as Record<string, DraftCategoryMemo>;
+      // v1 → v2 迁移：只留人工选过的（memo.auto 的全是旧算法猜的）
+      const legacy = read<Record<string, DraftCategoryMemo>>(DRAFT_CATEGORY_KEY_V1, {});
+      const manual = Object.fromEntries(
+        Object.entries(legacy).filter(([, memo]) => memo && !memo.auto),
+      );
+      write(DRAFT_CATEGORY_KEY, manual);
+      return manual;
+    } catch {
+      return {};
+    }
+  },
   /** 记住某条草稿的类目：下次「用于发布」直接选中，草稿库也能显示路径。 */
   rememberDraftCategory: (draftId: string, path: TemuCategory[], options?: { auto?: boolean }) => {
     if (!draftId || !path.length) return;

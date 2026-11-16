@@ -10,7 +10,11 @@ import { BatchManualConfig } from "../components/BatchManualConfig";
 import { TemuBatchEditPage, type BatchEditField } from "../components/TemuBatchEditPage";
 import { TemuBatchImagePage } from "../components/TemuBatchImagePage";
 import { DEFAULT_SHIPMENT_DAYS } from "../components/ShipmentDaysPicker";
-import { categorySearchTexts } from "../utils/categoryMatch";
+import {
+  categoryQueryPlan,
+  decideCategoryPath,
+  type CategoryQueryResult,
+} from "../utils/categoryMatch";
 import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
 import { buildDraftForPublish } from "../data/batchPublish";
 import { DRAFT_IMAGES_KEY, resolveEntryImages } from "../data/draftImages";
@@ -541,6 +545,36 @@ function entryPrefill(
   };
 }
 
+/**
+ * 端到端自动分类：查询计划（属性锚定词优先）→ 逐个打 category.match → 多查询互验裁决。
+ *
+ * 单个查询失败不影响其它查询（网关抖动常见）；裁决没有结论（多个标题查询冲突且
+ * 没有锚定）就返回 null —— 宁缺勿错，绝不拿猜的类目硬发。
+ */
+async function matchEntryCategoryPath(entry: {
+  title?: string;
+  subtitle?: string;
+  source_attributes?: Array<{ name: string; value: string }>;
+}): Promise<TemuCategory[] | null> {
+  const plan = categoryQueryPlan({
+    title: entry.title || entry.subtitle || "",
+    sourceAttributes: entry.source_attributes,
+  });
+  const results: CategoryQueryResult[] = [];
+  for (const { text, kind } of plan) {
+    try {
+      const response = await temuPublishApi.matchCategory(text, 100);
+      const paths = (response?.categoryPathDTOS ?? [])
+        .map((dto) => categoryPathFromDto(dto))
+        .filter((path) => path.length > 0);
+      results.push({ kind, paths });
+    } catch {
+      // 单个查询失败不影响其它查询
+    }
+  }
+  return decideCategoryPath(results);
+}
+
 export function TemuDraftLibraryPage({
   onUseDraft,
   onCreateProduct,
@@ -873,13 +907,9 @@ export function TemuDraftLibraryPage({
         for (;;) {
           const entry = queue.shift();
           if (!entry || !alive) return;
-          const text = categorySearchTexts(entry.title || entry.subtitle)[0];
-          if (!text) continue;
           try {
-            const result = await temuPublishApi.matchCategory(text, 100);
-            const leafPath = (result.categoryPathDTOS ?? [])
-              .map((dto) => categoryPathFromDto(dto))
-              .find((path) => path.length > 0 && path[path.length - 1].isLeaf);
+            // 属性锚定词优先 + 多查询互验 + 只收可见叶子（categoryMatch.matchEntryCategoryPath）
+            const leafPath = await matchEntryCategoryPath(entry);
             if (!leafPath) continue;
             localStore.rememberDraftCategory(entry.id, leafPath, { auto: true });
             if (alive) setCategoryMemo(localStore.draftCategories());
@@ -1173,13 +1203,9 @@ export function TemuDraftLibraryPage({
       for (;;) {
         const entry = pending.shift();
         if (!entry) return;
-        const text = categorySearchTexts(entry.title || entry.subtitle || "")[0];
-        if (!text) continue;
         try {
-          const response = await temuPublishApi.matchCategory(text, 100);
-          const path = (response?.categoryPathDTOS ?? [])
-            .map((dto) => categoryPathFromDto(dto))
-            .find((item) => item.length > 0 && item[item.length - 1].isLeaf);
+          // 属性锚定词优先 + 多查询互验 + 只收可见叶子：宁缺勿错（结论不明就不认领）
+          const path = await matchEntryCategoryPath(entry);
           if (path?.length) localStore.rememberDraftCategory(entry.id, path, { auto: true });
         } catch {
           // 匹配接口抖动：这条按「没类目」排除，绝不拿猜的类目硬发

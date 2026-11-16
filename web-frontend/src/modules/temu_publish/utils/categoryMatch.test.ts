@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { categorySearchTexts, dedupeCategoryPaths } from "./categoryMatch.ts";
+import {
+  categoryAnchorTexts,
+  categoryQueryPlan,
+  categorySearchTexts,
+  decideCategoryPath,
+  dedupeCategoryPaths,
+  type CategoryQueryResult,
+} from "./categoryMatch.ts";
+import type { TemuCategory } from "../types.ts";
 
 test("标题查询词：截到第一个逗号前 + 去掉 for 用途说明", () => {
   const title =
@@ -58,4 +66,75 @@ test("类目路径去重：同一条路径只留一次", () => {
   assert.equal(merged.length, 2);
   assert.equal(merged[0].cat2DTO.catId, 2);
   assert.equal(merged[1].cat2DTO.catId, 10);
+});
+
+/* ---------------- 属性锚定 + 多查询互验（2026-11 类目配错修复） ---------------- */
+
+function cat(catId: number, catName: string, options: Partial<TemuCategory> = {}): TemuCategory {
+  return { catId, catName, isLeaf: true, isHidden: false, catLevel: 4, ...options } as TemuCategory;
+}
+
+test("品类锚定词：只取「款式/品类/品名/种类」属性的值", () => {
+  const anchors = categoryAnchorTexts([
+    { name: "箱包潮流款式", value: "单肩斜挎包" },
+    { name: "材质类型", value: "PU" }, // 「类型」不是品类信号，PU 不是品类词
+    { name: "箱包大小", value: "中" }, // 单字尺寸词不算
+    { name: "风格", value: "简约风" }, // 风格不是品类
+    { name: "产品种类", value: "默认项" }, // 占位值不算
+  ]);
+  assert.deepEqual(anchors, ["单肩斜挎包"]);
+});
+
+test("查询计划：锚定词优先，标题兜底，去重且最多 3 个", () => {
+  const plan = categoryQueryPlan({
+    title: "Women's Soft PU Leather Tote Shoulder Bag, Large Capacity",
+    sourceAttributes: [{ name: "箱包潮流款式", value: "单肩斜挎包" }],
+  });
+  assert.equal(plan[0]?.kind, "anchor");
+  assert.equal(plan[0]?.text, "单肩斜挎包");
+  assert.ok(plan.filter((item) => item.kind === "title").length >= 1);
+  assert.ok(plan.length <= 3);
+});
+
+test("裁决：同一叶子 ≥2 个查询命中就是共识", () => {
+  const bag = [cat(29164, "女士手提包")];
+  const results: CategoryQueryResult[] = [
+    { kind: "anchor", paths: [bag] },
+    { kind: "title", paths: [bag] },
+    { kind: "title", paths: [[cat(30988, "工具包")]] },
+  ];
+  assert.equal(decideCategoryPath(results)?.[0]?.catId, 29164);
+});
+
+test("裁决：锚定结果压过标题猜测（托特包实测：标题猜到木材类目）", () => {
+  const bag = [cat(29164, "女士手提包")];
+  const wood = [cat(29158, "木制品")];
+  const results: CategoryQueryResult[] = [
+    { kind: "anchor", paths: [bag] },
+    { kind: "title", paths: [wood] },
+    { kind: "title", paths: [wood] },
+  ];
+  assert.equal(decideCategoryPath(results)?.[0]?.catId, 29164);
+});
+
+test("裁决：隐藏类目不当候选（29158 就是这么混进来的）", () => {
+  const hidden = [cat(29158, "隐藏类目", { isHidden: true })];
+  const results: CategoryQueryResult[] = [{ kind: "title", paths: [hidden] }];
+  assert.equal(decideCategoryPath(results), null);
+});
+
+test("裁决：多个标题查询互相冲突且没有锚定 → 不认领", () => {
+  const results: CategoryQueryResult[] = [
+    { kind: "title", paths: [[cat(1, "桌布")]] },
+    { kind: "title", paths: [[cat(2, "化妆包")]] },
+  ];
+  assert.equal(decideCategoryPath(results), null);
+});
+
+test("裁决：只有一个查询有结果时认领（维持原有覆盖率）", () => {
+  const results: CategoryQueryResult[] = [
+    { kind: "title", paths: [[cat(1, "桌布")]] },
+    { kind: "title", paths: [] },
+  ];
+  assert.equal(decideCategoryPath(results)?.[0]?.catId, 1);
 });

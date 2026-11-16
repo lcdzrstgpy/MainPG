@@ -1600,8 +1600,10 @@ test("入草稿库时按标题自动匹配 Temu 类目（标 auto、不覆盖人
   // 标题太短的没意义，跳过
   assert.match(library, /\.filter\(\(entry\) => \(entry\.title \|\| entry\.subtitle \|\| ""\)\.trim\(\)\.length >= 8\)/);
   // 用标题派生的搜索词查类目，只认叶子路径
-  assert.match(library, /const text = categorySearchTexts\(entry\.title \|\| entry\.subtitle\)\[0\];/);
-  assert.match(library, /\.find\(\(path\) => path\.length > 0 && path\[path\.length - 1\]\.isLeaf\)/);
+  // （2026-11 起走 matchEntryCategoryPath：属性锚定词优先 + 多查询互验 + 过滤隐藏类目，
+  //   英文标题曾被匹配到隐藏类目 29158 答错问卷 → 满屏瞎填）
+  assert.match(library, /const leafPath = await matchEntryCategoryPath\(entry\);/);
+  assert.doesNotMatch(library, /categorySearchTexts\(entry\.title \|\| entry\.subtitle\)\[0\]/);
   // 写入时打 auto 标记，UI 才知道要标「自动」
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, leafPath, \{ auto: true \}\);/);
   // 匹配失败不记空值：否则下次进来永远不会重试
@@ -3070,10 +3072,9 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
-  // 补类目：只补没有 memo 的，按标题 → matchCategory → 首个叶子路径 → 写 memo
+  // 补类目：只补没有 memo 的，属性锚定 + 多查询互验 → 裁决出叶子路径 → 写 memo
   assert.match(library, /const ensureDraftCategories = async \(entries: TemuDraftEntry\[\]\) => \{/);
-  assert.match(library, /const text = categorySearchTexts\(entry\.title \|\| entry\.subtitle \|\| ""\)\[0\];/);
-  assert.match(library, /await temuPublishApi\.matchCategory\(text, 100\)/);
+  assert.match(library, /const path = await matchEntryCategoryPath\(entry\);/);
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, path, \{ auto: true \}\)/);
   // 匹配接口抖动不硬发：这条按「没类目」排除，绝不拿猜的类目发
   assert.match(library, /这条按「没类目」排除，绝不拿猜的类目硬发/);
