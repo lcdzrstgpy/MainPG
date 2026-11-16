@@ -19,6 +19,8 @@ _MIGRATION_KEY = "links_migrated"
 DEFAULT_WEIGHT_KG = Decimal("0.5")
 # 可入库门槛：净利润 ≥ 10 元（用户口径）。
 READY_MIN_NET_PROFIT = Decimal("10")
+# 采集货源生成规则版本：价格回退链/存量修复逻辑一变就加一，列表下次加载会整体重跑一遍。
+_SOURCE_SYNC_RULE_VERSION = 2
 # 手动填写申报价：固定批次与 SKU 标识，重复保存只覆盖这一行，不影响采集行。
 MANUAL_DECLARED_BATCH = "__manual__"
 MANUAL_DECLARED_SKU_REF = "__manual__"
@@ -48,6 +50,7 @@ _STATUS_ORDER = (
     "low_profit",
     "needs_price",
     "needs_source",
+    "needs_source_cost",
     "needs_site",
     "unmatched_source",
     "in_library",
@@ -468,14 +471,22 @@ class SourcingLedgerService:
             ]
         else:
             pairs = list(self._repository.collected_draft_payloads(workspace).items())
-        created = 0
+        created = repaired = 0
         for skc, raw in pairs:
-            if not raw or skc in existing or skc in deleted:
+            if not raw or skc in deleted:
                 continue
             row = _source_from_draft_payload(workspace, skc, raw)
-            if row and self._repository.insert_source(row):
+            if not row:
+                continue
+            if skc in existing:
+                # 存量修复：早先采集的草稿只读到整页价时，货源落库的价格是空的，
+                # 台账就算不出利润。这里只补「采集自动带入且价格为空」的那几条，
+                # 用户手工填过的价格/运费/重量一律不动。
+                repaired += self._repository.repair_collect_source_price(row)
+                continue
+            if self._repository.insert_source(row):
                 created += 1
-        return created
+        return created + repaired
 
     def sync_collected_sources(self, workspace_id: str) -> int:
         """列表加载前增量补货源：定向采集/整店采集处理完即时进入台账。
@@ -487,7 +498,9 @@ class SourcingLedgerService:
         workspace = _text(workspace_id)
         if not workspace:
             return 0
-        signature = self._repository.processed_item_count(workspace)
+        # 签名带上规则版本：改了价格回退链/存量修复逻辑后，列表下次加载会重跑一遍，
+        # 否则只在「处理子项数量变化」时才补，老的空价货源永远修不到。
+        signature = f"v{_SOURCE_SYNC_RULE_VERSION}:{self._repository.processed_item_count(workspace)}"
         if self._source_sync.get(workspace) == signature:
             return 0
         created = self.ensure_collected_sources(workspace)
@@ -832,6 +845,9 @@ class SourcingLedgerService:
             status = "needs_source"
         elif aggregate is None:
             status = "needs_price"
+        elif not cost:
+            # 有货源但单价为空：利润算不出来，真正的原因是缺货源成本，不是站点没识别。
+            status = "needs_source_cost"
         elif not profit:
             status = "needs_site"
         elif Decimal(_decimal_text(profit.get("net_profit")) or "0") >= READY_MIN_NET_PROFIT:
@@ -1458,6 +1474,7 @@ def _source_from_draft_payload(
         item for item in (payload.get("source_variant_records") or []) if isinstance(item, Mapping)
     ]
     price = _decimal_text(payload.get("price_cny"))
+    price_source = "payload"
     if not price:
         prices = [
             value
@@ -1466,6 +1483,19 @@ def _source_from_draft_payload(
         ]
         if prices:
             price = f"{min(prices).quantize(Decimal('0.0001'))}"
+            price_source = "sku"
+    if not price:
+        # 插件常只读到整页价、逐 SKU 价为空（SKU 面板没解析出来）。草稿的 cost 已经
+        # 按「逐 SKU 价 → SKU 面板价 → 页面价」折算过，用它兜底，避免货源成本落空
+        # 导致整条台账算不出利润。
+        price = _decimal_text(payload.get("cost"))
+        if price:
+            price_source = "draft_cost"
+    if not price:
+        # 最后才回落到插件从整页文本取的第一个价（可能是广告位/推荐位，可信度最低）。
+        price = _decimal_text(payload.get("price"))
+        if price:
+            price_source = "page_text"
     freight = _decimal_text(payload.get("freight_cny"))
     # 起订量不再参与计算：一条货源按一件成本（单价 + 国内运费）核算。
     moq = 1
@@ -1484,8 +1514,20 @@ def _source_from_draft_payload(
         "weight_kg": _weight_kg_from_payload(payload, variants),
         "landed_cost_cny": landed_cost(price, freight, moq),
         "source_kind": "collect",
-        "note": "采集自动带入",
+        "note": _collection_note(price_source),
     }
+
+
+# 采集货源备注：兜底价要写清来源，避免用户把页面价当成逐 SKU 已核对的价格。
+_COLLECTION_NOTE = "采集自动带入"
+_COLLECTION_NOTE_BY_SOURCE = {
+    "draft_cost": "采集自动带入（价格为草稿汇总值，未逐 SKU 核对）",
+    "page_text": "采集自动带入（页面价格，未逐 SKU 核对，请核对单价）",
+}
+
+
+def _collection_note(price_source: str) -> str:
+    return _COLLECTION_NOTE_BY_SOURCE.get(price_source, _COLLECTION_NOTE)
 
 
 def _parse_weight_kg(text: Any) -> Decimal | None:

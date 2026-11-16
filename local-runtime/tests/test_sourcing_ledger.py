@@ -859,3 +859,102 @@ def test_enter_library_uses_market_skc_as_key(tmp_path: Path) -> None:
     service.enter_library(WORKSPACE, "PP-001554", site="美国站")
 
     assert profit.products[0]["skc"] == "468618588060"
+
+
+def test_collected_source_falls_back_to_draft_cost_when_sku_prices_missing(
+    tmp_path: Path,
+) -> None:
+    """插件只读到整页价、逐 SKU 价为空时，用草稿的 cost 兜底，货源成本不能落空。"""
+    path = _database(tmp_path)
+    repo = SourcingLedgerRepository(path)
+    service = SourcingLedgerService(repo)
+    repo.draft_payload_for = lambda workspace_id, skc: json.dumps(
+        {
+            "source_url": "https://detail.1688.com/offer/994702116572.html",
+            "source_title": "狗狗衣服秋冬装",
+            "cost": 14.0,
+            "price": "¥14",
+            "source_variant_records": [{"price_cny": None}, {"price_cny": None}],
+        },
+        ensure_ascii=False,
+    )
+
+    assert service.ensure_collected_sources(WORKSPACE, ["PP-001554"]) == 1
+    source = service.sources_for(WORKSPACE, "PP-001554")[0]
+    assert source["price_cny"] == "14.0000"
+    assert source["landed_cost_cny"] == "14.0000"
+    # 兜底价必须标明未逐 SKU 核对，别让用户当成已核实价格。
+    assert "未逐 SKU 核对" in source["note"]
+
+
+def test_collected_source_falls_back_to_page_price_last(tmp_path: Path) -> None:
+    """草稿没有 cost 时，最后回落到插件从整页文本取到的价格。"""
+    path = _database(tmp_path)
+    repo = SourcingLedgerRepository(path)
+    service = SourcingLedgerService(repo)
+    repo.draft_payload_for = lambda workspace_id, skc: json.dumps(
+        {
+            "source_url": "https://detail.1688.com/offer/1060013611696.html",
+            "price": "¥7",
+            "source_variant_records": [],
+        },
+        ensure_ascii=False,
+    )
+
+    service.ensure_collected_sources(WORKSPACE, ["PP-001554"])
+    source = service.sources_for(WORKSPACE, "PP-001554")[0]
+    assert source["price_cny"] == "7.0000"
+    assert "页面价格" in source["note"]
+
+
+def test_existing_collect_source_without_price_is_repaired(tmp_path: Path) -> None:
+    """存量空价货源：再次同步时按回退链补价，且只补一次、不动已有运费。"""
+    path = _database(tmp_path)
+    repo = SourcingLedgerRepository(path)
+    service = SourcingLedgerService(repo)
+    repo.insert_source(
+        {
+            "workspace_id": WORKSPACE,
+            "product_key": "PP-001554",
+            "source_url": "https://detail.1688.com/offer/1080739199032.html",
+            "price_cny": "",
+            "domestic_freight_cny": "5",
+            "source_kind": "collect",
+        }
+    )
+    repo.draft_payload_for = lambda workspace_id, skc: json.dumps(
+        {"source_url": "https://detail.1688.com/offer/1080739199032.html", "cost": 12.0}
+    )
+
+    assert service.ensure_collected_sources(WORKSPACE, ["PP-001554"]) == 1
+    source = service.sources_for(WORKSPACE, "PP-001554")[0]
+    assert source["price_cny"] == "12.0000"
+    # 到手成本沿用货源自己的国内运费：12 + 5
+    assert source["landed_cost_cny"] == "17.0000"
+    # 系统默认备注跟着改成「未逐 SKU 核对」，用户自己写过的不动。
+    assert "未逐 SKU 核对" in source["note"]
+    assert service.ensure_collected_sources(WORKSPACE, ["PP-001554"]) == 0
+
+
+def test_item_with_source_but_no_price_reports_missing_source_cost(tmp_path: Path) -> None:
+    """有货源但单价为空时，状态是「缺货源价」，不能再显示成站点未识别。"""
+    path = _database(tmp_path)
+    repo = SourcingLedgerRepository(path)
+    service = SourcingLedgerService(repo, profit_service=_FakeProfit())
+    service.ingest_capture(workspace_id=WORKSPACE, batch_id="b1", items=[_item()])
+    repo.insert_source(
+        {
+            "workspace_id": WORKSPACE,
+            "product_key": "PP-001554",
+            "source_url": "https://detail.1688.com/offer/994702116572.html",
+            "price_cny": "",
+            "source_kind": "collect",
+        }
+    )
+
+    item = next(
+        row for row in service.list_items(WORKSPACE)["items"] if row["skc"] == "PP-001554"
+    )
+
+    assert item["status"] == "needs_source_cost"
+    assert not item["profit"]

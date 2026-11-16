@@ -8,6 +8,7 @@ export type LedgerStatus =
   | "low_profit"
   | "needs_price"
   | "needs_source"
+  | "needs_source_cost"
   | "needs_site"
   | "unmatched_source"
   | "in_library";

@@ -30,6 +30,7 @@ const STATUS_LABELS: Record<LedgerStatus, string> = {
   low_profit: "利润偏低",
   needs_price: "待采申报价",
   needs_source: "待补货源",
+  needs_source_cost: "缺货源价",
   needs_site: "站点未识别",
   unmatched_source: "货源待关联",
   in_library: "已入产品库",
@@ -38,6 +39,7 @@ const STATUS_LABELS: Record<LedgerStatus, string> = {
 const PENDING_STATUSES: LedgerStatus[] = [
   "needs_price",
   "needs_source",
+  "needs_source_cost",
   "needs_site",
   "unmatched_source",
 ];
