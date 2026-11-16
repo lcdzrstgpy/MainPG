@@ -4,17 +4,32 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 24px;
+  padding: 22px 24px 26px;
   min-height: 100%;
   color: var(--theme-text-primary, #18334d);
+  /* 页签、下拉、按钮、批量输入统一高度，避免高低错落。 */
+  --ledger-control-h: 34px;
+  /* 纯色微深底框：把筛选、表格和批量控件从水彩背景上托起来。 */
+  border: 1px solid var(--theme-module-border, #d8e5ee);
+  border-radius: calc(var(--theme-card-radius, 14px) + 4px);
+  background: color-mix(in srgb, var(--theme-primary, #0a8fca) 9%, #fffdfb);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 16px 36px -24px rgba(60, 34, 44, 0.45);
 }
 
 .ledger-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px 16px;
+  padding-bottom: 14px;
+  /* 标题/批量栏与下方状态页签之间加一条隔离线，两行不再粘在一起。 */
+  border-bottom: 1px solid var(--theme-module-border, #d8e5ee);
+}
+
+.ledger-head > div:first-child {
+  min-width: 0;
 }
 
 .ledger-head h1 {
@@ -32,7 +47,9 @@
 .ledger-head-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
+  justify-self: end;
 }
 
 .ledger-total {
@@ -49,9 +66,9 @@
 
 .ledger-tab {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
-  height: 32px;
+  height: var(--ledger-control-h, 34px);
   padding: 0 14px;
   border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
@@ -83,19 +100,21 @@
   color: rgba(255, 255, 255, 0.82);
 }
 
-.ledger-filters {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  align-items: flex-end;
+/* 用 .ledger-page 限定作用域：个人中心也有一组 .ledger-filters 样式，
+   后加载时会用 flex 覆盖这里的 grid，导致筛选控件挤在左侧。 */
+.ledger-page .ledger-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.9fr) minmax(0, 1.1fr) minmax(0, 2.6fr);
+  gap: 12px 16px;
+  align-items: end;
   padding: 14px 16px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
   border-radius: var(--theme-card-radius, 14px);
   background-color: var(--theme-module-surface, #fff);
 }
 
-.ledger-filters label,
-.ledger-filters .ledger-keyword {
+.ledger-page .ledger-filters label,
+.ledger-page .ledger-filters .ledger-keyword {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -103,21 +122,26 @@
   color: var(--theme-text-secondary, #526a82);
 }
 
-.ledger-filters select,
-.ledger-filters input,
+.ledger-page .ledger-filters select,
+.ledger-page .ledger-filters input,
 .ledger-form input {
-  min-width: 140px;
-  height: 34px;
+  min-width: 0;
+  height: var(--ledger-control-h, 34px);
   padding: 0 12px;
   border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: var(--theme-module-surface-raised, #fff);
+  background-color: var(--theme-module-surface-raised, #fff);
   color: var(--theme-text-primary, #18334d);
   font-size: 13px;
 }
 
+.ledger-page .ledger-filters select,
+.ledger-page .ledger-filters input {
+  width: 100%;
+}
+
 .ledger-keyword {
-  flex: 1 1 260px;
+  min-width: 0;
 }
 
 .ledger-keyword-box {
@@ -127,20 +151,30 @@
 }
 
 .ledger-keyword textarea {
+  display: block;
   width: 100%;
-  min-width: 240px;
-  max-width: 420px;
-  min-height: 34px;
-  max-height: 120px;
-  padding: 8px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: var(--theme-module-surface-raised, #fff);
+  min-width: 0;
+  height: 40px;
+  min-height: 40px;
+  padding: 4px 2px 6px;
+  /* 关键词用下划线输入框：不要胶囊，只留一根底线。 */
+  border: 0;
+  border-bottom: 1px solid var(--theme-module-border-strong, #82c9ef);
+  border-radius: 0;
+  background: transparent;
   color: var(--theme-text-primary, #18334d);
   font: inherit;
   font-size: 13px;
-  line-height: 1.4;
-  resize: vertical;
+  line-height: 28px;
+  /* 去掉原生拖拽手柄，多行粘贴在框内滚动。 */
+  resize: none;
+  overflow-y: auto;
+  outline: none;
+}
+
+.ledger-keyword textarea:focus {
+  border-bottom-color: var(--theme-primary, #0a8fca);
+  box-shadow: 0 1px 0 var(--theme-primary, #0a8fca);
 }
 
 .ledger-keyword-actions {
@@ -184,15 +218,11 @@
   cursor: not-allowed;
 }
 
-.ledger-batch-filter select {
-  min-width: 200px;
-  max-width: 280px;
-  text-overflow: ellipsis;
-}
-
+.ledger-batch-filter select,
 .ledger-store-filter select {
-  min-width: 160px;
-  max-width: 220px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
   text-overflow: ellipsis;
 }
 
@@ -486,10 +516,10 @@
   height: 30px;
   border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: transparent;
+  background-color: transparent;
   color: var(--theme-text-primary, #18334d);
   font-size: 12px;
-  padding: 0 10px;
+  padding: 0 26px 0 10px;
 }
 
 .ledger-drawer-mask {
@@ -556,10 +586,10 @@
 
 .ledger-site-picker select {
   height: 28px;
-  padding: 0 8px;
+  padding: 0 24px 0 8px;
   border-radius: 8px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: var(--theme-module-surface-raised, #fff);
+  background-color: var(--theme-module-surface-raised, #fff);
   color: var(--theme-text-primary, #18334d);
   font-size: 12px;
 }
@@ -925,7 +955,7 @@
   align-items: center;
   gap: 18px;
   flex-wrap: wrap;
-  flex: 1 1 100%;
+  grid-column: 1 / -1;
 }
 
 .ledger-batch-bar .ledger-total {
@@ -946,11 +976,11 @@
 .ledger-batch input,
 .ledger-batch select {
   width: 130px;
-  height: 32px;
+  height: var(--ledger-control-h, 34px);
   padding: 0 12px;
   border-radius: 999px;
   border: 1px solid var(--theme-module-border, #d8e5ee);
-  background: var(--theme-module-surface-raised, #fff);
+  background-color: var(--theme-module-surface-raised, #fff);
   color: var(--theme-text-primary, #18334d);
   font-size: 13px;
 }
@@ -958,7 +988,7 @@
 .ledger-batch .ledger-batch-store-select {
   width: 160px;
   max-width: 200px;
-  padding-right: 8px;
+  padding-right: 30px;
   text-overflow: ellipsis;
 }
 
@@ -1343,4 +1373,52 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* 原生下拉箭头贴边：统一换成内缩的 SVG 箭头，右侧留出呼吸位。 */
+.ledger-page .ledger-filters select,
+.ledger-batch select,
+.ledger-pager-size,
+.ledger-site-picker select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23526a82' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 10px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ledger-pager-size {
+  padding-right: 26px;
+  background-position: right 9px center;
+}
+
+.ledger-site-picker select {
+  padding-right: 24px;
+  background-position: right 8px center;
+}
+
+@media (max-width: 900px) {
+  .ledger-page .ledger-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .ledger-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ledger-head-actions {
+    justify-self: start;
+  }
+
+  .ledger-page .ledger-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
