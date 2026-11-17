@@ -286,8 +286,8 @@ export function TemuPublishHistoryPage({
    * 失败大头是「类目属性模板变了」——旧估填留着只会再败一遍，所以先清掉，
    * 成品库按新模板重估后再批量发。没 draft_id 的老记录按标题定位（库里能对上就收）。
    */
-  const batchRetry = () => {
-    const picked = items.filter((item) => retryPicked.includes(item.id));
+  const batchRetry = (targets?: TemuPublishHistoryItem[]) => {
+    const picked = targets ?? items.filter((item) => retryPicked.includes(item.id));
     if (!picked.length) return;
     const ids: string[] = [];
     const titles: string[] = [];
@@ -408,6 +408,16 @@ export function TemuPublishHistoryPage({
           <span className="temu-muted">
             {retryPicked.length ? `已勾 ${retryPicked.length} 条` : "勾选失败条目可批量重试"}
           </span>
+          {reasonFilter ? (
+            <button
+              type="button"
+              className="temu-btn temu-btn-sm temu-btn-primary"
+              title="当前原因筛选下的全部条目一起重试：清旧估填 → 回成品库自动勾选 → 批量发布"
+              onClick={() => batchRetry(listItems)}
+            >
+              一键重试这类（{listItems.length} 条）
+            </button>
+          ) : null}
           <button
             type="button"
             className="temu-btn temu-btn-sm temu-btn-primary"
@@ -417,7 +427,7 @@ export function TemuPublishHistoryPage({
                 ? "清掉旧估填（属性模板可能已变）→ 回成品库自动勾选 → 点「批量发布」重发"
                 : "先勾选要重试的条目"
             }
-            onClick={batchRetry}
+            onClick={() => batchRetry()}
           >
             批量重试{retryPicked.length ? `（${retryPicked.length} 条）` : ""}
           </button>

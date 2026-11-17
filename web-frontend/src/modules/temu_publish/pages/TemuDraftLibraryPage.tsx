@@ -591,6 +591,14 @@ export function TemuDraftLibraryPage({
   const [filter, setFilter] = useState<Filter>("all");
   /** 只看「发布失败过」的草稿（按本机失败台账的标题匹配） */
   const [onlyFailed, setOnlyFailed] = useState(false);
+  /**
+   * 失败台账（后端 temu_publish_submissions）：以它为准 —— 本机清缓存/换机器都还在。
+   * 本机台账（localStore.failures）只兜底老记录。切回页面时刷新。
+   */
+  const [failedLedger, setFailedLedger] = useState<{ ids: string[]; titles: string[] }>({
+    ids: [],
+    titles: [],
+  });
   /** 只看「待人工」的草稿：类目没配上、或必填属性估不出来的 */
   const [onlyManual, setOnlyManual] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -838,14 +846,39 @@ export function TemuDraftLibraryPage({
     return () => window.clearTimeout(timer);
   }, [queryInput, query]);
 
+  /** 拉后端失败台账（每页 200，最多 5 页 = 1000 条失败，远超实际）；失败就靠本机兜底。 */
+  const syncFailedLedger = async () => {
+    try {
+      const ids = new Set<string>();
+      const titles = new Set<string>();
+      for (let page = 1; page <= 5; page += 1) {
+        const data = await temuPublishApi.publishHistory({ status: "failed", page, pageSize: 200 });
+        const rows = Array.isArray(data?.items) ? data.items : [];
+        for (const row of rows) {
+          if (row.draft_id) ids.add(row.draft_id);
+          if (row.title?.trim()) titles.add(row.title.trim());
+        }
+        if (rows.length < 200) break;
+      }
+      setFailedLedger({ ids: [...ids], titles: [...titles] });
+    } catch {
+      // 后端不可用：本机台账兜底照常
+    }
+  };
+
   useEffect(() => {
-    const sync = () => setCategoryMemo(localStore.draftCategories());
+    const sync = () => {
+      setCategoryMemo(localStore.draftCategories());
+      void syncFailedLedger();
+    };
+    sync();
     window.addEventListener("focus", sync);
     document.addEventListener("visibilitychange", sync);
     return () => {
       window.removeEventListener("focus", sync);
       document.removeEventListener("visibilitychange", sync);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 本页数据：来源筛选与分页都已在后端完成，这里只合并「本机编辑」并剔除本机隐藏
@@ -857,17 +890,21 @@ export function TemuDraftLibraryPage({
   );
 
   /**
-   * 发布失败过的标题（本机台账）。
+   * 发布失败过的草稿：后端台账为准（换机器都还在），本机台账兜底老记录。
+   * id + 标题双匹配：老失败记录没 draft_id 就按标题对。
    *
    * 发成功的草稿会自动移出成品库，所以这里没有「已发布」筛选的意义；
    * 反过来「失败过」是真实存在的状态 —— 这类草稿要么改完重发、要么删掉，
-   * 不该和人堆在一起靠翻找。标题匹配够用（失败记录存的就是标题）。
+   * 不该和人堆在一起靠翻找。
    */
-  // 不用 memo 缓存：发布页新增失败记录后切回来要立刻看到标记（读 LS 很便宜）
-  const failedTitles = new Set(
-    localStore.failures().map((item) => item.draftTitle.trim()).filter(Boolean),
-  );
-  const failedCount = entries.filter((entry) => failedTitles.has(entry.title.trim())).length;
+  const failedIdSet = new Set(failedLedger.ids);
+  const failedTitleSet = new Set([
+    ...failedLedger.titles,
+    ...localStore.failures().map((item) => item.draftTitle.trim()).filter(Boolean),
+  ]);
+  const isFailedEntry = (entry: TemuDraftEntry) =>
+    failedIdSet.has(entry.id) || failedTitleSet.has((entry.title || "").trim());
+  const failedCount = entries.filter((entry) => isFailedEntry(entry)).length;
   /**
    * 「待人工」清单：类目没配上的（自动匹配也没结论）或必填属性估不出来的
    * （估填只能标 manual，填不了）。这两类发之前必须人动手，集中亮出来。
@@ -879,7 +916,7 @@ export function TemuDraftLibraryPage({
     if (!hasCategory || manualNames.length) manualIds.add(entry.id);
   }
   const visibleEntries = entries.filter((entry) => {
-    if (onlyFailed && !failedTitles.has(entry.title.trim())) return false;
+    if (onlyFailed && !isFailedEntry(entry)) return false;
     if (onlyManual && !manualIds.has(entry.id)) return false;
     return true;
   });
@@ -2537,7 +2574,7 @@ export function TemuDraftLibraryPage({
                       <span className={`temu-draft-source ${entry.source}`}>
                         {entry.source === "ai" ? "AI 处理" : "POD"}
                       </span>
-                      {failedTitles.has(entry.title.trim()) ? (
+                      {isFailedEntry(entry) ? (
                         <span className="temu-draft-failed" title="这条草稿发布失败过：点「编辑」进去改完再发">
                           失败过
                         </span>

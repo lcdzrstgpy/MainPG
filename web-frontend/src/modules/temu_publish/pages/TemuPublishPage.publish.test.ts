@@ -795,9 +795,8 @@ test("失败批量重试：勾选 → 清旧估填 → 回库自动勾选 → �
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
 
-  // 通道：清单走 sessionStorage（ids=有来源草稿的，titles=老记录按标题找）
+  // 通道：清单走 sessionStorage（ids=有来源草稿的，titles 全带——深层条目要靠标题搜）
   assert.match(types, /export const TEMU_LIBRARY_RETRY_KEY = "temu_library_retry_v1";/);
-  assert.match(history, /const batchRetry = \(\) =>/);
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_RETRY_KEY, JSON\.stringify\(\{ ids, titles \}\)\)/);
   // 只有失败行给勾选框；全选只作用于当前列表
   assert.match(history, /className="temu-history-pick"/);
@@ -807,6 +806,11 @@ test("失败批量重试：勾选 → 清旧估填 → 回库自动勾选 → �
   assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_RETRY_KEY\)/);
   assert.match(library, /for \(const target of targets\) deleteDraftAttrPrefill\(scope, target\.id\);/);
   assert.match(library, /setSelected\(new Set\(targets\.map\(\(target\) => target\.id\)\)\)/);
+
+  // 原因 chips 联动：筛出一类后一键全选这类并重试
+  assert.match(history, /const batchRetry = \(targets\?: TemuPublishHistoryItem\[\]\) =>/);
+  assert.match(history, /一键重试这类/);
+  assert.match(history, /onClick=\{\(\) => batchRetry\(listItems\)\}/);
 });
 
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
@@ -2933,10 +2937,14 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
-  // 成品库没有「已发布」状态（发成功的会移除），所以做的是「失败过」
-  assert.match(library, /const failedTitles = new Set\(/);
+  // 成品库没有「已发布」状态（发成功的会移除），所以做的是「失败过」。
+  // 台账以后端为准（本机清缓存/换机器都还在），本机台账兜底老记录
+  assert.match(library, /const syncFailedLedger = async \(\) =>/);
+  assert.match(library, /temuPublishApi\.publishHistory\(\{ status: "failed", page, pageSize: 200 \}\)/);
+  assert.match(library, /const isFailedEntry = \(entry: TemuDraftEntry\) =>/);
+  assert.match(library, /failedIdSet\.has\(entry\.id\) \|\| failedTitleSet\.has\(\(entry\.title \|\| ""\)\.trim\(\)\)/);
   assert.match(library, /const \[onlyFailed, setOnlyFailed\] = useState\(false\);/);
-  assert.match(library, /const failedCount = entries\.filter\(\(entry\) => failedTitles\.has\(entry\.title\.trim\(\)\)\)\.length;/);
+  assert.match(library, /const failedCount = entries\.filter\(\(entry\) => isFailedEntry\(entry\)\)\.length;/);
   assert.match(library, /\{visibleEntries\.map\(\(entry\) => \(/);
   assert.match(library, /className="temu-draft-failed"/);
   assert.match(library, /className={`temu-library-failed-toggle\$\{onlyFailed \? " is-active" : ""\}`}/);
