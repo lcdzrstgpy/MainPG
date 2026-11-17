@@ -774,6 +774,7 @@ def _removed_row(worksheet, row_number: int, reason_code: str, decision: dict[st
         "values": values, "reason_code": reason_code,
         "net_profit": decision.get("net_profit") if decision else None,
         "profit_rate": decision.get("profit_rate") if decision else None,
+        "weight_estimated": bool(decision.get("weight_estimated")) if decision else False,
     }
 
 
@@ -781,10 +782,11 @@ def _removed_workbook_bytes(rows: list[dict[str, Any]]) -> bytes:
     workbook = new_workbook()
     worksheet = workbook.active
     worksheet.title = "removed_rows"
-    worksheet.append(["worksheet", "row_number", "reason_code", "net_profit", "profit_rate", "original_values"])
+    worksheet.append(["worksheet", "row_number", "reason_code", "net_profit", "profit_rate", "weight_estimated", "original_values"])
     for row in rows:
         worksheet.append([
             row["worksheet"], row["row_number"], row["reason_code"], row["net_profit"], row["profit_rate"],
+            "是" if row.get("weight_estimated") else "",
             " | ".join("" if value is None else str(value) for value in row["values"]),
         ])
     return workbook_bytes_from(workbook)

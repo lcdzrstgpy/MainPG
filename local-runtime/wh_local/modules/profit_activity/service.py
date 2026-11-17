@@ -207,6 +207,55 @@ class ProfitActivityService:
             records = [record for record in records if record.skc in requested]
         return [_product_payload(record, context) for record in records]
 
+    def list_products_page(
+        self,
+        *,
+        sites: list[SiteCode] | None = None,
+        site: SiteCode | None = None,
+        source_type: str | None = None,
+        store: str = "",
+        keyword: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        actor: Any | None = None,
+        include_workspace_shared: bool = False,
+    ) -> dict[str, Any]:
+        """产品库分页：只返回当前页 + 总数 + 店铺候选，避免前端拉全量再本地分页。"""
+        context = _actor_context(actor)
+        requested = [item for item in (sites or []) if str(item or "").strip()]
+        if not requested and site:
+            requested = [site]
+        site_codes: list[str] = []
+        for item in requested:
+            resolved, _ = self._resolve_site(item, actor)
+            if resolved not in site_codes:
+                site_codes.append(resolved)
+        records, total = self._repository.list_records_page(
+            context.workspace_id,
+            site_codes=site_codes or None,
+            source_type=source_type,
+            store_name=store or None,
+            keyword=keyword,
+            offset=offset,
+            limit=limit,
+            actor_id=context.actor_id,
+            include_workspace_shared=include_workspace_shared,
+        )
+        stores = self._repository.list_store_names(
+            context.workspace_id,
+            site_codes=site_codes or None,
+            source_type=source_type,
+            keyword=keyword,
+            actor_id=context.actor_id,
+            include_workspace_shared=include_workspace_shared,
+        )
+        return {
+            "products": [_product_payload(record, context) for record in records],
+            "total": total,
+            "store_options": stores,
+            "site_codes": site_codes,
+        }
+
     def recalculate_products(self, *, site_codes: list[SiteCode] | None = None, actor: Any | None = None, include_workspace_shared: bool = False) -> dict[str, Any]:
         context = _actor_context(actor)
         snapshot = self.get_settings(actor)
@@ -297,7 +346,25 @@ class ProfitActivityService:
                 group["image_paths"].append(save_asset(root, site=site, skc=skc, kind="source", filename=filename, content=content))
         source_url = str(payload.get("source_url") or "").strip() or next((str(group.get("source_url") or "") for group in source_groups if group.get("source_url")), "")
         source_image_path = next((path for group in source_groups for path in group.get("image_paths", []) if path), current.source_image_path if current else "")
-        note = str(payload.get("note") or "").strip()[:500]
+        # 备注只在请求显式提供时覆盖：只更新货源组/图片的调用方不会传 note，
+        # 之前会把它整条清空（产品库货源侧边栏保存后备注就没了）。
+        note_value = payload.get("note")
+        note = (
+            str(current.note or "") if note_value is None and current is not None else str(note_value or "")
+        ).strip()[:500]
+        # 重量是否估算：显式传入优先；没传就沿用原记录；重量被改过则视为人工核对过，清掉标记。
+        if "weight_estimated" in payload:
+            weight_estimated = _bool_setting(payload.get("weight_estimated"))
+        else:
+            weight_estimated = bool(getattr(current, "weight_estimated", False)) if current is not None else False
+        weight_value = payload.get("weight_kg")
+        if current is not None and weight_value not in (None, ""):
+            try:
+                if Decimal(str(weight_value)) != Decimal(str(current.weight_kg)):
+                    weight_estimated = False
+            except (ArithmeticError, ValueError):
+                # 解析失败交给 calculate_profit 统一报错，这里不吞掉错误语义。
+                pass
         if require_complete_profile:
             missing = []
             if not image_path:
@@ -316,6 +383,7 @@ class ProfitActivityService:
             visibility=str(payload.get("visibility") or (current.visibility if current else "shared")),
             source_type=source_type,
             store_name=store_name,
+            weight_estimated=weight_estimated,
             source_url=source_url,
             image_path=image_path, attachment_image_path=attachment_image_path, source_main_image_url=source_main_image_url,
             source_image_path=source_image_path, source_groups=source_groups,
@@ -337,6 +405,7 @@ class ProfitActivityService:
             "store_name": payload.get("store_name", current.store_name),
             "source_url": payload.get("source_url", current.source_url), "source_groups_json": payload.get("source_groups_json", current.source_groups_json),
             "source_type": current.source_type, "source_main_image_url": current.source_main_image_url,
+            "weight_estimated": payload.get("weight_estimated", getattr(current, "weight_estimated", False)),
         }
         return self.upsert_product(merged, actor=actor, allow_company_write=allow_company_write, require_complete_profile=False)
 
@@ -492,11 +561,11 @@ class ProfitActivityService:
         workbook = new_workbook()
         sheet = workbook.active
         sheet.title = "products"
-        sheet.append(["site", "SKC", "售价", "成本", "重量KG", "备注", "货源", "利润", "利润率"])
+        sheet.append(["site", "SKC", "售价", "成本", "重量KG", "重量估算", "备注", "货源", "利润", "利润率"])
         for site in sites:
             site, _ = self._resolve_site(site, actor)
             for product in self.list_products(site=site, actor=actor, include_workspace_shared=include_workspace_shared):
-                sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
+                sheet.append([product["site"], product["skc"], product["selling_price"], product["cost_price"], product["weight_kg"], "是" if product.get("weight_estimated") else "", product["note"], product["source_url"], product["net_profit"], product["profit_rate"]])
         root = self._asset_root(self.get_settings(actor).settings)
         path = root / "product_catalog.xlsx"
         path.write_bytes(workbook_bytes(workbook))
@@ -525,6 +594,8 @@ class ProfitActivityService:
                 return {
                     "keep": decision == "eligible", "decision": decision, "reason_code": reason,
                     "net_profit": float(preview.net_profit), "profit_rate": float(preview.profit_rate),
+                    # 重量是估算值时结果里带上标记，方便前端/剔除明细区分「按 0.5kg 估的利润」。
+                    "weight_estimated": bool(product.get("weight_estimated")),
                     "net_profit_passed": preview.net_profit >= settings.activity_min_net_profit,
                     "profit_rate_passed": preview.profit_rate >= settings.activity_profit_rate_threshold,
                     "matched_id": candidate_id,
@@ -972,6 +1043,7 @@ def _product_payload(record, actor: ProfitActivityActorContext) -> dict[str, Any
         "source_main_image_url": record.source_main_image_url,
         "source_image_path": record.source_image_path, "source_groups": groups,
         "selling_price": float(record.selling_price), "cost_price": float(record.cost_price), "weight_kg": float(record.weight_kg),
+        "weight_estimated": bool(getattr(record, "weight_estimated", False)),
         "source_url": record.source_url, "note": record.note, "domestic_fee": float(record.domestic_fee),
         "shipping_subsidy": float(record.shipping_subsidy), "refund_rate": float(record.refund_rate) if hasattr(record, "refund_rate") else 0.0,
         "shipping_cost": float(record.shipping_cost), "end_fee": float(record.end_fee), "total_cost": float(record.total_cost),

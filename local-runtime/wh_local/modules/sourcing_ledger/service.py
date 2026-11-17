@@ -1353,6 +1353,8 @@ class SourcingLedgerService:
                 "selling_price": adjusted,
                 "cost_price": _text(chosen.get("landed_cost_cny")),
                 "weight_kg": _text(chosen.get("weight_kg")) or str(DEFAULT_WEIGHT_KG),
+                # 货源没填重量时按 0.5kg 兜底，标记出来让产品库/活动过滤能区分估算重量。
+                "weight_estimated": not _text(chosen.get("weight_kg")),
                 "note": "来自货源与利润台账",
                 "source_url": _text(chosen.get("source_url")),
                 "source_groups_json": json.dumps(groups, ensure_ascii=False),

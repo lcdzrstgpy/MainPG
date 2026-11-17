@@ -18,6 +18,8 @@ export type ProfitActivityProduct = {
   selling_price?: number;
   cost_price?: number;
   weight_kg?: number;
+  /** 采集没读到重量时按默认 0.5kg 兜底，这个标记用来提醒人工核对。 */
+  weight_estimated?: boolean;
   net_profit?: number;
   profit_rate?: number;
   source_url?: string;

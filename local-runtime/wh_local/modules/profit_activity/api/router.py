@@ -22,7 +22,6 @@ from ....session import Actor, actor_from_bearer_token, actor_has_permission, re
 from ....config import default_config
 from ....db import connect
 from ....price_verification.repository import PriceVerificationRepository
-from ....data_collection.plugin_queue import DataCollectionPluginQueue, TEMU_FLUX_ACCEL
 from ...product_processing.preview_urls import preview_content_url
 
 
@@ -32,7 +31,6 @@ logger = logging.getLogger("wh_local.profit_activity")
 def create_profit_activity_router(
     service: ProfitActivityService,
     database_path: Path | None = None,
-    plugin_queue: DataCollectionPluginQueue | None = None,
 ) -> APIRouter:
     """Router contract for the complete Profit Activity screen."""
     router = APIRouter(prefix="/profit-activity", tags=["profit_activity"])
@@ -185,10 +183,37 @@ def create_profit_activity_router(
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @router.get("/products")
-    def list_products(site: str | None = None, site_code: str | None = None, skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def list_products(site: str | None = None, site_code: str | None = None, sites: str = "", skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", store: str = "", keyword: str = "", offset: int = Query(0, ge=0), limit: int = Query(0, ge=0, le=500), actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
         requested = [item.strip() for item in re.split(r"[\s,，]+", product_ids or skcs) if item.strip()]
         include_company = _include_company(scope, actor, database_path)
+        if limit and not requested:
+            # 产品库列表：服务端分页，避免前端一次性拉全量再本地分页。
+            page = service.list_products_page(
+                sites=[item for item in re.split(r"[\s,，]+", sites) if item.strip()],
+                site=site or site_code,
+                source_type=source_type.strip() or None,
+                store=store.strip(),
+                keyword=keyword.strip(),
+                offset=offset,
+                limit=limit,
+                actor=actor,
+                include_workspace_shared=include_company,
+            )
+            _enrich_product_source_images(page["products"], database_path, actor.workspace_id)
+            _resign_product_images(
+                page["products"],
+                str(database_path or default_config().database_path),
+                actor.workspace_id,
+            )
+            return {
+                "products": page["products"],
+                "total": page["total"],
+                "store_options": page["store_options"],
+                "scope": scope,
+                "owner_user_id": owner_user_id,
+                "paged": True,
+            }
         products = service.list_products(
             site=site or site_code,
             skcs=requested,
@@ -202,7 +227,7 @@ def create_profit_activity_router(
             str(database_path or default_config().database_path),
             actor.workspace_id,
         )
-        return {"products": products, "scope": scope, "owner_user_id": owner_user_id}
+        return {"products": products, "total": len(products), "scope": scope, "owner_user_id": owner_user_id}
 
     @router.post("/products/recalculate")
     async def recalculate_products(request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
@@ -449,56 +474,6 @@ def create_profit_activity_router(
         except ValueError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-    @router.post("/activity-filter/{task_id}/dispatch-flux-accel")
-    async def dispatch_flux_accel(task_id: int, request: Request, actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
-        """把活动过滤结果里的可申报商品下发到流量加速插件。
-
-        商品标识 + 最低申报价来自 ``eligible_activity_products``，插件领取后
-        在 TEMU 流量分析页采集「日常申报价 + 三档加权价」并生成活动价表格。
-        """
-        require_permission(actor, "profit_activity.filter", database_path)
-        if plugin_queue is None:
-            logger.error("dispatch_flux_accel: plugin queue unavailable (task %s)", task_id)
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "plugin queue is unavailable")
-        payload = await request.json()
-        session_id = _session_id(payload.get("session_id"))
-        logger.info(
-            "dispatch_flux_accel: actor=%s workspace=%s task=%s session=%s",
-            actor.id, actor.workspace_id, task_id, session_id,
-        )
-        try:
-            products = service.eligible_activity_products(task_id, actor)
-        except ProfitActivityNotFound as exc:
-            logger.warning("dispatch_flux_accel: task %s not found", task_id)
-            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-        if not products:
-            logger.warning("dispatch_flux_accel: task %s has no eligible products", task_id)
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "no eligible products to dispatch")
-        logger.info("dispatch_flux_accel: task %s dispatching %d products", task_id, len(products))
-        try:
-            command = plugin_queue.queue_command(
-                actor_id=actor.id,
-                workspace_id=actor.workspace_id,
-                session_id=session_id,
-                command_type=TEMU_FLUX_ACCEL,
-                payload={"task_id": task_id, "products": products},
-                idempotency_key=f"flux-accel:{actor.workspace_id}:{task_id}",
-            )
-        except PermissionError as exc:
-            logger.warning("dispatch_flux_accel: session %s not found for actor %s", session_id, actor.id)
-            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
-        except ValueError as exc:
-            logger.warning("dispatch_flux_accel: queue rejected command: %s", exc)
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-        logger.info("dispatch_flux_accel: queued command %s (type=%s status=%s)", command.command_id, command.command_type, command.status)
-        return {
-            "task_id": task_id,
-            "command_id": command.command_id,
-            "command_type": command.command_type,
-            "status": command.status,
-            "product_count": len(products),
-        }
-
     @router.get("/activity-filter/tasks")
     def list_filter_tasks(limit: int = Query(20, ge=1, le=100), actor: Actor = Depends(profit_activity_actor)) -> list[dict[str, Any]]:
         require_permission(actor, "profit_activity.read", database_path)
@@ -545,16 +520,6 @@ def _include_company(scope: str, actor: Actor, database_path: Path | None) -> bo
         return False
     require_permission(actor, "profit_activity.company_read", database_path)
     return True
-
-
-def _session_id(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "session_id is required") from exc
-    if parsed < 1:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "session_id must be positive")
-    return parsed
 
 
 async def _product_form(request: Request) -> tuple[dict[str, Any], tuple[str, bytes] | None, tuple[str, bytes] | None, tuple[str, bytes] | None, dict[int, list[tuple[str, bytes]]]]:

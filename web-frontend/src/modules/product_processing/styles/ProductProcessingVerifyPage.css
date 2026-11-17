@@ -1720,6 +1720,10 @@
   display: grid;
   gap: 16px;
   border: 1px solid var(--theme-module-border, #e2edf5);
+  /* 一页几十张卡片时，屏幕外的卡片跳过布局与绘制（滚回来再算），
+     避免每次输入/滚动都重排整页。数字只是占位高度，浏览器记住实际尺寸后会用实测值。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 560px;
 }
 
 .precheck-card.is-edited {
@@ -5819,6 +5823,26 @@
 
 .verify-sku-check-hint b {
   color: #0a8fca;
+}
+
+/* 等待同步的操作面板：后台静默刷新 pending_sync，同时给用户"全部回退主图"按钮 */
+.verify-sku-pending-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff8e6;
+  border: 1px solid #ffe199;
+}
+.verify-sku-pending-hint {
+  color: #8a6a00;
+  font-size: .78rem;
+  line-height: 1.5;
+}
+.verify-sku-pending-hint b {
+  color: #c48800;
 }
 
 /* 用途说明：这一步决定 SKU 图能否复用原图链接 */

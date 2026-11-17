@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..domain.models import ProfitPreview, ProfitSettings, ProfitSiteProfile, SiteCode
@@ -87,7 +87,7 @@ class ProfitActivityRepository:
             session.flush()
             return _site_profile(row)
 
-    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", store_name: str = "", source_url: str = "", image_path: str = "", attachment_image_path: str = "", source_main_image_url: str = "", source_image_path: str = "", source_groups: list[dict] | None = None) -> ProfitRecordRow:
+    def upsert_record(self, *, workspace_id: str, created_by: str, created_by_username: str, skc: str, note: str, preview: ProfitPreview, calculation_hash: str, settings_revision: int, refund_rate: Decimal = Decimal("0"), visibility: str = "shared", source_type: str = "manual", store_name: str = "", source_url: str = "", image_path: str = "", attachment_image_path: str = "", source_main_image_url: str = "", source_image_path: str = "", source_groups: list[dict] | None = None, weight_estimated: bool = False) -> ProfitRecordRow:
         with self._sessions.begin() as session:
             row = session.scalar(select(ProfitRecordRow).where(ProfitRecordRow.workspace_id == workspace_id, ProfitRecordRow.site_code == preview.site_code, ProfitRecordRow.skc == skc))
             values = {
@@ -95,6 +95,7 @@ class ProfitActivityRepository:
                 "settings_revision": settings_revision, "refund_rate": refund_rate, "visibility": visibility,
                 "source_type": source_type,
                 "store_name": store_name,
+                "weight_estimated": bool(weight_estimated),
                 "source_url": source_url, "image_path": image_path, "attachment_image_path": attachment_image_path,
                 "source_main_image_url": source_main_image_url,
                 "source_image_path": source_image_path,
@@ -145,6 +146,111 @@ class ProfitActivityRepository:
                     | (ProfitRecordRow.source_type == "price_verification")
                 )
             return list(session.scalars(query))
+
+    def _record_conditions(
+        self,
+        workspace_id: str,
+        *,
+        site_codes: list[str] | None,
+        source_type: str | None,
+        store_name: str | None,
+        keyword: str,
+        actor_id: str,
+        include_workspace_shared: bool,
+    ) -> list:
+        """产品库列表的筛选条件（分页列表与店铺候选共用，保证口径一致）。"""
+        conditions = [
+            (ProfitRecordRow.source_type == "price_verification")
+            | (ProfitRecordRow.workspace_id == workspace_id)
+        ]
+        if site_codes:
+            conditions.append(ProfitRecordRow.site_code.in_(site_codes))
+        if source_type:
+            conditions.append(ProfitRecordRow.source_type == source_type)
+        if store_name == "__empty__":
+            conditions.append(ProfitRecordRow.store_name == "")
+        elif store_name:
+            conditions.append(ProfitRecordRow.store_name == store_name)
+        text_value = str(keyword or "").strip()
+        if text_value:
+            like = f"%{text_value}%"
+            conditions.append(
+                or_(
+                    ProfitRecordRow.skc.ilike(like),
+                    ProfitRecordRow.note.ilike(like),
+                    ProfitRecordRow.store_name.ilike(like),
+                )
+            )
+        if not include_workspace_shared:
+            conditions.append(
+                (ProfitRecordRow.created_by == actor_id)
+                | (ProfitRecordRow.source_type == "price_verification")
+            )
+        return conditions
+
+    def list_records_page(
+        self,
+        workspace_id: str,
+        *,
+        site_codes: list[str] | None = None,
+        source_type: str | None = None,
+        store_name: str | None = None,
+        keyword: str = "",
+        offset: int = 0,
+        limit: int = 50,
+        actor_id: str = "",
+        include_workspace_shared: bool = False,
+    ) -> tuple[list[ProfitRecordRow], int]:
+        """产品库分页查询：筛选/排序/计数都在库里做，避免前端拉全量。"""
+        conditions = self._record_conditions(
+            workspace_id,
+            site_codes=site_codes,
+            source_type=source_type,
+            store_name=store_name,
+            keyword=keyword,
+            actor_id=actor_id,
+            include_workspace_shared=include_workspace_shared,
+        )
+        with self._sessions() as session:
+            total = session.scalar(
+                select(func.count()).select_from(ProfitRecordRow).where(*conditions)
+            ) or 0
+            rows = list(
+                session.scalars(
+                    select(ProfitRecordRow)
+                    .where(*conditions)
+                    .order_by(ProfitRecordRow.id.desc())
+                    .offset(max(0, int(offset)))
+                    .limit(max(1, int(limit)))
+                )
+            )
+        return rows, int(total)
+
+    def list_store_names(
+        self,
+        workspace_id: str,
+        *,
+        site_codes: list[str] | None = None,
+        source_type: str | None = None,
+        keyword: str = "",
+        actor_id: str = "",
+        include_workspace_shared: bool = False,
+    ) -> list[str]:
+        """店铺下拉候选：与列表同一套筛选口径，但不按店铺自身过滤。"""
+        conditions = self._record_conditions(
+            workspace_id,
+            site_codes=site_codes,
+            source_type=source_type,
+            store_name=None,
+            keyword=keyword,
+            actor_id=actor_id,
+            include_workspace_shared=include_workspace_shared,
+        )
+        with self._sessions() as session:
+            names = session.scalars(
+                select(ProfitRecordRow.store_name).where(*conditions).distinct()
+            )
+            return sorted({str(name or "").strip() for name in names if str(name or "").strip()})
 
     def create_activity_run(self, workspace_id: str, site_code: SiteCode | None, settings: ProfitSettings, decisions: list[tuple[int, str, str]]) -> ActivityRunRow:
         with self._sessions.begin() as session:

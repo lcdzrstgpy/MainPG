@@ -1413,7 +1413,12 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                 <button
                   type="button"
                   className="ledger-btn is-primary"
-                  onClick={() =>
+                  onClick={() => {
+                    // 亏损入库要二次确认：利润是负数时用户可能只是没核对重量/成本。
+                    const net = Number((bestSource?.profit as Record<string, unknown> | undefined)?.net_profit);
+                    if (Number.isFinite(net) && net < 0 && !window.confirm(`按当前货源算出的净利润是 ${net.toFixed(2)} 元（亏损）。仍然入库吗？`)) {
+                      return;
+                    }
                     void run("enter", async () => {
                       await sourcingLedgerApi.enterLibrary(
                         detail.skc,
@@ -1421,8 +1426,8 @@ export function SourcingLedgerPage({ isActive = true }: { isActive?: boolean }) 
                         String(bestSource?.id || ""),
                       );
                       await reloadDetail(detail.skc, detail.site);
-                    }, "已入产品库")
-                  }
+                    }, "已入产品库");
+                  }}
                   disabled={Boolean(busy) || !bestSource || !detail.adjusted_min}
                 >
                   入产品库
