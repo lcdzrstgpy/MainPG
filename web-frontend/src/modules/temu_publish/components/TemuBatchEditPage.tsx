@@ -143,11 +143,11 @@ export function TemuBatchEditPage({
     null | { key: BatchEditField; previous: Record<string, string | undefined> }
   >(null);
   /**
-   * 「按变种拆行」：一条草稿 4 个颜色 → 表格里 4 行，每个变种单独定价。
+   * 「按变种拆行」：一条草稿 4 个颜色 → 表格里 4 行，每个变种单独改。
    *
-   * 拆行只放开**申报价格**（其余字段是整条共用的，拆开改会产生
-   * 「同一件商品两个标题」这种矛盾数据）。所以拆行模式下表格只保留
-   * 图片 / 变种 / 申报价 / 库存(只读) 四列。
+   * 七列全放开（价/货号/库存/重量/三围）：每个变种留空 = 回落整条值，
+   * 所以「同一件商品两个标题」式的矛盾不会发生 —— 不填就共用，填了才分叉。
+   * 取值/组装统一走 skuPricing.resolveSkuField（单件预填和批量组装同一口径）。
    */
   const [splitSku, setSplitSku] = useState(false);
   /** 变种覆盖草稿：保存时整体提交（空值 = 取消该变种的覆盖，回落整条值） */

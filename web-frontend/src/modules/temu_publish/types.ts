@@ -375,6 +375,20 @@ export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";
 export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";
 
 /**
+ * 发布历史「批量重试」带过来的目标清单：{ ids, titles }。
+ *
+ * 成品库消费后：清掉这些草稿的旧估填（失败多因旧模板估的属性，留着只会再败）→
+ * 自动勾选 → 用户直接点「批量发布」。没 draft_id 的老记录按标题找。
+ */
+export const TEMU_LIBRARY_RETRY_KEY = "temu_library_retry_v1";
+
+/**
+ * 批量重试的事件通道：库页签已打开时只切页签、effect 不会重跑，
+ * 光靠 sessionStorage 会「点了没反应」。写完 storage 再发这个事件把它叫醒。
+ */
+export const TEMU_LIBRARY_RETRY_EVENT = "mainpg:temu-library-retry";
+
+/**
  * 草稿库「用于发布」的事件通道。
  * 为什么需要两条通道：openModule 会**复用已存在的页签**，发布页已打开时不会再挂载，
  * 只读 sessionStorage 的挂载逻辑就不会执行（点了没反应）。所以挂载走 storage，

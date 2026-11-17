@@ -12,6 +12,7 @@ import {
 } from "../components/PublishSkuPanel";
 import type { VariantRow } from "../components/PublishSkuPanel";
 import { DraftImagePicker } from "../components/DraftImagePicker";
+import { useAppConfirm } from "../components/ConfirmDialog";
 import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
@@ -1437,7 +1438,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 换类目会清空已填的类目属性（不同类目的属性集不一样，留着会被判不合法），
    * 所以换之前问一句。同一叶子重套、自动推荐、产品模板套用都不问。
    */
-  const confirmCategorySwitch = (nextLeaf?: TemuCategory): boolean => {
+  const confirmCategorySwitch = async (nextLeaf?: TemuCategory): Promise<boolean> => {
     const currentLeaf = categoryPath[categoryPath.length - 1];
     if (!nextLeaf?.isLeaf) return true;
     if (!currentLeaf?.isLeaf) return true;
@@ -1446,10 +1447,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       (pick) => pick && (pick.vid > 0 || pick.text.trim()),
     ).length;
     if (!filled) return true;
-    return window.confirm(
-      `换成「${categoryName(nextLeaf)}」？\n` +
+    return appConfirm({
+      title: "换类目？",
+      message:
+        `换成「${categoryName(nextLeaf)}」？\n` +
         `已经填好的 ${filled} 个类目属性会被清空 —— 不同类目要求的属性不一样。`,
-    );
+      confirmText: "换类目",
+    });
   };
 
   const chooseCategory = (item: TemuCategory) =>
@@ -1458,7 +1462,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       // 「自动按标题匹配类目」会把用户选的类目静默换掉、连属性一起清空
       // （categoryTouchedRef 只拦自动推荐，不拦手动选择）。
       categoryTouchedRef.current = true;
-      if (!confirmCategorySwitch(item)) return;
+      if (!(await confirmCategorySwitch(item))) return;
       const next = [...categoryPath, item];
       setCategoryPath(next);
       if (item.isLeaf) {
@@ -1496,13 +1500,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     });
 
   /** 直接套用一条完整类目路径（预设、最近使用都走这里）。 */
-  const applyCategory = (
+  const applyCategory = async (
     path: TemuCategory[],
     options?: { auto?: boolean; skipConfirm?: boolean },
   ) => {
     // 换到别的叶子类目会清空已填属性：先问一句（自动推荐 / 套产品模板不问）
-    if (!options?.auto && !options?.skipConfirm && !confirmCategorySwitch(path[path.length - 1])) {
-      return Promise.resolve();
+    if (!options?.auto && !options?.skipConfirm && !(await confirmCategorySwitch(path[path.length - 1]))) {
+      return;
     }
     return run("category", async () => {
       // 自动推荐不算「用户选过」：标题一改还能继续跟着改
@@ -1858,7 +1862,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const deleteShop = (shop: TemuShop) =>
     run("shop", async () => {
       const label = shop.mall_name || shop.id;
-      if (!window.confirm(`删除店铺「${label}」？\n删掉之后要重新贴 token 才能再用这一家。`)) return;
+      const confirmed = await appConfirm({
+        title: "删除店铺？",
+        message: `删除店铺「${label}」？\n删掉之后要重新贴 token 才能再用这一家。`,
+        confirmText: "删除",
+        danger: true,
+      });
+      if (!confirmed) return;
       const next = await temuPublishApi.removeShop(shop.id);
       setStatus(next);
       if (!next.configured.ready) {
@@ -1871,9 +1881,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /** 解绑当前账号的店铺：只删自己那份凭证。 */
   const clearShop = () =>
     run("clear-shop", async () => {
-      const confirmed = window.confirm(
-        "停用当前店铺：发布时会提示还没绑定。\n这家店会留在「已保存的店铺」列表里，想再用点一下「切换到这家」即可，不用重新贴 token。确认停用？",
-      );
+      const confirmed = await appConfirm({
+        title: "停用当前店铺？",
+        message:
+          "停用当前店铺：发布时会提示还没绑定。\n" +
+          "这家店会留在「已保存的店铺」列表里，想再用点一下「切换到这家」即可，不用重新贴 token。",
+        confirmText: "停用",
+        danger: true,
+      });
       if (!confirmed) return;
       const next = await temuPublishApi.clearSettings();
       setStatus(next);
@@ -2728,6 +2743,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 原生框样式也跟工作台不搭。这里换成应用内弹窗，顺便把「要提交什么」列清楚。
    * kind=duplicate 是后端说「24 小时内提交过同一条」时的二次确认。
    */
+  /** 换类目 / 删店铺这些确认也走应用内弹窗（原生框在 WebView 里可能被禁用） */
+  const [confirmNode, appConfirm] = useAppConfirm();
   const [publishConfirm, setPublishConfirm] = useState<
     null | {
       kind: "submit" | "duplicate";
@@ -4679,6 +4696,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           </div>
         </aside>
       </div>
+
+      {confirmNode}
 
       {imagePreview
         ? createPortal(

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
 import type { TemuPublishHistoryItem } from "../types";
-import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
+import { TEMU_LIBRARY_FOCUS_KEY, TEMU_LIBRARY_RETRY_EVENT, TEMU_LIBRARY_RETRY_KEY } from "../types";
 import { explainPublishError, isStaleAttributeError, shortReasonLabel } from "../data/errorExplain";
 import {
   copyText,
@@ -153,6 +153,8 @@ export function TemuPublishHistoryPage({
   const [copied, setCopied] = useState("");
   /** 失败页签的「常见原因」筛选：点某个原因只看这一类（清空＝看全部） */
   const [reasonFilter, setReasonFilter] = useState("");
+  /** 失败页签勾选的条目（批量重试用）：item.id 列表 */
+  const [retryPicked, setRetryPicked] = useState<number[]>([]);
   // 剪贴板被浏览器/WebView 拒绝时不能静默：用户点「复制 id」没反应会以为功能坏了
   const [copyError, setCopyError] = useState("");
   // 列表可能是几分钟前拉的：相对时间要有东西可参照，避免「刚刚」永远不刷新
@@ -278,6 +280,33 @@ export function TemuPublishHistoryPage({
     window.setTimeout(() => setCopied((current) => (current === key ? "" : current)), 1600);
   }
 
+  /**
+   * 批量重试：把勾选的失败条目一次性送回成品库重新发。
+   *
+   * 失败大头是「类目属性模板变了」——旧估填留着只会再败一遍，所以先清掉，
+   * 成品库按新模板重估后再批量发。没 draft_id 的老记录按标题定位（库里能对上就收）。
+   */
+  const batchRetry = () => {
+    const picked = items.filter((item) => retryPicked.includes(item.id));
+    if (!picked.length) return;
+    const ids: string[] = [];
+    const titles: string[] = [];
+    for (const item of picked) {
+      if (item.draft_id) ids.push(item.draft_id);
+      // 标题都带上：id 深的条目（普通聚合每任务只出前 20 条）要靠标题走搜索找
+      if (item.title.trim()) titles.push(item.title.trim());
+    }
+    try {
+      window.sessionStorage.setItem(TEMU_LIBRARY_RETRY_KEY, JSON.stringify({ ids, titles }));
+    } catch {
+      // 隐私模式写不进 storage：退回普通跳转（用户自己在库里勾）
+    }
+    // 库页签已挂载时 effect 不会因切页签重跑 —— 再发事件把它叫醒（双通道，同预填）
+    window.dispatchEvent(new CustomEvent(TEMU_LIBRARY_RETRY_EVENT));
+    setRetryPicked([]);
+    onOpenDraftLibrary?.();
+  };
+
   let lastDay = "";
 
   return (
@@ -300,6 +329,7 @@ export function TemuPublishHistoryPage({
               setTab("success");
               setExpanded({});
               setReasonFilter("");
+              setRetryPicked([]);
             }}
           >
             成功 <em>{succeeded}</em>
@@ -313,6 +343,7 @@ export function TemuPublishHistoryPage({
               setTab("failed");
               setExpanded({});
               setReasonFilter("");
+              setRetryPicked([]);
             }}
           >
             失败 <em>{failed}</em>
@@ -362,6 +393,37 @@ export function TemuPublishHistoryPage({
         </div>
       ) : null}
 
+      {tab === "failed" ? (
+        <div className="temu-history-retry-bar">
+          <label className="temu-history-retry-all">
+            <input
+              type="checkbox"
+              checked={listItems.length > 0 && retryPicked.length >= listItems.length}
+              onChange={(event) =>
+                setRetryPicked(event.target.checked ? listItems.map((item) => item.id) : [])
+              }
+            />
+            全选
+          </label>
+          <span className="temu-muted">
+            {retryPicked.length ? `已勾 ${retryPicked.length} 条` : "勾选失败条目可批量重试"}
+          </span>
+          <button
+            type="button"
+            className="temu-btn temu-btn-sm temu-btn-primary"
+            disabled={!retryPicked.length}
+            title={
+              retryPicked.length
+                ? "清掉旧估填（属性模板可能已变）→ 回成品库自动勾选 → 点「批量发布」重发"
+                : "先勾选要重试的条目"
+            }
+            onClick={batchRetry}
+          >
+            批量重试{retryPicked.length ? `（${retryPicked.length} 条）` : ""}
+          </button>
+        </div>
+      ) : null}
+
       {error ? (
         <p className="temu-history-error" role="alert">
           {error}
@@ -401,6 +463,21 @@ export function TemuPublishHistoryPage({
                 </p>
               ) : null}
               <article className={`temu-history-row is-${item.status}`}>
+                {!isSuccess ? (
+                  <input
+                    type="checkbox"
+                    className="temu-history-pick"
+                    checked={retryPicked.includes(item.id)}
+                    title="勾选后可用上方「批量重试」一次性送回成品库"
+                    onChange={() =>
+                      setRetryPicked((current) =>
+                        current.includes(item.id)
+                          ? current.filter((id) => id !== item.id)
+                          : [...current, item.id],
+                      )
+                    }
+                  />
+                ) : null}
                 <HistoryThumb path={item.image} alt={item.title || "商品主图"} />
 
                 <div className="temu-history-body">

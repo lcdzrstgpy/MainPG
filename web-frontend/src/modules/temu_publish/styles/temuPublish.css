@@ -158,6 +158,35 @@
     inset 0 1px 0 rgba(0, 0, 0, 0.12);
 }
 
+/* 破坏性确认（删除/停用）：警示红，跟主按钮的蓝区分开 */
+.temu-btn-danger {
+  border-color: color-mix(in srgb, var(--theme-danger, #d64541) 70%, #000);
+  color: #fff;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--theme-danger, #d64541) 88%, #fff) 0%,
+    var(--theme-danger, #d64541) 52%,
+    color-mix(in srgb, var(--theme-danger, #d64541) 88%, #000) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.16),
+    0 2px 6px -2px color-mix(in srgb, var(--theme-danger, #d64541) 52%, transparent);
+}
+
+.temu-btn-danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+/* 确认弹窗正文：保留换行分段 */
+.temu-confirm-text {
+  margin: 0;
+  color: var(--theme-text, #333);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  white-space: pre-line;
+}
+
 .temu-btn-upload {
   position: relative;
   cursor: pointer;
@@ -7847,6 +7876,40 @@ textarea.temu-input {
   background: transparent;
   color: var(--theme-module-primary-strong, #087bf5);
   font-size: 12px;
+  cursor: pointer;
+}
+
+/* 失败页签的批量重试条：全选 + 计数 + 动作按钮 */
+.temu-history-retry-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 18%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-module-primary-strong, #087bf5) 5%, transparent);
+}
+
+.temu-history-retry-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.temu-history-retry-all input {
+  accent-color: var(--theme-module-primary-strong, #087bf5);
+}
+
+/* 失败行的勾选框（只有失败行有） */
+.temu-history-pick {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 4px;
+  accent-color: var(--theme-module-primary-strong, #087bf5);
   cursor: pointer;
 }
 

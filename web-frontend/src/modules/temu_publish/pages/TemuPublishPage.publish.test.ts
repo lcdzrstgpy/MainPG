@@ -309,8 +309,8 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(api, /clearSettings: \(\) => httpJson<TemuSettingsStatus>\(`\$\{BASE\}\/settings`, \{ method: "DELETE" \}\)/);
   // 页面：解绑前要确认，成功后清掉店铺信息
   assert.match(page, /const clearShop = \(\) =>/);
-  // 停用当前店铺：条目留在列表里，切回来不用重新贴 token
-  assert.match(page, /window\.confirm\(\s*"停用当前店铺/);
+  // 停用当前店铺：条目留在列表里，切回来不用重新贴 token（应用内弹窗确认）
+  assert.match(page, /title: "停用当前店铺？"/);
   assert.match(page, /const next = await temuPublishApi\.clearSettings\(\);/);
   // 未绑定时顶部横幅 + 顶部 chip 都是「绑定我的店铺」，不能只是报“凭证未配置”
   assert.match(page, /还没绑定你的 Temu 店铺/);
@@ -788,6 +788,25 @@ test("瞎填治理四件套：黑名单 / 重选属性 / 猜值透明化 / 待�
   assert.match(library, /待人工 \{manualIds\.size\}/);
   assert.match(library, /if \(onlyManual && !manualIds\.has\(entry\.id\)\) return false;/);
   void precheck;
+});
+
+test("失败批量重试：勾选 → 清旧估填 → 回库自动勾选 → 批量发布", () => {
+  const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
+
+  // 通道：清单走 sessionStorage（ids=有来源草稿的，titles=老记录按标题找）
+  assert.match(types, /export const TEMU_LIBRARY_RETRY_KEY = "temu_library_retry_v1";/);
+  assert.match(history, /const batchRetry = \(\) =>/);
+  assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_RETRY_KEY, JSON\.stringify\(\{ ids, titles \}\)\)/);
+  // 只有失败行给勾选框；全选只作用于当前列表
+  assert.match(history, /className="temu-history-pick"/);
+  assert.match(history, /批量重试\{retryPicked\.length/);
+
+  // 成品库消费：清旧估填（模板变了旧值只会再败）→ 自动勾选 → 用户点批量发布
+  assert.match(library, /window\.sessionStorage\.getItem\(TEMU_LIBRARY_RETRY_KEY\)/);
+  assert.match(library, /for \(const target of targets\) deleteDraftAttrPrefill\(scope, target\.id\);/);
+  assert.match(library, /setSelected\(new Set\(targets\.map\(\(target\) => target\.id\)\)\)/);
 });
 
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
@@ -1430,7 +1449,7 @@ test("类目：换类目后行里残留的非法规格值一次性列出来，�
   assert.match(chooseCategory, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
 
   const applyCategory = page.slice(
-    page.indexOf("const applyCategory = ("),
+    page.indexOf("const applyCategory = async ("),
     page.indexOf("applyCategoryRef.current = applyCategory"),
   );
   assert.match(applyCategory, /setSpecMismatch\(findSpecMismatches\(attrs, rows\)\);/);
@@ -1467,23 +1486,23 @@ test("类目：刷新类目树入口 + 换类目二次确认", () => {
   assert.match(refresh, /const attrs = await temuPublishApi\.attributes\(currentLeaf\.catId\);/);
   assert.match(refresh, /setAttributes\(attrs\);/);
 
-  // ② 换类目确认：只在「已填属性 + 换成别的叶子」时问
-  assert.match(page, /const confirmCategorySwitch = \(nextLeaf\?: TemuCategory\): boolean =>/);
+  // ② 换类目确认：只在「已填属性 + 换成别的叶子」时问（应用内弹窗，原生框 WebView 会禁用）
+  assert.match(page, /const confirmCategorySwitch = async \(nextLeaf\?: TemuCategory\): Promise<boolean> =>/);
   const confirm = page.slice(
-    page.indexOf("const confirmCategorySwitch = (nextLeaf?: TemuCategory): boolean =>"),
+    page.indexOf("const confirmCategorySwitch = async (nextLeaf?: TemuCategory)"),
     page.indexOf("const chooseCategory = (item: TemuCategory) =>"),
   );
   assert.match(confirm, /if \(Number\(currentLeaf\.catId\) === Number\(nextLeaf\.catId\)\) return true;/);
   assert.match(confirm, /if \(!filled\) return true;/);
-  assert.match(confirm, /window\.confirm\(/);
+  assert.match(confirm, /appConfirm\(\{/);
   // 点选下钻也要走确认（会清属性）
   const chooseCategory = page.slice(
     page.indexOf("const chooseCategory = (item: TemuCategory) =>"),
     page.indexOf("const resetToLevel = (index: number) =>"),
   );
-  assert.match(chooseCategory, /if \(!confirmCategorySwitch\(item\)\) return;/);
+  assert.match(chooseCategory, /if \(!\(await confirmCategorySwitch\(item\)\)\) return;/);
   // 套用整条路径会确认，但自动推荐 / 套产品模板不问
-  assert.match(page, /if \(!options\?\.auto && !options\?\.skipConfirm && !confirmCategorySwitch\(/);
+  assert.match(page, /if \(!options\?\.auto && !options\?\.skipConfirm && !\(await confirmCategorySwitch\(/);
   assert.match(page, /await applyCategory\(template\.categoryPath, \{ skipConfirm: true \}\);/);
 
   // ③ 按钮与样式在位

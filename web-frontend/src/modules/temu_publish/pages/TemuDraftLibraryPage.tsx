@@ -44,7 +44,7 @@ import type {
   TemuPublishPrefill,
   TemuWarehouseGroup,
 } from "../types";
-import { TEMU_LIBRARY_FOCUS_KEY } from "../types";
+import { TEMU_LIBRARY_FOCUS_KEY, TEMU_LIBRARY_RETRY_EVENT, TEMU_LIBRARY_RETRY_KEY } from "../types";
 import "../styles/temuPublish.css";
 
 type Filter = "all" | "ai" | "pod";
@@ -923,6 +923,125 @@ export function TemuDraftLibraryPage({
     }
     onUseDraft(entryPrefill(target, categoryMemo, attrMap, imageEdits, skuFields));
   }, [entries, categoryMemo, attrPrefills, onUseDraft]);
+
+  /**
+   * 发布历史「批量重试」带过来的清单：清旧估填 + 自动勾选，用户直接点「批量发布」。
+   *
+   * 为什么要清估填：失败大头是「类目属性模板变了」，旧估填按旧模板给的值留着
+   * 只会再败一遍 —— 清掉后估填 effect 会按新模板重估（同「重选属性」的语义）。
+   * 按 id 匹配，老记录没有 draft_id 就按标题对。只消费一次。
+   */
+  const retryHandledRef = useRef(false);
+  /** 库页签已挂载时 entries 不变、effect 不重跑：事件通道叫醒它（同预填的双通道） */
+  const [retryTick, setRetryTick] = useState(0);
+  useEffect(() => {
+    const wake = () => setRetryTick((value) => value + 1);
+    window.addEventListener(TEMU_LIBRARY_RETRY_EVENT, wake);
+    return () => window.removeEventListener(TEMU_LIBRARY_RETRY_EVENT, wake);
+  }, []);
+  useEffect(() => {
+    if (retryHandledRef.current || !entries.length) return;
+    let raw = "";
+    try {
+      raw = window.sessionStorage.getItem(TEMU_LIBRARY_RETRY_KEY) || "";
+    } catch {
+      raw = "";
+    }
+    if (!raw) return;
+    retryHandledRef.current = true;
+    try {
+      window.sessionStorage.removeItem(TEMU_LIBRARY_RETRY_KEY);
+    } catch {
+      // 清不掉也无所谓：标记只消费一次
+    }
+    let ids: string[] = [];
+    let titles: string[] = [];
+    try {
+      const parsed = JSON.parse(raw) as { ids?: string[]; titles?: string[] };
+      ids = Array.isArray(parsed.ids) ? parsed.ids : [];
+      titles = Array.isArray(parsed.titles) ? parsed.titles : [];
+    } catch {
+      return;
+    }
+    const titleSet = new Set(titles.map((title) => title.trim()));
+    const matches = (entry: TemuDraftEntry) =>
+      ids.includes(entry.id) || titleSet.has((entry.title || "").trim());
+    const found = new Map<string, TemuDraftEntry>();
+    for (const entry of entries) {
+      if (matches(entry)) found.set(entry.id, entry);
+    }
+    const scope = storageScope();
+    const finalize = () => {
+      const targets = [...found.values()];
+      if (!targets.length) return;
+      // 清旧估填：存档和内存都清，估填 effect 才会按新模板重估
+      for (const target of targets) deleteDraftAttrPrefill(scope, target.id);
+      setAttrPrefills((current) => {
+        const next = { ...current };
+        for (const target of targets) delete next[target.id];
+        return next;
+      });
+      // 目标不一定在当前页（库按时间倒序分页）：把不在的并进可见列表，
+      // 否则勾选会静默落空。翻页时 deepEntries 会照常清掉，不影响既有语义。
+      setDeepEntries((prev) => {
+        const visibleIds = new Set((data?.entries ?? []).map((entry) => entry.id));
+        const merged = new Map(prev.map((entry) => [entry.id, entry]));
+        for (const target of targets) {
+          if (!visibleIds.has(target.id)) merged.set(target.id, target);
+        }
+        return [...merged.values()];
+      });
+      setSelected(new Set(targets.map((target) => target.id)));
+    };
+    // 当前页没找齐就逐页扫（标题/老 id 的目标常不在第一页）
+    const seenTitles = new Set([...found.values()].map((entry) => (entry.title || "").trim()));
+    const missing =
+      ids.some((id) => !found.has(id)) || [...titleSet].some((title) => !seenTitles.has(title));
+    if (!missing) {
+      finalize();
+      return;
+    }
+    void (async () => {
+      // ① 先扫普通聚合页（便宜）：能覆盖在聚合口径内的目标
+      for (let next = 1; next <= 10; next += 1) {
+        let result: Awaited<ReturnType<typeof temuPublishApi.draftLibrary>>;
+        try {
+          result = await temuPublishApi.draftLibrary({
+            page: next,
+            pageSize: 100,
+            source: "",
+            q: "",
+            itemOffset: 0,
+          });
+        } catch {
+          break;
+        }
+        for (const entry of result.entries ?? []) {
+          if (matches(entry)) found.set(entry.id, entry);
+        }
+        if (next >= (result.pages ?? 1)) break;
+      }
+      // ② 普通聚合每任务只出前 20 条，配额外的目标要走搜索（q 会把任务项扫全）
+      for (const title of titleSet) {
+        if ([...found.values()].some((entry) => (entry.title || "").trim() === title)) continue;
+        try {
+          const result = await temuPublishApi.draftLibrary({
+            page: 1,
+            pageSize: 20,
+            source: "",
+            q: title.slice(0, 60),
+            itemOffset: 0,
+          });
+          for (const entry of result.entries ?? []) {
+            if (matches(entry)) found.set(entry.id, entry);
+          }
+        } catch {
+          // 单条搜不到不影响其它
+        }
+      }
+      finalize();
+    })();
+  }, [entries, retryTick]);
   /**
    * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
    *
