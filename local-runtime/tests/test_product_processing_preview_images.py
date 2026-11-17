@@ -292,10 +292,13 @@ def test_finalize_uses_existing_static_image_host_when_cos_is_not_configured(
     deliberately not configured; it must not be rejected at request time.
     """
     # Ensure this test exercises the static-host branch even on machines whose
-    # project has a git-ignored cos.local.json already configured.
+    # project already carries a COS credential file. 明文（cos.local.json）与
+    # 安装包下发的加密副本（cos.enc）都要隔离，否则本地只要有其中一个，
+    # COS 就会被判定为已配置，静态图床分支根本不会执行。
     for name in ("WH_COS_BUCKET", "WH_COS_REGION", "WH_COS_SECRET_ID", "WH_COS_SECRET_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(service_module, "_cos_local_config_paths", lambda: [])
+    monkeypatch.setattr(service_module, "_cos_enc_config_paths", lambda: [])
     monkeypatch.setenv("WH_MEDIA_BASE_URL", "https://images.example.test")
     service, task, draft_id = _finished_service(tmp_path)
     content = _jpeg("green")

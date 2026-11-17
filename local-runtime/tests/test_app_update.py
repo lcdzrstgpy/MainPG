@@ -58,6 +58,11 @@ def test_frozen_runtime_root_is_appdata_mainpg(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(config_module.sys, "frozen", True, raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.delenv("WH_LOCAL_DATA_DIR", raising=False)
+    monkeypatch.delenv("WH_LOCAL_DATA_ROOT", raising=False)
+    # 安装器会把用户选的自定义数据根写进 HKCU\Software\MainPG\DataRoot，且它的
+    # 优先级高于 %APPDATA%。不清掉这一项，本用例在装过 MainPG 的机器上会读到
+    # 真实的安装目录（storage_root 的既定行为），从而误报失败。
+    monkeypatch.setattr(config_module, "_configured_storage_root", lambda: None)
 
     config = default_config()
 

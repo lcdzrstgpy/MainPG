@@ -60,6 +60,9 @@ _backup/
 local-runtime/python.exe
 .trae/
 product_processing.db
+# 本地自检令牌（一次性、含凭据性质）与 Playwright CLI 产物
+local-runtime/.selftest-token
+.playwright-cli/
 
 # 公告发布后台本地数据
 announcement-admin/announcements.sqlite3
