@@ -773,6 +773,8 @@ def create_temu_publish_router(
                 groups=payload.groups,
                 elements=payload.elements,
                 records=payload.records,
+                body_elements=payload.body_elements,
+                body_records=payload.body_records,
             )
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc

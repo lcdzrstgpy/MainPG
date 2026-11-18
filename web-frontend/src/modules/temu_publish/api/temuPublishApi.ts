@@ -166,6 +166,8 @@ export const temuPublishApi = {
     groups: Array<{ id: number; name: string }>;
     elements: Array<{ id: number; name: string }>;
     records: Array<Record<string, string>>;
+    body_elements?: Array<{ id: number; name: string }>;
+    body_records?: Array<Record<string, string>>;
   }) =>
     httpJson<{ id: number; name: string; raw?: unknown }>(`${BASE}/size-charts/create`, {
       method: "POST",

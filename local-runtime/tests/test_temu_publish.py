@@ -2165,7 +2165,8 @@ class SizeChartClient(StubCatalogClient):
 
 
 def test_create_size_chart_maps_content_vo(tmp_path: Path) -> None:
-    """建表参数映射：groups/elements/records 按 sizecharts.get 返回的 contentVO 镜像。
+    """建表参数映射：groups/elements/records 按 sizecharts.get 返回的 contentVO 镜像，
+    身体元素（type=2）分流进 bodyMeta/bodyRecords。
 
     这是实验性接口（参数无公开样例）——本测试即参数契约文档：
     改映射前先想清楚网关那边怎么认。
@@ -2178,6 +2179,8 @@ def test_create_size_chart_maps_content_vo(tmp_path: Path) -> None:
         groups=[{"id": 1, "name": "size"}],
         elements=[{"id": 10002, "name": "胸围全围"}],
         records=[{"1": "S", "10002": "86"}],
+        body_elements=[{"id": 10011, "name": "身高"}],
+        body_records=[{"1": "S", "10011": "155"}],
     )
     payload = client.create_payload
     assert payload["name"] == "女装上衣-常规"
@@ -2185,8 +2188,23 @@ def test_create_size_chart_maps_content_vo(tmp_path: Path) -> None:
     assert payload["contentVO"]["meta"]["groups"] == [{"id": 1, "name": "size"}]
     assert payload["contentVO"]["meta"]["elements"] == [{"id": 10002, "name": "胸围全围"}]
     assert payload["contentVO"]["records"] == [{"1": "S", "10002": "86"}]
+    # 身体元素走 bodyMeta/bodyRecords，不混进 meta/records
+    assert payload["contentVO"]["bodyMeta"]["elements"] == [{"id": 10011, "name": "身高"}]
+    assert payload["contentVO"]["bodyRecords"] == [{"1": "S", "10011": "155"}]
     # 回包里的模板 id 要认出来（前端自动填就靠它）
     assert result["id"] == 9527
+
+    # 没有身体元素时 bodyMeta/bodyRecords 不该出现（别拿空结构去赌网关校验）
+    client2 = SizeChartClient(elements=[{"id": 10002, "name": "胸围全围", "necessary": True}])
+    service2 = TemuPublishService(tmp_path / "e.sqlite3", client=client2)
+    service2.create_size_chart(
+        name="n",
+        class_id=5,
+        groups=[{"id": 1, "name": "size"}],
+        elements=[{"id": 10002, "name": "胸围全围"}],
+        records=[{"1": "S", "10002": "86"}],
+    )
+    assert "bodyMeta" not in client2.create_payload["contentVO"]
 
 
 def test_size_charts_reports_whether_category_needs_one(tmp_path: Path) -> None:

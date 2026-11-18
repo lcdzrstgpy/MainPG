@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { temuPublishApi } from "../api/temuPublishApi";
+import { useAppConfirm } from "./ConfirmDialog";
 import {
   draftRowsFromSizes,
   loadSizeChartTemplates,
@@ -24,6 +25,8 @@ export function SizeChartDialog({
   onClose,
   catId,
   classId,
+  shopId,
+  shopName,
   categoryElements,
   requiredElements,
   categorySizes,
@@ -37,8 +40,12 @@ export function SizeChartDialog({
   catId: number;
   /** 尺码分类 ID（size-charts 响应的 class_id）：实验性建表要用 */
   classId: number;
-  /** 类目测量项（sizecharts.meta.get 的 elements，带 id）：列候选 + 建表元数据 */
-  categoryElements: Array<{ id: number; name: string }>;
+  /** 当前店铺（尺码表模板是店铺级，ID 跨店不能混用）：新模板记归属、列表标差异 */
+  shopId: string;
+  shopName: string;
+  /** 类目测量项（sizecharts.meta.get 的 elements，带 id）：列候选 + 建表元数据。
+   * type=1 商品元素（进 meta/records），type=2 身体元素（进 bodyMeta/bodyRecords） */
+  categoryElements: Array<{ id: number; name: string; type?: string }>;
   /** 类目必填测量项：进编辑器默认勾上且不可取消 */
   requiredElements: string[];
   /** 类目可选尺码名（sizecharts.settings.get）：行候选 */
@@ -57,6 +64,7 @@ export function SizeChartDialog({
   /** 实验性建表的状态/结果提示 */
   const [creating, setCreating] = useState("");
   const elementNames = categoryElements.map((item) => item.name);
+  const [confirmNode, confirm] = useAppConfirm();
 
   const selectedIds = useMemo(
     () =>
@@ -146,6 +154,8 @@ export function SizeChartDialog({
     const template: SizeChartTemplate = {
       ...editing,
       name: editing.name.trim() || `尺码表 ${new Date().toLocaleDateString()}`,
+      shopId: shopId || editing.shopId || "",
+      shopName: shopName || editing.shopName || "",
       savedAt: Date.now(),
     };
     setTemplates(upsertSizeChartTemplate(template));
@@ -159,29 +169,38 @@ export function SizeChartDialog({
   const createOnTemu = async () => {
     if (!editing || creating) return;
     const name = editing.name.trim() || `Size Chart ${new Date().toISOString().slice(0, 10)}`;
-    // 行列 → contentVO：groups 第一行是尺码列（id=1），元素列按类目测量项的 id 对齐
-    const elements = editing.columns
+    // 行列 → contentVO：groups 第一行是尺码列（id=1）；测量列按类型分流 ——
+    // 商品元素（type=1）进 meta/records，身体元素（type=2）进 bodyMeta/bodyRecords
+    const selected = editing.columns
       .map((column) => categoryElements.find((item) => item.name === column))
-      .filter((item): item is { id: number; name: string } => Boolean(item));
-    if (!elements.length) {
+      .filter((item): item is { id: number; name: string; type?: string } => Boolean(item));
+    if (!selected.length) {
       setCreating("测量列必须来自类目测量项（自定义列建不了表）");
       return;
     }
-    const records = editing.rows.map((row) => {
+    const isBody = (item: { type?: string }) => String(item.type ?? "1") === "2";
+    const productElements = selected.filter((item) => !isBody(item));
+    const bodyElements = selected.filter(isBody);
+    const groups = [{ id: 1, name: "size" }];
+    const rowFor = (elements: typeof selected, row: SizeChartRow) => {
       const record: Record<string, string> = { "1": row.size };
-      elements.forEach((element, index) => {
-        record[String(element.id)] = row.values[index] ?? "";
+      elements.forEach((element) => {
+        record[String(element.id)] = row.values[editing.columns.indexOf(element.name)] ?? "";
       });
       return record;
-    });
+    };
     setCreating("正在向 Temu 建表…");
     try {
       const result = await temuPublishApi.createSizeChart({
         name,
         class_id: classId,
-        groups: [{ id: 1, name: "size" }],
-        elements,
-        records,
+        groups,
+        elements: productElements.map((item) => ({ id: item.id, name: item.name })),
+        records: editing.rows.map((row) => rowFor(productElements, row)),
+        body_elements: bodyElements.map((item) => ({ id: item.id, name: item.name })),
+        body_records: bodyElements.length
+          ? editing.rows.map((row) => rowFor(bodyElements, row))
+          : [],
       });
       if (result.id > 0) {
         setEditing({ ...editing, name, templateId: String(result.id) });
@@ -202,7 +221,9 @@ export function SizeChartDialog({
   };
 
   return createPortal(
-    <div className="temu-edit-backdrop" onClick={onClose}>
+    <>
+      {confirmNode}
+      <div className="temu-edit-backdrop" onClick={onClose}>
       <div
         className="temu-edit-dialog temu-sizechart-dialog"
         role="dialog"
@@ -346,9 +367,16 @@ export function SizeChartDialog({
                           {template.rows.length} 码
                           {template.catIds.includes(catId) ? " · 适合本类目" : ""}
                         </span>
-                        <span className="temu-sizechart-preview">
-                          {template.columns.join(" / ")}
-                        </span>
+                        {template.shopId && shopId && template.shopId !== shopId ? (
+                          <span className="temu-sizechart-shop-warn">
+                            ⚠ 这张表建在「{template.shopName || template.shopId}」，
+                            当前是「{shopName || shopId}」——尺码表 ID 跨店不能混用
+                          </span>
+                        ) : (
+                          <span className="temu-sizechart-preview">
+                            {template.columns.join(" / ")}
+                          </span>
+                        )}
                       </div>
                       <div className="temu-sizechart-actions">
                         <button
@@ -371,7 +399,15 @@ export function SizeChartDialog({
                         <button
                           type="button"
                           className="temu-btn temu-btn-sm"
-                          onClick={() => setTemplates(removeSizeChartTemplate(template.id))}
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: "删除模板？",
+                              message: `删除「${template.name || "（未命名）"}」（ID ${template.templateId || "—"}）？\n只是删本机存档，Temu 店里建的表不受影响。`,
+                              confirmText: "删除",
+                              danger: true,
+                            });
+                            if (ok) setTemplates(removeSizeChartTemplate(template.id));
+                          }}
                         >
                           删除
                         </button>
@@ -427,7 +463,8 @@ export function SizeChartDialog({
           )}
         </footer>
       </div>
-    </div>,
+    </div>
+    </>,
     document.body,
   );
 }

@@ -32,8 +32,8 @@ export type TemuSizeChartInfo = {
    */
   tables?: Array<{ id: number; name: string }>;
   raw?: unknown;
-  /** 该尺码组的测量项（肩宽/胸围全围/裙长…） */
-  elements?: Array<{ id: number; name: string; necessary: boolean }>;
+  /** 该尺码组的测量项（肩宽/胸围全围/裙长…）；type=1 商品元素 / type=2 身体元素 */
+  elements?: Array<{ id: number; name: string; necessary: boolean; type?: string }>;
   /** 其中必填的测量项名称 */
   required_elements?: string[];
   /** 可选尺码名（S/M/L/one-size…），建表或选码时要参考 */

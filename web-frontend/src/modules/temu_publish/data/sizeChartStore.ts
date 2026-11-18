@@ -26,6 +26,9 @@ export type SizeChartTemplate = {
   templateId: string;
   /** 适用类目提示（叶子 catId）：选模板时排前面 */
   catIds: number[];
+  /** 这张表建在哪家店（尺码表模板是店铺级的，ID 跨店不能混用） */
+  shopId?: string;
+  shopName?: string;
   /** 测量列（不含尺码列）：衣长/胸围/腰围… */
   columns: string[];
   rows: SizeChartRow[];

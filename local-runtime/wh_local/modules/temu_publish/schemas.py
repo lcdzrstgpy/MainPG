@@ -215,8 +215,14 @@ class SizeChartCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     class_id: int = Field(ge=1, description="尺码分类 ID（size-charts 响应的 class_id）")
     groups: list[dict] = Field(default_factory=list, description="尺码列元数据 [{id, name}]")
-    elements: list[dict] = Field(default_factory=list, description="测量列元数据 [{id, name}]")
+    elements: list[dict] = Field(default_factory=list, description="商品元素元数据 [{id, name}]")
     records: list[dict[str, str]] = Field(
         default_factory=list, description="每行 {元数据id: 值}，含尺码列（id=1 → S/M/L）"
+    )
+    body_elements: list[dict] = Field(
+        default_factory=list, description="身体元素元数据（type=2，身高/体重那类）"
+    )
+    body_records: list[dict[str, str]] = Field(
+        default_factory=list, description="身体元素的行值（结构同 records）"
     )
 

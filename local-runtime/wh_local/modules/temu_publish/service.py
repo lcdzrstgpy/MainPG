@@ -1172,6 +1172,8 @@ class TemuPublishService:
                 "id": int(item.get("id") or 0),
                 "name": str(item.get("name") or ""),
                 "necessary": bool(item.get("necessary")),
+                # type=1 商品元素（进 meta/records），type=2 身体元素（进 bodyMeta/bodyRecords）
+                "type": str(item.get("type") or "1"),
             }
             for item in raw_elements
             if isinstance(item, dict) and item.get("name")
@@ -1237,20 +1239,28 @@ class TemuPublishService:
         groups: list[dict[str, Any]],
         elements: list[dict[str, Any]],
         records: list[dict[str, str]],
+        body_elements: list[dict[str, Any]] | None = None,
+        body_records: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """新增尺码表模板（实验性，见 client.size_chart_create）。
 
         参数按 `sizecharts.get` 返回表的 contentVO 结构镜像：
-        groups=尺码列元数据、elements=测量列元数据、records=每行 {元数据id: 值}。
+        groups=尺码列元数据、elements=商品元素（type=1）、records=每行 {元数据id: 值}。
+        身体元素（type=2，身高/体重那类）按官方发品文档的语义走 bodyMeta/bodyRecords
+        通道；模板接口认不认这个分支没有样例，被拒时看原话再对齐（2026-11-18）。
         成功返回 {id, name, raw}；网关拒绝把原话放进 error 抛给前端（好迭代参数）。
         """
+        content_vo: dict[str, Any] = {
+            "meta": {"groups": groups, "elements": elements},
+            "records": records,
+        }
+        if body_elements:
+            content_vo["bodyMeta"] = {"groups": groups, "elements": body_elements}
+            content_vo["bodyRecords"] = body_records or []
         payload = {
             "name": name,
             "classId": int(class_id),
-            "contentVO": {
-                "meta": {"groups": groups, "elements": elements},
-                "records": records,
-            },
+            "contentVO": content_vo,
         }
         try:
             result = self.client().size_chart_create(payload)

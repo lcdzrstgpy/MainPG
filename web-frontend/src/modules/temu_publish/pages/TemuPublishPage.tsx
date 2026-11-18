@@ -4362,6 +4362,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 onClose={() => setSizeChartLibOpen(false)}
                 catId={Number(categoryPath[categoryPath.length - 1]?.catId ?? 0)}
                 classId={sizeChart.info?.class_id ?? 0}
+                shopId={status?.active_shop_id ?? ""}
+                shopName={tokenInfo?.mall_name ?? ""}
                 categoryElements={(sizeChart.info?.elements ?? []).map((item) => ({
                   id: item.id,
                   name: item.name,

@@ -7308,6 +7308,13 @@ textarea.temu-input {
   color: var(--theme-text-muted, #7c8fa3);
 }
 
+/* 模板建在别的店铺：尺码表 ID 跨店不能混用，红字点名 */
+.temu-sizechart-shop-warn {
+  display: block;
+  font-size: 11px;
+  color: var(--theme-danger, #d64541);
+}
+
 .temu-sizechart-actions {
   display: flex;
   align-items: center;
