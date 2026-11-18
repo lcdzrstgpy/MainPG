@@ -2820,6 +2820,30 @@ test("提交失败要「红到哪里」：出错区块描红 + 清单同步 + �
   assert.match(css, /\[data-theme="alpine"\] \.is-console \.temu-sec\.is-error \{/);
 });
 
+test("尺码表模板库：选模板填 ID / 建表辅助（行从变种带、列按类目测量项）", () => {
+  const store = readFileSync(new URL("../data/sizeChartStore.ts", import.meta.url), "utf8");
+  const dialog = readFileSync(new URL("../components/SizeChartDialog.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
+
+  // 存储层：按账号隔离、增删改查、行草稿从尺码值生成
+  assert.match(store, /export const SIZE_CHART_TEMPLATES_KEY = "temu_size_chart_templates_v1";/);
+  assert.match(store, /export function upsertSizeChartTemplate\(/);
+  assert.match(store, /export function draftRowsFromSizes\(/);
+  // 类目认不出测量项时的兜底预设
+  assert.match(store, /export const SIZE_CHART_PRESETS/);
+
+  // 弹窗：选（用这张=填 ID）+ 建（名称/模板 ID/测量列/尺码行/格子）
+  assert.match(dialog, /用这张/);
+  assert.match(dialog, /新建模板/);
+  assert.match(dialog, /requiredElements\.includes\(column\)/);
+  assert.match(dialog, /draftRowsFromSizes\(sizes, columns\.length\)/);
+
+  // 发布页接线：模板库入口 + onApply 写回 form.sizeTemplates
+  assert.match(page, /模板库…/);
+  assert.match(page, /<SizeChartDialog/);
+  assert.match(page, /onApply=\{\(ids\) => patch\(\{ sizeTemplates: ids \}\)\}/);
+});
+
 test("发布确认用应用内弹窗：列清标题/类目/变种，重复提交也能二次确认", () => {
   // 原生 window.confirm 在 WebView 里可能被禁（点了直接 false），样式也不搭。
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");

@@ -13,6 +13,7 @@ import {
 import type { VariantRow } from "../components/PublishSkuPanel";
 import { DraftImagePicker } from "../components/DraftImagePicker";
 import { useAppConfirm } from "../components/ConfirmDialog";
+import { SizeChartDialog } from "../components/SizeChartDialog";
 import { CheckGlyph } from "../components/CheckGlyph";
 import { TemuPropertyForm } from "../components/TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "../components/ShipmentDaysPicker";
@@ -723,6 +724,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     has: boolean | null;
     info: TemuSizeChartInfo | null;
   }>({ loading: false, has: null, info: null });
+  /** 尺码表模板库弹窗（选模板/建模板） */
+  const [sizeChartLibOpen, setSizeChartLibOpen] = useState(false);
   /**
    * 是不是「服饰 / 量体」类目 —— 用「这个类目必须有尺码表」当判据。
    *
@@ -4339,8 +4342,36 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   onChange={(event) => patch({ sizeTemplates: event.target.value })}
                   placeholder="可选，如 12345,67890"
                 />
+                <div className="temu-sizechart-lib-row">
+                  <button
+                    type="button"
+                    className="temu-btn temu-btn-sm"
+                    onClick={() => setSizeChartLibOpen(true)}
+                  >
+                    模板库…
+                  </button>
+                  <span className="temu-muted">
+                    常用尺码表存档在这：选一张自动填 ID；新建时行从本商品尺码带出
+                  </span>
+                </div>
               </div>
             )}
+            {sizeChartLibOpen ? (
+              <SizeChartDialog
+                open={sizeChartLibOpen}
+                onClose={() => setSizeChartLibOpen(false)}
+                catId={Number(categoryPath[categoryPath.length - 1]?.catId ?? 0)}
+                categoryElements={(sizeChart.info?.elements ?? []).map((item) => item.name)}
+                requiredElements={sizeChart.info?.required_elements ?? []}
+                categorySizes={sizeChart.info?.sizes ?? []}
+                initialSizes={form.sizesText
+                  .split(/[,，\s]+/)
+                  .map((item) => item.trim())
+                  .filter(Boolean)}
+                currentIds={form.sizeTemplates}
+                onApply={(ids) => patch({ sizeTemplates: ids })}
+              />
+            ) : null}
           </section>
 
           {/* 4 包装信息 */}
