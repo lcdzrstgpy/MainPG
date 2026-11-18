@@ -2154,6 +2154,40 @@ class SizeChartClient(StubCatalogClient):
             "sizeSpecDataList": self.rows or None,
         }
 
+    def size_chart_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # 记下 payload 供断言；回一个带模板 id 的表（模拟网关成功）
+        self.create_payload = payload
+        return {
+            "sizeSpecDataList": [
+                {"businessId": 9527, "name": payload.get("name"), "classId": payload.get("classId")}
+            ]
+        }
+
+
+def test_create_size_chart_maps_content_vo(tmp_path: Path) -> None:
+    """建表参数映射：groups/elements/records 按 sizecharts.get 返回的 contentVO 镜像。
+
+    这是实验性接口（参数无公开样例）——本测试即参数契约文档：
+    改映射前先想清楚网关那边怎么认。
+    """
+    client = SizeChartClient(elements=[{"id": 10002, "name": "胸围全围", "necessary": True}])
+    service = TemuPublishService(tmp_path / "d.sqlite3", client=client)
+    result = service.create_size_chart(
+        name="女装上衣-常规",
+        class_id=5,
+        groups=[{"id": 1, "name": "size"}],
+        elements=[{"id": 10002, "name": "胸围全围"}],
+        records=[{"1": "S", "10002": "86"}],
+    )
+    payload = client.create_payload
+    assert payload["name"] == "女装上衣-常规"
+    assert payload["classId"] == 5
+    assert payload["contentVO"]["meta"]["groups"] == [{"id": 1, "name": "size"}]
+    assert payload["contentVO"]["meta"]["elements"] == [{"id": 10002, "name": "胸围全围"}]
+    assert payload["contentVO"]["records"] == [{"1": "S", "10002": "86"}]
+    # 回包里的模板 id 要认出来（前端自动填就靠它）
+    assert result["id"] == 9527
+
 
 def test_size_charts_reports_whether_category_needs_one(tmp_path: Path) -> None:
     """宠物/家居这类：网关回「没有找到尺码组」→ required=False，前端据此隐藏字段。"""
@@ -2205,8 +2239,8 @@ def test_size_charts_clothing_category_without_table(tmp_path: Path) -> None:
     assert [item["name"] for item in info["elements"]] == ["胸围全围", "裙长", "肩宽"]
     # 可选尺码来自 settings，建表/选码时要用
     assert info["sizes"] == ["S", "M", "L"]
-    # 建表接口参数结构还没打通，前端据此提示「去后台建」
-    assert info["can_create"] is False
+    # 建表走实验性 create（参数按 get 返回镜像），前端给「在 Temu 建表」入口
+    assert info["can_create"] is True
 
 
 def test_size_charts_without_category_short_circuits(tmp_path: Path) -> None:

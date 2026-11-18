@@ -159,6 +159,19 @@ export const temuPublishApi = {
   /** 这个类目是否需要尺码表（false → 前端隐藏「尺码表模板 ID」） */
   sizeCharts: (catId: number) => httpJson<TemuSizeChartInfo>(`${BASE}/categories/${catId}/size-charts`),
 
+  /** 新增尺码表（实验性）：参数镜像 sizecharts.get 返回结构；被拒时网关原话在 error 里 */
+  createSizeChart: (payload: {
+    name: string;
+    class_id: number;
+    groups: Array<{ id: number; name: string }>;
+    elements: Array<{ id: number; name: string }>;
+    records: Array<Record<string, string>>;
+  }) =>
+    httpJson<{ id: number; name: string; raw?: unknown }>(`${BASE}/size-charts/create`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   /** 待补库存清单：扫店铺商品，列出库存为 0 的 SKU（只读） */
   lowStockGoods: (params: { limit?: number; pageSize?: number; maxPages?: number } = {}) =>
     httpJson<TemuLowStockResult>(

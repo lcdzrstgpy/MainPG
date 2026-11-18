@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { temuPublishApi } from "../api/temuPublishApi";
 import {
   draftRowsFromSizes,
   loadSizeChartTemplates,
@@ -22,6 +23,7 @@ export function SizeChartDialog({
   open,
   onClose,
   catId,
+  classId,
   categoryElements,
   requiredElements,
   categorySizes,
@@ -33,8 +35,10 @@ export function SizeChartDialog({
   onClose: () => void;
   /** 当前叶子类目：用于「适用类目」标记和测量项/尺码候选 */
   catId: number;
-  /** 类目测量项（sizecharts.meta.get 的 elements）：列候选 */
-  categoryElements: string[];
+  /** 尺码分类 ID（size-charts 响应的 class_id）：实验性建表要用 */
+  classId: number;
+  /** 类目测量项（sizecharts.meta.get 的 elements，带 id）：列候选 + 建表元数据 */
+  categoryElements: Array<{ id: number; name: string }>;
   /** 类目必填测量项：进编辑器默认勾上且不可取消 */
   requiredElements: string[];
   /** 类目可选尺码名（sizecharts.settings.get）：行候选 */
@@ -50,6 +54,9 @@ export function SizeChartDialog({
   const [editing, setEditing] = useState<SizeChartTemplate | null>(null);
   /** 编辑器里尺码行的原始输入（逗号分隔，落表时拆行） */
   const [rowSizesText, setRowSizesText] = useState("");
+  /** 实验性建表的状态/结果提示 */
+  const [creating, setCreating] = useState("");
+  const elementNames = categoryElements.map((item) => item.name);
 
   const selectedIds = useMemo(
     () =>
@@ -70,8 +77,8 @@ export function SizeChartDialog({
   if (!open) return null;
 
   const startCreate = () => {
-    const columns = categoryElements.length
-      ? categoryElements.filter((el) => requiredElements.includes(el) || categoryElements.indexOf(el) < 3)
+    const columns = elementNames.length
+      ? elementNames.filter((el) => requiredElements.includes(el) || elementNames.indexOf(el) < 3)
       : SIZE_CHART_PRESETS[0].columns;
     const sizes = initialSizes.length ? initialSizes : categorySizes;
     setEditing({
@@ -145,6 +152,48 @@ export function SizeChartDialog({
     setEditing(null);
   };
 
+  /**
+   * 实验性：直接在 Temu 建表（sizecharts.create，参数按 get 返回镜像）。
+   * 成功 → 自动填模板 ID；被拒 → 网关原话亮出来（拿真实样例再对齐参数）。
+   */
+  const createOnTemu = async () => {
+    if (!editing || creating) return;
+    const name = editing.name.trim() || `Size Chart ${new Date().toISOString().slice(0, 10)}`;
+    // 行列 → contentVO：groups 第一行是尺码列（id=1），元素列按类目测量项的 id 对齐
+    const elements = editing.columns
+      .map((column) => categoryElements.find((item) => item.name === column))
+      .filter((item): item is { id: number; name: string } => Boolean(item));
+    if (!elements.length) {
+      setCreating("测量列必须来自类目测量项（自定义列建不了表）");
+      return;
+    }
+    const records = editing.rows.map((row) => {
+      const record: Record<string, string> = { "1": row.size };
+      elements.forEach((element, index) => {
+        record[String(element.id)] = row.values[index] ?? "";
+      });
+      return record;
+    });
+    setCreating("正在向 Temu 建表…");
+    try {
+      const result = await temuPublishApi.createSizeChart({
+        name,
+        class_id: classId,
+        groups: [{ id: 1, name: "size" }],
+        elements,
+        records,
+      });
+      if (result.id > 0) {
+        setEditing({ ...editing, name, templateId: String(result.id) });
+        setCreating(`✅ 已在 Temu 建表（模板 ID ${result.id}），点「保存模板」存进库`);
+      } else {
+        setCreating("Temu 接受了请求但没回模板 ID，去卖家后台「尺码表模板」确认后手动填 ID");
+      }
+    } catch (cause) {
+      setCreating(`建表被拒：${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  };
+
   const applyTemplate = (template: SizeChartTemplate) => {
     const id = Number(template.templateId.trim());
     if (!Number.isFinite(id) || id <= 0) return;
@@ -201,13 +250,13 @@ export function SizeChartDialog({
               <span>
                 测量列
                 <em className="temu-muted">
-                  {categoryElements.length
+                  {elementNames.length
                     ? "按类目要求给出；带 * 的是必填项"
                     : "认不出类目测量项，先用常用预设"}
                 </em>
               </span>
               <div className="temu-sizechart-columns">
-                {(categoryElements.length ? categoryElements : SIZE_CHART_PRESETS[0].columns).map(
+                {(elementNames.length ? elementNames : SIZE_CHART_PRESETS[0].columns).map(
                   (column) => {
                     const on = editing.columns.includes(column);
                     const locked = requiredElements.includes(column);
@@ -337,11 +386,25 @@ export function SizeChartDialog({
           </div>
         )}
 
-        <footer className="temu-edit-foot">
+        <footer className="temu-edit-foot temu-sizechart-foot">
           {editing ? (
             <>
+              {creating ? <p className="temu-muted temu-sizechart-create-note">{creating}</p> : null}
               <button type="button" className="temu-btn" onClick={() => setEditing(null)}>
                 返回列表
+              </button>
+              <button
+                type="button"
+                className="temu-btn temu-btn-sm"
+                disabled={Boolean(creating) || !classId}
+                title={
+                  classId
+                    ? "实验性：按上方格子直接在 Temu 建表，成功自动填模板 ID（省去后台手建）"
+                    : "认不出尺码分类 ID，只能去卖家后台建"
+                }
+                onClick={() => void createOnTemu()}
+              >
+                在 Temu 建表（实验）
               </button>
               <button
                 type="button"

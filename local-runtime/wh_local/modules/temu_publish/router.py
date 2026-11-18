@@ -29,6 +29,7 @@ from .schemas import (
     GoodsDraftInput,
     ImageUploadRequest,
     ImageUploadUrlRequest,
+    SizeChartCreateRequest,
     SpecCreateRequest,
     TemuSettingsUpdate,
     TemuShopCreate,
@@ -756,6 +757,23 @@ def create_temu_publish_router(
         """该类目是否需要尺码表（服装/鞋类需要，宠物用品等不需要 → 前端据此隐藏字段）。"""
         try:
             return _service(actor).size_charts(cat_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _handle(exc) from exc
+
+    @router.post("/size-charts/create")
+    def size_chart_create(
+        payload: SizeChartCreateRequest,
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """新增尺码表（实验性，参数按 sizecharts.get 返回镜像；被拒时把网关原话透传）。"""
+        try:
+            return _service(actor).create_size_chart(
+                name=payload.name,
+                class_id=payload.class_id,
+                groups=payload.groups,
+                elements=payload.elements,
+                records=payload.records,
+            )
         except Exception as exc:  # noqa: BLE001
             raise _handle(exc) from exc
 

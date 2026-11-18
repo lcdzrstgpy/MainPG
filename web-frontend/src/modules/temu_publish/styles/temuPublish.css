@@ -7314,6 +7314,17 @@ textarea.temu-input {
   gap: 6px;
 }
 
+.temu-sizechart-foot {
+  flex-wrap: wrap;
+}
+
+.temu-sizechart-create-note {
+  flex: 1 0 100%;
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* ================================================================
    深色主题下的金属质感
    ----------------------------------------------------------------

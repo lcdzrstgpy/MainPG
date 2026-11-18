@@ -1218,9 +1218,53 @@ class TemuPublishService:
             "required_elements": [item["name"] for item in elements if item["necessary"]],
             "sizes": sizes,
             "allow_range": bool((meta or {}).get("allowRange")),
-            "can_create": False,
+            # 尺码分类 ID（建表用）：不同网关版本挂的位置不一样，防御性找
+            "class_id": int(
+                spec_meta.get("classId")
+                or (meta or {}).get("classId")
+                or ((meta or {}).get("sizeSpecElementRule") or {}).get("classId")
+                or 0
+            ),
+            "can_create": True,
             "error": error,
         }
+
+    def create_size_chart(
+        self,
+        *,
+        name: str,
+        class_id: int,
+        groups: list[dict[str, Any]],
+        elements: list[dict[str, Any]],
+        records: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """新增尺码表模板（实验性，见 client.size_chart_create）。
+
+        参数按 `sizecharts.get` 返回表的 contentVO 结构镜像：
+        groups=尺码列元数据、elements=测量列元数据、records=每行 {元数据id: 值}。
+        成功返回 {id, name, raw}；网关拒绝把原话放进 error 抛给前端（好迭代参数）。
+        """
+        payload = {
+            "name": name,
+            "classId": int(class_id),
+            "contentVO": {
+                "meta": {"groups": groups, "elements": elements},
+                "records": records,
+            },
+        }
+        try:
+            result = self.client().size_chart_create(payload)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Temu 建表被拒：{exc}") from exc
+        rows = result.get("sizeSpecDataList") if isinstance(result, dict) else None
+        entry = next(
+            (item for item in (self._size_table_entry(row) for row in (rows or [])) if item),
+            None,
+        )
+        if entry:
+            return {**entry, "raw": result}
+        # 成功但没认出 id：把原始回包给前端人工认（总比静默丢好）
+        return {"id": 0, "name": name, "raw": result}
 
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情。个别商品会返回「无权访问」（991000001），由调用方提示用户。"""

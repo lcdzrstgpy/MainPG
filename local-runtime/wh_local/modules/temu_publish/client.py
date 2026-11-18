@@ -463,6 +463,16 @@ class TemuProductClient:
             "bg.glo.goods.sizecharts.settings.get", {"catId": int(cat_id)}, max_attempts=1
         )
 
+    def size_chart_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """新增尺码表（bg.glo.goods.sizecharts.create）。
+
+        ⚠️ 实验性：官方接口清单（马帮 ERP 权限通知）确认这个接口存在，但参数结构
+        没有公开文档样例 —— payload 按 `sizecharts.get` 返回的表结构（contentVO.meta.
+        groups/elements + records）镜像构造。网关拒绝时把原话透传给调用方，
+        拿到真实请求样例再对齐（2026-11-18 首次接）。
+        """
+        return self.call("bg.glo.goods.sizecharts.create", payload, max_attempts=1)
+
     def goods_detail(self, product_id: int) -> dict[str, Any]:
         """商品详情（bg.glo.goods.detail.get）。注意：个别商品会返回「无权访问」。"""
         return self.call("bg.glo.goods.detail.get", {"productId": int(product_id)})

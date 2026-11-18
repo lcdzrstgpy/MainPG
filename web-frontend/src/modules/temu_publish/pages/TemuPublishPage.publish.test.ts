@@ -2838,10 +2838,17 @@ test("尺码表模板库：选模板填 ID / 建表辅助（行从变种带、�
   assert.match(dialog, /requiredElements\.includes\(column\)/);
   assert.match(dialog, /draftRowsFromSizes\(sizes, columns\.length\)/);
 
-  // 发布页接线：模板库入口 + onApply 写回 form.sizeTemplates
+  // 实验性一键建表：行列映射 contentVO（groups id=1 尺码列 + elements id 对齐 + records）
+  assert.match(dialog, /在 Temu 建表（实验）/);
+  assert.match(dialog, /temuPublishApi\.createSizeChart\(/);
+  assert.match(dialog, /groups: \[\{ id: 1, name: "size" \}\]/);
+  assert.match(dialog, /record\[String\(element\.id\)\] = row\.values\[index\]/);
+
+  // 发布页接线：模板库入口 + onApply 写回 form.sizeTemplates + classId/元素 id 传进弹窗
   assert.match(page, /模板库…/);
   assert.match(page, /<SizeChartDialog/);
   assert.match(page, /onApply=\{\(ids\) => patch\(\{ sizeTemplates: ids \}\)\}/);
+  assert.match(page, /classId=\{sizeChart\.info\?\.class_id \?\? 0\}/);
 });
 
 test("发布确认用应用内弹窗：列清标题/类目/变种，重复提交也能二次确认", () => {

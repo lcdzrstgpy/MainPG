@@ -208,3 +208,15 @@ class DimensionCheckRequest(BaseModel):
     cat_id: int | None = Field(default=None, ge=1)
     class_id: int | None = Field(default=None, ge=1)
 
+
+class SizeChartCreateRequest(BaseModel):
+    """新增尺码表（实验性）：参数镜像 sizecharts.get 返回的 contentVO 结构。"""
+
+    name: str = Field(min_length=1, max_length=120)
+    class_id: int = Field(ge=1, description="尺码分类 ID（size-charts 响应的 class_id）")
+    groups: list[dict] = Field(default_factory=list, description="尺码列元数据 [{id, name}]")
+    elements: list[dict] = Field(default_factory=list, description="测量列元数据 [{id, name}]")
+    records: list[dict[str, str]] = Field(
+        default_factory=list, description="每行 {元数据id: 值}，含尺码列（id=1 → S/M/L）"
+    )
+

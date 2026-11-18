@@ -39,7 +39,9 @@ export type TemuSizeChartInfo = {
   /** 可选尺码名（S/M/L/one-size…），建表或选码时要参考 */
   sizes?: string[];
   allow_range?: boolean;
-  /** 建表接口（sizecharts.create）参数结构还没打通，固定 false */
+  /** 尺码分类 ID（建表用） */
+  class_id?: number;
+  /** 建表入口（实验性 create，参数按 get 返回镜像） */
   can_create?: boolean;
   error?: string;
 };

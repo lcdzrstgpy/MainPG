@@ -4295,8 +4295,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     {sizeChart.info.required_elements?.length
                       ? `Temu 要求必填测量项：${sizeChart.info.required_elements.join("、")}。`
                       : ""}
-                    去卖家后台「商品管理 → 尺码表模板」建一张，再把模板 ID 填到这里
-                    （接口建表 sizecharts.create 的参数结构还没打通，暂时只能后台建）。
+                    去卖家后台「商品管理 → 尺码表模板」建一张，再把模板 ID 填到这里；
+                    或点下面「模板库…」拼好格子后试「在 Temu 建表」（实验功能，被拒会显示原因）。
                   </p>
                 ) : null}
                 {/* 店里的商品既然带尺码表，就该能直接点选 —— 以前只能去后台抄那串 ID。
@@ -4361,7 +4361,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 open={sizeChartLibOpen}
                 onClose={() => setSizeChartLibOpen(false)}
                 catId={Number(categoryPath[categoryPath.length - 1]?.catId ?? 0)}
-                categoryElements={(sizeChart.info?.elements ?? []).map((item) => item.name)}
+                classId={sizeChart.info?.class_id ?? 0}
+                categoryElements={(sizeChart.info?.elements ?? []).map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                }))}
                 requiredElements={sizeChart.info?.required_elements ?? []}
                 categorySizes={sizeChart.info?.sizes ?? []}
                 initialSizes={form.sizesText
