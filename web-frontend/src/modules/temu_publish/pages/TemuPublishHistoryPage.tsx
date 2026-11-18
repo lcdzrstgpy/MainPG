@@ -375,7 +375,11 @@ export function TemuPublishHistoryPage({
               type="button"
               className={`temu-history-reason-chip${reasonFilter === group.reason ? " is-active" : ""}`}
               title={group.reason}
-              onClick={() => setReasonFilter(reasonFilter === group.reason ? "" : group.reason)}
+              onClick={() => {
+                setReasonFilter(reasonFilter === group.reason ? "" : group.reason);
+                // 换筛选就清勾选：不然计数/全选状态还挂着上一类的条目
+                setRetryPicked([]);
+              }}
             >
               {(() => {
                 // 显示人话（Temu 原文太工程化），筛选仍用原文当 key 才筛得准
@@ -386,7 +390,14 @@ export function TemuPublishHistoryPage({
             </button>
           ))}
           {reasonFilter ? (
-            <button type="button" className="temu-history-reason-clear" onClick={() => setReasonFilter("")}>
+            <button
+              type="button"
+              className="temu-history-reason-clear"
+              onClick={() => {
+                setReasonFilter("");
+                setRetryPicked([]);
+              }}
+            >
               看全部
             </button>
           ) : null}

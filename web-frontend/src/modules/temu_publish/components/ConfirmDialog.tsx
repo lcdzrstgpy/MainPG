@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 /**
@@ -30,12 +30,20 @@ type Pending = { request: ConfirmRequest; resolve: (value: boolean) => void };
 
 export function useAppConfirm(): [ReactNode, (request: ConfirmRequest) => Promise<boolean>] {
   const [pending, setPending] = useState<Pending | null>(null);
+  /** 当前挂起的 resolver：新请求顶掉旧请求时必须先放行旧的（按取消处理），
+   * 否则旧 Promise 永不结算，await 它的 run() 会把 busy 状态卡死。 */
+  const resolverRef = useRef<((value: boolean) => void) | null>(null);
 
   const confirm = (request: ConfirmRequest) =>
-    new Promise<boolean>((resolve) => setPending({ request, resolve }));
+    new Promise<boolean>((resolve) => {
+      resolverRef.current?.(false);
+      resolverRef.current = resolve;
+      setPending({ request, resolve });
+    });
 
   const settle = (value: boolean) => {
-    pending?.resolve(value);
+    resolverRef.current?.(value);
+    resolverRef.current = null;
     setPending(null);
   };
 
