@@ -2858,6 +2858,8 @@ test("尺码表模板库：选模板填 ID / 建表辅助（行从变种带、�
   assert.match(page, /onApply=\{\(ids\) => patch\(\{ sizeTemplates: ids \}\)\}/);
   assert.match(page, /classId=\{sizeChart\.info\?\.class_id \?\? 0\}/);
   assert.match(page, /shopId=\{status\?\.active_shop_id \?\? ""\}/);
+  // type 必须透传进弹窗：丢了 type 身体元素分流就永远失灵
+  assert.match(page, /type: item\.type,/);
 });
 
 test("发布确认用应用内弹窗：列清标题/类目/变种，重复提交也能二次确认", () => {

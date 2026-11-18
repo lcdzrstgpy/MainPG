@@ -4367,6 +4367,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 categoryElements={(sizeChart.info?.elements ?? []).map((item) => ({
                   id: item.id,
                   name: item.name,
+                  // type 必须透传：建表时身体元素（type=2）要分流 bodyMeta/bodyRecords
+                  type: item.type,
                 }))}
                 requiredElements={sizeChart.info?.required_elements ?? []}
                 categorySizes={sizeChart.info?.sizes ?? []}
