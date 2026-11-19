@@ -601,6 +601,11 @@ export function TemuDraftLibraryPage({
   });
   /** 只看「待人工」的草稿：类目没配上、或必填属性估不出来的 */
   const [onlyManual, setOnlyManual] = useState(false);
+  /**
+   * 待人工向导：把「待人工 N」从筛选变成逐条补完的流。
+   * ids 在开始时冻结（补的过程中列表会变），补好一条（不再待人工）自动跳下一条。
+   */
+  const [wizard, setWizard] = useState<{ ids: string[]; index: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -869,6 +874,8 @@ export function TemuDraftLibraryPage({
   useEffect(() => {
     const sync = () => {
       setCategoryMemo(localStore.draftCategories());
+      // 估填/必填项也要跟着刷：发布页补完属性切回来，「待人工」计数和向导要立刻反映
+      setAttrPrefills(readDraftAttrPrefills(storageScope()));
       void syncFailedLedger();
     };
     sync();
@@ -920,6 +927,22 @@ export function TemuDraftLibraryPage({
     if (onlyManual && !manualIds.has(entry.id)) return false;
     return true;
   });
+
+  /** 向导前进（到队尾就收工） */
+  const advanceWizard = () =>
+    setWizard((current) => {
+      if (!current) return null;
+      const next = current.index + 1;
+      return next < current.ids.length ? { ...current, index: next } : null;
+    });
+
+  // 当前这条补好了（不再待人工）→ 自动跳下一条：补完属性切回库页，进度自己往前走
+  useEffect(() => {
+    if (!wizard) return;
+    const currentId = wizard.ids[wizard.index];
+    if (currentId && !manualIds.has(currentId)) advanceWizard();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizard, manualIds]);
 
   /**
    * 发布历史点「去修这条」过来：找到那条草稿自动打开（=整表预填进发布页）。
@@ -2124,6 +2147,22 @@ export function TemuDraftLibraryPage({
           待人工 {manualIds.size}
         </button>
 
+        {onlyManual && manualIds.size > 0 && !wizard ? (
+          <button
+            type="button"
+            className="temu-btn temu-btn-sm temu-btn-primary"
+            title="逐条过一遍要人工处理的草稿：补完一条自动跳下一条，补完直达批量发布"
+            onClick={() =>
+              setWizard({
+                ids: entries.filter((entry) => manualIds.has(entry.id)).map((entry) => entry.id),
+                index: 0,
+              })
+            }
+          >
+            逐条补完（{manualIds.size}）
+          </button>
+        ) : null}
+
         <div className="temu-library-head-actions">
           {onOpenHistory ? (
             <button type="button" className="temu-btn" onClick={onOpenHistory}>
@@ -2138,6 +2177,75 @@ export function TemuDraftLibraryPage({
           </button>
         </div>
       </header>
+
+      {wizard
+        ? (() => {
+            const entry = entries.find((item) => item.id === wizard.ids[wizard.index]);
+            const position = Math.min(wizard.index + 1, wizard.ids.length);
+            const manualNames = entry ? (attrPrefills[entry.id]?.manualNames ?? []) : [];
+            const reasons = entry
+              ? [
+                  categoryMemo[entry.id]?.path?.length ? "" : "缺类目",
+                  manualNames.length ? `属性待填：${manualNames.join("、")}` : "",
+                ].filter(Boolean)
+              : [];
+            return (
+              <div className="temu-manual-wizard">
+                <strong>
+                  待人工向导 {position}/{wizard.ids.length}
+                </strong>
+                {entry ? (
+                  <>
+                    <span className="temu-manual-wizard-title" title={entry.title}>
+                      {entry.title || "（无标题）"}
+                    </span>
+                    <span className="temu-muted">{reasons.join(" · ") || "已补完，自动跳下一条"}</span>
+                    <div className="temu-manual-wizard-actions">
+                      <button
+                        type="button"
+                        className="temu-btn temu-btn-sm temu-btn-primary"
+                        title="打开这条草稿的整表预填：换类目、补必填属性，补完切回来自动跳下一条"
+                        onClick={() =>
+                          onUseDraft(
+                            entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
+                          )
+                        }
+                      >
+                        去补这条
+                      </button>
+                      <button type="button" className="temu-btn temu-btn-sm" onClick={advanceWizard}>
+                        跳过
+                      </button>
+                      <button
+                        type="button"
+                        className="temu-btn temu-btn-sm"
+                        onClick={() => setWizard(null)}
+                      >
+                        退出向导
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <span className="temu-muted">这条已不在当前列表（被删或刷新掉了）</span>
+                    <div className="temu-manual-wizard-actions">
+                      <button type="button" className="temu-btn temu-btn-sm" onClick={advanceWizard}>
+                        跳过
+                      </button>
+                      <button
+                        type="button"
+                        className="temu-btn temu-btn-sm"
+                        onClick={() => setWizard(null)}
+                      >
+                        退出向导
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()
+        : null}
 
       {error && (
         <div className="temu-alert" role="alert">

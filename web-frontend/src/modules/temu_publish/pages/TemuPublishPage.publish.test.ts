@@ -2862,6 +2862,29 @@ test("尺码表模板库：选模板填 ID / 建表辅助（行从变种带、�
   assert.match(page, /type: item\.type,/);
 });
 
+test("待人工向导：筛选态逐条补完——补好自动跳下一条、跳过/退出可中断", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+
+  // 入口只在「待人工」筛选态出现，清单开始时冻结
+  assert.match(library, /const \[wizard, setWizard\] = useState<\{ ids: string\[\]; index: number \} \| null>\(null\);/);
+  assert.match(library, /逐条补完（\{manualIds\.size\}）/);
+  assert.match(library, /ids: entries\.filter\(\(entry\) => manualIds\.has\(entry\.id\)\)\.map\(\(entry\) => entry\.id\)/);
+
+  // 自动推进：当前条不再待人工就跳下一条（补完属性切回库页进度自己走）
+  assert.match(library, /if \(currentId && !manualIds\.has\(currentId\)\) advanceWizard\(\);/);
+
+  // 向导条：进度/原因/去补这条（复用整表预填）/跳过/退出
+  assert.match(library, /待人工向导 \{position\}\/\{wizard\.ids\.length\}/);
+  assert.match(library, /去补这条/);
+  assert.match(library, /跳过/);
+  assert.match(library, /退出向导/);
+  assert.match(css, /\.temu-manual-wizard \{/);
+
+  // 估填随切回刷新：不刷的话计数和自动推进都吃旧数据
+  assert.match(library, /setAttrPrefills\(readDraftAttrPrefills\(storageScope\(\)\)\);/);
+});
+
 test("发布确认用应用内弹窗：列清标题/类目/变种，重复提交也能二次确认", () => {
   // 原生 window.confirm 在 WebView 里可能被禁（点了直接 false），样式也不搭。
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");

@@ -7332,6 +7332,38 @@ textarea.temu-input {
   line-height: 1.6;
 }
 
+/* 待人工向导条：逐条补完的进度与操作 */
+.temu-manual-wizard {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--theme-module-primary-strong, #087bf5);
+  border-radius: 10px;
+  background: var(--theme-module-surface, rgba(8, 123, 245, 0.06));
+}
+
+.temu-manual-wizard strong {
+  font-size: 13px;
+}
+
+.temu-manual-wizard-title {
+  max-width: 320px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temu-manual-wizard-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 /* ================================================================
    深色主题下的金属质感
    ----------------------------------------------------------------
