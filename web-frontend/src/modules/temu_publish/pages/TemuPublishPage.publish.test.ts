@@ -811,6 +811,14 @@ test("失败批量重试：勾选 → 清旧估填 → 回库自动勾选 → �
   assert.match(history, /const batchRetry = \(targets\?: TemuPublishHistoryItem\[\]\) =>/);
   assert.match(history, /一键重试这类/);
   assert.match(history, /onClick=\{\(\) => batchRetry\(listItems\)\}/);
+
+  // 瞬时失败自动重试一次：业务拒绝绝不重试（宁可不重试，也不把真拒绝掩盖成超时）
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  assert.match(batch, /export function isTransientPublishError\(cause: unknown\): boolean \{/);
+  assert.match(batch, /if \(BUSINESS_REJECT_HINT\.test\(message\)\) return false;/);
+  assert.match(library, /if \(!isTransientPublishError\(first\) \|\| batchAbortRef\.current \|\| batchStopRequested\(\)\) \{/);
+  assert.match(library, /网络抖动，2 秒后重试一次/);
+  assert.match(library, /result = await temuPublishApi\.publish\(draft\);/);
 });
 
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
@@ -1015,7 +1023,7 @@ test("批量发布与单条发布同一套规矩（货号清洗/详情图尺寸/
 test("批量发布的提示与商品 id 不能静默丢掉", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  assert.match(library, /const result = await temuPublishApi\.publish\(draft\);/);
+  assert.match(library, /result = await temuPublishApi\.publish\(draft\);/);
   assert.match(library, /if \(result\.warnings\?\.length\) \{/);
   assert.match(library, /const warnText = warned/);
   assert.match(library, /const idText = publishedIds\.length/);

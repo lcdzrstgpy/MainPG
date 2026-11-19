@@ -16,7 +16,7 @@ import {
   type CategoryQueryResult,
 } from "../utils/categoryMatch";
 import { categoryPathFromDto, categoryName } from "../utils/categoryPath";
-import { buildDraftForPublish } from "../data/batchPublish";
+import { buildDraftForPublish, isTransientPublishError } from "../data/batchPublish";
 import { DRAFT_IMAGES_KEY, resolveEntryImages } from "../data/draftImages";
 import { DRAFT_SKU_FIELDS_KEY, type SkuFieldStore } from "../data/skuPricing";
 import { precheckBatchItem, precheckFixTarget } from "../data/batchPrecheck";
@@ -1869,7 +1869,23 @@ export function TemuDraftLibraryPage({
             itemTemplate,
             variant,
           );
-          const result = await temuPublishApi.publish(draft);
+          let result: Awaited<ReturnType<typeof temuPublishApi.publish>>;
+          try {
+            result = await temuPublishApi.publish(draft);
+          } catch (first) {
+            // 网络抖动 / 网关超时 / 限流：同一条草稿重试一次大概率就过。
+            // 业务拒绝和「停止」不重试；万一首次其实已上架，台账的「重复提交」会挡下来。
+            if (!isTransientPublishError(first) || batchAbortRef.current || batchStopRequested()) {
+              throw first;
+            }
+            setBatchState({
+              running: true,
+              text: `${index + 1}/${tasks.length}${groupText} · ${label} · 网络抖动，2 秒后重试一次`,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            if (batchAbortRef.current || batchStopRequested()) throw first;
+            result = await temuPublishApi.publish(draft);
+          }
           const goodsId = pickGoodsId(result.result);
           if (goodsId) publishedIds.push(goodsId);
           if (result.warnings?.length) {

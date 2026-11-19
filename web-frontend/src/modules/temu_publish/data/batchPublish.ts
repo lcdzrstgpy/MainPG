@@ -544,3 +544,23 @@ export async function buildDraftForPublish(
 
   return finishDraft();
 }
+
+/**
+ * 批量发布：这次失败值不值得自动重试一次。
+ *
+ * 只重试「网络层抖动 / 网关超时 / 限流」这类**下一次大概率不同结果**的失败；
+ * 业务拒绝（属性不对、图片不合规、重复提交…）重试一万次也是同样结果，
+ * 白等还刷不出新信息。判定顺序：先排业务（宁可不重试，也不要把真拒绝掩盖成超时）。
+ */
+const TRANSIENT_ERROR_HINT =
+  /请求超时|超时|timeout|timed out|本地服务无响应|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|请求过于频繁|系统繁忙|rate.?limit|服务不可用|502|503|504/i;
+/** 业务拒绝关键词：命中就绝不重试（Temu 拒绝文案/本地校验文案都会带这些词） */
+const BUSINESS_REJECT_HINT =
+  /重复提交|类目|属性|重量|体积|图片|申报价|建议售价|库存|变种|规格|标题|尺码|敏感词/;
+
+export function isTransientPublishError(cause: unknown): boolean {
+  const message = cause instanceof Error ? cause.message : String(cause ?? "");
+  if (!message.trim()) return false;
+  if (BUSINESS_REJECT_HINT.test(message)) return false;
+  return TRANSIENT_ERROR_HINT.test(message);
+}
