@@ -3329,10 +3329,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </strong>
             </div>
             <div>
-              <span>服务商凭据</span>
-              <strong>{gatewayReady ? "已由服务器下发（不用管）" : "还没拿到"}</strong>
-            </div>
-            <div>
               <span>
                 店铺授权
                 {/* 问号放在授权状态旁边：用户是看到「已配置/未绑定」才想问怎么弄，
@@ -3393,13 +3389,13 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
           )}
 
-          {/* 服务商 client_id / token 由服务器统一下发：安装包里不带，也不让用户填 */}
-          <p className="temu-muted">
-            服务商凭据（client_id / token）：
-            {gatewayReady
-              ? "已由服务器下发，不用管；服务商换了凭据会自动更新"
-              : "还没拿到 —— 登录后打开本页会自动获取（需要联网）。一直拿不到请联系管理员"}
-          </p>
+          {/* 服务商凭据由服务器统一下发：拿到的时候什么也不用说（说了也是废话），
+              只在没拿到时提示正确动作 —— 安装包里不带凭据，该做的是登录一次 */}
+          {!gatewayReady ? (
+            <p className="temu-muted">
+              服务商凭据还没拿到 —— 登录后打开本页会自动获取（需要联网）。一直拿不到请联系管理员
+            </p>
+          ) : null}
           <label className="temu-field">
             <span>
               新增店铺：粘贴 access_token
