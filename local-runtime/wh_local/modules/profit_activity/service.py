@@ -217,6 +217,8 @@ class ProfitActivityService:
         keyword: str = "",
         offset: int = 0,
         limit: int = 50,
+        sort_by: str = "",
+        sort_dir: str = "",
         actor: Any | None = None,
         include_workspace_shared: bool = False,
     ) -> dict[str, Any]:
@@ -238,6 +240,8 @@ class ProfitActivityService:
             keyword=keyword,
             offset=offset,
             limit=limit,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
             actor_id=context.actor_id,
             include_workspace_shared=include_workspace_shared,
         )

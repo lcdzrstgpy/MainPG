@@ -1199,6 +1199,81 @@
   white-space: nowrap;
 }
 
+/* 可排序表头：文字 + 上下三角，三态（未排序 / 倒序 / 正序）。
+   未排序时两个三角都是淡色；点亮哪个由 is-desc / is-asc 决定。 */
+button.profit-table-th-label.is-sortable {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  color: inherit;
+  background: transparent !important;
+  box-shadow: none !important;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profit-table-th-label.is-sortable:hover {
+  color: var(--theme-primary, #0a8cf2);
+}
+
+.profit-table-th-label.is-sortable:focus-visible {
+  outline: 2px solid var(--theme-primary, #0a8cf2);
+  outline-offset: 1px;
+}
+
+.profit-table-th-label.is-sorted {
+  color: var(--theme-primary, #0a8cf2);
+  font-weight: var(--weight-bold, 700);
+}
+
+.profit-table-th-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profit-table-sort-arrows {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 0;
+}
+
+.profit-table-sort-up,
+.profit-table-sort-down {
+  width: 0;
+  height: 0;
+  border-right: 3.5px solid transparent;
+  border-left: 3.5px solid transparent;
+  opacity: .32;
+}
+
+.profit-table-sort-up {
+  border-bottom: 5px solid currentColor;
+}
+
+.profit-table-sort-down {
+  border-top: 5px solid currentColor;
+}
+
+/* 升序只亮上三角，降序只亮下三角，另一个压得更淡 */
+.profit-table-th-label.is-asc .profit-table-sort-up,
+.profit-table-th-label.is-desc .profit-table-sort-down {
+  opacity: 1;
+}
+
+.profit-table-th-label.is-asc .profit-table-sort-down,
+.profit-table-th-label.is-desc .profit-table-sort-up {
+  opacity: .16;
+}
+
 .profit-table-resize-handle {
   position: absolute;
   top: 0;

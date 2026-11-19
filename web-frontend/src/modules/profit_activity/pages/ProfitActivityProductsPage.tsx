@@ -10,7 +10,7 @@ import {
   updateProfitActivityProduct,
   saveProfitActivityProductEdit,
 } from "../api/profitActivityApi";
-import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite, ProfitProductsSort, ProfitProductsSortDir, ProfitProductsSortKey } from "../types/products";
 import { ProductSourceDrawer } from "../components/ProductSourceDrawer";
 import { ImagePreviewModal } from "../components/ImagePreviewModal";
 import type { PreviewImage } from "../components/ImagePreviewModal";
@@ -33,7 +33,7 @@ type ProductTableColumnKey =
   | "select" | "site" | "storeName" | "productId" | "createdAt" | "productImage"
   | "sellingPrice" | "costPrice" | "weightKg" | "netProfit" | "profitRate"
   | "note" | "source";
-type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number };
+type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number; sortable?: ProfitProductsSortKey };
 type InlineEditField = "site" | "store_name" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note" | "product_image" | "attachment_image";
 type InlineEditState =
   | { key: string; field: "site"; value: ProfitActivitySite }
@@ -44,13 +44,13 @@ const productTableColumns: ProductTableColumn[] = [
   { key: "site", label: "站点", width: 128, minWidth: 96 },
   { key: "storeName", label: "店铺", width: 160, minWidth: 110 },
   { key: "productId", label: "商品ID", width: 220, minWidth: 150 },
-  { key: "createdAt", label: "入库日期", width: 128, minWidth: 108 },
+  { key: "createdAt", label: "入库日期", width: 128, minWidth: 108, sortable: "library_created_at" },
   { key: "productImage", label: "商品图", width: 100, minWidth: 82 },
   { key: "sellingPrice", label: "售价", width: 120, minWidth: 96 },
   { key: "costPrice", label: "成本", width: 120, minWidth: 96 },
   { key: "weightKg", label: "重量", width: 112, minWidth: 90 },
-  { key: "netProfit", label: "利润", width: 120, minWidth: 96 },
-  { key: "profitRate", label: "利润率", width: 126, minWidth: 102 },
+  { key: "netProfit", label: "利润", width: 120, minWidth: 96, sortable: "net_profit" },
+  { key: "profitRate", label: "利润率", width: 126, minWidth: 102, sortable: "profit_rate" },
   { key: "source", label: "货源", width: 130, minWidth: 104 },
   { key: "note", label: "备注", width: 260, minWidth: 150 },
 ];
@@ -59,6 +59,16 @@ const defaultColumnWidths = productTableColumns.reduce<Record<ProductTableColumn
   return acc;
 }, {} as Record<ProductTableColumnKey, number>);
 const productColumnWidthsStorageKey = "profitActivityProducts.columnWidths.v1";
+
+/** 三态排序循环：无排序 → 倒序 → 正序 → 无排序；切到别的列时从倒序开始。 */
+function nextSort(current: ProfitProductsSort, key: ProfitProductsSortKey): ProfitProductsSort {
+  if (!current || current.key !== key) return { key, dir: "desc" };
+  return current.dir === "desc" ? { key, dir: "asc" } : null;
+}
+
+function sortDirLabel(dir: ProfitProductsSortDir) {
+  return dir === "asc" ? "正序" : "倒序";
+}
 
 function storedProductColumnWidths(): Record<ProductTableColumnKey, number> | null {
   try {
@@ -123,6 +133,7 @@ const productLibraryCache: {
   total?: number;
   page?: number;
   pageSize?: LibraryPageSize;
+  sort?: ProfitProductsSort;
 } = {};
 
 export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boolean }) {
@@ -141,6 +152,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [batchStoreName, setBatchStoreName] = useState("");
   const [page, setPage] = useState(productLibraryCache.page ?? 1);
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(productLibraryCache.pageSize ?? 10);
+  // 表头三态排序：null=默认（入库倒序）；排序在后端做，翻页不会打乱顺序。
+  const [sort, setSort] = useState<ProfitProductsSort>(productLibraryCache.sort ?? null);
   // 页码输入框的草稿值：允许用户自由填写，回车/失焦/点“跳转”才生效
   const [pageInput, setPageInput] = useState("1");
   const [busy, setBusy] = useState("");
@@ -246,7 +259,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     }
   };
 
-  const fetchProducts = async (targetPage = page, size = pageSize) => {
+  const fetchProducts = async (targetPage = page, size = pageSize, order = sort) => {
     if (!sites.size) return [];
     const byId = querySkcs.trim().length > 0;
     const offset = byId ? 0 : Math.max(0, (targetPage - 1) * size);
@@ -256,6 +269,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       productIds: querySkcs,
       sourceType: sourceFilter,
       store: storeFilter,
+      sortBy: order?.key ?? "",
+      sortDir: order?.dir ?? "",
       offset,
       // 按 ID 查询时后端忽略分页、返回全部匹配项。
       limit: byId ? 0 : size,
@@ -267,17 +282,24 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     return result.products.slice(offset, offset + size);
   };
 
-  const goToPage = async (target: number, size = pageSize) => {
+  const goToPage = async (target: number, size = pageSize, order = sort) => {
     const next = Math.max(1, Math.min(totalPages, target));
     setPage(next);
     setPageInput(String(next));
     try {
-      const nextProducts = await fetchProducts(next, size);
+      const nextProducts = await fetchProducts(next, size, order);
       setProducts(nextProducts);
       setSelected(new Set());
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  // 点表头：三态循环后回到第一页重新拉取（排序变了，页码要归位）。
+  const toggleSort = (key: ProfitProductsSortKey) => {
+    const next = nextSort(sort, key);
+    setSort(next);
+    void goToPage(1, pageSize, next);
   };
 
   const queryProducts = () => withBusy("查询产品", async () => {
@@ -339,7 +361,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     productLibraryCache.total = total;
     productLibraryCache.page = page;
     productLibraryCache.pageSize = pageSize;
-  }, [sites, scope, querySkcs, storeFilter, shopOptions, products, total, page, pageSize]);
+    productLibraryCache.sort = sort;
+  }, [sites, scope, querySkcs, storeFilter, shopOptions, products, total, page, pageSize, sort]);
 
   // 刷新产品列表但保留页码/选择/未保存修改：用于图片上传等局部更新，避免把用户“弹回”首页。
   const refreshProducts = async () => {
@@ -773,7 +796,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
               <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
                 <ProductTableColumns widths={columnWidths} />
                 <thead>
-                  <ProductTableHeader />
+                  <ProductTableHeader sort={sort} />
                 </thead>
               </table>
             </div>
@@ -792,7 +815,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
           <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
             <ProductTableColumns widths={columnWidths} />
             <thead ref={theadRef}>
-              <ProductTableHeader onResizeStart={startColumnResize} />
+              <ProductTableHeader onResizeStart={startColumnResize} sort={sort} onSort={toggleSort} />
             </thead>
             <tbody>
               {pageProducts.length ? pageProducts.map((item) => {
@@ -916,12 +939,12 @@ function ProductTableColumns({ widths }: { widths: Record<ProductTableColumnKey,
   );
 }
 
-function ProductTableHeader({ onResizeStart }: { onResizeStart?: (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+function ProductTableHeader({ onResizeStart, sort, onSort }: { onResizeStart?: (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => void; sort?: ProfitProductsSort; onSort?: (key: ProfitProductsSortKey) => void }) {
   return (
     <tr>
       {productTableColumns.map((column) => (
-        <th key={column.key} title={column.label}>
-          <span className="profit-table-th-label">{column.label}</span>
+        <th key={column.key}>
+          <ProductTableHeadLabel column={column} sort={sort} onSort={onSort} />
           {onResizeStart ? (
             <button
               type="button"
@@ -933,6 +956,42 @@ function ProductTableHeader({ onResizeStart }: { onResizeStart?: (column: Produc
         </th>
       ))}
     </tr>
+  );
+}
+
+/** 表头文字；可排序列额外带一个上下箭头，三态循环（无 → 倒序 → 正序）。 */
+function ProductTableHeadLabel({ column, sort, onSort }: { column: ProductTableColumn; sort?: ProfitProductsSort; onSort?: (key: ProfitProductsSortKey) => void }) {
+  const key = column.sortable;
+  const activeDir = key && sort?.key === key ? sort.dir : null;
+  if (!key) {
+    return <span className="profit-table-th-label" title={column.label}>{column.label}</span>;
+  }
+  const label = (
+    <>
+      <span className="profit-table-th-text">{column.label}</span>
+      <span className="profit-table-sort-arrows" aria-hidden="true">
+        <i className="profit-table-sort-up" />
+        <i className="profit-table-sort-down" />
+      </span>
+    </>
+  );
+  if (!onSort) {
+    return (
+      <span className={`profit-table-th-label is-sortable ${activeDir ? `is-sorted is-${activeDir}` : ""}`} title={column.label}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={`profit-table-th-label is-sortable ${activeDir ? `is-sorted is-${activeDir}` : ""}`}
+      title={`${column.label}：${activeDir ? `当前${sortDirLabel(activeDir)}，点击切换` : "点击排序"}`}
+      aria-label={`${column.label}排序：${activeDir ? `当前${sortDirLabel(activeDir)}` : "未排序"}`}
+      onClick={() => onSort(key)}
+    >
+      {label}
+    </button>
   );
 }
 

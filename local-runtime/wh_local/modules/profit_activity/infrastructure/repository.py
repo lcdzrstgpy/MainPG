@@ -198,10 +198,16 @@ class ProfitActivityRepository:
         keyword: str = "",
         offset: int = 0,
         limit: int = 50,
+        sort_by: str = "",
+        sort_dir: str = "",
         actor_id: str = "",
         include_workspace_shared: bool = False,
     ) -> tuple[list[ProfitRecordRow], int]:
-        """产品库分页查询：筛选/排序/计数都在库里做，避免前端拉全量。"""
+        """产品库分页查询：筛选/排序/计数都在库里做，避免前端拉全量。
+
+        sort_by 为空表示默认口径（入库顺序倒序）；sort_dir 为 desc/asc。
+        排序值相同的行再按 id 倒序，保证翻页时顺序稳定不跳动。
+        """
         conditions = self._record_conditions(
             workspace_id,
             site_codes=site_codes,
@@ -219,12 +225,26 @@ class ProfitActivityRepository:
                 session.scalars(
                     select(ProfitRecordRow)
                     .where(*conditions)
-                    .order_by(ProfitRecordRow.id.desc())
+                    .order_by(*self._record_order_by(sort_by, sort_dir))
                     .offset(max(0, int(offset)))
                     .limit(max(1, int(limit)))
                 )
             )
         return rows, int(total)
+
+    @staticmethod
+    def _record_order_by(sort_by: str, sort_dir: str) -> list:
+        """产品库可排序列：入库日期、利润、利润率；其余列走默认顺序。"""
+        columns = {
+            "library_created_at": ProfitRecordRow.created_at,
+            "net_profit": ProfitRecordRow.net_profit,
+            "profit_rate": ProfitRecordRow.profit_rate,
+        }
+        column = columns.get(str(sort_by or "").strip())
+        if column is None:
+            return [ProfitRecordRow.id.desc()]
+        primary = column.asc() if str(sort_dir or "").strip().lower() == "asc" else column.desc()
+        return [primary, ProfitRecordRow.id.desc()]
 
     def list_store_names(
         self,

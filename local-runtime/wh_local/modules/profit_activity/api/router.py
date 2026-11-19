@@ -183,7 +183,7 @@ def create_profit_activity_router(
         return FileResponse(path, filename=path.name, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @router.get("/products")
-    def list_products(site: str | None = None, site_code: str | None = None, sites: str = "", skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", store: str = "", keyword: str = "", offset: int = Query(0, ge=0), limit: int = Query(0, ge=0, le=500), actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
+    def list_products(site: str | None = None, site_code: str | None = None, sites: str = "", skcs: str = "", product_ids: str = "", scope: str = "default", owner_user_id: int | None = None, source_type: str = "", store: str = "", keyword: str = "", sort_by: str = "", sort_dir: str = "", offset: int = Query(0, ge=0), limit: int = Query(0, ge=0, le=500), actor: Actor = Depends(profit_activity_actor)) -> dict[str, Any]:
         require_permission(actor, "profit_activity.read", database_path)
         requested = [item.strip() for item in re.split(r"[\s,，]+", product_ids or skcs) if item.strip()]
         include_company = _include_company(scope, actor, database_path)
@@ -197,6 +197,8 @@ def create_profit_activity_router(
                 keyword=keyword.strip(),
                 offset=offset,
                 limit=limit,
+                sort_by=sort_by.strip(),
+                sort_dir=sort_dir.strip(),
                 actor=actor,
                 include_workspace_shared=include_company,
             )

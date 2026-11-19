@@ -1,4 +1,4 @@
-import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite, ProfitProductsSortKey } from "../types/products";
 import {
   AUTH_RETRY_MANAGED,
   getAuthToken,
@@ -110,6 +110,9 @@ export async function listProfitActivityProductsPage(params: {
   sourceType?: "manual" | "price_verification" | "all";
   store?: string;
   keyword?: string;
+  /** 排序列：入库日期 / 利润 / 利润率；留空表示默认顺序。 */
+  sortBy?: ProfitProductsSortKey | "";
+  sortDir?: "asc" | "desc" | "";
   offset: number;
   limit: number;
 }): Promise<{ products: ProfitActivityProduct[]; total: number; storeOptions: string[]; paged: boolean }> {
@@ -120,6 +123,8 @@ export async function listProfitActivityProductsPage(params: {
     source_type: params.sourceType && params.sourceType !== "all" ? params.sourceType : "",
     store: params.store ?? "",
     keyword: params.keyword ?? "",
+    sort_by: params.sortBy ?? "",
+    sort_dir: params.sortDir ?? "",
     offset: String(params.offset),
     limit: String(params.limit),
   });
