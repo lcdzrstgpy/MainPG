@@ -335,6 +335,8 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /if \(!fresh\.configured\.ready\) return undefined;/);
   // 面板要说明账号归属，并展示当前店铺/token 有效期
   assert.match(page, /凭证按登录账号各存一份/);
+  // 账号 id（cust_xxx）与「已绑定/未绑定」是内部状态，不摆给用户
+  assert.ok(!/owner\?\.account_id/.test(page), "不要把账号 id 显示给用户");
   assert.match(page, /每个账号存自己的店铺，互不影响/);
   assert.match(page, /status\?\.owner\?\.personal/);
 });

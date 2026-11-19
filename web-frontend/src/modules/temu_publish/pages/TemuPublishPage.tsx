@@ -3310,10 +3310,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         <section className="temu-card temu-settings-card">
           <div className="temu-card-head">
             <h2>我的店铺</h2>
-            <span className="temu-muted">
-              凭证按登录账号各存一份：{status?.owner?.account_id || "当前账号"}
-              {status?.owner?.personal ? "（已绑定）" : "（未绑定）"}
-            </span>
+            {/* 账号 id（cust_xxx，邮箱哈希）和「已绑定/未绑定」都是内部状态：
+                用户看这行只想确认「换账号是不是另一套店铺」，给这句话就够 */}
+            <span className="temu-muted">凭证按登录账号各存一份：换账号看到的是另一套店铺</span>
           </div>
           <div className="temu-shop-status">
             <div>
@@ -3527,7 +3526,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <div>
                 <strong>还没绑定你的 Temu 店铺</strong>
                 <p>
-                  发布用的是当前登录账号名下的 access_token（{status?.owner?.account_id || "当前账号"}）。
+                  发布用的是当前登录账号名下的 access_token。
                   填一次就行，之后这个账号发商品只会进你自己的店铺，不会用别人的。
                 </p>
               </div>
