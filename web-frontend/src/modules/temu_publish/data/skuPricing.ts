@@ -2,12 +2,12 @@ import type { TemuDraftEntry } from "../types";
 import { yuanToCents } from "../utils/price.ts";
 
 /**
- * 变种级 SKU 字段：一条草稿里按变种单独定价 / 定库存 / 定尺寸重量 / 定货号。
+ * 变种级 SKU 字段：一条成品里按变种单独定价 / 定库存 / 定尺寸重量 / 定货号。
  *
  * 背景：衣服鞋包按尺码、箱包按款式，长宽高重量本来就不同；不同颜色库存也不同。
  * 「整条一个价、一个尺寸」只能应付单 SKU 商品。
  *
- * 存储：`{ 草稿id: { 变种key: {字段: 值} } }`，只存**改过**的字段；
+ * 存储：`{ 成品id: { 变种key: {字段: 值} } }`，只存**改过**的字段；
  * 没设的字段回落整条值，所以不用每个都填。
  *
  * ⚠️ 取值只走 `resolveSkuField` 这一个函数（批量组装 / 单件预填 / 批量编辑显示
@@ -28,10 +28,10 @@ export type SkuField =
 /** 一个变种改过的字段：字段 → 值（空串 = 取消覆盖，回落整条） */
 export type SkuVariantFields = Partial<Record<SkuField, string>>;
 
-/** 一条草稿的变种覆盖：变种 key → 改过的字段 */
+/** 一条成品的变种覆盖：变种 key → 改过的字段 */
 export type SkuFieldMap = Record<string, SkuVariantFields>;
 
-/** 所有草稿的变种覆盖：草稿 id → 变种覆盖 */
+/** 所有成品的变种覆盖：成品 id → 变种覆盖 */
 export type SkuFieldStore = Record<string, SkuFieldMap>;
 
 /** 本机存储 key（按账号 scope 后使用） */
@@ -112,7 +112,7 @@ export function variantLabel(color?: string | null, size?: string | null): strin
 }
 
 /**
- * 一条草稿有哪些变种（顺序稳定：先颜色后尺码，和发布时的生成顺序一致）。
+ * 一条成品有哪些变种（顺序稳定：先颜色后尺码，和发布时的生成顺序一致）。
  *
  * 优先用 `variants`（AI/POD 导出的真实变种列表）；没有就按
  * `spec_values_1 × spec_values_2` 铺组合；再没有就用单值字段。

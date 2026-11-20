@@ -97,9 +97,9 @@ const FAILURE_KEY = "temu_publish_failures";
 const MAX_FAILURES = 100;
 
 /**
- * 草稿 → Temu 类目路径。
+ * 成品 → Temu 类目路径。
  *
- * `auto: true` 表示这条是**按标题自动匹配**出来的（入草稿库时补的），不是人工选过的：
+ * `auto: true` 表示这条是**按标题自动匹配**出来的（入成品库时补的），不是人工选过的：
  * 只是「大概方向」，发布前最好扫一眼。人工选过的 memo 不带这个标记。
  */
 export type DraftCategoryMemo = {
@@ -134,7 +134,7 @@ export const localStore = {
       return {};
     }
   },
-  /** 记住某条草稿的类目：下次「用于发布」直接选中，草稿库也能显示路径。 */
+  /** 记住某条成品的类目：下次「用于发布」直接选中，成品库也能显示路径。 */
   rememberDraftCategory: (draftId: string, path: TemuCategory[], options?: { auto?: boolean }) => {
     if (!draftId || !path.length) return;
     const next = { ...localStore.draftCategories() };

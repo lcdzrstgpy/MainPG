@@ -24,7 +24,7 @@ const MODES: Array<{ key: Mode; label: string; hint: string }> = [
 ];
 
 type Props = {
-  /** 勾选的草稿 */
+  /** 勾选的成品 */
   entries: TemuDraftEntry[];
   /** 现有图片覆盖（entry.id → 图片列表） */
   imageEdits: Record<string, string[]>;
@@ -225,13 +225,13 @@ export function TemuBatchImagePage({ entries, imageEdits, onSave, onClose }: Pro
           <label className="temu-img-edit-radio">
             <input type="radio" checked readOnly /> 产品轮播图
           </label>
-          <label className="temu-img-edit-radio is-off" title="当前草稿只有轮播图，没有 SKC 图/素材图/变种预览图">
+          <label className="temu-img-edit-radio is-off" title="当前成品只有轮播图，没有 SKC 图/素材图/变种预览图">
             <input type="radio" disabled /> 产品SKC图
           </label>
-          <label className="temu-img-edit-radio is-off" title="当前草稿只有轮播图">
+          <label className="temu-img-edit-radio is-off" title="当前成品只有轮播图">
             <input type="radio" disabled /> 产品素材图
           </label>
-          <label className="temu-img-edit-radio is-off" title="当前草稿只有轮播图">
+          <label className="temu-img-edit-radio is-off" title="当前成品只有轮播图">
             <input type="radio" disabled /> 变种预览图
           </label>
         </div>

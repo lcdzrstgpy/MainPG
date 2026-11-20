@@ -36,7 +36,7 @@ test("发布商品：提交前必须人工确认（外部副作用，不允许�
   assert.doesNotMatch(publishFlow, /window\.confirm\(/);
 });
 
-test("发布商品：检查必填与发布复用同一份草稿，避免两条路径走偏", () => {
+test("发布商品：检查必填与发布复用同一份成品，避免两条路径走偏", () => {
   assert.match(page, /const composeDraft = async \(\): Promise<TemuGoodsDraft> =>/, "缺少 composeDraft");
   // 校验必填 / 发布两条入口都必须走同一个 composeDraft（请求体预览是排障用的，已从界面移除）
   const composeCalls = page.match(/await composeDraft\(\)/g) ?? [];
@@ -48,7 +48,7 @@ test("发布商品：检查必填与发布复用同一份草稿，避免两条�
   assert.ok(!/提交为 [a-zA-Z]/.test(page), "「提交为 xxx」这类裸字段说明不许出现在界面上");
   assert.ok(!page.includes("敏感货"), "统一使用「敏感产品」这一正式称谓");
   assert.match(page, /<strong>敏感产品<\/strong>/);
-  assert.ok(!readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8").includes("发布 payload"), "草稿库不许出现 payload 术语");
+  assert.ok(!readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8").includes("发布 payload"), "成品库不许出现 payload 术语");
   const explain = readFileSync(new URL("../data/errorExplain.ts", import.meta.url), "utf8");
   assert.ok(!/去修这条|别手填|瞎猜|白搭/.test(explain), "失败提示用正式表述，不用口语");
   assert.ok(!explain.includes("人话"), "注释/文案不再用「人话」这种表述");
@@ -73,7 +73,7 @@ test("发布商品：接口指向 /publish，按钮提交中要禁用", () => {
   assert.match(page, /提交发布/);
 });
 
-test("草稿库「用于发布」：页签已打开时也要生效（事件通道，不能只靠挂载读 storage）", () => {
+test("成品库「用于发布」：页签已打开时也要生效（事件通道，不能只靠挂载读 storage）", () => {
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
   const shell = readFileSync(new URL("../../../app/layout/WorkspaceShell.tsx", import.meta.url), "utf8");
 
@@ -83,7 +83,7 @@ test("草稿库「用于发布」：页签已打开时也要生效（事件通�
   assert.match(shell, /window\.dispatchEvent\(new CustomEvent\(TEMU_PUBLISH_PREFILL_EVENT, \{ detail: prefill \}\)\);/);
   const dispatchAt = shell.indexOf("new CustomEvent(TEMU_PUBLISH_PREFILL_EVENT");
   // 注意：WorkspaceShell 里「创建产品」也会调 openModule("temu_publish")，
-  // 所以要从草稿库 onUseDraft 那段往后找，不能用 indexOf 取第一个。
+  // 所以要从成品库 onUseDraft 那段往后找，不能用 indexOf 取第一个。
   const useDraftAt = shell.indexOf("onUseDraft={(prefill) =>");
   const openAt = shell.indexOf('openModule("temu_publish")', useDraftAt);
   assert.ok(dispatchAt > 0 && openAt > dispatchAt, "事件必须在 openModule 之前广播，否则首次挂载会漏");
@@ -95,15 +95,15 @@ test("草稿库「用于发布」：页签已打开时也要生效（事件通�
   assert.match(page, /title: prefill\.title \|\| current\.title,/);
   assert.match(page, /carousel: \(prefill\.images \|\| \[\]\)\.join\("\\n"\) \|\| current\.carousel,/);
   // 预填的读取+清空必须在 setState updater 之外：updater 在 StrictMode 下跑两次，
-  // 写进 updater 里第二次就拿到 null，草稿的尺码/价格全落不到 SKU 行（2026-10-26 实测踩到）。
+  // 写进 updater 里第二次就拿到 null，成品的尺码/价格全落不到 SKU 行（2026-10-26 实测踩到）。
   assert.match(
     page,
     /const prefill = prefillRef\.current;\n\s*prefillRef\.current = null;/,
     "prefillRef 不能在 setRows 的 updater 里读写",
   );
-  // 变种行也要在 updater 外面按草稿算好（换草稿整表重建，不留上一条的行）
-  // 而且按草稿里的每个 SKU 各铺一行，不是只铺第一行
-  assert.match(page, /const seedRows = prefill \? buildRowsFromPrefill\(prefill, whId\) : null;/, "带入草稿要整表重建变种行");
+  // 变种行也要在 updater 外面按成品算好（换成品整表重建，不留上一条的行）
+  // 而且按成品里的每个 SKU 各铺一行，不是只铺第一行
+  assert.match(page, /const seedRows = prefill \? buildRowsFromPrefill\(prefill, whId\) : null;/, "带入成品要整表重建变种行");
   assert.match(page, /if \(seedRows && seedRows\.length\) return seedRows;/);
 });
 
@@ -145,7 +145,7 @@ test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", ()
   // 素材图不能沿用 3:4 轮播首图：上传轮播时顺手另裁一张 1:1 填进 material
   assert.match(page, /if \(slot === "carousel" && apparel && !form\.material\.trim\(\) && files\[0\]\) \{/);
   assert.match(page, /const materialUrl = pickUploadedUrl\(await temuPublishApi\.uploadImage\(square, leaf\?\.catId\)\);/);
-  // 草稿带入的竖图没法自动转（alicdn 取不到 canvas 像素），必须在提交前说清楚
+  // 成品带入的竖图没法自动转（alicdn 取不到 canvas 像素），必须在提交前说清楚
   assert.match(page, /服饰类目的产品素材图要单独填一张 1:1（宽 ≥800px）的方图/);
   // 界面文案也要跟着类目变，不能写着 1:1 实际裁 3:4
   // （2026-11-06 改版：轮播的说明收进上传位，写成一行「3:4 竖图（≥1344×1792）」，
@@ -157,7 +157,7 @@ test("服饰类目：轮播裁 3:4（≥1340×1785），素材图单独 1:1", ()
 });
 
 test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () => {
-  // 批量发布走的是草稿库里的 AI/POD 成品图，不经过发布页的上传流程。
+  // 批量发布走的是成品库里的 AI/POD 成品图，不经过发布页的上传流程。
   // 以前这里「原图直接传 + 素材图 = 轮播首图」，发服饰类目必撞两条校验。
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
   // 和单件发布共用同一套尺寸常量/裁切函数，不能各写一份
@@ -172,18 +172,18 @@ test("批量发布也按类目裁图片：服饰 3:4 + 素材图单独 1:1", () 
   assert.match(batch, /material = pickUrl\(await temuPublishApi\.uploadImage\(await toSquareDataUrl\(firstRaw\), leaf\)\);/);
   assert.match(batch, /material_image_url: material,/);
   assert.doesNotMatch(batch, /material_image_url: carousel\[0\],/);
-  // 一批草稿共用一个类目：查询按 catId 缓存，30 件不会打 30 次网关
+  // 一批成品共用一个类目：查询按 catId 缓存，30 件不会打 30 次网关
   assert.match(batch, /const apparelCache = new Map<number, Promise<boolean>>\(\);/);
   assert.match(batch, /const cached = apparelCache\.get\(catId\);/);
-  // 必须把来源草稿 id 带上去：后端发布成功后靠它把草稿移出草稿库，
-  // 以前没带 → 「发成功了但刷新草稿还在」，同一件商品很容易再发一遍
+  // 必须把来源成品 id 带上去：后端发布成功后靠它把成品移出成品库，
+  // 以前没带 → 「发成功了但刷新成品还在」，同一件商品很容易再发一遍
   assert.match(batch, /draft_id: prefill\.draftId \?\? "",/);
   assert.match(batch, /category_names: templatePath\.map\(\(item\) => item\.catName\)\.filter\(Boolean\),/);
 });
 
-test("草稿带入的图也按类目裁比例（不是只有手动上传才裁）", () => {
+test("成品带入的图也按类目裁比例（不是只有手动上传才裁）", () => {
   // 以前只有 uploadTo（手动上传）走裁切，composeDraft 里的 resolveImage 是原图直传 ——
-  // 从草稿库带入的图全靠原图比例碰运气，服饰类目必挂。
+  // 从成品库带入的图全靠原图比例碰运气，服饰类目必挂。
   assert.match(page, /const resolveImage = async \(\s*url: string,\s*cateId\?: number,\s*shape\?: \{ width: number; height: number \},\s*\): Promise<string> => \{/);
   // 缓存 key 必须带比例：同一张图先按 1:1 传过、改类目后按 3:4 传，不能直接还回 1:1 的地址
   assert.match(page, /const cacheKey = shape \? `\$\{text\}\|\$\{shape\.width\}x\$\{shape\.height\}` : text;/);
@@ -261,7 +261,7 @@ test("发布页布局：分区顺序对齐ERP + 右侧检查清单 + 模板按�
   assert.match(page, /loadJsonLocal<TemuCategory\[\]>\(`\$\{RECENT_CATEGORY_KEY\}:\$\{storageScope\(\)\}`, \[\]\)/);
 });
 
-test("发布页：轮播/外包装/详情都能看到缩略图（草稿库带来的本地图也要能显示）", () => {
+test("发布页：轮播/外包装/详情都能看到缩略图（成品库带来的本地图也要能显示）", () => {
   const strip = readFileSync(
     new URL("../components/TemuImageStrip.tsx", import.meta.url),
     "utf8",
@@ -298,7 +298,7 @@ test("发布页：轮播/外包装/详情都能看到缩略图（草稿库带来
   assert.equal(uses.length, 1, `三组图片共用一处预览条，实际 ${uses.length}`);
 });
 
-test("SKU 面板：公共设置跟随第一行，生成不会用默认值盖掉草稿带入的价格", () => {
+test("SKU 面板：公共设置跟随第一行，生成不会用默认值盖掉成品带入的价格", () => {
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   // 公共值默认镜像第一行；用户手改后就停止同步
   assert.match(panel, /const \[batchTouched, setBatchTouched\] = useState\(false\);/);
@@ -306,7 +306,7 @@ test("SKU 面板：公共设置跟随第一行，生成不会用默认值盖掉�
   // 生成时「公共值 or 第一行已有值」兜底，否则 10 / 0.2 / 20×15×3 会覆盖带入的库存与尺寸
   assert.match(panel, /batch\.supplierPrice\.trim\(\) \|\| base\?\.supplierPrice \|\| ""/);
   assert.match(panel, /batch\.weightG\.trim\(\) \|\| base\?\.weightG \|\| ""/);
-  // 尺码列表提升到页面持有（草稿带入 specValue2 后可一键生成），面板不能自己再存一份
+  // 尺码列表提升到页面持有（成品带入 specValue2 后可一键生成），面板不能自己再存一份
   assert.doesNotMatch(panel, /const \[sizesText, setSizesText\] = useState/);
   assert.match(page, /sizesText=\{form\.sizesText\}/);
   // 规格框优先用「全部取值」（11 个颜色都要列出来），没有才退回单个值
@@ -352,8 +352,8 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
 });
 
 test("本机留档：表单/变种行/最近分类按登录账号分开存，换账号不串数据", () => {
-  // 同一台电脑换账号登录时，不能把上一个人的草稿、变种、分类带出来。
-  // storageScope 已抽到 data/attrPicksStore.ts（草稿库也要用同一份账号作用域）
+  // 同一台电脑换账号登录时，不能把上一个人的成品、变种、分类带出来。
+  // storageScope 已抽到 data/attrPicksStore.ts（成品库也要用同一份账号作用域）
   const store = readFileSync(new URL("../data/attrPicksStore.ts", import.meta.url), "utf8");
   assert.match(store, /export function storageScope\(\): string \{/);
   assert.match(store, /return account\?\.user_id \|\| "local";/);
@@ -391,7 +391,7 @@ test("变种：多颜色 = 多个 SKC，按颜色分组提交", () => {
   assert.match(page, /^      skcs,$/m);
 });
 
-test("草稿库：批量发布要套模板、逐条提交、失败进记录", () => {
+test("成品库：批量发布要套模板、逐条提交、失败进记录", () => {
   const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
@@ -422,13 +422,13 @@ test("价格全链路用「元」，只在提交前换成分", () => {
   const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
 
-  // 草稿库带入发布页：原样带「元」，不再 ×100
-  // 草稿价先圆整到「分」再带入：12.345 会在提交时被「最多两位小数」拦住
+  // 成品库带入发布页：原样带「元」，不再 ×100
+  // 成品价先圆整到「分」再带入：12.345 会在提交时被「最多两位小数」拦住
   assert.match(library, /function moneyText\(value: number \| string \| null \| undefined\): string \{/);
   assert.match(library, /return String\(Math\.round\(amount \* 100\) \/ 100\);/);
   assert.match(library, /supplierPrice: moneyText\(entry\.declared_price\)/);
   assert.match(library, /suggestedPrice: moneyText\(entry\.suggested_price\)/);
-  assert.doesNotMatch(library, /yuanToCents/, "草稿库不该再做元→分换算");
+  assert.doesNotMatch(library, /yuanToCents/, "成品库不该再做元→分换算");
 
   // 发布页：元 → 分只在组装 payload 时发生，换算函数只有一份（utils/price.ts）
   const price = readFileSync(new URL("../utils/price.ts", import.meta.url), "utf8");
@@ -472,10 +472,10 @@ test("本机老数据（价格存的是分）升级后自动换成元，且只�
   );
 });
 
-test("草稿库站点列显示类目路径：选过的优先、其次草稿自带、最后提示", () => {
+test("成品库站点列显示类目路径：选过的优先、其次成品自带、最后提示", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  // 取值顺序：本机记忆（人工/自动）→ 草稿自带 category_name → 提示去发布页选
+  // 取值顺序：本机记忆（人工/自动）→ 成品自带 category_name → 提示去发布页选
   assert.match(library, /function siteCategoryLabel\(/);
   assert.match(library, /const hit = memo\[entry\.id\];/);
   assert.match(library, /if \(hit\?\.label\) return hit\.auto \? `自动 · \$\{hit\.label\}` : hit\.label;/);
@@ -485,16 +485,16 @@ test("草稿库站点列显示类目路径：选过的优先、其次草稿自�
   assert.match(library, /draftId: entry\.id,/);
   assert.match(library, /categoryPath: memo\?\.\[entry\.id\]\?\.path,/);
 
-  // 发布页选完类目回写给草稿；下次带入直接套用
+  // 发布页选完类目回写给成品；下次带入直接套用
   assert.match(page, /prefillDraftId\.current = prefill\.draftId \|\| "";/);
   assert.match(page, /localStore\.rememberDraftCategory\(prefillDraftId\.current, path\);/);
   assert.match(page, /void applyCategory\(prefill\.categoryPath\);/);
 
-  // 批量发布用的是「这一条所属模板」的类目，也要记到草稿上
+  // 批量发布用的是「这一条所属模板」的类目，也要记到成品上
   assert.match(library, /localStore\.rememberDraftCategory\(entry\.id, itemTemplate\.categoryPath\);/);
 });
 
-test("草稿库：编辑在上/用于发布在下，用于发布要先确认基础信息", () => {
+test("成品库：编辑在上/用于发布在下，用于发布要先确认基础信息", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
   // 两个按钮的位置互换：编辑在前，用于发布在后。
@@ -505,8 +505,8 @@ test("草稿库：编辑在上/用于发布在下，用于发布要先确认基�
     "操作列里「编辑」应排在「用于发布」前面",
   );
 
-  // 「编辑」直接带这条草稿进发布页（草稿库小弹窗改不了类目/属性/图片）
-  assert.match(library, /title="带这条草稿进发布页，改完所有信息后再提交"/);
+  // 「编辑」直接带这条成品进发布页（成品库小弹窗改不了类目/属性/图片）
+  assert.match(library, /title="将该成品带入发布页，完善信息后提交"/);
   assert.match(library, /onClick=\{\(\) => onUseDraft\(entryPrefill\(entry, categoryMemo, attrPrefills, imageEdits, skuFields\)\)\}/);
 
   // 点「用于发布」不再直接带入：先弹确认
@@ -570,8 +570,8 @@ test("标题自动匹配类目：防抖匹配、没手动选过才自动套用",
 
 test("属性自动加载的恢复链：settings 拉挂要静默重试，属性补拉失败要允许再试", () => {
   // 自动匹配被 status.configured.ready 门控：settings 在进页面那一刻失败
-  // （后端刚重启/网络抖动）时 status 停在 null，没有重试的话草稿库点「编辑」
-  // 带入的没记忆过类目的草稿永远不触发属性加载，界面像「点了没反应」。
+  // （后端刚重启/网络抖动）时 status 停在 null，没有重试的话成品库点「编辑」
+  // 带入的没记忆过类目的成品永远不触发属性加载，界面像「点了没反应」。
   assert.match(page, /missed\.push\("店铺凭证"\);\n {10,}\/\/ 店铺凭证没取到/);
   assert.match(page, /for \(const delay of \[2000, 5000, 10000\]\)/);
   assert.match(page, /const fresh = await temuPublishApi\.settings\(\);/);
@@ -584,23 +584,23 @@ test("属性自动加载的恢复链：settings 拉挂要静默重试，属性�
   );
 });
 
-test("换草稿：上一条商品的类目和推荐列表不能留在新商品上", () => {
-  // 从草稿带入但没有存过类目时，清空并重新按标题匹配
+test("换成品：上一条商品的类目和推荐列表不能留在新商品上", () => {
+  // 从成品带入但没有存过类目时，清空并重新按标题匹配
   assert.match(page, /} else \{\n {4,}\/\/ 上一条商品的类目\/属性也必须清掉/);
   assert.match(page, /categoryTouchedRef\.current = false;\n {4,}setCategoryPath\(\[\]\);/);
   assert.match(page, /setTitleMatches\(\[\]\);/);
-  // 进页面时不能直接顶「最近用过的类目」：带草稿进来要按草稿走
+  // 进页面时不能直接顶「最近用过的类目」：带成品进来要按成品走
   assert.match(page, /const \[categoryPath, setCategoryPath\] = useState<TemuCategory\[\]>\(initialCategoryPath\);/);
   assert.match(page, /function initialCategoryPath\(\): TemuCategory\[\]/);
   assert.match(page, /return prefill\?\.categoryPath\?\.length \? prefill\.categoryPath : \[\];/);
 });
 
-test("推荐列表按当前商品重算：记住过类目的草稿也要换掉上一条的推荐", () => {
+test("推荐列表按当前商品重算：记住过类目的成品也要换掉上一条的推荐", () => {
   // 清推荐 + 重新触发匹配排在「有没有存过类目」判断之前，两条分支都会走
   const clearAt = page.indexOf("setTitleMatches([]);\n    setMatchSeq");
-  assert.ok(clearAt > 0, "换草稿时先清推荐列表并触发重算");
+  assert.ok(clearAt > 0, "换成品时先清推荐列表并触发重算");
   const branchAt = page.indexOf("if (prefill.categoryPath?.length) {");
-  assert.ok(branchAt > clearAt, "清推荐要早于类目分支，否则记住过类目的草稿会留着上一条的推荐");
+  assert.ok(branchAt > clearAt, "清推荐要早于类目分支，否则记住过类目的成品会留着上一条的推荐");
   // 存过类目时只给推荐，不自动覆盖
   assert.match(page, /setTitleMatches\(merged\);\n {10}if \(categoryTouchedRef\.current\) return;/);
   // 也不能在匹配前就 return，否则刚说的「重算」永远不执行
@@ -618,7 +618,7 @@ test("变种行也落盘：刷新后价格/库存/尺寸不丢", () => {
   assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(rowsKey, rows\), 300\)/);
 });
 
-test("发布：同一条草稿 24 小时内重复提交要先二次确认", () => {
+test("发布：同一条成品 24 小时内重复提交要先二次确认", () => {
   assert.match(api, /publish: \(draft: TemuGoodsDraft, force = false\) =>/);
   assert.match(api, /\$\{BASE\}\/publish\$\{force \? "\?force=true" : ""\}/);
   // 后端 409 会带「重复提交：…」前缀，前端识别后弹确认，确认才带 force 再发
@@ -659,7 +659,7 @@ test("批量发布：勾完直接发，模板在弹窗里选（不用先去菜�
   assert.match(library, /setBatchSkipped\(\(current\) => \[\.\.\.current,/);
 });
 
-test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
+test("库存可以是 0：不拦不标红，但成品带入要保留 0", () => {
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
@@ -672,7 +672,7 @@ test("库存可以是 0：不拦不标红，但草稿带入要保留 0", () => {
   assert.match(panel, /: Number\(row\.stock\) === 0/);
   assert.match(panel, /is-empty-stock/);
   assert.match(panel, /placeholder="0 也可"/);
-  // 草稿带入：0 不再被当空丢掉
+  // 成品带入：0 不再被当空丢掉
   assert.match(library, /stock: numericText\(entry\.stock\),/);
 });
 
@@ -809,7 +809,7 @@ test("失败批量重试：勾选 → 清旧估填 → 回库自动勾选 → �
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
 
-  // 通道：清单走 sessionStorage（ids=有来源草稿的，titles 全带——深层条目要靠标题搜）
+  // 通道：清单走 sessionStorage（ids=有来源成品的，titles 全带——深层条目要靠标题搜）
   assert.match(types, /export const TEMU_LIBRARY_RETRY_KEY = "temu_library_retry_v1";/);
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_RETRY_KEY, JSON\.stringify\(\{ ids, titles \}\)\)/);
   // 只有失败行给勾选框；全选只作用于当前列表
@@ -1135,7 +1135,7 @@ test("图片张数上限在上传时就挡（外包装 6 张、轮播 10 张）"
   assert.match(page, /const IMAGE_LIMITS: Record<ImageSlot, number> = \{ carousel: 10, outer: 6, detail: 30 \};/);
   assert.match(page, /const exist = splitLines\(slotText\(slot\)\)\.length;/);
   assert.match(page, /if \(exist \+ files\.length > limit\) \{/);
-  // 提交前再兜一次（草稿带入 / 手填 URL 也要守上限）
+  // 提交前再兜一次（成品带入 / 手填 URL 也要守上限）
   assert.match(page, /if \(outerSource\.length > 6\) throw new Error\("外包装图片最多 6 张"\);/);
   assert.match(page, /if \(detailSource\.length > IMAGE_LIMITS\.detail\) \{/);
 });
@@ -1175,7 +1175,7 @@ test("产地/站外链接按 Temu 的格式约束", () => {
   assert.ok(page.includes("站外产品链接必须是 https:// 开头的地址"), "站外链接要校验 https");
 });
 
-test("草稿库改成服务端分页，30 条/页（不再一次拉 80 条）", () => {
+test("成品库改成服务端分页，30 条/页（不再一次拉 80 条）", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const apiSrc = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
 
@@ -1192,7 +1192,7 @@ test("草稿库改成服务端分页，30 条/页（不再一次拉 80 条）", 
   assert.doesNotMatch(library, /const pageSize = 50;/);
 });
 
-test("草稿库搜索防抖 + 页签切换回到第一页", () => {
+test("成品库搜索防抖 + 页签切换回到第一页", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
   assert.match(library, /const SEARCH_DEBOUNCE_MS = 300;/);
@@ -1204,7 +1204,7 @@ test("草稿库搜索防抖 + 页签切换回到第一页", () => {
   assert.match(library, /setFilter\(key\);/);
 });
 
-test("草稿库按发布 payload 把信息摆出来（类目/价格分/库存/尺寸/完整度）", () => {
+test("成品库按发布 payload 把信息摆出来（类目/价格分/库存/尺寸/完整度）", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
   // 完整度：缺类目/申报价/货号/重量/尺寸 会被点名
@@ -1240,27 +1240,27 @@ test("价格照常带入，但界面文案里不出现「推算」二字", () =>
   // 有价就算齐，不会因为「是算出来的」被判缺项
   assert.doesNotMatch(library, /declared_price_estimated\) missing\.push/);
 
-  // 措辞：四个文件（草稿库、发布页、批量发布、类型注释）都不许出现这两个字
+  // 措辞：四个文件（成品库、发布页、批量发布、类型注释）都不许出现这两个字
   for (const source of [library, page, batch, types]) {
     assert.doesNotMatch(source, /推算/, "界面文案里不应出现「推算」");
   }
 });
 
-test("草稿库区分「草稿自带分类」和「已选 Temu 类目」", () => {
+test("成品库区分「成品自带分类」和「已选 Temu 类目」", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  // 四态：发布页选过的 / 按标题自动匹配的 / 草稿自带（只是自由文本）/ 都没有
+  // 四态：发布页选过的 / 按标题自动匹配的 / 成品自带（只是自由文本）/ 都没有
   assert.match(library, /function categoryState\(/);
   assert.match(library, /const hit = memo\[entry\.id\];/);
   assert.match(library, /if \(hit\?\.label\) return hit\.auto \? "auto" : "picked";/);
   assert.match(library, /if \(entry\.category_name\) return "draft";/);
-  assert.match(library, /草稿分类：\$\{label\}/);
-  // 草稿自带分类用中性色，不当成错误；自动匹配用橙色提醒
+  assert.match(library, /成品分类：\$\{label\}/);
+  // 成品自带分类用中性色，不当成错误；自动匹配用橙色提醒
   assert.match(library, /state === "auto"/);
   assert.match(library, /\? "is-auto"/);
   assert.match(library, /state === "draft"/);
 
-  // 完整度只认「有 Temu 类目路径」：草稿自带的自由文本不是类目 id，发布时照样得选；
+  // 完整度只认「有 Temu 类目路径」：成品自带的自由文本不是类目 id，发布时照样得选；
   // 自动匹配出来的算「有」，但界面上标 auto 提醒确认
   assert.match(library, /if \(!categoryMemo\[entry\.id\]\?\.label\) missing\.push\("类目"\);/);
   assert.match(library, /title=\{\s*state === "picked"/);
@@ -1346,7 +1346,7 @@ test("发下一条：只清本商品特有的内容，类目/属性/运费/仓�
     assert.ok(!body.includes(keep), `「发下一条」不该清掉共用设置：${keep}`);
   }
 
-  // 上一条草稿的预填数据要一起清：留着会被「rows 为空就消费 prefillRef」重新填回来
+  // 上一条成品的预填数据要一起清：留着会被「rows 为空就消费 prefillRef」重新填回来
   assert.match(page, /prefillRef\.current = null;\s*prefillDraftId\.current = "";\s*setPrefillInfo\(null\);/);
 
   // 标题清空后不能被自动匹配把已选类目冲掉
@@ -1554,8 +1554,8 @@ test("同事反馈的三点：属性落盘、带入即检查并一键修正、�
   assert.match(attrStore, /if \(Number\(legacy\?\.catId \?\? 0\) === catId && legacy\?\.picks && typeof legacy\.picks === "object"\) \{/);
   // 写：按时间裁剪，别让本地存储无限长
   assert.match(attrStore, /export const ATTR_PICKS_HISTORY_MAX = 20;/);
-  // 历史只在「用户自己动过属性下拉」时才写：自动填/草稿估填铺的值写进历史，
-  // 等于教同类目以后都这么填 —— 一条没改过的草稿就能污染整个类目
+  // 历史只在「用户自己动过属性下拉」时才写：自动填/成品估填铺的值写进历史，
+  // 等于教同类目以后都这么填 —— 一条没改过的成品就能污染整个类目
   assert.match(page, /const picksTouchedRef = useRef\(false\);/);
   assert.match(page, /if \(picksTouchedRef\.current\) \{\s*\n\s*saveAttrPicksHistory\(scope, leafCatId, attrPicks\);/);
   assert.match(page, /const handleAttributePicksChange = \(next: Record<number, AttrPick>\) => \{\s*\n\s*picksTouchedRef\.current = true;/);
@@ -1632,7 +1632,7 @@ test("批量发布：没有产品模板也能现场配类目+全量属性，直�
   assert.match(library, /initialPath=\{batchCommonCategory\}/);
   assert.match(library, /initialPicks=\{batchCommonPicks\}/);
   assert.match(library, /const batchCommonPicks = useMemo\(\(\) => \{/);
-  // 整批草稿同一个叶子类目时预填，省一次搜索
+  // 整批成品同一个叶子类目时预填，省一次搜索
   assert.match(library, /const batchCommonCategory = useMemo\(\(\) => \{/);
   // 产品模板和现场配置二选一：模板优先，没有就用现场配出来的临时模板
   assert.match(
@@ -1666,14 +1666,14 @@ test("批量发布：没有产品模板也能现场配类目+全量属性，直�
   assert.match(manual, /if \(!configReady\) \{\s*\n\s*onChange\(null\);/);
 });
 
-test("入草稿库时按标题自动匹配 Temu 类目（标 auto、不覆盖人工选的）", () => {
+test("入成品库时按标题自动匹配 Temu 类目（标 auto、不覆盖人工选的）", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
   // 限流：一次最多 24 条、并发 3，别把网关打爆
   assert.match(library, /const AUTO_LIMIT = 24;/);
   assert.match(library, /const AUTO_CONCURRENCY = 3;/);
 
-  // 只补「还没有类目记忆」的草稿 —— 人工选过的绝不能被自动匹配覆盖
+  // 只补「还没有类目记忆」的成品 —— 人工选过的绝不能被自动匹配覆盖
   assert.match(library, /\.filter\(\(entry\) => !categoryMemo\[entry\.id\]\?\.label\)/);
   // 标题太短的没意义，跳过
   assert.match(library, /\.filter\(\(entry\) => \(entry\.title \|\| entry\.subtitle \|\| ""\)\.trim\(\)\.length >= 8\)/);
@@ -1702,11 +1702,11 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   );
   assert.ok(effect.length > 0, "expected autofill effect");
   assert.match(effect, /if \(autoFilledCatRef\.current === leafCatId\) return;/);
-  // 草稿库带进来的估填值先铺上（只铺空位），再把合并后的 base 交给自动填
+  // 成品库带进来的估填值先铺上（只铺空位），再把合并后的 base 交给自动填
   assert.match(effect, /const carried = carriedAttrPicksRef\.current;/);
   // 带进来的属性必须跟当前叶子类目对得上才铺：不同类目 pid 完全不同，
   // 铺错等于给 Temu 塞一堆不存在的属性。
-  // 对上类目还不够：草稿存的是「估填那一刻」的 vid，Temu 调过属性表之后就查不到了 ——
+  // 对上类目还不够：成品存的是「估填那一刻」的 vid，Temu 调过属性表之后就查不到了 ——
   // 原样铺进去会变成「下拉框空白却算已填」，本地校验放行、提交被拒
   // 「请求的内容不存在或已被删除」，所以必须再按当前属性表 prune 一遍。
   assert.match(effect, /if \(carried && carried\.catId && carried\.catId === leafCatId\) \{/);
@@ -1714,7 +1714,7 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   assert.match(effect, /base = \{ \.\.\.pruned\.picks, \.\.\.attrPicksRef\.current \};/);
   assert.match(effect, /setStaleAttrNames\(pruned\.dropped\);/);
   assert.match(effect, /runAttributeAutofill\(base, leafCatId\);/);
-  // 清空自动填时，「草稿库估了 N 项」这条提示也要一起撤
+  // 清空自动填时，「成品库估了 N 项」这条提示也要一起撤
   assert.match(page, /setCarriedAttrCount\(0\);/);
   // 依赖只跟 attributes：标题变了不能自动重跑（会把用户清空的值填回来）
   assert.match(effect, /\}, \[attributes\]\);/);
@@ -1736,11 +1736,11 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
 
   // ⑤ 提示条写明来源与需要人工确认的项
   assert.match(page, /className="temu-autofill-bar"/);
-  // 两个来源分开说：草稿库已经估好的、进页面后补填的
-  assert.match(page, /草稿库已按类目估了 <strong>\{carriedAttrCount\}<\/strong> 项属性/);
+  // 两个来源分开说：成品库已经估好的、进页面后补填的
+  assert.match(page, /成品库已按类目预填 <strong>\{carriedAttrCount\}<\/strong> 项属性/);
   // 失效项必须当场说出来并点名，不能等提交被 Temu 拒了才知道
   assert.match(page, /staleAttrNames\.length > 0/);
-  assert.match(page, /项草稿属性/);
+  assert.match(page, /项成品属性/);
   assert.match(page, /重新选/);
   assert.match(page, /本次补填 <strong>\{autoFill\.hits\.length\}<\/strong> 项/);
   assert.match(page, /describeAutoFill\(autoFill\.hits\)/);
@@ -1757,11 +1757,11 @@ test("产品属性自动填：同类目沿用上次填法 + 按标题匹配，�
   assert.match(autofill, /const PLACEHOLDER_VALUE =/);
 });
 
-test("草稿库不能标「可发」：产品属性草稿库不存，只能在发布页填", () => {
+test("成品库不能标「可发」：产品属性成品库不存，只能在发布页填", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  // 属性是 Temu 必填项，而草稿库根本没有属性数据（要选完叶子类目才知道要填哪些），
-  // 所以任何草稿都不可能「可直接发布」。原来那个「可发」是纯误导。
+  // 属性是 Temu 必填项，而成品库根本没有属性数据（要选完叶子类目才知道要填哪些），
+  // 所以任何成品都不可能「可直接发布」。原来那个「可发」是纯误导。
   assert.doesNotMatch(library, /is-ok">可发</);
   assert.match(library, /<span className="temu-ready is-ok">字段齐<\/span>/);
   assert.match(library, /<span className="temu-ready is-pending">属性待填<\/span>/);
@@ -1773,7 +1773,7 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
 
   // 表头也别再说「完整度」——那个词会被读成「填完了就能发」
   assert.doesNotMatch(library, />完整度</);
-  assert.match(library, /草稿字段\s*<\/th>/);
+  assert.match(library, /成品字段\s*<\/th>/);
 
   // 有缺项时的 tooltip 同样要提醒属性也要填
   assert.match(library, /另外产品属性也要在发布页填/);
@@ -1781,12 +1781,12 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
   // 勾了多条但类目不一致 → 必须说清原因，否则用户只看到类目是空的、以为坏了
   assert.match(library, /const batchCategoryConflict = useMemo\(\(\) => \{/);
   assert.match(library, /有 \$\{missing\} 条还没匹配到 Temu 类目，整批没法共用一套属性/);
-  assert.match(library, /所选草稿不属于同一叶子类目/);
+  assert.match(library, /所选成品不属于同一叶子类目/);
   assert.match(library, /\{batchCategoryConflict && \(/);
   // 只要有一条没类目就不预填：整批套一个类目会把那条塞错
   assert.match(library, /if \(paths\.some\(\(path\) => !path\?\.length\)\) return \[\];/);
 
-  // 判定函数本身不掺属性：草稿库拿不到属性数据，掺进去只会让每条都「缺」
+  // 判定函数本身不掺属性：成品库拿不到属性数据，掺进去只会让每条都「缺」
   const fn = library.slice(
     library.indexOf("function draftMissingFields("),
     library.indexOf("/** 尺寸/重量摘要"),
@@ -1794,19 +1794,19 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
   assert.doesNotMatch(fn, /属性/);
 });
 
-test("入草稿库就把产品属性估好，带入发布页直接用", () => {
+test("入成品库就把产品属性估好，带入发布页直接用", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
   // ① 只有拿到叶子类目才估：属性是按类目定义的，没有 catId 无从谈起
   assert.match(library, /const ATTR_ESTIMATE_LIMIT = 60;/);
   assert.match(library, /if \(!leaf\) return false;/);
   // 类目变了要重估；同类目「历史」变新了也要重估 —— 否则用户在发布页把属性改对了，
-  // 其他草稿还留着上次猜出来的值，用户会以为改一次全都跟着变
+  // 其他成品还留着上次猜出来的值，用户会以为改一次全都跟着变
   assert.match(library, /if \(!saved \|\| Number\(saved\.catId\) !== leaf\) return true;/);
   assert.match(library, /return Number\(saved\.historyAt \?\? 0\) !== readAttrPicksHistoryAt\(scope, leaf\);/);
   assert.match(library, /historyAt: readAttrPicksHistoryAt\(scope, leaf\),/);
 
-  // ② attrs 按 catId 缓存在内存：同类目 N 条草稿只打一次网关
+  // ② attrs 按 catId 缓存在内存：同类目 N 条成品只打一次网关
   assert.match(library, /const attrEstimateCacheRef = useRef\(new Map<number, TemuAttributes>\(\)\);/);
   // 拉不到不写结果（写了空值等于「这条永远不再试」）、也不缓存失败结果，
   // 但要记进 failedCat，否则「一直失败 + 一直重跑」会把网关打爆
@@ -1859,7 +1859,7 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
   assert.match(publish, /const diff = await reloadCategoryAttributes\(attributes\)\.catch\(/);
   assert.match(publish, /const detail = diff \? attributeDiffText\(diff\) : "";/);
   // 有差异 → 点名；没差异 → 直接说「重选也没用」，别让用户白试第三次
-  assert.match(publish, /Temu 后台改过这个类目的属性定义：\$\{detail\}/);
+  assert.match(publish, /Temu 卖家中心改过这个类目的属性定义：\$\{detail\}/);
   // 没差异 → 说明属性表没变，真凶在规格（无销售属性类目补的假规格）。
   // 提示必须把这条指出来，不能再让用户「等 1-2 分钟再刷」白等。
   assert.match(publish, /属性定义未发生变化/);
@@ -2014,13 +2014,13 @@ test("首屏只留必填：低频字段都收进「更多选项」折叠", () =>
   assert.ok(!page.includes("敏感货、定制）"), "折叠标题里不该再提敏感货/定制，它们已经平铺");
 });
 
-test("草稿库带了真规格就自动按多规格发，不用用户再勾", () => {
-  // 开关默认已勾上（2026-11-05 改）；但如果用户手动取消过、而草稿里明明带了「颜色=白」，
+test("成品库带了真规格就自动按多规格发，不用用户再勾", () => {
+  // 开关默认已勾上（2026-11-05 改）；但如果用户手动取消过、而成品里明明带了「颜色=白」，
   // 还按单 SKU 发，颜色就被吞了 —— 用户看到填了、发出去却没有，这才是卡点。
   assert.match(page, /function hasRealSpecValue\(prefill: TemuPublishPrefill\): boolean \{/);
   // 「默认」是单 SKU 的占位符，不能因为它把开关打开
   assert.match(page, /return !!text && text !== "默认";/);
-  // 在 applyPrefillMeta 里判断 —— 草稿入口（挂载态与事件态）都会经过它
+  // 在 applyPrefillMeta 里判断 —— 成品入口（挂载态与事件态）都会经过它
   const meta = page.slice(
     page.indexOf("function applyPrefillMeta(prefill: TemuPublishPrefill)"),
     page.indexOf("function hasRealSpecValue"),
@@ -2045,7 +2045,7 @@ test("库存默认 0（先按售罄建品，开卖前补）", () => {
   assert.match(page, /if \(!text \|\| !Number\.isFinite\(number\) \|\| number < 0\)/);
 });
 
-test("发布历史：成功与失败分开，成功过的草稿从草稿库消失", () => {
+test("发布历史：成功与失败分开，成功过的成品从成品库消失", () => {
   const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
   const apiTs = readFileSync(new URL("../api/temuPublishApi.ts", import.meta.url), "utf8");
   const modules = readFileSync(
@@ -2066,12 +2066,12 @@ test("发布历史：成功与失败分开，成功过的草稿从草稿库消�
   assert.match(apiTs, /publish-history\?/);
   assert.match(history, /temuPublishApi\.publishHistory\(/);
 
-  // 导航：草稿库 → 发布商品 → 发布历史
+  // 导航：成品库 → 发布商品 → 发布历史
   assert.match(modules, /id: "temu_publish_history"/);
   assert.match(modules, /children: \[temuDraftLibrary, temuPublish, temuPublishHistory\]/);
 
-  // 草稿库里那份「发布失败历史」抽屉已经搬走（避免两份失败列表）
-  assert.ok(!library.includes("发布失败历史"), "草稿库不该再有第二条失败列表");
+  // 成品库里那份「发布失败历史」抽屉已经搬走（避免两份失败列表）
+  assert.ok(!library.includes("发布失败历史"), "成品库不该再有第二条失败列表");
 });
 
 test("发布历史列表要「看得懂」：缩略图、类目名、价格、店铺、来源、搜索", () => {
@@ -2113,7 +2113,7 @@ test("老记录缺图时自动补一次（按商品 id 去店铺列表认）", (
   assert.match(apiTs, /publish-history\/backfill/);
 });
 
-test("草稿库改版：批量入口收敛成一个，选中后直接出快捷动作", () => {
+test("成品库改版：批量入口收敛成一个，选中后直接出快捷动作", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const bar = readFileSync(new URL("../components/TemuDraftBulkBar.tsx", import.meta.url), "utf8");
 
@@ -2121,7 +2121,7 @@ test("草稿库改版：批量入口收敛成一个，选中后直接出快捷�
   assert.match(library, /<header className="temu-library-head">/);
   assert.match(library, /className=\{`temu-library-stat\$/);
   assert.match(library, /setFilter\(key\);/);
-  // 发布历史和创建产品都在头部：发过的商品已经不在草稿库里，得留个入口回看
+  // 发布历史和创建产品都在头部：发过的商品已经不在成品库里，得留个入口回看
   assert.match(library, /onOpenHistory/);
   assert.match(library, /创建产品\s*<\/button>/);
 
@@ -2161,7 +2161,7 @@ test("生成变种是「补齐组合」，不是重建表格", () => {
   assert.doesNotMatch(panel, /价格单位分/);
 });
 
-test("草稿库的备注/删除用应用内弹窗，不用 window.prompt / confirm", () => {
+test("成品库的备注/删除用应用内弹窗，不用 window.prompt / confirm", () => {
   // 原生弹窗样式跟工作台不搭；更麻烦的是 WebView 宿主可以禁用它，
   // 禁掉之后 prompt 返回 null、confirm 返回 false —— 功能静默失效，用户以为点坏了。
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
@@ -2181,8 +2181,8 @@ test("发布历史的复制按钮失败时要有提示，不能静默", () => {
   assert.match(history, /temu-history-toast/);
 });
 
-test("草稿带入要按 SKU 铺满变种表，不用用户再手填颜色/尺码", () => {
-  // 真实草稿的 source_variant_records 是「一个颜色一条」，每条有自己的价格/库存/图。
+test("成品带入要按 SKU 铺满变种表，不用用户再手填颜色/尺码", () => {
+  // 真实成品的 source_variant_records 是「一个颜色一条」，每条有自己的价格/库存/图。
   // 以前只铺第一行，进发布页还得手动补其余颜色 —— 数据本来就有。
   const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
@@ -2197,7 +2197,7 @@ test("草稿带入要按 SKU 铺满变种表，不用用户再手填颜色/尺�
   assert.match(page, /typeof variant\.stock === "number" \? String\(variant\.stock\)/);
   assert.match(page, /typeof variant\.price === "number" && variant\.price > 0/);
   assert.match(page, /thumbUrl: variant\.image \|\| merged\.thumbUrl/);
-  // 草稿库要把整列表传过去
+  // 成品库要把整列表传过去
   assert.match(library, /specValues1: entry\.spec_values_1 \?\? \[\]/);
   assert.match(library, /variants: entry\.variants \?\? \[\]/);
 });
@@ -2205,14 +2205,14 @@ test("草稿带入要按 SKU 铺满变种表，不用用户再手填颜色/尺�
 test("外链商品图不能带 Referer：alicdn 会 403，缩略图全是空白", () => {
   // 实测：https://cbu01.alicdn.com/... 不带 Referer 返回 200(145KB)，
   // 带上 http://127.0.0.1:5173/ 直接 403 —— 浏览器 <img> 默认会带 Referer，
-  // 于是草稿库缩略图、变种预览图、发布历史缩略图全部空白。
+  // 于是成品库缩略图、变种预览图、发布历史缩略图全部空白。
   const strip = readFileSync(new URL("../components/TemuImageStrip.tsx", import.meta.url), "utf8");
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
 
   for (const [name, source] of [
     ["图片条/变种缩略图", strip],
-    ["草稿库缩略图", library],
+    ["成品库缩略图", library],
     ["发布历史缩略图", history],
   ] as Array<[string, string]>) {
     assert.match(source, /referrerPolicy="no-referrer"/, `${name} 必须关掉 Referer`);
@@ -2223,7 +2223,7 @@ test("外链商品图不能带 Referer：alicdn 会 403，缩略图全是空白"
 });
 
 test("生成变种按钮：组合齐了就置灰，别让人对着一个点了没反应的按钮发呆", () => {
-  // 草稿带入时已经按 SKU 铺满，按钮再亮着就是纯噪音（用户会问「这有什么用」）。
+  // 成品带入时已经按 SKU 铺满，按钮再亮着就是纯噪音（用户会问「这有什么用」）。
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   const merge = readFileSync(new URL("../data/variantMerge.ts", import.meta.url), "utf8");
 
@@ -2303,7 +2303,7 @@ test("尺寸与重量按尺码绑定，不跟着「应用到全部」一把梭",
 });
 
 test("从成品库挑图：三个图片槽位都能直接挑，不用先存本地再上传", () => {
-  // 成品图本来就在草稿库里（AI 处理 / POD 成品），以前发布页只能本地上传或手填 URL，
+  // 成品图本来就在成品库里（AI 处理 / POD 成品），以前发布页只能本地上传或手填 URL，
   // 想复用同一款的其他图就得先下载再传一遍 —— 店小秘那套「AI 商品套图」就是省这一步。
   const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
   const picker = readFileSync(new URL("../components/DraftImagePicker.tsx", import.meta.url), "utf8");
@@ -2327,7 +2327,7 @@ test("从成品库挑图：三个图片槽位都能直接挑，不用先存本�
 });
 
 test("变种预览图可以改：本地 / 网络 / 引用轮播，且能按颜色批量套", () => {
-  // 用户问「能改变种信息的预览图吗」——之前 thumbUrl 只有草稿带入时才写，界面上没有入口。
+  // 用户问「能改变种信息的预览图吗」——之前 thumbUrl 只有成品带入时才写，界面上没有入口。
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
 
@@ -2358,7 +2358,7 @@ test("变种预览图可以改：本地 / 网络 / 引用轮播，且能按颜�
   assert.match(page, /carouselImages=\{splitLines\(form\.carousel\)\}/);
 });
 
-test("缩略图尺寸：变种行/草稿库/历史都要看得清，别被容器压成 34px", () => {
+test("缩略图尺寸：变种行/成品库/历史都要看得清，别被容器压成 34px", () => {
   // 实测反馈「图都太小了」：变种行的容器写死 34px，把 72px 的图压成小方块。
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
 
@@ -2366,7 +2366,7 @@ test("缩略图尺寸：变种行/草稿库/历史都要看得清，别被容器
   assert.match(css, /grid-template-columns: 72px 96px 62px/);
   assert.match(css, /\.is-console \.temu-variant-thumb \{[\s\S]{0,80}width: 68px;/);
   assert.match(css, /\.is-console \.temu-variant-row \.temu-img-thumb \{[\s\S]{0,80}width: 64px;/);
-  // 草稿库 76px 图 + 88px 列，历史 88px
+  // 成品库 76px 图 + 88px 列，历史 88px
   assert.match(css, /width: 76px;\n  height: 76px;/);
   assert.match(css, /\.temu-draft-table \.col-image \{[\s\S]{0,80}width: 88px;/);
   // 挑图弹窗网格放大
@@ -2511,7 +2511,7 @@ test("整页结构：批量编辑分组、图片子卡、发货时效整行、�
 });
 
 test("库存 0 能在提交前就被说清楚（不是提交成功后才提示）", () => {
-  // 实测：带入草稿 → 库存改 0 → 提交按钮照样可用（Temu 允许 0 库存建品），
+  // 实测：带入成品 → 库存改 0 → 提交按钮照样可用（Temu 允许 0 库存建品），
   // 但商品会落在「售罄/不可售」，而界面上原先只有 input 的 title 和提交后的 warning。
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
@@ -2847,7 +2847,7 @@ test("尺码表模板库：选模板填 ID / 建表辅助（行从变种带、�
   const dialog = readFileSync(new URL("../components/SizeChartDialog.tsx", import.meta.url), "utf8");
   const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
 
-  // 存储层：按账号隔离、增删改查、行草稿从尺码值生成
+  // 存储层：按账号隔离、增删改查、行成品从尺码值生成
   assert.match(store, /export const SIZE_CHART_TEMPLATES_KEY = "temu_size_chart_templates_v1";/);
   assert.match(store, /export function upsertSizeChartTemplate\(/);
   assert.match(store, /export function draftRowsFromSizes\(/);
@@ -3026,7 +3026,7 @@ test("发布确认弹窗带上价格/图片/运费/仓库，最后一眼能核�
   assert.ok(page.includes("轮播 ${splitLines(form.carousel).length}"));
 });
 
-test("成品库：失败过的草稿打标 + 只看失败过；历史点「去修这条」自动打开", () => {
+test("成品库：失败过的成品打标 + 只看失败过；历史点「去修这条」自动打开", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   const history = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
   const types = readFileSync(new URL("../types.ts", import.meta.url), "utf8");
@@ -3046,7 +3046,7 @@ test("成品库：失败过的草稿打标 + 只看失败过；历史点「去�
   assert.match(css, /\.temu-library-failed-toggle \{/);
   assert.match(css, /\.temu-draft-failed \{/);
 
-  // 历史 → 草稿库：记下目标草稿 id，草稿库读到后自动打开
+  // 历史 → 成品库：记下目标成品 id，成品库读到后自动打开
   assert.match(types, /export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";/);
   assert.match(history, /window\.sessionStorage\.setItem\(TEMU_LIBRARY_FOCUS_KEY, item\.draft_id\);/);
   assert.match(history, /\{item\.draft_id \? "去修这条" : "去成品库重发"\}/);
@@ -3064,7 +3064,7 @@ test("批量发布：先预检再提交，发不出去的默认跳过", () => {
   assert.match(precheck, /轮播图只有 \$\{carousel\.length\} 张（Temu 要求至少 3 张）/);
   assert.match(precheck, /产品模板里没有默认发货仓库/);
   assert.match(precheck, /库存 0（会以售罄状态创建）/);
-  // 口径和实际组装一致：变种模板的值优先于草稿自带值
+  // 口径和实际组装一致：变种模板的值优先于成品自带值
   assert.match(precheck, /variantTemplate\?\.colorsText \|\|/);
   assert.match(precheck, /variantTemplate\?\.batch/);
 
@@ -3142,7 +3142,7 @@ test("批量发布：中止后没发的要留着勾选，点一下就能接着�
 
 test("批量发布：切页/刷新前发起的那批还在跑，不许再开一批（防重复上架）", () => {
   // 真隐患：跑批途中切到别的模块，本页被卸载、batchState 归零；回来后用户以为没在跑，
-  // 再开一批 → 同一批草稿提交两次，店铺里多出重复商品（接口非幂等）。
+  // 再开一批 → 同一批成品提交两次，店铺里多出重复商品（接口非幂等）。
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
   // 跨实例标记：localStorage + 心跳，2 分钟没心跳视为已死（刷新会真的杀掉循环）
@@ -3155,7 +3155,7 @@ test("批量发布：切页/刷新前发起的那批还在跑，不许再开一�
   // 开批前查跨实例标记（本实例的 state 可能根本不知道那批）：点按钮就拦，别等填完模板
   assert.match(library, /const openBatchDialog = async \(\) => \{[\s\S]{0,400}batchRunningElsewhere\(\)/);
   assert.match(library, /if \(batchRunningElsewhere\(\)\) \{/);
-  assert.match(library, /并行提交会导致同一批草稿重复上架/);
+  assert.match(library, /并行提交会导致同一批成品重复上架/);
 
   // 开批写标记、每轮心跳、finally 一定要清
   assert.match(library, /writeBatchStore\(BATCH_RUN_KEY, String\(Date\.now\(\)\)\);/);
@@ -3220,7 +3220,7 @@ test("Temu 硬性限制本地先拦：标题 ≤500 字符、重量 2~1000000g",
   assert.match(precheck, /超出 Temu 允许范围/);
 });
 
-test("批量发布：没选模板时按每条草稿自己的类目分组，匹配上倒计时自动开跑", () => {
+test("批量发布：没选模板时按每条成品自己的类目分组，匹配上倒计时自动开跑", () => {
   // 用户诉求：「店小秘点一下就全上架，为什么我们不能」。
   // 店小秘的类目藏在「导入任务」里；我们做到更前一步：标题匹配 Temu 类目 → 找对应模板 → 自动跑。
   // 但必须**按条分组**：勾选的一批常横跨好几个类目，拿第一条的类目套整批 = 把化妆包发成托特包。
@@ -3238,7 +3238,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /const planBatchGroups = \(entries: TemuDraftEntry\[\]\) => \{/);
   assert.match(library, /return templateLeaf && String\(templateLeaf\.catId\) === leafCatId;/);
   assert.match(library, /template,\s*\n\s*categoryPath: bucket\.path,/);
-  // 没存模板的类目：用草稿自己的类目 + 估好的属性 + 店铺默认运费/仓库临时拼一份模板
+  // 没存模板的类目：用成品自己的类目 + 估好的属性 + 店铺默认运费/仓库临时拼一份模板
   assert.match(
     library,
     /const buildAutoTemplate = async \(\s*\n\s*group: BatchGroup,\s*\n\s*\): Promise<\{ template: ProductTemplate \| null; reason: string \}> => \{/,
@@ -3248,7 +3248,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /必填属性没估全（缺 \$\{missing\.slice\(0, 3\)\.join\("、"\)\}）/);
   assert.match(library, /这个店没有可用于批量发布的仓库（都被标成类型 3）/);
   assert.match(library, /const auto = await buildAutoTemplate\(group\);/);
-  assert.match(library, /已按草稿的类目\/属性自动填（属性是估的）/);
+  assert.match(library, /已按成品的类目\/属性自动填（属性是估的）/);
   // 拼不出模板的条目数要说出来（别让用户以为整批都发了）
   assert.match(library, /条没匹配到类目/);
   assert.match(library, /需手动配/);
@@ -3307,7 +3307,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /if \(!runnable\) \{\s*\n\s*setBatchState\(\{ running: false, text: "这批都有阻塞问题，先看下面的预检" \}\);/);
 });
 
-test("批量发布：属性按每条草稿自己的估值，不整组共用第一条", () => {
+test("批量发布：属性按每条成品自己的估值，不整组共用第一条", () => {
   const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
 
   // 自动拼的组模板只是「第一条的快照」；同组十几条材料/风格常常不一样，
@@ -3338,7 +3338,7 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
   assert.match(page, /选择批量编辑的信息/);
   assert.match(page, /onClick=\{\(\) => setActiveColumn\(column\)\}/);
   assert.match(page, /批量改/);
-  assert.match(page, /仅从当前表格中移除，不影响草稿本身/);
+  assert.match(page, /仅从当前表格中移除，不影响成品本身/);
   assert.match(page, /if \(value === ""\) delete merged\[key\];/);
   // 表头里绝不放输入框（之前标签+规则+输入框挤一行，糊成一团）
   assert.doesNotMatch(page, /temu-batch-edit-head-fill/);

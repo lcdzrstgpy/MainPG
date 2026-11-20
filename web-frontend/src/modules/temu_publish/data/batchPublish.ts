@@ -41,7 +41,7 @@ const createdSpecCache = new Map<
  *
  * Temu 对货号的字符集很窄（「请使用字母、数字和标点符号维护货号」，1000002），
  * 中文规格名（黑茶色-性价比版）拼进去会被整条拒掉。以前这里只删符号不删中文，
- * 批量发中文颜色的草稿必然失败 —— 同一个草稿在发布页发却能过，就是因为那边洗得更严。
+ * 批量发中文颜色的成品必然失败 —— 同一个成品在发布页发却能过，就是因为那边洗得更严。
  * 清洗后变空的片段由调用方用序号兜底，否则多个颜色会撞成同一个货号（ext_code 重复）。
  */
 function safeCode(value: string | undefined | null): string {
@@ -117,8 +117,8 @@ async function localDataUrl(path: string): Promise<string | null> {
 /**
  * 这个类目要不要尺码表 = 是不是服饰/量体类目（主图要 3:4 而不是 1:1）。
  *
- * 批量发布是「一批草稿共用一个产品模板类目」，所以按 catId 缓存一次即可，
- * 不然 30 件草稿要打 30 次同一个查询。查询失败按「不是服饰」处理：
+ * 批量发布是「一批成品共用一个产品模板类目」，所以按 catId 缓存一次即可，
+ * 不然 30 件成品要打 30 次同一个查询。查询失败按「不是服饰」处理：
  * 一次网关抖动不该让整批发布全挂。
  */
 const apparelCache = new Map<number, Promise<boolean>>();
@@ -143,10 +143,10 @@ function pickUrl(result: { imageUrl?: string; image_url?: string; url?: string }
 
 
 /**
- * 批量发布用的草稿组装：和发布页同一套规则，但不依赖页面状态。
+ * 批量发布用的成品组装：和发布页同一套规则，但不依赖页面状态。
  *
- * 需要「产品模板」提供分类/属性/运费/仓库/时效，因为草稿库里的 AI/POD 成品
- * 本身没有类目和属性；变种模板提供 颜色×尺码 与批量值，没套就用草稿自带的值。
+ * 需要「产品模板」提供分类/属性/运费/仓库/时效，因为成品库里的 AI/POD 成品
+ * 本身没有类目和属性；变种模板提供 颜色×尺码 与批量值，没套就用成品自带的值。
  */
 export async function buildDraftForPublish(
   prefill: TemuPublishPrefill,
@@ -162,9 +162,9 @@ export async function buildDraftForPublish(
   const leaf = categoryIds[categoryIds.length - 1];
 
   /**
-   * 属性值：**这条草稿自己估的那套**优先，模板里的只兜底。
+   * 属性值：**这条成品自己估的那套**优先，模板里的只兜底。
    *
-   * 自动拼的组模板是按「第一条草稿」的估值生成的一份快照（一次批量里同组十几条
+   * 自动拼的组模板是按「第一条成品」的估值生成的一份快照（一次批量里同组十几条
    * 桌布的材料/风格常常不一样）。整组共用一套 → 后面几条要么被判「属性不合法」，
    * 要么发出去属性是错的。所以每条都用自己的估值，pid 对不上类目时（pid 是类目维度的）
    * 一律不铺，退回模板。
@@ -182,12 +182,12 @@ export async function buildDraftForPublish(
   // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」）。提前拦，
   // 不然图全传完才被拒，批量里还看不出是哪一步的问题
   if (carouselSource.length < 3) {
-    throw new Error(`草稿轮播图不足 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
+    throw new Error(`成品轮播图不足 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
   }
   /**
    * 主图比例按类目走：服饰（= 必须有尺码表）3:4，其它 1:1。
    *
-   * 以前这里是「原图直接传」，靠草稿图恰好是方图蒙对；发服装类目必然撞
+   * 以前这里是「原图直接传」，靠成品图恰好是方图蒙对；发服装类目必然撞
    * 「服饰类目skc轮播图校验失败，应符合 3:4」。
    */
   const apparel = await isApparelCategory(leaf);
@@ -199,7 +199,7 @@ export async function buildDraftForPublish(
   if (apparel && !firstRaw) {
     throw new Error(
       "服饰类目的素材图须为独立的 1:1 方图，当前轮播图不是本地成品图（外链或图床地址），无法自动裁剪。" +
-        "请在草稿库更换为本地成品图，或在「发布商品」页单件提交。",
+        "请在成品库更换为本地成品图，或在「发布商品」页单件提交。",
     );
   }
   // 限并发：批量里每条都有十几张图，串行的话 30 条就是几百次排队往返
@@ -235,10 +235,10 @@ export async function buildDraftForPublish(
   );
 
   /**
-   * 规格值口径：变种模板 > 草稿里的**全部**规格值 > 单个值。
+   * 规格值口径：变种模板 > 成品里的**全部**规格值 > 单个值。
    *
-   * 草稿的 specValue1/2 只是「第一个值」（例如第一个颜色），整列表在
-   * specValues1/2 里。以前只读第一个值，多颜色的草稿批量发出去就只剩一个颜色 ——
+   * 成品的 specValue1/2 只是「第一个值」（例如第一个颜色），整列表在
+   * specValues1/2 里。以前只读第一个值，多颜色的成品批量发出去就只剩一个颜色 ——
    * 商品建出来了但少了几个变种，很难发现。发布页铺变种表用的就是整列表。
    */
   const colors = splitList(
@@ -309,13 +309,13 @@ export async function buildDraftForPublish(
       specCache.set(cacheKey, resolved);
       return resolved;
     }
-    // 该类目压根没有预设值（或模板里填的是自定义值）时才自建，避免每条草稿都建一遍
+    // 该类目压根没有预设值（或模板里填的是自定义值）时才自建，避免每条成品都建一遍
     if (options.length) {
       throw new Error(
         `「${name}」不是「${parentName}」的合法值：Temu 只认类目预设值`,
       );
     }
-    // 跨条目复用：同一批里「黑色」会出现在几十条草稿上，不复用就在规格库里堆一堆同名值
+    // 跨条目复用：同一批里「黑色」会出现在几十条成品上，不复用就在规格库里堆一堆同名值
     const shared = createdSpecCache.get(cacheKey);
     if (shared) {
       specCache.set(cacheKey, shared);
@@ -387,8 +387,8 @@ export async function buildDraftForPublish(
     outer_goods_url: /^https:\/\//i.test(prefill.sourceUrl ?? "") ? (prefill.sourceUrl ?? "") : "",
     properties,
     skcs,
-    // 来源草稿 id：后端发布成功后靠它把这条从草稿库移出，发布历史里也能显示来源。
-    // 批量发布以前没带，结果「发成功了但刷新草稿还在」，同一件商品很容易再发一次。
+    // 来源成品 id：后端发布成功后靠它把这条从成品库移出，发布历史里也能显示来源。
+    // 批量发布以前没带，结果「发成功了但刷新成品还在」，同一件商品很容易再发一次。
     draft_id: prefill.draftId ?? "",
     site_ids: [SITE_ID],
     size_template_ids: splitList((productTemplate.sizeTemplates ?? "").replace(/[\s,，]+/g, ",")).map(Number).filter((n) => n > 0),
@@ -472,18 +472,18 @@ export async function buildDraftForPublish(
   const sizeAxis = sizes.length > 0 && !!sizeParent && (saleIndex.has(sizeParent) || canCustomSpecs);
 
   if (!colorAxis && !sizeAxis) {
-    // 草稿有变种值、却发不出变种：要么模板缺父规格、要么类目不支持规格。
+    // 成品有变种值、却发不出变种：要么模板缺父规格、要么类目不支持规格。
     // 两种都不能静默吞成单 SKU —— 商品会建出来但变种没了，比报错难发现得多。
     if (colors.length > 0 || sizes.length > 0) {
       throw new Error(
         canCustomSpecs
           ? "产品模板缺少颜色/尺码父规格；未补齐时变种将被合并为单一 SKU，请补齐后重新提交"
-          : `该类目不支持颜色/尺码规格（最多 ${specDimLimit} 个规格维度），草稿中的变种值无法提交：请更换类目，或清除变种值后按单 SKU 提交`,
+          : `该类目不支持颜色/尺码规格（最多 ${specDimLimit} 个规格维度），成品中的变种值无法提交：请更换类目，或清除变种值后按单 SKU 提交`,
       );
     }
     if (saleIndex.size > 0) {
       throw new Error(
-        "草稿的规格值和类目预设值对不上（或产品模板缺少颜色/尺码父规格）：选一个变种模板再发",
+        "成品的规格值与类目预设值不匹配（或产品模板缺少颜色/尺码父规格）：选一个变种模板再发",
       );
     }
     // 一个变种值都没有：本来就是单 SKU 商品（桌布/亚麻布这类）
@@ -492,7 +492,7 @@ export async function buildDraftForPublish(
         .filter(Boolean)
         .join("-")
         .slice(0, 120) || "SKU-1";
-    // 单 SKU 也可能被「按变种改价」覆盖过（变种名就是草稿里那个规格值）
+    // 单 SKU 也可能被「按变种改价」覆盖过（变种名就是成品里那个规格值）
     skcs.push({
       ext_code: (safeCode(prefill.sku) || "SKC").slice(0, 120),
       preview_image_urls: [carousel[0]],

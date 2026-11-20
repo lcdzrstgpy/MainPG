@@ -101,7 +101,7 @@ export function categoryAnchorTexts(
 
 export type CategoryQuery = { text: string; kind: "anchor" | "dict" | "title" };
 
-/** 一条草稿的查询计划：锚定词 → 词典品类词 → 标题原文，三档轮转保底各一个，最多 3 个查询。 */
+/** 一条成品的查询计划：锚定词 → 词典品类词 → 标题原文，三档轮转保底各一个，最多 3 个查询。 */
 export function categoryQueryPlan(input: {
   title?: string;
   sourceAttributes?: Array<{ name: string; value: string }>;

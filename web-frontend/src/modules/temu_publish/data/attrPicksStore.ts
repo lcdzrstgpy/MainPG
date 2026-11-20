@@ -5,14 +5,14 @@ import type { AttrPickMap } from "./attributeModel";
  *
  * 两套东西：
  * 1. **按叶子类目**记「上次怎么填的」（连发同款时下一个商品直接沿用）；
- * 2. **按草稿**记「入草稿库时自动估的那一份」，点「用于发布」时直接带进发布页。
+ * 2. **按成品**记「入成品库时自动估的那一份」，点「用于发布」时直接带进发布页。
  *
  * 都按账号隔离：同一台电脑换账号登录，不能把上一个人选的属性带出来。
  */
 
 /**
  * 「当前这一条」的属性选择：**只用于刷新页面后恢复**，任何来源都写
- * （包括自动填和草稿库估好铺进来的值）。
+ * （包括自动填和成品库估好铺进来的值）。
  *
  * 和历史分开的原因：历史是「同类目下次沿用」的依据，写进历史等于教它
  * 「以后都这么填」。自动铺的值不是用户的决定，混进去会污染整个类目。
@@ -25,9 +25,9 @@ export const ATTR_PICKS_KEY_V1 = "temu_publish_attr_picks_v1";
 /** 按类目留多少份历史：够覆盖日常几个类目，又不至于把本地存储撑大 */
 export const ATTR_PICKS_HISTORY_MAX = 20;
 
-/** 草稿 → 入草稿库时自动估出来的属性。 */
+/** 成品 → 入成品库时自动估出来的属性。 */
 export const DRAFT_ATTR_PREFILL_KEY = "temu_publish_draft_attr_prefill_v1";
-/** 草稿预填留多少条：草稿库一页 30 条，留 200 够翻好几页 */
+/** 成品预填留多少条：成品库一页 30 条，留 200 够翻好几页 */
 export const DRAFT_ATTR_PREFILL_MAX = 200;
 
 export type AttrPicksHistory = Record<string, { picks?: AttrPickMap; at?: number }>;
@@ -50,7 +50,7 @@ export type DraftAttrPrefill = {
   /**
    * 估这一份时「同类目历史」的版本（时间戳）。
    * 之后用户在发布页把属性改对了，历史会变新 —— 这里对不上就说明该重估，
-   * 否则其他草稿还留着旧的猜测值。
+   * 否则其他成品还留着旧的猜测值。
    */
   historyAt?: number;
 };
@@ -175,7 +175,7 @@ export function readAttrPicksHistoryAt(scope: string, catId: number): number {
   return Number(legacy?.catId ?? 0) === catId ? Number(legacy?.at ?? 0) : 0;
 }
 
-/** 读出全部草稿的估填结果（草稿 id → 预填）。 */
+/** 读出全部成品的估填结果（成品 id → 预填）。 */
 export function readDraftAttrPrefills(scope: string): Record<string, DraftAttrPrefill> {
   const all = readJson<Record<string, DraftAttrPrefill>>(
     `${DRAFT_ATTR_PREFILL_KEY}:${scope}`,
@@ -185,9 +185,9 @@ export function readDraftAttrPrefills(scope: string): Record<string, DraftAttrPr
 }
 
 /**
- * 写入一批草稿的估填结果，并裁剪总量。
+ * 写入一批成品的估填结果，并裁剪总量。
  *
- * 按条写而不是整份覆盖：草稿库分页加载，只写本页看到的那几条，
+ * 按条写而不是整份覆盖：成品库分页加载，只写本页看到的那几条，
  * 不能把别的页算好的结果冲掉。
  */
 export function saveDraftAttrPrefills(
@@ -204,7 +204,7 @@ export function saveDraftAttrPrefills(
   writeJson(key, Object.fromEntries(Object.entries(all).slice(-DRAFT_ATTR_PREFILL_MAX)));
 }
 
-/** 删掉某条草稿的估填结果（类目属性变了要重估时用）。 */
+/** 删掉某条成品的估填结果（类目属性变了要重估时用）。 */
 export function deleteDraftAttrPrefill(scope: string, draftId: string): void {
   if (!draftId) return;
   const key = `${DRAFT_ATTR_PREFILL_KEY}:${scope}`;

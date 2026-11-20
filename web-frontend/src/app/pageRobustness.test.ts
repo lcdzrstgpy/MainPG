@@ -116,7 +116,7 @@ test("发布/批量发布：轮播图少于 3 张在本地就拦（Temu 硬性�
   assert.match(page, /if \(carouselSource\.length < 3\) \{/);
   assert.match(page, /轮播图至少 3 张/);
   assert.match(batch, /if \(carouselSource\.length < 3\) \{/);
-  assert.match(batch, /草稿轮播图不足 3 张/);
+  assert.match(batch, /成品轮播图不足 3 张/);
   // 界面上的说明必须是同一个数，不能一处写 3 一处写 1
   assert.match(page, /至少 3 张 · 1:1 方图/);
 });

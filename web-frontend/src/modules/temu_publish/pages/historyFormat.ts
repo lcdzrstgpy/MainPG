@@ -47,7 +47,7 @@ export function dayLabelOf(createdTs?: number, now: number = Date.now()): string
   return `${target.getMonth() + 1} 月 ${target.getDate()} 日`;
 }
 
-/** 来源标签：草稿 id 前缀决定这件商品是从哪条流水线来的。 */
+/** 来源标签：成品 id 前缀决定这件商品是从哪条流水线来的。 */
 export function sourceLabelOf(draftId?: string): string {
   const value = String(draftId || "");
   if (value.startsWith("ai:")) return "AI 处理";

@@ -60,7 +60,7 @@ function useNearViewport(): [(node: Element | null) => void, boolean] {
  *
  * 发布时存的是「当时那张主图」的地址：网店图是公网 https（直接显示），
  * 本地 AI/POD 产物是带签名的本地媒体地址 —— 签名两小时就过期，所以走 httpBlob
- * 带登录态取，和草稿库同一套逻辑。取不到就显示占位块，不留破图。
+ * 带登录态取，和成品库同一套逻辑。取不到就显示占位块，不留破图。
  */
 function HistoryThumb({ path, alt }: { path: string; alt: string }) {
   const [thumbRef, inView] = useNearViewport();
@@ -132,12 +132,12 @@ function HistoryThumb({ path, alt }: { path: string; alt: string }) {
  * 记录来自后端台账 `temu_publish_submissions`，本机清缓存/换机器都还在。
  *
  * 列表里每条都尽量把「这是哪件商品、发到哪个店、卖多少钱、什么时候发的、
- * 错在哪」摆出来：只有标题和时间的列表，用户还得点回草稿库去认货。
+ * 错在哪」摆出来：只有标题和时间的列表，用户还得点回成品库去认货。
  */
 export function TemuPublishHistoryPage({
   onOpenDraftLibrary,
 }: {
-  /** 失败那条要重发时，跳回草稿库挑成品 */
+  /** 失败那条要重发时，跳回成品库挑成品 */
   onOpenDraftLibrary?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("success");
@@ -598,10 +598,10 @@ export function TemuPublishHistoryPage({
               <button
                 type="button"
                 className="temu-history-retry"
-                title="类目属性模板变了：清掉这条估好的属性，打开草稿重新选一遍（自动填会按新模板重跑）"
+                title="类目属性模板已变更：清除该条已预填的属性，打开成品重新选择（自动填充将按新模板重新执行）"
                 onClick={() => {
-                  // 带 reselect: 前缀：库页定位到草稿后先清估填再打开。
-                  // 没有来源草稿 id 的老数据按标题找（失败台账记的就是标题）
+                  // 带 reselect: 前缀：库页定位到成品后先清估填再打开。
+                  // 没有来源成品 id 的老数据按标题找（失败台账记的就是标题）
                   const target = item.draft_id || `title:${item.title}`;
                   try {
                     window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, `reselect:${target}`);
@@ -619,11 +619,11 @@ export function TemuPublishHistoryPage({
               className="temu-history-retry"
               title={
                 item.draft_id
-                  ? "回成品库自动打开这条草稿，改完再发"
-                  : "手填的商品没有来源草稿，回成品库重新挑一条"
+                  ? "回成品库自动打开该成品，完善后重新提交"
+                  : "手工填写的商品无来源成品，回成品库重新选择"
               }
               onClick={() => {
-                // 记了来源草稿 id → 草稿库自动打开那条；没记就只切过去
+                // 记了来源成品 id → 成品库自动打开那条；没记就只切过去
                 if (item.draft_id) {
                   try {
                     window.sessionStorage.setItem(TEMU_LIBRARY_FOCUS_KEY, item.draft_id);

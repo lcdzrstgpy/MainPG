@@ -44,7 +44,7 @@ function makePrefill(overrides: Partial<TemuPublishPrefill> = {}): TemuPublishPr
   };
 }
 
-test("预检：正常的草稿不该报任何阻塞项", () => {
+test("预检：正常的成品不该报任何阻塞项", () => {
   const result = precheckBatchItem(makePrefill(), makeTemplate(), null);
   assert.deepEqual(result.blocked, []);
 });
@@ -81,8 +81,8 @@ test("预检：价格/重量/三边缺一个都要指名道姓", () => {
   assert.ok(result.blocked.some((item) => item.includes("高度")));
 });
 
-test("预检：变种模板的值会覆盖草稿自带的（批量套模板时不能报假错）", () => {
-  // 草稿本身没有尺码值，但套了变种模板就有 —— 预检必须跟着模板走
+test("预检：变种模板的值会覆盖成品自带的（批量套模板时不能报假错）", () => {
+  // 成品本身没有尺码值，但套了变种模板就有 —— 预检必须跟着模板走
   const result = precheckBatchItem(
     makePrefill({ specValue1: "", specValue2: "" }),
     makeTemplate(),

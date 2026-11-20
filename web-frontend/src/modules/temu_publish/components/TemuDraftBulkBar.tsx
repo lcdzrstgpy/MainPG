@@ -8,10 +8,10 @@ type MenuKey = "panel" | null;
 type View = "fields" | "category";
 
 /**
- * 批量改字段：只列草稿真的有的字段。
+ * 批量改字段：只列成品真的有的字段。
  *
  * 以前这里还摆着「英文标题 / 产地 / 敏感属性 / SKU 分类 / 仓库」这些灰按钮 ——
- * 点不动、也没解释，纯粹是噪音。仓库/属性这类要在发布页按类目选，不属于草稿库。
+ * 点不动、也没解释，纯粹是噪音。仓库/属性这类要在发布页按类目选，不属于成品库。
  */
 const FIELD_GROUPS: Array<{ title: string; fields: Array<{ label: string; field: BulkField }> }> = [
   {
@@ -80,7 +80,7 @@ type Props = {
 };
 
 /**
- * 草稿库的批量操作条。
+ * 成品库的批量操作条。
  *
  * 两种形态：
  * - 没勾选：一个「批量操作」入口（打开面板看到全部能力），不占地方；
@@ -180,7 +180,7 @@ export function TemuDraftBulkBar({
                   ? "上一批还在提交，等它跑完再发"
                   : canBatchPublish
                     ? "逐条提交到店铺（弹窗里选模板）"
-                    : "点击后：按每条草稿的类目分组；未保存模板的按草稿属性自动拼装（属性为估算值，倒计时期间可取消并复核）"
+                    : "点击后：按每条成品的类目分组；未保存模板的按成品属性自动拼装（属性为估算值，倒计时期间可取消并复核）"
               }
               onClick={onBatchPublish}
             >
@@ -232,7 +232,7 @@ export function TemuDraftBulkBar({
               type="button"
               className="temu-bulk-action"
               disabled={disabledNoSelection}
-              title="选择项 → 填写一个值 → 批量应用到所选草稿"
+              title="选择项 → 填写一个值 → 批量应用到所选成品"
               onClick={() => openPanel("fields")}
             >
               批量改字段

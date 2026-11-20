@@ -216,7 +216,7 @@ export type TemuSkcDraft = {
 };
 
 export type TemuGoodsDraft = {
-  /** 来源草稿条目 id：发布成功后后端据此把它从草稿库移除 */
+  /** 来源成品条目 id：发布成功后后端据此把它从成品库移除 */
   draft_id?: string;
   category_ids: number[];
   /** 类目路径名（和 category_ids 对应），只用于发布历史展示 */
@@ -285,7 +285,7 @@ export type TemuBuildPayloadResult = {
   };
 };
 
-/** 草稿里的一条 SKU（AI 处理采集到的原始变体记录，一个颜色一条）。 */
+/** 成品里的一条 SKU（AI 处理采集到的原始变体记录，一个颜色一条）。 */
 export type TemuDraftVariant = {
   /** 上游 SKU id（能当货号用） */
   sku?: string;
@@ -321,7 +321,7 @@ export type TemuDraftEntry = {
   sku: string;
   description?: string;
   source_url?: string;
-  /** 草稿自带的类目（AI 采集的类目路径 / POD 的 category_name），可能为空 */
+  /** 成品自带的类目（AI 采集的类目路径 / POD 的 category_name），可能为空 */
   category_name?: string;
   spec_name_1?: string;
   spec_value_1?: string;
@@ -370,8 +370,8 @@ export type TemuDraftLibrary = {
 export const TEMU_PUBLISH_PREFILL_KEY = "temu_publish_prefill_v1";
 
 /**
- * 发布历史「去修这条」→ 草稿库自动打开指定草稿。
- * 历史条目记了来源草稿 id（ai:任务:项 / pod:批次:款式），草稿库条目 id 同源，
+ * 发布历史「去修这条」→ 成品库自动打开指定成品。
+ * 历史条目记了来源成品 id（ai:任务:项 / pod:批次:款式），成品库条目 id 同源，
  * 切过去找到那条直接走「编辑」链路（整表预填进发布页），不用用户再翻。
  */
 export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";
@@ -379,7 +379,7 @@ export const TEMU_LIBRARY_FOCUS_KEY = "temu_library_focus_draft_v1";
 /**
  * 发布历史「批量重试」带过来的目标清单：{ ids, titles }。
  *
- * 成品库消费后：清掉这些草稿的旧估填（失败多因旧模板估的属性，留着只会再败）→
+ * 成品库消费后：清掉这些成品的旧估填（失败多因旧模板估的属性，留着只会再败）→
  * 自动勾选 → 用户直接点「批量发布」。没 draft_id 的老记录按标题找。
  */
 export const TEMU_LIBRARY_RETRY_KEY = "temu_library_retry_v1";
@@ -391,7 +391,7 @@ export const TEMU_LIBRARY_RETRY_KEY = "temu_library_retry_v1";
 export const TEMU_LIBRARY_RETRY_EVENT = "mainpg:temu-library-retry";
 
 /**
- * 草稿库「用于发布」的事件通道。
+ * 成品库「用于发布」的事件通道。
  * 为什么需要两条通道：openModule 会**复用已存在的页签**，发布页已打开时不会再挂载，
  * 只读 sessionStorage 的挂载逻辑就不会执行（点了没反应）。所以挂载走 storage，
  * 已挂载走事件。
@@ -399,7 +399,7 @@ export const TEMU_LIBRARY_RETRY_EVENT = "mainpg:temu-library-retry";
 export const TEMU_PUBLISH_PREFILL_EVENT = "mainpg:temu-publish-prefill";
 
 /**
- * 草稿库 → 发布页的预填数据。
+ * 成品库 → 发布页的预填数据。
  * 字段口径对齐ERP导入模板（dxm_import_task_*.xlsx / pod_dxm_*.xlsx）：
  * 变种属性、申报价、尺寸重量、轮播图/素材图这些列在导出里是什么，这里就是什么。
  */
@@ -429,7 +429,7 @@ export type TemuPublishPrefill = {
   /** 建议售价（单位：元） */
   suggestedPrice?: string;
   stock?: string;
-  /** POD 草稿在模板里是占位值（申报价/重量/尺寸），需要人核对后覆盖 */
+  /** POD 成品在模板里是占位值（申报价/重量/尺寸），需要人核对后覆盖 */
   needsReview?: string[];
   /** ERP模板的变种属性：名称仅作参考展示，值用于填规格 */
   specName1?: string;
@@ -443,12 +443,12 @@ export type TemuPublishPrefill = {
   variants?: TemuDraftVariant[];
   description?: string;
   sourceUrl?: string;
-  /** 来源草稿 id：发布页选完类目回写给它，草稿库下次直接显示类目路径 */
+  /** 来源成品 id：发布页选完类目回写给它，成品库下次直接显示类目路径 */
   draftId?: string;
-  /** 这条草稿上次选过的 Temu 类目路径，带入时直接选中，不用重选 */
+  /** 这条成品上次选过的 Temu 类目路径，带入时直接选中，不用重选 */
   categoryPath?: TemuCategory[];
   /**
-   * 入草稿库时按类目估好的产品属性（pid → vid/text）。
+   * 入成品库时按类目估好的产品属性（pid → vid/text）。
    *
    * 是**估**出来的（没有依据时取第一个可用选项），不是人填的：
    * 发布页会把它们铺上，同时提示「产品属性（自动估）」要核对。
@@ -473,7 +473,7 @@ export type TemuImageUploadResult = {
   [key: string]: unknown;
 };
 
-/** 草稿库「编辑」可改的字段（对齐ERP模板列），只在本机生效。 */
+/** 成品库「编辑」可改的字段（对齐ERP模板列），只在本机生效。 */
 export type TemuDraftEdit = {
   title?: string;
   sku?: string;
@@ -528,7 +528,7 @@ export type TemuPublishHistoryItem = {
   error: string;
   /** Temu 返回的错误码（6000002 等）。老记录没有，前端会从 error 文本里再试一次 */
   error_code?: string;
-  /** 来源草稿条目 id（ai:任务:项 / pod:批次:款式），手填的为空 */
+  /** 来源成品条目 id（ai:任务:项 / pod:批次:款式），手填的为空 */
   draft_id: string;
   leaf_cat_id: number;
   /** 类目路径名，例如「美妆个护 > 化妆包 > 手拿包」。老记录为空，退回显示 cat id */

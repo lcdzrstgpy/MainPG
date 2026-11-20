@@ -66,12 +66,12 @@ const DRAFT_REMARKS_KEY = "temu_draft_remarks_v1";
  */
 const PAGE_SIZE = 30;
 /**
- * 入草稿库时自动按标题匹配 Temu 类目：一次最多补这么多条、并发这么多路。
+ * 入成品库时自动按标题匹配 Temu 类目：一次最多补这么多条、并发这么多路。
  * 限流是为了别在打开页面时同时打几十个 category.match（网关有每分钟限流）。
  */
 const AUTO_LIMIT = 24;
 /**
- * 入草稿库时就给每条草稿把产品属性估一遍。
+ * 入成品库时就给每条成品把产品属性估一遍。
  *
  * 一次最多处理这么多条：同一类目只打一次 attrs（后端还有 1 小时缓存），
  * 限流只是防止一次开页面把网关打满；剩下的下次进页面继续。
@@ -115,7 +115,7 @@ function loadDraftEdits(): Record<string, TemuDraftEdit> {
   }
 }
 
-/** 「按变种改」的结果：草稿 id → 变种 key → 改过的字段（只存改过的） */
+/** 「按变种改」的结果：成品 id → 变种 key → 改过的字段（只存改过的） */
 function loadDraftSkuFields(): SkuFieldStore {
   try {
     const raw = window.localStorage.getItem(scoped(DRAFT_SKU_FIELDS_KEY));
@@ -150,7 +150,7 @@ const EDIT_FIELDS: Array<{ key: keyof TemuDraftEdit; label: string; placeholder?
 ];
 
 /**
- * 这条草稿还缺什么才能直接发（提交内容里缺失会被平台驳回的字段）。
+ * 这条成品还缺什么才能直接发（提交内容里缺失会被平台驳回的字段）。
  *
  * 依据 docs/temu-goods-add-成功样例.json 的必填结构 + 实测清单：
  * 类目 / 申报价 / 货号 / 重量 / 三边尺寸 是硬性前置，库存 0 允许（商品建出来是不可售）。
@@ -160,7 +160,7 @@ function draftMissingFields(
   categoryMemo: Record<string, DraftCategoryMemo>,
 ): string[] {
   const missing: string[] = [];
-  // 只认「发布页真选过」的 Temu 类目：草稿自带的 category_name 是自由文本，
+  // 只认「发布页真选过」的 Temu 类目：成品自带的 category_name 是自由文本，
   // 不是类目 id，发布时照样得选，所以不能算齐
   if (!categoryMemo[entry.id]?.label) missing.push("类目");
   const price = Number(entry.declared_price);
@@ -307,13 +307,13 @@ function DraftThumb({
 }
 
 /**
- * 草稿里的金额都是「元」（POD 导出表、AI 结果口径一致），发布页用「分」。
+ * 成品里的金额都是「元」（POD 导出表、AI 结果口径一致），发布页用「分」。
  * 带入时统一 ×100，避免把 ¥150 当成 1.5 元发出去。
  */
 /**
  * 价格文本：四舍五入到「分」（两位小数）后去掉多余的零。
  *
- * 草稿里的价可能带多位小数（导出表按成本算出来的），直接带进发布页会在提交时
+ * 成品里的价可能带多位小数（导出表按成本算出来的），直接带进发布页会在提交时
  * 被「最多两位小数」拦下；这里先规整到分，用户看到的数和最终提交的一分不差。
  */
 function moneyText(value: number | string | null | undefined): string {
@@ -342,7 +342,7 @@ function dimensionText(entry: TemuDraftEntry): string {
   return parts.every((item) => item === "-") ? "—" : `${parts.join(" × ")} cm`;
 }
 
-/** 变种规格：颜色 / 尺码（名称取草稿里的变种属性名）。 */
+/** 变种规格：颜色 / 尺码（名称取成品里的变种属性名）。 */
 function specText(entry: TemuDraftEntry): string {
   const pairs = [
     entry.spec_name_1 && entry.spec_value_1 ? `${entry.spec_name_1}：${entry.spec_value_1}` : "",
@@ -351,7 +351,7 @@ function specText(entry: TemuDraftEntry): string {
   return pairs.length ? pairs.join(" · ") : "—";
 }
 
-/** 站点下面的第二行：优先显示上次选过的 Temu 类目，其次草稿自带类目，都没有才提示去发布页选。 */
+/** 站点下面的第二行：优先显示上次选过的 Temu 类目，其次成品自带类目，都没有才提示去发布页选。 */
 function siteCategoryLabel(
   entry: TemuDraftEntry,
   memo: Record<string, DraftCategoryMemo>,
@@ -364,7 +364,7 @@ function siteCategoryLabel(
 /**
  * 类目这一格的三态：
  * - picked：发布页真选过 Temu 叶子类目，能直接发
- * - draft：只有草稿自带的分类（POD 模板里手填的文字、AI 采集的路径），
+ * - draft：只有成品自带的分类（POD 模板里手填的文字、AI 采集的路径），
  *   它**不是** Temu 类目 ID，发布前还得去发布页选一次
  * - none：两样都没有，必须选
  */
@@ -386,7 +386,7 @@ function leafCatIdOf(path?: TemuCategory[]): number {
  *
  * 为什么不用组件 state：跑批途中切到别的模块，本页会被卸载（WorkspaceShell 是条件渲染），
  * 而旧批次还在后台一条条提交。切回来 state 归零 → 用户以为没在跑 → 再开一批 →
- * 同一批草稿被提交两次（接口非幂等，店铺里就多出重复商品）。
+ * 同一批成品被提交两次（接口非幂等，店铺里就多出重复商品）。
  * 存 localStorage 连刷新都能识别；2 分钟没心跳视为已死（刷新会真的杀掉 JS 循环）。
  */
 const BATCH_RUN_KEY = "temu_publish_batch_running_at";
@@ -394,21 +394,21 @@ const BATCH_STOP_KEY = "temu_publish_batch_stop";
 const BATCH_HEARTBEAT_TIMEOUT = 120_000;
 
 /**
- * 一批活：同一个产品模板（= 同一个 Temu 末级类目）下的若干条草稿。
+ * 一批活：同一个产品模板（= 同一个 Temu 末级类目）下的若干条成品。
  *
- * 为什么必须分组：勾选的一批草稿经常横跨好几个类目（一个店铺一天几十款，
+ * 为什么必须分组：勾选的一批成品经常横跨好几个类目（一个店铺一天几十款，
  * 托特包/化妆包/桌布混在一起勾）。拿第一条标题匹配出来的类目套给整批，
  * 属性对不上的会失败，属性对得上的就被**发成错类目**——后者比失败更难收拾。
  */
 type BatchGroup = {
   /**
-   * 这个类目的产品模板。`null` = 还没存过，等「按草稿自动拼一份」（见 buildAutoTemplate）。
+   * 这个类目的产品模板。`null` = 还没存过，等「按成品自动拼一份」（见 buildAutoTemplate）。
    * 自动拼也拼不出（必填属性估不全）才整组跳过。
    */
   template: ProductTemplate | null;
   /** 这一组的 Temu 类目路径（自动拼模板要用它拉属性表） */
   categoryPath: TemuCategory[];
-  /** 这类草稿的 Temu 类目路径文案（末级类目一致才在一组） */
+  /** 这类成品的 Temu 类目路径文案（末级类目一致才在一组） */
   categoryName: string;
   entries: TemuDraftEntry[];
 };
@@ -496,9 +496,9 @@ function entryPrefill(
   entry: TemuDraftEntry,
   memo?: Record<string, DraftCategoryMemo>,
   attrPrefills?: Record<string, DraftAttrPrefill>,
-  /** 「批量编辑产品图片」改过的图；不传就用草稿自带的轮播图 */
+  /** 「批量编辑产品图片」改过的图；不传就用成品自带的轮播图 */
   imageOverrides?: Record<string, string[]>,
-  /** 「按变种改」的覆盖：草稿 id → 变种 key → 改过的字段 */
+  /** 「按变种改」的覆盖：成品 id → 变种 key → 改过的字段 */
   skuPriceOverrides?: SkuFieldStore,
 ): TemuPublishPrefill {
   const weightG = numericText(entry.weight_g);
@@ -516,9 +516,9 @@ function entryPrefill(
     heightCm: height,
     sourceLabel: entry.source === "ai" ? "AI 处理" : "POD",
     sourceKind: entry.source,
-    // 草稿和发布页现在都用「元」，原样带过去；换算成「分」是提交前的事
+    // 成品和发布页现在都用「元」，原样带过去；换算成「分」是提交前的事
     supplierPrice: moneyText(entry.declared_price),
-    // 变种覆盖：只带这条草稿自己的；取值统一走 resolveSkuField
+    // 变种覆盖：只带这条成品自己的；取值统一走 resolveSkuField
     skuFields: skuPriceOverrides?.[entry.id],
     suggestedPrice: moneyText(entry.suggested_price),
     // 库存原样带入（0 也是有效值：先建品后补库存）；只有真的没值才留空
@@ -537,7 +537,7 @@ function entryPrefill(
     // 带上 id 和上次选过的类目：发布页选完会回写，下次带入直接选中
     draftId: entry.id,
     categoryPath: memo?.[entry.id]?.path,
-    // 入草稿库时按类目估好的属性：带进去直接铺上，发布页只补剩下没估到的
+    // 入成品库时按类目估好的属性：带进去直接铺上，发布页只补剩下没估到的
     attrPicks: attrPrefills?.[entry.id]?.picks,
     attrPicksCatId: attrPrefills?.[entry.id]?.catId,
     attrGuessedPids: attrPrefills?.[entry.id]?.guessedPids,
@@ -584,12 +584,12 @@ export function TemuDraftLibraryPage({
 }: {
   onUseDraft: (prefill: TemuPublishPrefill) => void;
   onCreateProduct?: () => void;
-  /** 跳「发布历史」：发过的商品在草稿库里已经看不到了，得有个地方能回看 */
+  /** 跳「发布历史」：发过的商品在成品库里已经看不到了，得有个地方能回看 */
   onOpenHistory?: () => void;
 }) {
   const [data, setData] = useState<TemuDraftLibrary | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  /** 只看「发布失败过」的草稿（按本机失败台账的标题匹配） */
+  /** 只看「发布失败过」的成品（按本机失败台账的标题匹配） */
   const [onlyFailed, setOnlyFailed] = useState(false);
   /**
    * 失败台账（后端 temu_publish_submissions）：以它为准 —— 本机清缓存/换机器都还在。
@@ -599,7 +599,7 @@ export function TemuDraftLibraryPage({
     ids: [],
     titles: [],
   });
-  /** 只看「待人工」的草稿：类目没配上、或必填属性估不出来的 */
+  /** 只看「待人工」的成品：类目没配上、或必填属性估不出来的 */
   const [onlyManual, setOnlyManual] = useState(false);
   /**
    * 待人工向导：把「待人工 N」从筛选变成逐条补完的流。
@@ -618,7 +618,7 @@ export function TemuDraftLibraryPage({
    * save 时统一 String()，数组进去会被拍成 "[object Object]"。
    */
   const [imageEdits, setImageEdits] = useState<Record<string, string[]>>(loadDraftImages);
-  /** 变种级 SKU 覆盖：草稿 id → 变种 key → 改过的字段（价/库存/尺寸/重量/货号） */
+  /** 变种级 SKU 覆盖：成品 id → 变种 key → 改过的字段（价/库存/尺寸/重量/货号） */
   const [skuFields, setSkuFields] = useState<SkuFieldStore>(loadDraftSkuFields);
   const [categories, setCategories] = useState<string[]>(() =>
     loadMap<string[]>(scoped(DRAFT_CATS_KEY), []),
@@ -655,11 +655,11 @@ export function TemuDraftLibraryPage({
   const [picker, setPicker] = useState<"product" | "variant" | null>(null);
   // 点「用于发布」先弹基础信息确认，确认后才带进发布页
   const [confirmEntry, setConfirmEntry] = useState<TemuDraftEntry | null>(null);
-  // 草稿 → 上次在发布页选过的 Temu 类目：进页面/切回来都重读，刚选完的能立刻显示
+  // 成品 → 上次在发布页选过的 Temu 类目：进页面/切回来都重读，刚选完的能立刻显示
   const [categoryMemo, setCategoryMemo] = useState<Record<string, DraftCategoryMemo>>(() =>
     localStore.draftCategories(),
   );
-  /** 草稿 → 入草稿库时按叶子类目估出来的产品属性（点「用于发布」直接带进发布页） */
+  /** 成品 → 入成品库时按叶子类目估出来的产品属性（点「用于发布」直接带进发布页） */
   const [attrPrefills, setAttrPrefills] = useState<Record<string, DraftAttrPrefill>>(() =>
     readDraftAttrPrefills(storageScope()),
   );
@@ -729,7 +729,7 @@ export function TemuDraftLibraryPage({
   /**
    * 发布确认单。
    *
-   * 用户没手选模板时：按每条草稿自己的类目分组 → 每组配一个模板 → 弹这张单子，
+   * 用户没手选模板时：按每条成品自己的类目分组 → 每组配一个模板 → 弹这张单子，
    * **必须手点「确认发布」才真的提交**。以前是 3 秒倒计时自动开跑，
    * 手一抖点错就真上架了（接口非幂等，发出去收不回来），所以改成显式确认。
    */
@@ -748,7 +748,7 @@ export function TemuDraftLibraryPage({
       skipBroken: boolean;
       /** 被排除的条目说明（没模板 / 没类目），没有就空串 */
       note: string;
-      /** 用了「按草稿临时拼的模板」时的说明（属性是估的，要让人知道） */
+      /** 用了「按成品临时拼的模板」时的说明（属性是估的，要让人知道） */
       autoNote: string;
       /** 纯猜属性明细（发布前透明化）：只含有猜值的条目 */
       guessedAttrs: {
@@ -897,11 +897,11 @@ export function TemuDraftLibraryPage({
   );
 
   /**
-   * 发布失败过的草稿：后端台账为准（换机器都还在），本机台账兜底老记录。
+   * 发布失败过的成品：后端台账为准（换机器都还在），本机台账兜底老记录。
    * id + 标题双匹配：老失败记录没 draft_id 就按标题对。
    *
-   * 发成功的草稿会自动移出成品库，所以这里没有「已发布」筛选的意义；
-   * 反过来「失败过」是真实存在的状态 —— 这类草稿要么改完重发、要么删掉，
+   * 发成功的成品会自动移出成品库，所以这里没有「已发布」筛选的意义；
+   * 反过来「失败过」是真实存在的状态 —— 这类成品要么改完重发、要么删掉，
    * 不该和人堆在一起靠翻找。
    */
   const failedIdSet = new Set(failedLedger.ids);
@@ -945,7 +945,7 @@ export function TemuDraftLibraryPage({
   }, [wizard, manualIds]);
 
   /**
-   * 发布历史点「去修这条」过来：找到那条草稿自动打开（=整表预填进发布页）。
+   * 发布历史点「去修这条」过来：找到那条成品自动打开（=整表预填进发布页）。
    * 只尝试一次：条目可能不在当前页，找不到就清标记，避免以后每次进库都触发。
    */
   const focusHandledRef = useRef(false);
@@ -967,7 +967,7 @@ export function TemuDraftLibraryPage({
     // reselect: 前缀 = 发布历史「重选属性」：旧模板估的属性只会害人，先清掉再打开
     const reselect = focusId.startsWith("reselect:");
     const wanted = reselect ? focusId.slice("reselect:".length) : focusId;
-    // 没有来源草稿 id 的老失败记录按标题找（失败台账记的就是标题）
+    // 没有来源成品 id 的老失败记录按标题找（失败台账记的就是标题）
     const target = wanted.startsWith("title:")
       ? entries.find(
           (entry) => (entry.title || "").trim() === wanted.slice("title:".length).trim(),
@@ -1103,9 +1103,9 @@ export function TemuDraftLibraryPage({
     })();
   }, [entries, retryTick]);
   /**
-   * 入草稿库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
+   * 入成品库时**按标题自动分好 Temu 类目**，省掉「先选一次类目」这一步。
    *
-   * 只处理「还没有类目记忆」的草稿，一次最多 AUTO_LIMIT 条、并发 3：
+   * 只处理「还没有类目记忆」的成品，一次最多 AUTO_LIMIT 条、并发 3：
    * - 结果写成 memo 但带 `auto: true`，UI 上标「自动」，人工选过的不会被覆盖
    * - 匹配失败/没有叶子路径就跳过，下次进页面再试（不记空值，否则永远不重试）
    * - 只是为了少点一次，**不代替确认**：类目错了发出去要下架重发，界面必须看得出来
@@ -1133,7 +1133,7 @@ export function TemuDraftLibraryPage({
             localStore.rememberDraftCategory(entry.id, leafPath, { auto: true });
             if (alive) setCategoryMemo(localStore.draftCategories());
           } catch {
-            // 单条匹配失败不影响其它草稿；下次进页面会再试
+            // 单条匹配失败不影响其它成品；下次进页面会再试
           }
         }
       };
@@ -1150,12 +1150,12 @@ export function TemuDraftLibraryPage({
   }, [entries]);
 
   /**
-   * 入草稿库时把产品属性**估一遍**，点「用于发布」就不用再手点 8 个下拉。
+   * 入成品库时把产品属性**估一遍**，点「用于发布」就不用再手点 8 个下拉。
    *
    * 估的口径见 `data/attrEstimate.ts`：同类目上次填的 > 标题点名 > 第一个可用选项。
    * 猜出来的值都会标 `guessed`，发布页会提示「按类目估的，请核对」。
    *
-   * 限流：attrs 按 catId 缓存在内存里（同类目 N 条草稿只打一次网关），
+   * 限流：attrs 按 catId 缓存在内存里（同类目 N 条成品只打一次网关），
    * 一次最多 ATTR_ESTIMATE_LIMIT 条，剩下的下次进页面继续。
    */
   const attrEstimateCacheRef = useRef(new Map<number, TemuAttributes>());
@@ -1167,7 +1167,7 @@ export function TemuDraftLibraryPage({
    *
    * 必须有这一下：自动分类是异步分批补类目的，估填启动时 memo 里可能只有一部分；
    * 若那一轮还在跑，新的 memo 进来会被 `attrEstimatingRef` 挡掉，之后再也没有
-   * 触发点 —— 剩下的草稿就永远估不上。
+   * 触发点 —— 剩下的成品就永远估不上。
    */
   const [estimateTick, setEstimateTick] = useState(0);
   useEffect(() => {
@@ -1183,7 +1183,7 @@ export function TemuDraftLibraryPage({
         const saved = attrPrefills[entry.id];
         if (!saved || Number(saved.catId) !== leaf) return true;
         // 同类目历史变新了（用户在发布页把属性改对了）→ 重估，
-        // 否则其他草稿还留着上一次猜出来的值，用户会以为「改一次都跟着变」
+        // 否则其他成品还留着上一次猜出来的值，用户会以为「改一次都跟着变」
         return Number(saved.historyAt ?? 0) !== readAttrPicksHistoryAt(scope, leaf);
       })
       .slice(0, ATTR_ESTIMATE_LIMIT);
@@ -1262,7 +1262,7 @@ export function TemuDraftLibraryPage({
     })().finally(() => {
       if (!alive) return;
       attrEstimatingRef.current = false;
-      // 再跑一轮：这期间可能又有草稿被自动分类补上了类目。
+      // 再跑一轮：这期间可能又有成品被自动分类补上了类目。
       // 没有 pending 时下一轮会直接 return，不会自激。
       setEstimateTick((value) => value + 1);
     });
@@ -1290,7 +1290,7 @@ export function TemuDraftLibraryPage({
   }, [preview, confirmEntry, batchOpen]);
 
   /**
-   * 勾选的草稿如果都被匹配到同一个叶子类目，现场配置就直接预填它：
+   * 勾选的成品如果都被匹配到同一个叶子类目，现场配置就直接预填它：
    * 用户只需填属性 + 选运费仓库，不用再搜一次类目。
    */
   const batchCommonCategory = useMemo(() => {
@@ -1317,11 +1317,11 @@ export function TemuDraftLibraryPage({
     if (missing) {
       return `有 ${missing} 条还没匹配到 Temu 类目，整批没法共用一套属性：先单独「用于发布」把它们选好类目，或分批发。`;
     }
-    return "所选草稿不属于同一叶子类目（属性按类目定义，不同类目不可共用）：关闭弹窗直接点「批量发布」将按类目自动分批执行；如需手动配置，请在下方选择类目并整批应用。";
+    return "所选成品不属于同一叶子类目（属性按类目定义，不同类目不可共用）：关闭弹窗直接点「批量发布」将按类目自动分批执行；如需手动配置，请在下方选择类目并整批应用。";
   }, [selected, categoryMemo, batchCommonCategory]);
 
   /**
-   * 整批同一个叶子类目时，用第一条草稿估好的属性当批量配置的初值。
+   * 整批同一个叶子类目时，用第一条成品估好的属性当批量配置的初值。
    * 类目不一致就不传：不同类目的 pid 完全不同，混着填只会塞错值。
    */
   const batchCommonPicks = useMemo(() => {
@@ -1335,14 +1335,14 @@ export function TemuDraftLibraryPage({
 
   const selectedIds = () => Array.from(selected);
 
-  /** 「用于发布」二次确认：确认后才把这条草稿带进发布页。 */
+  /** 「用于发布」二次确认：确认后才把这条成品带进发布页。 */
   const confirmUseDraft = () => {
     if (!confirmEntry) return;
     onUseDraft(entryPrefill(confirmEntry, categoryMemo, attrPrefills, imageEdits, skuFields));
     setConfirmEntry(null);
   };
 
-  /** 勾选的草稿（批量发布/批量编辑都按这个口径，和表格里看到的行一致）。 */
+  /** 勾选的成品（批量发布/批量编辑都按这个口径，和表格里看到的行一致）。 */
   const batchTargets = useMemo(
     () => entries.filter((entry) => selected.has(entry.id)),
     [entries, selected],
@@ -1416,9 +1416,9 @@ export function TemuDraftLibraryPage({
     : batchTargets;
 
   /**
-   * 给还没记过类目的草稿补一次「标题 → Temu 类目」，写成 memo（`auto: true`）。
+   * 给还没记过类目的成品补一次「标题 → Temu 类目」，写成 memo（`auto: true`）。
    *
-   * memo 是草稿库里显示的那一列类目，分组直接读它——所见即所发。
+   * memo 是成品库里显示的那一列类目，分组直接读它——所见即所发。
    * 只补缺的：已经匹配过的不再打网关；单条失败就按「没类目」排除，
    * 不让一条 API 抖动把整批拖成弹窗（用户还能单独手动发）。
    */
@@ -1445,7 +1445,7 @@ export function TemuDraftLibraryPage({
   };
 
   /**
-   * 把勾选的草稿按**自己匹配到的末级类目**分组，每组找一个末级 catId 对得上的产品模板。
+   * 把勾选的成品按**自己匹配到的末级类目**分组，每组找一个末级 catId 对得上的产品模板。
    *
    * 严格按 catId 相等，不按名字碰：中间层同名类目很多（好几个「桌布」），
    * 按名字配会把货发到隔壁类目去。
@@ -1482,7 +1482,7 @@ export function TemuDraftLibraryPage({
           const templateLeaf = templatePath[templatePath.length - 1];
           return templateLeaf && String(templateLeaf.catId) === leafCatId;
         }) ?? null;
-      // 没有模板也先留着这一组：稍后用草稿自己的属性估填 + 店铺默认运费/仓库拼一份
+      // 没有模板也先留着这一组：稍后用成品自己的属性估填 + 店铺默认运费/仓库拼一份
       groups.push({
         template,
         categoryPath: bucket.path,
@@ -1534,9 +1534,9 @@ export function TemuDraftLibraryPage({
   };
 
   /**
-   * 没存过模板的类目，按**草稿自己的东西**临时拼一份模板，让「点一下就全上架」在
+   * 没存过模板的类目，按**成品自己的东西**临时拼一份模板，让「点一下就全上架」在
    * 第一次用、或者新类目上也能成立：
-   *   类目 = 草稿自动匹配出来的路径 / 属性 = 入草稿库时估的那套 / 运费+仓库 = 店铺默认。
+   *   类目 = 成品自动匹配出来的路径 / 属性 = 入成品库时估的那套 / 运费+仓库 = 店铺默认。
    *
    * 拼不出来的唯一情况是「必填属性没估全」——那就返回 null，交给弹窗让人配，
    * 绝不带着缺属性的模板硬发（每条都会等网关报错，白跑一趟）。
@@ -1611,7 +1611,7 @@ export function TemuDraftLibraryPage({
     // 切页前发起的那批可能还在跑（本实例的 state 不知道）：点按钮就拦，别等填完模板才说
     if (batchRunningElsewhere()) {
       setError(
-        "上一批仍在提交中（可能由其它页签或切换页面前发起）：请等待其完成，或点击进度条上的「停止」后再提交——并行提交会导致同一批草稿重复上架",
+        "上一批仍在提交中（可能由其它页签或切换页面前发起）：请等待其完成，或点击进度条上的「停止」后再提交——并行提交会导致同一批成品重复上架",
       );
       return;
     }
@@ -1628,11 +1628,11 @@ export function TemuDraftLibraryPage({
     setAutoMatching(true);
     setBatchState({ running: false, text: "正在按标题匹配类目…" });
     try {
-      // 每条草稿按自己的标题补类目（已有 memo 的不再打网关）
+      // 每条成品按自己的标题补类目（已有 memo 的不再打网关）
       await ensureDraftCategories(batchTargets);
       const plan = planBatchGroups(batchTargets);
       const notes: string[] = [];
-      // 没存过模板的类目：拿草稿自己的类目 + 入草稿库时估好的属性 + 店铺默认运费/仓库
+      // 没存过模板的类目：拿成品自己的类目 + 入成品库时估好的属性 + 店铺默认运费/仓库
       // 临时拼一份。这样第一次用、或者遇到新类目也能一键跑，不用每类目先手工建模板。
       let autoEntries = 0;
       let autoFailedEntries = 0;
@@ -1660,7 +1660,7 @@ export function TemuDraftLibraryPage({
           running: false,
           text: plan.groups.length
             ? "这批的类目还没匹配到可用的属性，请手动配或先在发布页存一份模板"
-            : "勾选的草稿都没匹配到 Temu 类目，请手动选",
+            : "勾选的成品都没匹配到 Temu 类目，请手动选",
         });
         setBatchOpen(true);
         return;
@@ -1735,7 +1735,7 @@ export function TemuDraftLibraryPage({
         note: notes.join("，"),
         // 有类目是「临时拼的模板」时必须说明：属性是估的，不是人核过的
         autoNote: autoEntries
-          ? `${autoEntries} 条没存模板，已按草稿的类目/属性自动填（属性是估的）`
+          ? `${autoEntries} 条没存模板，已按成品的类目/属性自动填（属性是估的）`
           : "",
         guessedAttrs,
         manualAttrNames: [...manualNames],
@@ -1747,7 +1747,7 @@ export function TemuDraftLibraryPage({
   };
 
   /**
-   * 批量发布：勾选的草稿逐条套「产品模板 + 变种模板」→ 组装 → 提交，失败的进失败列表。
+   * 批量发布：勾选的成品逐条套「产品模板 + 变种模板」→ 组装 → 提交，失败的进失败列表。
    *
    * 两种入口：
    * - 弹窗里手选模板 / 现场配置 → 整批共用一套（用户明确选过，尊重选择）；
@@ -1759,7 +1759,7 @@ export function TemuDraftLibraryPage({
     if (batchState.running) return;
     if (batchRunningElsewhere()) {
       setError(
-        "上一批仍在提交中（可能由其它页签或切换页面前发起）：请等待其完成，或点击进度条上的「停止」后再提交——并行提交会导致同一批草稿重复上架",
+        "上一批仍在提交中（可能由其它页签或切换页面前发起）：请等待其完成，或点击进度条上的「停止」后再提交——并行提交会导致同一批成品重复上架",
       );
       return;
     }
@@ -1855,7 +1855,7 @@ export function TemuDraftLibraryPage({
         }
         // 心跳：别的页签 / 切页回来的实例靠它判断「这批还活着」
         writeBatchStore(BATCH_RUN_KEY, String(Date.now()));
-        // 标题可能压根没有（草稿只存了 subtitle）：直接 .slice 会把整批炸在循环外
+        // 标题可能压根没有（成品只存了 subtitle）：直接 .slice 会把整批炸在循环外
         const label = (entry.title || entry.sku || "（无标题）").slice(0, 16);
         // 多批时要把「第几批」显示出来：混类目批次一条条换模板，不然数字跳得很莫名
         const groupText = groups.length > 1 ? ` · 第 ${task.groupIndex + 1}/${groups.length} 批` : "";
@@ -1900,7 +1900,7 @@ export function TemuDraftLibraryPage({
               if (warnSamples.length < 2 && !warnSamples.includes(text)) warnSamples.push(text);
             }
           }
-          // 批量发布用的是这一条所属模板的类目：记到这条草稿上，列表里就能看到类目路径
+          // 批量发布用的是这一条所属模板的类目：记到这条成品上，列表里就能看到类目路径
           localStore.rememberDraftCategory(entry.id, itemTemplate.categoryPath);
           handledIds.push(entry.id);
           ok += 1;
@@ -1936,7 +1936,7 @@ export function TemuDraftLibraryPage({
         }
       }
     } catch (cause) {
-      // 循环本身炸了（localStorage 写满、草稿字段缺失…）：必须把 running 放掉。
+      // 循环本身炸了（localStorage 写满、成品字段缺失…）：必须把 running 放掉。
       // 否则界面永远停在「批量发布中」，「批量发布」按钮和弹窗一起锁死，只能刷新页面。
       crashed = errorMessage(cause) || "未知错误";
     } finally {
@@ -1967,7 +1967,7 @@ export function TemuDraftLibraryPage({
         const done = new Set(handledIds);
         setSelected((current) => new Set([...current].filter((id) => !done.has(id))));
       } else if (ok > 0) {
-        // 整批跑完：成功的已从草稿库发出去了，清空勾选避免误点又提交一遍
+        // 整批跑完：成功的已从成品库发出去了，清空勾选避免误点又提交一遍
         setSelected(new Set());
       }
       setProductTemplates(localStore.productTemplates());
@@ -2112,12 +2112,12 @@ export function TemuDraftLibraryPage({
         </div>
 
         {/* 分类筛选做成统计卡：一眼看到各类有多少条，点一下就筛 */}
-        <div className="temu-library-stats" role="tablist" aria-label="草稿来源筛选">
+        <div className="temu-library-stats" role="tablist" aria-label="成品来源筛选">
           {(
             [
               // counts 也要兜：接口回 `{}`（网关吞错 / 老版本没有这个字段）时
               // data 存在但 data.counts 是 undefined，`data?.counts.total` 照样抛，
-              // 整个草稿库白屏。
+              // 整个成品库白屏。
               ["all", "全部", data?.counts?.total ?? 0, ""],
               ["ai", "AI 处理", data?.counts?.ai ?? 0, "ai"],
               ["pod", "POD", data?.counts?.pod ?? 0, "pod"],
@@ -2147,7 +2147,7 @@ export function TemuDraftLibraryPage({
           type="button"
           className={`temu-library-failed-toggle${onlyFailed ? " is-active" : ""}`}
           aria-pressed={onlyFailed}
-          title="按本机失败记录筛选：只显示发布失败过的草稿"
+          title="按本机失败记录筛选：只显示发布失败过的成品"
           onClick={() => {
             setOnlyFailed((current) => !current);
             setSelected(new Set());
@@ -2173,7 +2173,7 @@ export function TemuDraftLibraryPage({
           <button
             type="button"
             className="temu-btn temu-btn-sm temu-btn-primary"
-            title="逐条过一遍要人工处理的草稿：补完一条自动跳下一条，补完直达批量发布"
+            title="逐条过一遍要人工处理的成品：补完一条自动跳下一条，补完直达批量发布"
             onClick={() =>
               setWizard({
                 ids: entries.filter((entry) => manualIds.has(entry.id)).map((entry) => entry.id),
@@ -2226,7 +2226,7 @@ export function TemuDraftLibraryPage({
                       <button
                         type="button"
                         className="temu-btn temu-btn-sm temu-btn-primary"
-                        title="打开这条草稿的整表预填：换类目、补必填属性，补完切回来自动跳下一条"
+                        title="打开这条成品的整表预填：换类目、补必填属性，补完切回来自动跳下一条"
                         onClick={() =>
                           onUseDraft(
                             entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
@@ -2312,7 +2312,7 @@ export function TemuDraftLibraryPage({
               value={queryInput}
               onChange={(event) => setQueryInput(event.target.value)}
               placeholder="搜标题 / 货号 / 类目"
-              aria-label="搜索草稿"
+              aria-label="搜索成品"
             />
             {queryInput ? (
               <button
@@ -2356,7 +2356,7 @@ export function TemuDraftLibraryPage({
           )}
 
           {/*
-            发布确认单：按每条草稿自己的类目分组、每组配一个模板，**手点「确认发布」才跑**。
+            发布确认单：按每条成品自己的类目分组、每组配一个模板，**手点「确认发布」才跑**。
             接口非幂等，以前的 3 秒倒计时手一抖就真上架了，这里改成显式确认。
           */}
           {publishConfirm &&
@@ -2505,7 +2505,7 @@ export function TemuDraftLibraryPage({
                       <p className="temu-muted">已跳过：{publishConfirm.note}</p>
                     ) : null}
                     <p className="temu-muted">
-                      逐条提交，中途某条失败只跳过它、原因进「发布历史」；同一条草稿 24 小时内重复提交会被拦一次。
+                      逐条提交，中途某条失败只跳过它、原因进「发布历史」；同一条成品 24 小时内重复提交会被拦一次。
                     </p>
                   </div>
 
@@ -2605,7 +2605,7 @@ export function TemuDraftLibraryPage({
           )}
 
         {entries.length === 0 ? (
-          // 首次进入（还没拿到过任何数据）先铺骨架：原来只有一行「正在读取草稿…」，
+          // 首次进入（还没拿到过任何数据）先铺骨架：原来只有一行「正在读取成品…」，
           // 聚合要跑 8 个任务的预览（约 1 秒），这行小字看着像没反应，
           // 而且 data 为 null 时 loading 初值还是 false，会先闪一下「暂无可用成品」。
           !data ? (
@@ -2637,7 +2637,7 @@ export function TemuDraftLibraryPage({
               <thead>
                 <tr>
                   <th className="col-check">
-                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} aria-label="全选草稿" />
+                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} aria-label="全选成品" />
                   </th>
                   <th className="col-image">图片</th>
                   <th className="col-title">产品</th>
@@ -2659,9 +2659,9 @@ export function TemuDraftLibraryPage({
                   </th>
                   <th
                     className="col-ready"
-                    title="草稿自身信息是否完整；产品属性与能否发布无关，需在发布页填写"
+                    title="成品自身信息是否完整；产品属性与能否发布无关，需在发布页填写"
                   >
-                    草稿字段
+                    成品字段
                   </th>
                   <th className="col-time">更新</th>
                   <th className="col-actions">操作</th>
@@ -2675,14 +2675,14 @@ export function TemuDraftLibraryPage({
                         type="checkbox"
                         checked={selected.has(entry.id)}
                         onChange={() => toggleSelect(entry.id)}
-                        aria-label={`选择 ${entry.title || "草稿"}`}
+                        aria-label={`选择 ${entry.title || "成品"}`}
                       />
                     </td>
                     <td className="col-image">
                       <span className="temu-draft-thumb-wrap">
                         <DraftThumb
                           path={entry.main_image || entry.images[0]}
-                          alt={entry.title || "草稿图"}
+                          alt={entry.title || "成品图"}
                           onPreview={(src, alt) => setPreview({ src, alt })}
                         />
                         {/* 角标「+N」= 除了这张缩略图还有 N 张（轮播 + 详情合集）。
@@ -2705,7 +2705,7 @@ export function TemuDraftLibraryPage({
                         {entry.source === "ai" ? "AI 处理" : "POD"}
                       </span>
                       {isFailedEntry(entry) ? (
-                        <span className="temu-draft-failed" title="这条草稿发布失败过：点「编辑」进去改完再发">
+                        <span className="temu-draft-failed" title="这条成品发布失败过：点「编辑」进去改完再发">
                           失败过
                         </span>
                       ) : null}
@@ -2741,7 +2741,7 @@ export function TemuDraftLibraryPage({
                                   : state === "auto"
                                     ? `按标题自动匹配的类目：${label}（仅供参考，提交前请确认）`
                                     : state === "draft"
-                                      ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
+                                      ? `成品自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
                                       : "还没选 Temu 类目，发布前必须选到叶子类目"
                               }
                             >
@@ -2750,7 +2750,7 @@ export function TemuDraftLibraryPage({
                                 : state === "auto"
                                   ? label
                                   : state === "draft"
-                                    ? `草稿分类：${label}`
+                                    ? `成品分类：${label}`
                                     : label}
                             </small>
                             <em className="temu-draft-site">美国站</em>
@@ -2809,7 +2809,7 @@ export function TemuDraftLibraryPage({
                                       ? `，其中 ${guessedInPrefill} 项是凭类目猜的（没有依据，取了第一个可用选项）`
                                       : "") +
                                     "；带入发布页后将自动填充，提交前请核对"
-                                  : `草稿字段齐了，不用回上游补数据。${pendingHint}`
+                                  : `成品字段齐了，不用回上游补数据。${pendingHint}`
                               }
                             >
                               <span className="temu-ready is-ok">字段齐</span>
@@ -2839,7 +2839,7 @@ export function TemuDraftLibraryPage({
                       <button
                         type="button"
                         className="temu-btn"
-                        title="带这条草稿进发布页，改完所有信息后再提交"
+                        title="将该成品带入发布页，完善信息后提交"
                         onClick={() => onUseDraft(entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields))}
                       >
                         编辑
@@ -3036,7 +3036,7 @@ export function TemuDraftLibraryPage({
                 )}
                 {batchCommonPicks && (
                   <p className="temu-confirm-warn">
-                    下面的产品属性取自本批第一条草稿的自动估值，<strong>整批共用</strong> ——
+                    下面的产品属性取自本批第一条成品的自动估值，<strong>整批共用</strong> ——
                     发布前请核对，尤其是标着「估」的项。
                   </p>
                 )}
@@ -3140,7 +3140,7 @@ export function TemuDraftLibraryPage({
                 ) : (
                   <p className="temu-edit-note">
                     接口非幂等：重复提交会在店铺里多出商品；中途某条失败只跳过它，原因进「发布历史」。
-                    同一条草稿 24 小时内重复提交会被拦一次，需要你二次确认。
+                    同一条成品 24 小时内重复提交会被拦一次，需要你二次确认。
                   </p>
                 )}
               </div>
@@ -3294,7 +3294,7 @@ export function TemuDraftLibraryPage({
                 <span className="temu-confirm-thumb">
                   <DraftThumb
                     path={confirmEntry.main_image || confirmEntry.images[0]}
-                    alt={confirmEntry.title || "草稿图"}
+                    alt={confirmEntry.title || "成品图"}
                     onPreview={(src, alt) => setPreview({ src, alt })}
                   />
                 </span>
@@ -3384,12 +3384,12 @@ export function TemuDraftLibraryPage({
               className="temu-edit-dialog"
               role="dialog"
               aria-modal="true"
-              aria-label="编辑草稿"
+              aria-label="编辑成品"
               onClick={(event) => event.stopPropagation()}
             >
               <header className="temu-edit-head">
                 <div>
-                  <strong>编辑草稿</strong>
+                  <strong>编辑成品</strong>
                   <span>{editing.source === "ai" ? "AI 处理" : "POD"}</span>
                 </div>
                 <button type="button" onClick={() => setEditing(null)} aria-label="关闭">

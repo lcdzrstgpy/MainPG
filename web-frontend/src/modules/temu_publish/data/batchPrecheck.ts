@@ -70,7 +70,7 @@ function checkError(fn: () => unknown): string {
 }
 
 /**
- * 一条草稿的预检结果。
+ * 一条成品的预检结果。
  *
  * 覆盖真实批量失败里的绝大多数：缺图、缺价、缺尺寸、模板没配全。
  * 剩下的（属性不合法、规格值和类目预设对不上）只能靠网关回话，仍然走失败台账。
@@ -114,7 +114,7 @@ export function precheckBatchItem(
   ];
   const overridesMap = prefill.skuFields ?? {};
   const hasOverrides = Object.keys(overridesMap).length > 0;
-  // variantKeysOf 吃草稿字段名（snake_case），prefill 是 camelCase，对一下再喂
+  // variantKeysOf 吃成品字段名（snake_case），prefill 是 camelCase，对一下再喂
   const skuRows = hasOverrides
     ? variantKeysOf({
         variants: prefill.variants,

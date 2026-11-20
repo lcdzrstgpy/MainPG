@@ -44,7 +44,7 @@ test("日期分隔：今天 / 昨天 / 月日", () => {
   assert.equal(dayLabelOf(at("2026-10-28T09:00:00"), now), "10 月 28 日");
 });
 
-test("来源标签按草稿 id 前缀判定", () => {
+test("来源标签按成品 id 前缀判定", () => {
   assert.equal(sourceLabelOf("ai:task-1:item-2"), "AI 处理");
   assert.equal(sourceLabelOf("pod:batch-9:style-1"), "POD 定制");
   assert.equal(sourceLabelOf(""), "手动填写");

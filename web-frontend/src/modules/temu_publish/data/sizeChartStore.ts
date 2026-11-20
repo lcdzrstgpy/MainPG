@@ -82,7 +82,7 @@ export function removeSizeChartTemplate(id: string): SizeChartTemplate[] {
 }
 
 /**
- * 新建模板的行草稿：优先用本商品变种里的尺码值（一条商品有哪些码自己最清楚），
+ * 新建模板的行成品：优先用本商品变种里的尺码值（一条商品有哪些码自己最清楚），
  * 没有就用类目可选尺码。返回 [{size, values: 列数个空串}]。
  */
 export function draftRowsFromSizes(sizes: string[], columnCount: number): SizeChartRow[] {

@@ -220,7 +220,7 @@ export function buildAttributeGroups(
 /**
  * 丢掉「当前类目属性表里已经查不到」的选择。
  *
- * 草稿库里的属性是按**估填那一刻**的 pid/vid 存的，Temu 后台会调整类目属性
+ * 成品库里的属性是按**估填那一刻**的 pid/vid 存的，Temu 后台会调整类目属性
  * （选项下线、pid 重建）。这类脏值有两个要命的表现：
  * 1. 界面上下拉框空白 —— 因为 values 里找不到那个 vid，`<option>` 根本没渲染；
  * 2. 内部 picks 仍算「有值」→ 本地必填校验放行 → 一路走到 goods.add，
@@ -234,7 +234,7 @@ export function pruneStaleAttrPicks(
   attributes: TemuAttributes | null,
 ): { picks: AttrPickMap; dropped: string[] } {
   // 老存档的键是原始 pid；服装类目「同 pid 多条」的键已被换成 refPid。
-  // 先按「唯一对应」翻译一遍，否则草稿里填好的纹理/克重会全部变成失效值。
+  // 先按「唯一对应」翻译一遍，否则成品里填好的纹理/克重会全部变成失效值。
   const migrated = migrateLegacyPicks(picks, attributes).picks;
   const byPid = new Map<number, TemuProperty>();
   for (const item of attributes?.properties ?? []) byPid.set(Number(item.pid), item);

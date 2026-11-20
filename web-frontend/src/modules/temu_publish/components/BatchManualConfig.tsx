@@ -28,12 +28,12 @@ type Props = {
   /** 配置完整时回传一份可直接用于批量发布的产品模板；不完整时回传 null */
   onChange: (template: ProductTemplate | null) => void;
   /**
-   * 预填类目：整批草稿都被自动匹配到同一个叶子类目时传进来，
+   * 预填类目：整批成品都被自动匹配到同一个叶子类目时传进来，
    * 用户只需要填属性 + 选运费/仓库，不用再搜一次。
    */
   initialPath?: TemuCategory[];
   /**
-   * 草稿库入池时按类目估好的属性：整批同一个叶子类目时传进来直接铺上，
+   * 成品库入池时按类目估好的属性：整批同一个叶子类目时传进来直接铺上，
    * 用户只需核对 + 选运费模板/仓库，不用再手点一遍下拉。
    */
   initialPicks?: AttrPickMap;
@@ -158,7 +158,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       const loaded = await temuPublishApi.attributes(leaf.catId);
       setAttributes(loaded);
       catIdRef.current = Number(leaf.catId) || 0;
-      // 草稿库估好的属性：铺上，用户仍可逐项改
+      // 成品库估好的属性：铺上，用户仍可逐项改
       if (seeded && Object.keys(seeded).length) setPicks(seeded);
     } catch (cause) {
       setAttributes(null);
@@ -178,7 +178,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
     if (catIdRef.current) saveAttrPicksHistory(storageScope(), catIdRef.current, next);
   };
 
-  // 整批草稿自动匹配到同一类目时直接预填，省一次搜索（用户仍可改）
+  // 整批成品自动匹配到同一类目时直接预填，省一次搜索（用户仍可改）
   const prefilledRef = useRef(false);
   useEffect(() => {
     if (prefilledRef.current || !initialPath?.length) return;

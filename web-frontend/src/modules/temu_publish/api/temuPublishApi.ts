@@ -93,7 +93,7 @@ export const temuPublishApi = {
     ),
   /** refresh=true 跳过服务端 60 秒缓存（点「刷新」时用） */
   /**
-   * 草稿库（服务端分页）：聚合扫描很贵，后端把全量结果缓存 60 秒，
+   * 成品库（服务端分页）：聚合扫描很贵，后端把全量结果缓存 60 秒，
    * 来源筛选 / 关键字 / 翻页都只是在缓存上切片，不会重扫任务和批次。
    */
   draftLibrary: (params: {
@@ -137,7 +137,7 @@ export const temuPublishApi = {
   removeShop: (shopId: string) =>
     httpJson<TemuSettingsStatus>(`${BASE}/settings/shops/${shopId}`, { method: "DELETE" }),
 
-  /** 发布历史：成功与失败分开取（status 留空=全部；q 搜标题/商品 id/草稿 id/类目名） */
+  /** 发布历史：成功与失败分开取（status 留空=全部；q 搜标题/商品 id/成品 id/类目名） */
   publishHistory: (params: { status?: "success" | "failed" | ""; q?: string; page?: number; pageSize?: number } = {}) =>
     httpJson<TemuPublishHistory>(
       `${BASE}/publish-history?${new URLSearchParams({

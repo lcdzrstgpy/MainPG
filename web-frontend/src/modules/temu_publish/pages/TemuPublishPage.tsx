@@ -105,7 +105,7 @@ type SpecMismatch = {
  * 类目匹配带重试。
  *
  * 网关的 category.match 偶发 SYSTEM_EXCEPTION（实测过好几次），一次失败就让推荐列表空着，
- * 界面上看起来就像「这条草稿不识别类目」。这里最多试 3 次、退避 800/1600ms，
+ * 界面上看起来就像「这条成品不识别类目」。这里最多试 3 次、退避 800/1600ms，
  * 只有真的连续失败才返回 null（标题匹配那边本来就是「失败不打扰」的语义）。
  */
 async function matchCategoryWithRetry(
@@ -317,7 +317,7 @@ function firstSpecValue(text?: string): string {
 /**
  * 进页面时的初始类目。
  *
- * 有草稿带入且这条草稿存过类目 → 直接用它；从草稿带入但没存过 → 留空，等标题自动匹配。
+ * 有成品带入且这条成品存过类目 → 直接用它；从成品带入但没存过 → 留空，等标题自动匹配。
  * 不能无脑读「最近用过的类目」：那样打开 B 商品会先显示 A 商品的类目，看着就像没识别。
  */
 function initialCategoryPath(): TemuCategory[] {
@@ -648,7 +648,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const [form, setForm] = useState<PublishForm>(() => {
     const saved = loadJsonLocal<Partial<PublishForm>>(`${FORM_KEY}:${storageScope()}`, {});
     // 这里**不再**把存档里的 1 天 / 7 天拉回 9 天：
-    // 发货时效改成 Temu 后台那四个档位单选（1/2/7/9 + 自定义）之后，1 和 7 是
+    // 发货时效改成 Temu 卖家中心那四个档位单选（1/2/7/9 + 自定义）之后，1 和 7 是
     // 用户可能主动选的合法值，再清洗一遍会把用户刚选的档位每次刷新都改回去。
     // 旧默认值的影响只剩「一进来看到选中了 1 个工作日」，眼就能发现并改。
     const raw = saved.shipmentDays;
@@ -666,9 +666,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // 按标题自动匹配到的类目候选
   const [titleMatches, setTitleMatches] = useState<TemuCategoryPath[]>([]);
   const [titleMatching, setTitleMatching] = useState(false);
-  // 换草稿时自增：标题没变（同一个商品再点一次）也要重新跑一次匹配
+  // 换成品时自增：标题没变（同一个商品再点一次）也要重新跑一次匹配
   const [matchSeq, setMatchSeq] = useState(0);
-  // 请求代次：换草稿/改标题后旧请求回来不能覆盖新状态
+  // 请求代次：换成品/改标题后旧请求回来不能覆盖新状态
   const matchSeqRef = useRef(0);
   // 用户手动选过类目后，标题再变也不覆盖
   const categoryTouchedRef = useRef(false);
@@ -690,7 +690,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /** 已经对哪个叶子类目跑过自动填：同一类目只跑一次，用户清空后不会被偷偷填回来。 */
   const autoFilledCatRef = useRef(0);
   /**
-   * 草稿库估好的属性：先存着，等类目属性表加载完再铺。
+   * 成品库估好的属性：先存着，等类目属性表加载完再铺。
    * 不能直接 setAttrPicks —— 紧接着的 applyCategory 会 setAttrPicks({}) 把它清掉。
    */
   const carriedAttrPicksRef = useRef<{
@@ -700,9 +700,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   } | null>(null);
   /** 铺进来的属性里哪些是「猜的」：表单上标「估」，让人先核对这几项 */
   const [guessedPids, setGuessedPids] = useState<number[]>([]);
-  /** 从草稿库带进来的估填项数（提示「这些是按类目估的」） */
+  /** 从成品库带进来的估填项数（提示「这些是按类目估的」） */
   const [carriedAttrCount, setCarriedAttrCount] = useState(0);
-  /** 草稿属性里「Temu 那边已经查不到」的那些名字：清空了，必须让用户知道要重选 */
+  /** 成品属性里「Temu 那边已经查不到」的那些名字：清空了，必须让用户知道要重选 */
   const [staleAttrNames, setStaleAttrNames] = useState<string[]>([]);
   const [autoFill, setAutoFill] = useState<{ hits: AutoFillHit[]; ambiguous: string[] }>({
     hits: [],
@@ -804,9 +804,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   // 详情图统一宽度后的尺寸（key 同 imageCache）
   const detailSizeCache = useRef(new Map<string, { width: number; height: number }>());
   const prefillRef = useRef<TemuPublishPrefill | null>(null);
-  // 当前表单来自哪条草稿：选完类目回写给草稿库，下次不用重选
+  // 当前表单来自哪条成品：选完类目回写给成品库，下次不用重选
   const prefillDraftId = useRef("");
-  /** 最近一次带入的草稿：切店铺重取规格表后要按它重新对一次父规格 */
+  /** 最近一次带入的成品：切店铺重取规格表后要按它重新对一次父规格 */
   const lastPrefillRef = useRef<TemuPublishPrefill | null>(null);
 
   const warehouses = useMemo(
@@ -821,7 +821,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   /**
    * 已选的尺码表模板 ID（逗号/空格分隔的字符串 ↔ 数组）。
-   * 店里已经有表的时候，让用户点一下直接填，别去 Temu 后台抄 ID。
+   * 店里已经有表的时候，让用户点一下直接填，别去 Temu 卖家中心抄 ID。
    */
   const selectedSizeTemplateIds = form.sizeTemplates
     .split(/[,，\s]+/)
@@ -871,8 +871,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /**
    * 用户有没有自己动过属性下拉。
    *
-   * 只有动过才写「同类目历史」：自动填和草稿库估好的值都是程序铺的，
-   * 写进历史等于教它「以后都这么填」—— 一条没改过的草稿就会把整个类目
+   * 只有动过才写「同类目历史」：自动填和成品库估好的值都是程序铺的，
+   * 写进历史等于教它「以后都这么填」—— 一条没改过的成品就会把整个类目
    * 的复用值污染成猜出来的第一个选项，甚至清空后历史跟着变空。
    */
   const picksTouchedRef = useRef(false);
@@ -900,9 +900,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   /**
-   * 刷新页面 / HMR 后类目是从本机存档恢复出来的（最近用过的类目、或草稿带入），
+   * 刷新页面 / HMR 后类目是从本机存档恢复出来的（最近用过的类目、或成品带入），
    * 但属性表还没拉过 —— 不补拉的话属性区一片空，连恢复出来的选择都没处显示。
-   * 只跑一次；拉回来顺手按该类目的预设值检查变种行（带入的草稿可能是别的类目存的）。
+   * 只跑一次；拉回来顺手按该类目的预设值检查变种行（带入的成品可能是别的类目存的）。
    */
   const restoredAttrsLoadedRef = useRef(false);
   useEffect(() => {
@@ -957,7 +957,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const leafCatId = Number(categoryPath[categoryPath.length - 1]?.catId ?? 0);
     if (!attributes || !leafCatId) return;
     if (autoFilledCatRef.current === leafCatId) return;
-    // 草稿库带进来的估填值先铺上（只铺空位，用户已填的不动），再补剩下没估到的
+    // 成品库带进来的估填值先铺上（只铺空位，用户已填的不动），再补剩下没估到的
     const carried = carriedAttrPicksRef.current;
     carriedAttrPicksRef.current = null;
     let base = attrPicksRef.current;
@@ -1009,7 +1009,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       return next;
     });
     setAutoFill({ hits: [], ambiguous: [] });
-    // 「草稿库估了 N 项」这条也没意义了：值已经撤掉
+    // 「成品库估了 N 项」这条也没意义了：值已经撤掉
     setCarriedAttrCount(0);
     setStaleAttrNames([]);
     setGuessedPids([]);
@@ -1017,14 +1017,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   useEffect(() => {
     let alive = true;
-    // 草稿库「用于发布」带入：一次性读取后立即删除，避免下次进入重复覆盖。
+    // 成品库「用于发布」带入：一次性读取后立即删除，避免下次进入重复覆盖。
     try {
       const raw = window.sessionStorage.getItem(TEMU_PUBLISH_PREFILL_KEY);
       if (raw) {
         window.sessionStorage.removeItem(TEMU_PUBLISH_PREFILL_KEY);
         const prefill = JSON.parse(raw) as TemuPublishPrefill;
         prefillRef.current = prefill;
-        // 草稿存过类目：先标成「已选」，否则接口回来前标题匹配可能抢先覆盖它
+        // 成品存过类目：先标成「已选」，否则接口回来前标题匹配可能抢先覆盖它
         if (prefill.categoryPath?.length) categoryTouchedRef.current = true;
         applyPrefillMeta(prefill);
         setForm((current) => ({ ...current, ...prefillToForm(current, prefill) }));
@@ -1058,8 +1058,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         } else {
           missed.push("店铺凭证");
           // 店铺凭证没取到（后端刚重启/网络抖动）时 status 停在 null，而标题自动匹配
-          // 被 status.configured.ready 门控 —— 没有这层重试，草稿库点「编辑」带入的
-          // 没记忆过类目的草稿就永远不触发属性加载，界面看着是「点了没反应」还不报错。
+          // 被 status.configured.ready 门控 —— 没有这层重试，成品库点「编辑」带入的
+          // 没记忆过类目的成品就永远不触发属性加载，界面看着是「点了没反应」还不报错。
           // 静默重试三次（2s/5s/10s），取到为止；仍失败就维持「点刷新重试」的原语义。
           void (async () => {
             for (const delay of [2000, 5000, 10000]) {
@@ -1114,20 +1114,20 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         }));
         // 预填数据必须在 updater 外面取出并清空：
         // updater 在 StrictMode 下会被调用两次，把「读 ref + 置空」写在里面，
-        // 第二次就拿到 null，草稿的尺码/价格全部落不到变种行上。
+        // 第二次就拿到 null，成品的尺码/价格全部落不到变种行上。
         const prefill = prefillRef.current;
         prefillRef.current = null;
-        // 草稿只有颜色时别默认占着「尺码」父规格（否则每行都判缺尺码）
+        // 成品只有颜色时别默认占着「尺码」父规格（否则每行都判缺尺码）
         if (prefill) alignSpecParents(prefill);
         const seedRows = prefill ? buildRowsFromPrefill(prefill, whId) : null;
         setRows((current) => {
-          // 带草稿进来：整表按这条草稿重建，别把上一条的颜色/价格/尺寸留在后面几行。
-          // 一条草稿往往有多个 SKU（一个颜色一条），全部铺出来，不用用户再点生成。
+          // 带成品进来：整表按这条成品重建，别把上一条的颜色/价格/尺寸留在后面几行。
+          // 一条成品往往有多个 SKU（一个颜色一条），全部铺出来，不用用户再点生成。
           if (seedRows && seedRows.length) return seedRows;
           if (current.length) return current;
           return [createVariantRow(whId, "", "", EMPTY_BATCH, 0)];
         });
-        // 这条草稿上次选过类目：直接套回去，省得每次重选
+        // 这条成品上次选过类目：直接套回去，省得每次重选
         if (prefill?.categoryPath?.length) {
           void applyCategory(prefill.categoryPath);
         }
@@ -1148,11 +1148,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   function applyPrefillMeta(prefill: TemuPublishPrefill) {
     prefillDraftId.current = prefill.draftId || "";
     lastPrefillRef.current = prefill;
-    // 草稿自带颜色/尺码 → 说明这条是多规格商品，直接按多规格发。
-    // 不然「默认单 SKU」会把草稿里的颜色吞掉（用户看到填了，发出去却没有），
+    // 成品自带颜色/尺码 → 说明这条是多规格商品，直接按多规格发。
+    // 不然「默认单 SKU」会把成品里的颜色吞掉（用户看到填了，发出去却没有），
     // 那才是真正的卡点。占位值「默认」不算（那是单 SKU 的占位符）。
     if (hasRealSpecValue(prefill)) setVariantsOn(true);
-    // 草稿库按类目估好的属性：留给自动填那一步铺（那时才对得上当前类目）
+    // 成品库按类目估好的属性：留给自动填那一步铺（那时才对得上当前类目）
     carriedAttrPicksRef.current =
       prefill.attrPicks && Object.keys(prefill.attrPicks).length
         ? {
@@ -1177,7 +1177,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     });
   }
 
-  /** 草稿里的规格值是不是「真的规格」（排除单 SKU 占位符「默认」）。 */
+  /** 成品里的规格值是不是「真的规格」（排除单 SKU 占位符「默认」）。 */
   function hasRealSpecValue(prefill: TemuPublishPrefill): boolean {
     return [prefill.specValue1, prefill.specValue2].some((raw) => {
       const text = String(raw ?? "").trim();
@@ -1185,12 +1185,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     });
   }
 
-  /** 草稿值铺到表单（不动变种行）。 */
+  /** 成品值铺到表单（不动变种行）。 */
   function prefillToForm(current: PublishForm, prefill: TemuPublishPrefill): Partial<PublishForm> {
     return {
       title: prefill.title || current.title,
       // Temu 的变种属性值一/值二
-      // 草稿里的「变种属性值一/二」= 颜色列表 / 尺码列表
+      // 成品里的「变种属性值一/二」= 颜色列表 / 尺码列表
       // 有全量取值就用全量（11 个颜色都要铺出来），否则退回单个值
       colorsText:
         (prefill.specValues1?.length ? prefill.specValues1.join(",") : prefill.specValue1) ||
@@ -1205,7 +1205,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   }
 
   /**
-   * 一个变种某个字段的值：**人手设的变种覆盖** > 草稿自带 > 整条值。
+   * 一个变种某个字段的值：**人手设的变种覆盖** > 成品自带 > 整条值。
    * 和批量组装（batchPublish.skuFields）同一个取值函数，别写第二份。
    */
   function skuFieldOf(
@@ -1218,7 +1218,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     return resolveSkuField(prefill.skuFields?.[skuKeyOf(colorName, sizeName)], field, base);
   }
 
-  /** 草稿值铺到某一变种行：kg→g，价格/库存/尺寸直接搬。 */
+  /** 成品值铺到某一变种行：kg→g，价格/库存/尺寸直接搬。 */
   function prefillToRow(row: VariantRow, prefill: TemuPublishPrefill): VariantRow {
     const weightKg = Number(prefill.weightKg);
     return {
@@ -1238,9 +1238,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   }
 
   /**
-   * 草稿 → 变种行：一个 SKU 一行。
+   * 成品 → 变种行：一个 SKU 一行。
    *
-   * AI 处理采到的草稿 `source_variant_records` 本来就是「一个颜色一条」，
+   * AI 处理采到的成品 `source_variant_records` 本来就是「一个颜色一条」，
    * 价格、库存、图都各不相同。以前只读第一条，进发布页只剩一行，剩下 10 个颜色
    * 要用户手填 —— 数据明明都在，没理由让人再录一遍。
    */
@@ -1250,7 +1250,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     );
     if (variants.length <= 1) {
       const row = prefillToRow(createVariantRow(whId, "", "", EMPTY_BATCH, 0), prefill);
-      // 单 SKU 也可能被「按变种改」覆盖过（key 就是草稿里那个规格值）
+      // 单 SKU 也可能被「按变种改」覆盖过（key 就是成品里那个规格值）
       return [
         {
           ...row,
@@ -1282,7 +1282,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         ...merged,
         colorName: color,
         sizeName: size,
-        // 每个字段都按「人手设的变种覆盖 > 草稿自带 > 整条值」取（同 batchPublish）；
+        // 每个字段都按「人手设的变种覆盖 > 成品自带 > 整条值」取（同 batchPublish）；
         // 库存 0 是合法值（先建品后补货），不能用 || 兜掉
         extCode: skuFieldOf(prefill, color, size, "sku", variant.sku || merged.extCode) || merged.extCode,
         supplierPrice:
@@ -1312,11 +1312,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   }
 
   /**
-   * 父规格按草稿**实际带的维度**来选。
+   * 父规格按成品**实际带的维度**来选。
    *
-   * `pickSpecPair` 无条件给出「颜色 + 尺码」，可草稿经常只有颜色（单维商品）。
+   * `pickSpecPair` 无条件给出「颜色 + 尺码」，可成品经常只有颜色（单维商品）。
    * 尺码槽位空着也照样算「缺尺码」：每个变种行都被判没填全，顶部一直「还差 1 项」，
-   * 用户只能自己去把「变种属性二」改成「不选」—— 明明草稿里就没有尺码这回事。
+   * 用户只能自己去把「变种属性二」改成「不选」—— 明明成品里就没有尺码这回事。
    */
   function alignSpecParents(prefill: TemuPublishPrefill) {
     const hasColors = (prefill.specValues1?.length ?? 0) > 0 || !!prefill.specValue1?.trim();
@@ -1325,9 +1325,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (!hasSizes) setSizeParentId(0);
   }
 
-  /** 把草稿库带入的数据直接铺到表单（用于「页签已打开」的情况）。 */
+  /** 把成品库带入的数据直接铺到表单（用于「页签已打开」的情况）。 */
   const applyPrefillNow = (prefill: TemuPublishPrefill) => {
-    // 同一条草稿再点一次（改了价格回来）→ 保留手改；换了一条 → 整表重建
+    // 同一条成品再点一次（改了价格回来）→ 保留手改；换了一条 → 整表重建
     const sameDraft = !!prefill.draftId && prefill.draftId === prefillDraftId.current;
     applyPrefillMeta(prefill);
     alignSpecParents(prefill);
@@ -1338,12 +1338,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         return current;
       }
       if (sameDraft) return [prefillToRow(current[0], prefill), ...current.slice(1)];
-      // 换了一条草稿：按这条草稿的全部变体重建整表
+      // 换了一条成品：按这条成品的全部变体重建整表
       return buildRowsFromPrefill(prefill, current[0].warehouseId);
     });
     // 同样不能写在 updater 里（StrictMode 会跑两次）
     prefillRef.current = prefill;
-    // 换了草稿：上一条的推荐列表一律先清空（不管这条草稿存没存过类目），
+    // 换了成品：上一条的推荐列表一律先清空（不管这条成品存没存过类目），
     // 再按新标题重新匹配。存过类目的不覆盖，只把推荐换成这条商品的。
     setTitleMatches([]);
     setMatchSeq((value) => value + 1);
@@ -1360,7 +1360,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   };
 
   // 发布页已经打开时 openModule 只会切页签、不会重新挂载，
-  // 所以草稿库还要走事件通道把数据推进来，否则「用于发布」点了没反应。
+  // 所以成品库还要走事件通道把数据推进来，否则「用于发布」点了没反应。
   useEffect(() => {
     const onPrefill = (event: Event) => {
       const detail = (event as CustomEvent<TemuPublishPrefill>).detail;
@@ -1531,7 +1531,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       }
       setCategoryOptions([]);
       saveJsonLocal(recentCategoryKey, path);
-      // 回写给来源草稿：草稿库那行会显示类目路径，下次带入也直接选中
+      // 回写给来源成品：成品库那行会显示类目路径，下次带入也直接选中
       if (prefillDraftId.current) {
         localStore.rememberDraftCategory(prefillDraftId.current, path);
       }
@@ -1599,8 +1599,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 标题停下 1.2 秒后，用 categorySearchTexts 给出的查询词（逗号前 + 去掉 `for …` 的
    * 主体段）查一次，合并去重后取前 8 条当推荐。
    *
-   * 推荐列表**每次换草稿/改标题都重新算**（哪怕这条草稿已经记住过类目），否则打开
-   * 另一个商品还挂着上一条的推荐；只有「用户没手动选过、草稿也没记住过类目」时，
+   * 推荐列表**每次换成品/改标题都重新算**（哪怕这条成品已经记住过类目），否则打开
+   * 另一个商品还挂着上一条的推荐；只有「用户没手动选过、成品也没记住过类目」时，
    * 才自动套用第一个叶子路径，其余情况只给推荐，点一下自己切。
    */
   useEffect(() => {
@@ -1609,7 +1609,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     const timer = setTimeout(() => {
       const queries = categorySearchTexts(title);
       if (!queries.length) return;
-      // 这一轮匹配的代次：回来时如果已经不是最新的（换草稿/又改了标题）就整份丢掉，
+      // 这一轮匹配的代次：回来时如果已经不是最新的（换成品/又改了标题）就整份丢掉，
       // 否则上一条商品的结果会把当前商品的类目改掉。
       const seq = (matchSeqRef.current += 1);
       setTitleMatching(true);
@@ -1797,7 +1797,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const pair = pickSpecPair(specItems);
       setColorParentId(pair.color);
       setSizeParentId(pair.size);
-      // 切店铺会重取规格表：还按当前草稿的维度对一次，别把「尺码」又占回去
+      // 切店铺会重取规格表：还按当前成品的维度对一次，别把「尺码」又占回去
       if (lastPrefillRef.current) alignSpecParents(lastPrefillRef.current);
     }
     // 旧店的值一律丢掉，换成新店的默认值（没有就让用户自己选，别带着旧 id 发出去）
@@ -1815,7 +1815,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     run("settings", async () => {
       const token = accessToken.trim();
       if (!token) {
-        throw new Error("请先粘贴店铺 access_token（Temu 后台：系统管理 → 授权管理 → 获取授权）");
+        throw new Error("请先粘贴店铺 access_token（Temu 卖家中心：系统管理 → 授权管理 → 获取授权）");
       }
       const saved = await temuPublishApi.addShop(token);
       setStatus(saved);
@@ -2196,7 +2196,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (cached) return cached;
 
     const options = saleValueIndex.get(parentSpec.parentSpecId) ?? [];
-    // 草稿带来的是「安卓通用款-黑色」「迷雾蓝」这种描述，先自动对齐到预设值
+    // 成品带来的是「安卓通用款-黑色」「迷雾蓝」这种描述，先自动对齐到预设值
     const matchedName = matchPresetValue(name, options.map((item) => item.name));
     const preset = matchedName ? options.find((item) => item.name === matchedName) : undefined;
     if (preset) {
@@ -2215,7 +2215,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (!specId) {
         throw new Error(
           `${parentSpec.parentSpecName}「${name}」建成自定义规格失败（Temu 没返回 spec_id），重试一次；` +
-            "仍失败就去 Temu 后台确认这个类目还能不能加自定义规格",
+            "仍失败就去 Temu 卖家中心确认这个类目还能不能加自定义规格",
         );
       }
       const resolved: TemuSkuSpec = {
@@ -2260,8 +2260,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /**
    * 本地媒体路径/外链统一上传到 Temu 图床；已是 Temu 地址则复用。
    *
-   * `shape` 给定时先按比例裁一遍再上传 —— **草稿库带入的图也走这条路径**，
-   * 以前它不裁，只有「手动上传」才裁，于是从草稿带入的图在服饰类目下
+   * `shape` 给定时先按比例裁一遍再上传 —— **成品库带入的图也走这条路径**，
+   * 以前它不裁，只有「手动上传」才裁，于是从成品带入的图在服饰类目下
    * （要 3:4）和普通类目下（要 1:1）都可能比例不对而被拒。
    *
    * 缓存 key 必须带上比例：同一张原图先按 1:1 传过、改类目后又按 3:4 传，
@@ -2288,7 +2288,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       // 公网外链（如 COS）交给后端代下载，避免浏览器跨域 —— 像素拿不到，裁不了
       uploaded = await temuPublishApi.uploadImageUrl(text, cateId);
     } else {
-      // 本地草稿图 / 素材图
+      // 本地成品图 / 素材图
       const blob = await readLocalImage(text, "图片");
       uploaded = await temuPublishApi.uploadImage(await shapeIt(await blobToDataUrl(blob)), cateId);
     }
@@ -2368,7 +2368,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       return resolved;
     });
 
-  /** 组装发布草稿（校验 + 图片上传 + 创建规格）。build / 校验 / 发布共用同一份。 */
+  /** 组装发布成品（校验 + 图片上传 + 创建规格）。build / 校验 / 发布共用同一份。 */
   const composeDraft = async (): Promise<TemuGoodsDraft> => {
     const warnings: string[] = [];
     if (!status?.configured.ready) {
@@ -2388,7 +2388,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       throw new Error(`轮播图至少 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
     }
     if (carouselSource.length > 10) throw new Error("轮播图最多 10 张");
-    // 草稿带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
+    // 成品带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
     const outerSource = splitLines(form.outerImages);
     if (outerSource.length > 6) throw new Error("外包装图片最多 6 张");
     const detailSource = splitLines(form.detailImages);
@@ -2423,10 +2423,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (missing.length) throw new Error(`缺少必填属性：${missing.join("、")}`);
     }
 
-    // 本地草稿图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
+    // 本地成品图/外链图在生成前统一上传到 Temu 图床；已上传过的复用缓存。
     //
-    // ⚠️ 主图比例按类目定（服饰 3:4、其它 1:1）：草稿库带入的图也走这条路径，
-    // 不在这里裁的话就只有「手动上传」的图是对的，草稿带入的全靠原图碰运气。
+    // ⚠️ 主图比例按类目定（服饰 3:4、其它 1:1）：成品库带入的图也走这条路径，
+    // 不在这里裁的话就只有「手动上传」的图是对的，成品带入的全靠原图碰运气。
     const apparel = sizeChart.info?.required === true;
     const carouselShape = apparel ? APPAREL_CAROUSEL_SHAPE : SQUARE_SHAPE;
     // 提交前的传图进度：轮播 + 外包装 + 详情全算进来，传完（或失败）立刻清空
@@ -2449,7 +2449,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
     // 服饰类目的素材图单独校验「1:1、宽>=800」，而轮播图是 3:4 竖图 ——
     // 留空回退到轮播首图会被 Temu 拒（实测报「素材图[...]校验失败，应符合 1:1，宽>=800」）。
-    // 上传轮播时已经自动另裁一张方图填进 material，走到这里还空着说明是草稿带入的竖图，
+    // 上传轮播时已经自动另裁一张方图填进 material，走到这里还空着说明是成品带入的竖图，
     // 只能让用户补一张，别默默回退去撞必然失败的校验。
     const materialSource = form.material.trim();
     if (apparel && !materialSource) {
@@ -2504,7 +2504,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
      */
     const usedSkuCodes = new Set<string>();
 
-    /** 一行变种 → 一个 SKU 草稿。带不带规格由调用方给，字段映射只写这一份。 */
+    /** 一行变种 → 一个 SKU 成品。带不带规格由调用方给，字段映射只写这一份。 */
     const buildSku = (
       row: VariantRow,
       at: string,
@@ -2692,8 +2692,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       outer_goods_url: form.externalUrl.trim(),
       properties,
       skcs,
-      // 带上来源草稿 id：发布成功后这条草稿会从草稿库移除（避免重复上架），
-      // 同时发布历史里能看出这条是从哪条草稿来的
+      // 带上来源成品 id：发布成功后这条成品会从成品库移除（避免重复上架），
+      // 同时发布历史里能看出这条是从哪条成品来的
       draft_id: prefillDraftId.current || "",
       site_ids: [SITE_ID],
       // 类目明确不需要尺码表（sizeChart.has === false）时不要带旧的模板 id：
@@ -2825,14 +2825,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           const todo = diff ? diff.staleChoices.length + diff.addedRequired.length : 0;
           if (detail && todo > 0) {
             throw new Error(
-              `Temu 后台改过这个类目的属性定义：${detail}。`
+              `Temu 卖家中心改过这个类目的属性定义：${detail}。`
                 + "请在下方「类目属性」里把这几项重新选好再提交。",
             );
           }
           if (detail) {
             // 只有 vid 重建、选值文字没变 → 已经自动沿用，不用用户动手
             throw new Error(
-              `Temu 后台改过这个类目的属性定义：${detail}。原来的选择已经自动沿用，直接再点一次提交即可。`,
+              `Temu 卖家中心改过这个类目的属性定义：${detail}。原来的选择已经自动沿用，直接再点一次提交即可。`,
             );
           }
           // 重拉后没差异：说明属性表本身没变，问题在别处。
@@ -2848,7 +2848,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               + "或者先在变种区手动选一个规格值再提交。",
           );
         }
-        // 失败也要留痕：草稿库/发布页的「发布失败」列表靠这条重试
+        // 失败也要留痕：成品库/发布页的「发布失败」列表靠这条重试
         const parsed = parsePublishError(cause);
         localStore.addFailure({
           id: `${Date.now()}`,
@@ -2864,7 +2864,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           at: new Date().toLocaleString("zh-CN"),
           reason: parsed.reason,
           traceId: parsed.traceId,
-          // 带上重试所需的字段：草稿库「发布失败」里点重试可以直接回填
+          // 带上重试所需的字段：成品库「发布失败」里点重试可以直接回填
           prefill: {
             title: draft.title,
             images: draft.carousel_image_urls,
@@ -2946,7 +2946,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
    * 发下一条：清掉「这件商品特有」的内容，保留一批商品共用的设置。
    *
    * 实际发一批货时常是同一类目、同一运费模板和仓库，只换个款（图/货号/变种不同）。
-   * 以前发完一条要回草稿库重进一次，类目和属性都得重选。
+   * 以前发完一条要回成品库重进一次，类目和属性都得重选。
    *
    * 保留：类目、属性选择、运费模板、发货仓库、时效、敏感/定制开关、多件装、产地。
    * 清掉：标题、英文标题、货号、轮播/外包装/详情图、描述、站外链接、变种行、提交结果。
@@ -2969,9 +2969,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setPublishResult(null);
     setMandatory(null);
     setShowFieldErrors(false);
-    // 上一条草稿的预填数据与来源条必须一起清：
+    // 上一条成品的预填数据与来源条必须一起清：
     // 留着的话「rows 为空就消费 prefillRef」的路径会把它重新填回来，
-    // 侧栏也还挂着「POD 草稿 · 申报价 ¥xx」。
+    // 侧栏也还挂着「POD 成品 · 申报价 ¥xx」。
     prefillRef.current = null;
     prefillDraftId.current = "";
     setPrefillInfo(null);
@@ -3372,7 +3372,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <span>
               新增店铺：粘贴店铺授权码（access_token）
               <em className="temu-muted">
-                Temu 后台：系统管理 → 授权管理 → 获取授权（对接系统选「启邦国际跨境分销运营管理系统」），
+                Temu 卖家中心：系统管理 → 授权管理 → 获取授权（对接系统选「启邦国际跨境分销运营管理系统」），
                 复制 access_token 后面的整串。保存前会先打一次网关校验，通过才存进列表
               </em>
             </span>
@@ -3466,7 +3466,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         <span className="temu-stepbar-progress" title="已完成的步骤数">
           <b>{flowSteps.filter((step) => step.done).length}</b>/{flowSteps.length}
         </span>
-        {/* 还没带入草稿时，把入口挂在步骤条右侧的空白里：
+        {/* 还没带入成品时，把入口挂在步骤条右侧的空白里：
             原来它单独占一整行（「来源」大条），首屏白白少看两个字段。
             带入之后摘要信息多（标题/图数/申报价/需核对项），才恢复成整行。 */}
         {!prefillInfo && onOpenDraftLibrary && (
@@ -3474,10 +3474,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             type="button"
             className="temu-stepbar-source"
             onClick={onOpenDraftLibrary}
-            title="草稿库里的 AI 处理 / POD 成品可以一键带入标题、图片和变种"
+            title="成品库中的 AI 处理 / POD 成品可一键带入标题、图片与变种"
           >
             <span className="temu-stepbar-source-tag">来源</span>
-            从草稿库带入
+            从成品库带入
           </button>
         )}
       </nav>
@@ -3509,14 +3509,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
           )}
 
-          {/* 来源条：有草稿带入就压缩成一行，没有就给一个入口 */}
+          {/* 来源条：有成品带入就压缩成一行，没有就给一个入口 */}
           {prefillInfo ? (
             <div className={`temu-source-bar${prefillInfo.needsReview?.length ? " is-warn" : ""}`}>
               <span className="temu-prefill-source">
-                {prefillInfo.source === "pod" ? "POD 草稿" : prefillInfo.source === "ai" ? "AI 处理草稿" : "草稿库"}
+                {prefillInfo.source === "pod" ? "POD 成品" : prefillInfo.source === "ai" ? "AI 处理成品" : "成品库"}
               </span>
               <div className="temu-source-main">
-                <strong>{prefillInfo.title || "已带入草稿"}</strong>
+                <strong>{prefillInfo.title || "已带入成品"}</strong>
                 <span className="temu-muted">
                   {[
                     prefillInfo.specLabel ? `变种 ${prefillInfo.specLabel}` : "",
@@ -3527,12 +3527,12 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     .join(" · ") || "标题/图片已填好，核对后补类目即可"}
                 </span>
                 {prefillInfo.needsReview?.length ? (
-                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（草稿带入的预填值与参考价，提交前请核对）</em>
+                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（成品带入的预填值与参考价，提交前请核对）</em>
                 ) : null}
               </div>
               {onOpenDraftLibrary && (
                 <button type="button" className="temu-link" onClick={onOpenDraftLibrary}>
-                  换一个草稿
+                  换一个成品
                 </button>
               )}
             </div>
@@ -3711,7 +3711,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                         className="temu-link"
                         onClick={() => void refreshCategoryTree()}
                         disabled={busy !== ""}
-                        title="在 Temu 后台修改类目或其必填属性后，点击此处立即刷新（无需等待自动刷新周期）"
+                        title="在 Temu 卖家中心修改类目或其必填属性后，点击此处立即刷新（无需等待自动刷新周期）"
                       >
                         刷新类目树
                       </button>
@@ -3797,14 +3797,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                       <span>
                         {carriedAttrCount > 0 && (
                           <>
-                            草稿库已按类目估了 <strong>{carriedAttrCount}</strong> 项属性，
+                            成品库已按类目预填 <strong>{carriedAttrCount}</strong> 项属性，
                             <em className="temu-muted">发布前请核对</em>
                             {autoFill.hits.length > 0 || staleAttrNames.length > 0 ? "；" : ""}
                           </>
                         )}
                         {staleAttrNames.length > 0 && (
                           <>
-                            <strong>{staleAttrNames.length}</strong> 项草稿属性
+                            <strong>{staleAttrNames.length}</strong> 项成品属性
                             在 Temu 那边已经失效（{staleAttrNames.slice(0, 6).join("、")}
                             {staleAttrNames.length > 6 ? " 等" : ""}），已清空 —— 这几项要重新选，
                             否则提交会被拒「请求的内容不存在或已被删除」
@@ -4011,8 +4011,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   busy={busy !== ""}
                   emptyHint={
                     slot.key === "carousel"
-                      ? `草稿带入的图会显示在这里；上传会自动裁成 ${apparelSlot ? "3:4" : "1:1"}`
-                      : "可选，从草稿库带入或上传"
+                      ? `成品带入的图会显示在这里；上传会自动裁成 ${apparelSlot ? "3:4" : "1:1"}`
+                      : "可选：从成品库带入或上传"
                   }
                 />
                 {slot.key === "carousel" ? (
@@ -4085,7 +4085,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 {isApparelCategory ? (
                   <em className="temu-field-note">
                     Temu 单独校验素材图「1:1、宽 ≥800」；上传轮播图时会自动另裁一张方图填进来，
-                    从草稿库带入的竖图需要在这里换一张
+                    从成品库带入的竖图需要在这里换一张
                   </em>
                 ) : null}
             </div>
@@ -4111,7 +4111,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 />
                 <span>
                   <strong>定制产品</strong>
-                  <em>需先在卖家中心配好定制模板，否则无法正常上架</em>
+                  <em>须先在 Temu 卖家中心配置定制模板，否则无法正常上架</em>
                 </span>
               </label>
             </div>
@@ -4254,7 +4254,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <em className="temu-muted">
                     {sizeChart.has
                       ? `这个类目需要尺码表（店里已有 ${sizeChart.info?.count ?? 0} 张）：点下面的表直接用，也可以手填 ID`
-                      : "这个类目必须绑尺码表：先在 Temu 后台建好，再把模板 ID 填这里"}
+                      : "这个类目必须绑尺码表：先在 Temu 卖家中心建好，再把模板 ID 填这里"}
                   </em>
                 </span>
                 {sizeChart.info?.required && !sizeChart.has ? (
@@ -4399,7 +4399,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
             {/* 发货时效原来是 two-col 的左半边，右半边空着、说明又占两行，
                 整块看着像「填了一半」。改成占满一行。
-                2026-11-05：从数字输入框改成 Temu 后台同款档位单选（1/2/7/9 + 自定义），
+                2026-11-05：从数字输入框改成 Temu 卖家中心同款档位单选（1/2/7/9 + 自定义），
                 radio 之间互斥要 label 包多个 input —— 外层不能再用 <label>，
                 否则点标题会命中第一个 radio（1 个工作日）。 */}
             <div className="temu-field temu-field-shipment">
@@ -4749,7 +4749,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <p className="temu-confirm-note">
                   {publishConfirm.kind === "submit"
                     ? "接口不支持重试（连点可能重复上架）；提交成功后商品会出现在店铺里。"
-                    : "确认还要再提交一次吗？确认后店铺里会多出一件相同商品；如果只是想改内容，先取消，回草稿库改完再发。"}
+                    : "确认还要再提交一次吗？确认后店铺里会多出一件相同商品；如需修改内容，请先取消，回到成品库修改后再提交。"}
                 </p>
                 <div className="temu-confirm-actions">
                   <button type="button" className="temu-btn" onClick={() => setPublishConfirm(null)}>
@@ -4797,9 +4797,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <section className="temu-help-step">
                 <div className="temu-help-step-head">
                   <i>1</i>
-                  <strong>卖家中心 → 服务市场 → 授权管理</strong>
+                  <strong>Temu 卖家中心 → 服务市场 → 授权管理</strong>
                 </div>
-                <p>登录 Temu 卖家中心，左侧菜单最下面的「服务市场」展开后点「授权管理」。</p>
+                <p>登录 Temu 卖家中心，在左侧菜单末尾展开「服务市场」，点击「授权管理」。</p>
                 <img
                   className="temu-help-shot is-narrow"
                   src="/help/temu-auth-menu.png"

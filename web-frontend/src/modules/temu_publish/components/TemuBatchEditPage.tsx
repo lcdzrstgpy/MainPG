@@ -91,11 +91,11 @@ function loadPending(): PendingState | null {
 }
 
 type Props = {
-  /** 勾选的草稿（已合并过本机编辑） */
+  /** 勾选的成品（已合并过本机编辑） */
   entries: TemuDraftEntry[];
   /** 现有编辑（保存时在它上面合并） */
   edits: Record<string, TemuDraftEdit>;
-  /** 现有变种覆盖（草稿 id → 变种 key → 改过的字段） */
+  /** 现有变种覆盖（成品 id → 变种 key → 改过的字段） */
   skuFields: SkuFieldStore;
   onSave: (next: Record<string, TemuDraftEdit>) => void;
   onSaveSkuFields: (next: SkuFieldStore) => void;
@@ -104,7 +104,7 @@ type Props = {
   focusFields?: BatchEditField[];
 };
 
-/** 一条草稿在表格里显示的值：本机编辑 > 源数据 */
+/** 一条成品在表格里显示的值：本机编辑 > 源数据 */
 function cellValue(entry: TemuDraftEntry, edit: TemuDraftEdit | undefined, key: BatchEditField): string {
   const local = edit?.[key];
   if (local !== undefined && local !== null && local !== "") return String(local);
@@ -127,7 +127,7 @@ export function TemuBatchEditPage({
   /** 本地待保存的改动：id → 字段 → 值（'' = 清掉覆盖，回落到源数据） */
   const [draft, setDraft] = useState<Record<string, TemuDraftEdit>>(() => loadPending()?.draft ?? {});
   const [fields, setFields] = useState<BatchEditField[]>(DEFAULT_FIELDS);
-  /** 被「移除」暂时不看的行（只是从这张表里去掉，不动草稿本身） */
+  /** 被「移除」暂时不看的行（只是从这张表里去掉，不动成品本身） */
   const [removed, setRemoved] = useState<string[]>([]);
   /**
    * 勾选的行（默认全勾）。
@@ -143,14 +143,14 @@ export function TemuBatchEditPage({
     null | { key: BatchEditField; previous: Record<string, string | undefined> }
   >(null);
   /**
-   * 「按变种拆行」：一条草稿 4 个颜色 → 表格里 4 行，每个变种单独改。
+   * 「按变种拆行」：一条成品 4 个颜色 → 表格里 4 行，每个变种单独改。
    *
    * 七列全放开（价/货号/库存/重量/三围）：每个变种留空 = 回落整条值，
    * 所以「同一件商品两个标题」式的矛盾不会发生 —— 不填就共用，填了才分叉。
    * 取值/组装统一走 skuPricing.resolveSkuField（单件预填和批量组装同一口径）。
    */
   const [splitSku, setSplitSku] = useState(false);
-  /** 变种覆盖草稿：保存时整体提交（空值 = 取消该变种的覆盖，回落整条值） */
+  /** 变种覆盖成品：保存时整体提交（空值 = 取消该变种的覆盖，回落整条值） */
   const [skuDraft, setSkuDraft] = useState<SkuFieldStore>(
     () => loadPending()?.skuDraft ?? JSON.parse(JSON.stringify(skuFields)),
   );
@@ -170,7 +170,7 @@ export function TemuBatchEditPage({
       // 存储满了就当没有暂存，别影响编辑本身
     }
   }, [draft, skuDraft]);
-  /** 拆行模式下勾选的变种：`草稿id::变种key` */
+  /** 拆行模式下勾选的变种：`成品id::变种key` */
   const [pickedSku, setPickedSku] = useState<string[]>(() =>
     entries.flatMap((entry) =>
       variantKeysOf(entry).map((variant) => `${entry.id}::${variant.key}`),
@@ -191,7 +191,7 @@ export function TemuBatchEditPage({
     [rows, picked],
   );
   const allPicked = rows.length > 0 && rows.every((entry) => picked.includes(entry.id));
-  /** 拆行模式的行：草稿 × 变种 */
+  /** 拆行模式的行：成品 × 变种 */
   const skuRows = useMemo(
     () =>
       rows.flatMap((entry) =>
@@ -267,8 +267,8 @@ export function TemuBatchEditPage({
   };
 
   /**
-   * 拆行模式某格的「回落值」：草稿自带的变体值优先于整条值
-   * （和发布链路一致：人设的变种覆盖 > 草稿变体值 > 整条值）。
+   * 拆行模式某格的「回落值」：成品自带的变体值优先于整条值
+   * （和发布链路一致：人设的变种覆盖 > 成品变体值 > 整条值）。
    */
   const skuBaseOf = (
     entry: TemuDraftEntry,
@@ -353,7 +353,7 @@ export function TemuBatchEditPage({
     });
     onSave(next);
 
-    // 变种覆盖：只留非空值；一条草稿一个变种都没设就整条删掉
+    // 变种覆盖：只留非空值；一条成品一个变种都没设就整条删掉
     const nextSku: SkuFieldStore = {};
     Object.entries(skuDraft).forEach(([id, map]) => {
       const clean: SkuFieldMap = {};
@@ -484,7 +484,7 @@ export function TemuBatchEditPage({
           ) : null}
           {splitSku ? (
             <>
-              一条草稿按变种拆成多行：<b>价格 / 货号 / 库存 / 尺寸 / 重量</b> 都可按变种单独设。
+              一条成品按变种拆成多行：<b>价格 / 货号 / 库存 / 尺寸 / 重量</b> 都可按变种单独设。
               输入框留空 = 跟随整条值；批量改只动勾选的变种（{pickedSkuRows.length}/{skuRows.length}）。
             </>
           ) : (
@@ -607,7 +607,7 @@ export function TemuBatchEditPage({
               {!skuRows.length ? (
                 <tr>
                   <td className="temu-muted" colSpan={SKU_COLUMNS.length + 3}>
-                    勾选的草稿没有变种（单 SKU）——关掉「按变种拆行」直接改整条值即可。
+                    勾选的成品没有变种（单 SKU）——关掉「按变种拆行」直接改整条值即可。
                   </td>
                 </tr>
               ) : null}
@@ -718,7 +718,7 @@ export function TemuBatchEditPage({
                     type="button"
                     className="temu-link"
                     onClick={() => setRemoved((current) => [...current, entry.id])}
-                    title="仅从当前表格中移除，不影响草稿本身"
+                    title="仅从当前表格中移除，不影响成品本身"
                   >
                     移除
                   </button>

@@ -162,7 +162,7 @@ test("必填判定：valueUnit 是空串数组时按「无单位」处理，只�
   );
 });
 
-test("pruneStaleAttrPicks：草稿存的旧 vid 在当前属性表里查不到就清掉", () => {
+test("pruneStaleAttrPicks：成品存的旧 vid 在当前属性表里查不到就清掉", () => {
   const attrs = {
     properties: [
       prop({

@@ -27,7 +27,7 @@ test("规格对齐：完全相等直接命中", () => {
 });
 
 test("规格对齐：描述里包含预设值，取最长的那个", () => {
-  // 草稿里就是这种「款式-颜色」拼起来的写法
+  // 成品里就是这种「款式-颜色」拼起来的写法
   assert.equal(matchPresetValue("安卓通用款-黑色", COLORS), "黑色");
   assert.equal(matchPresetValue("安卓通用款-迷雾蓝", COLORS), "蓝色");
   assert.equal(matchPresetValue("抹茶绿色", COLORS), "绿色");

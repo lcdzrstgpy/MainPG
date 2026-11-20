@@ -80,7 +80,7 @@ test("类目历史按时间裁剪，不无限增长", () => {
   );
 });
 
-test("草稿预填按条合并：分页加载时不能把别的页算好的冲掉", () => {
+test("成品预填按条合并：分页加载时不能把别的页算好的冲掉", () => {
   saveDraftAttrPrefills("u1", { "ai:1:a": { catId: 1, picks: { 1: { vid: 1, text: "" } }, at: 1 } });
   saveDraftAttrPrefills("u1", { "ai:1:b": { catId: 2, picks: { 2: { vid: 2, text: "" } }, at: 2 } });
 
@@ -89,7 +89,7 @@ test("草稿预填按条合并：分页加载时不能把别的页算好的冲�
   assert.equal(all["ai:1:b"]?.catId, 2);
 });
 
-test("草稿预填按时间裁剪，且新写入的不会被裁掉", () => {
+test("成品预填按时间裁剪，且新写入的不会被裁掉", () => {
   const batch: Record<string, { catId: number; picks: Record<number, { vid: number; text: string }>; at: number }> = {};
   for (let index = 0; index < DRAFT_ATTR_PREFILL_MAX + 10; index += 1) {
     batch[`ai:${index}`] = { catId: 1, picks: {}, at: index };
@@ -118,12 +118,12 @@ test("当前选择与同类目历史是两套东西：写当前不污染历史",
   const historyAt = readAttrPicksHistoryAt("u1", 900);
   assert.ok(historyAt > 0);
 
-  // 自动填/草稿估填铺的值只写「当前」，历史必须原样
+  // 自动填/成品估填铺的值只写「当前」，历史必须原样
   saveCurrentAttrPicks("u1", 900, { 1: { vid: 9, text: "" } });
 
   assert.equal(readCurrentAttrPicks("u1", 900)[1]?.vid, 9, "刷新恢复用新铺的值");
   assert.equal(readAttrPicksHistory("u1", 900)[1]?.vid, 7, "同类目复用的历史不能被改掉");
-  assert.equal(readAttrPicksHistoryAt("u1", 900), historyAt, "历史版本不变 → 别的草稿不用重估");
+  assert.equal(readAttrPicksHistoryAt("u1", 900), historyAt, "历史版本不变 → 别的成品不用重估");
 });
 
 test("历史版本时间戳：没有记录是 0，写过就变大", () => {
@@ -131,7 +131,7 @@ test("历史版本时间戳：没有记录是 0，写过就变大", () => {
   saveAttrPicksHistory("u1", 1234, { 1: { vid: 1, text: "" } });
   const first = readAttrPicksHistoryAt("u1", 1234);
   assert.ok(first > 0);
-  // 再写一次版本必须变（否则草稿库判断不出「历史更新了，要重估」）
+  // 再写一次版本必须变（否则成品库判断不出「历史更新了，要重估」）
   saveAttrPicksHistory("u1", 1234, { 1: { vid: 2, text: "" } });
   assert.ok(readAttrPicksHistoryAt("u1", 1234) >= first);
 });
@@ -169,7 +169,7 @@ test("失败教训黑名单：被拒过的 (属性, 值) 判定器能挡掉", ()
   assert.equal(bad("材质", "默认"), false, "属性名要对得上才拦");
 });
 
-test("删掉某条草稿的估填（类目属性变了要重估）", () => {
+test("删掉某条成品的估填（类目属性变了要重估）", () => {
   const { saveDraftAttrPrefills, readDraftAttrPrefills, deleteDraftAttrPrefill } =
     store as typeof import("./attrPicksStore.ts");
   saveDraftAttrPrefills("u1", {
@@ -179,5 +179,5 @@ test("删掉某条草稿的估填（类目属性变了要重估）", () => {
   deleteDraftAttrPrefill("u1", "d1");
   const all = readDraftAttrPrefills("u1");
   assert.equal(all.d1, undefined);
-  assert.ok(all.d2, "别的草稿不能被误删");
+  assert.ok(all.d2, "别的成品不能被误删");
 });
