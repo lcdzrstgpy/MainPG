@@ -1,10 +1,5 @@
 .daily-selection-page { display: grid; gap: 18px; color: #17283f; }
 .daily-view-back-row { display: flex; justify-content: flex-end; }
-.daily-collection-quick-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.daily-collection-quick-actions .preset-entry-button,
-.daily-collection-quick-actions .back-to-collection-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid var(--theme-icon-button-border, #d7e3ed); border-radius: 11px; padding: 9px 14px; color: var(--theme-text-secondary, #466079); background: var(--theme-icon-button-bg, #fff); font-size: .86rem; font-weight: 800; cursor: pointer; }
-.daily-collection-quick-actions .preset-entry-button:hover,
-.daily-collection-quick-actions .back-to-collection-button:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); box-shadow: 0 8px 18px var(--theme-module-shadow, rgba(7,48,83,.12)); }
 .daily-view-back-row .back-to-collection-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid var(--theme-icon-button-border, #d7e3ed); border-radius: 11px; padding: 9px 14px; color: var(--theme-text-secondary, #466079); background: var(--theme-icon-button-bg, #fff); font-size: .86rem; font-weight: 800; cursor: pointer; }
 .daily-view-back-row .back-to-collection-button:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); }
 /* mode-bar 里的批次管理：跟现有按钮同高、不抢切换器的位 */

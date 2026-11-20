@@ -362,7 +362,7 @@ type DailySelectionPageProps = {
 };
 
 export function DailySelectionPage({ view = "directions", initialDirectionId, onOpenCollection, onOpenProductProcessingDraft, topbarStatusVisible = true, isActive = true }: DailySelectionPageProps) {
-  // 视图支持内部轮转：主模块默认直接进采集视图，点「模板预设」切到预设页，
+  // 视图支持内部轮转：主模块默认直接进采集视图；预设页（directions）当前无入口，
   // 在预设页点方向卡再回到采集视图，而不再新开独立面板。
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
@@ -1498,13 +1498,6 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
       {collectionView && (
         <div className="daily-collection-workspace">
-          {!onOpenCollection && (
-            <div className="daily-collection-quick-actions">
-              <button type="button" className="preset-entry-button" onClick={() => setInternalView("directions")}>
-                <span aria-hidden="true">▦</span> 模板预设
-              </button>
-            </div>
-          )}
           {!collectionEntered ? (
             <CollectionEntryGate
               onEnter={(mode) => {
