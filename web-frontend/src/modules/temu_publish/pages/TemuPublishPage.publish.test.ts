@@ -44,6 +44,16 @@ test("发布商品：检查必填与发布复用同一份成品，避免两条�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 备份导出/导入（2026-11-20）：本机 localStorage 数据要能带走/恢复
+  const backup = readFileSync(new URL("../data/backupStore.ts", import.meta.url), "utf8");
+  assert.match(backup, /export function exportTemuPublishBackup/);
+  assert.match(backup, /export async function importTemuPublishBackup/);
+  assert.match(backup, /同键以导入为准/);
+  assert.match(backup, /BACKUP_FORMAT = "temu-publish-backup"/);
+  const dialogs = readFileSync(new URL("../components/TemplateDialogs.tsx", import.meta.url), "utf8");
+  assert.match(dialogs, /导出备份/);
+  assert.match(dialogs, /导入备份/);
+  assert.match(page, /onImported=/);
   // 界面不许露接口名/内部 ID（2026-11-20 第四轮：catsmandatory.get、pid= 兜底）
   assert.ok(!page.includes("来源：{mandatory.source}"), "禁显示裸接口名");
   assert.ok(!page.includes("pid=${item.pid}"), "缺项兜底不许露 pid");

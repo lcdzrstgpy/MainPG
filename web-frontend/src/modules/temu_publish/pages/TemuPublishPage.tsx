@@ -4907,6 +4907,11 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             else applyVariantTemplate(name);
             setTemplateDialog(null);
           }}
+          onImported={() => {
+            // 备份导入后模板列表要立刻反映（估填/失败台账在各自页面重新读取）
+            setProductTemplates(localStore.productTemplates());
+            setVariantTemplates(localStore.variantTemplates());
+          }}
           onRemove={(name) => {
             if (templateDialog.kind === "product") {
               localStore.removeProductTemplate(name);

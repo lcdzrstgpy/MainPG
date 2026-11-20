@@ -1,5 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+
+import {
+  backupSummaryText,
+  exportTemuPublishBackup,
+  importTemuPublishBackup,
+} from "../data/backupStore";
 
 /**
  * 产品模板 / 变种模板的「保存」「载入」弹窗。
@@ -115,7 +121,11 @@ export function TemplateLoadDialog({
   onPick,
   onRemove,
   onClose,
-}: LoadProps) {
+  onImported,
+}: LoadProps & { onImported?: () => void }) {
+  /** 备份文件的隐藏输入；按钮走它打开系统文件选择 */
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [backupNote, setBackupNote] = useState("");
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -168,7 +178,54 @@ export function TemplateLoadDialog({
           <p className="temu-template-empty">{emptyHint}</p>
         )}
 
+        {backupNote ? (
+          <p className="temu-muted temu-template-backup-note">{backupNote}</p>
+        ) : null}
+
         <div className="temu-edit-foot">
+          <button
+            type="button"
+            className="temu-btn temu-btn-sm"
+            title="把产品模板、变种模板、属性估填、失败台账、尺码表模板打包成一个文件（可发给同事或带到新电脑）"
+            onClick={() => {
+              const { blob, filename, counts } = exportTemuPublishBackup();
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement("a");
+              anchor.href = url;
+              anchor.download = filename;
+              anchor.click();
+              URL.revokeObjectURL(url);
+              setBackupNote(`已导出：${backupSummaryText(counts)}`);
+            }}
+          >
+            导出备份
+          </button>
+          <button
+            type="button"
+            className="temu-btn temu-btn-sm"
+            title="导入备份文件；同名模板以文件里的为准，其余保留"
+            onClick={() => importInputRef.current?.click()}
+          >
+            导入备份
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            style={{ display: "none" }}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              try {
+                const summary = await importTemuPublishBackup(file);
+                setBackupNote(`已导入：${backupSummaryText(summary.merged)}（同名以文件为准）`);
+                onImported?.();
+              } catch (cause) {
+                setBackupNote(cause instanceof Error ? cause.message : "导入失败，请检查文件");
+              }
+            }}
+          />
           <button type="button" className="temu-btn" onClick={onClose}>
             关闭
           </button>
