@@ -44,6 +44,10 @@ test("发布商品：检查必填与发布复用同一份成品，避免两条�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 界面不许露接口名/内部 ID（2026-11-20 第四轮：catsmandatory.get、pid= 兜底）
+  assert.ok(!page.includes("来源：{mandatory.source}"), "禁显示裸接口名");
+  assert.ok(!page.includes("pid=${item.pid}"), "缺项兜底不许露 pid");
+  assert.ok(!page.includes("查看原始返回"), "原始返回折叠块已删");
   // 界面文案红线（2026-11-20 用户反馈）：不许露裸字段名，统一「敏感产品」，失败提示用正式表述
   assert.ok(!/提交为 [a-zA-Z]/.test(page), "「提交为 xxx」这类裸字段说明不许出现在界面上");
   assert.ok(!page.includes("敏感货"), "统一使用「敏感产品」这一正式称谓");
@@ -362,7 +366,7 @@ test("本机留档：表单/变种行/最近分类按登录账号分开存，换
   assert.match(page, /const rowsKey = `\$\{ROWS_KEY\}:\$\{storageSuffix\}`;/);
   assert.match(page, /setTimeout\(\(\) => saveJsonLocal\(formKey, form\), 300\)/);
   // 表单里只保留会提交的字段；唯一留档的备注也是收起的、写清楚不提交
-  assert.match(page, /备注（不提交，只留档）/);
+  assert.match(page, /备注（不随商品提交，仅本地留存）/);
   assert.doesNotMatch(page, /function LocalTag/);
 });
 
@@ -1991,7 +1995,7 @@ test("首屏只留必填：低频字段都收进「更多选项」折叠", () =>
   // 折叠必须在，且内部字段仍被渲染
   for (const [summary, keep] of [
     ["更多选项（英文标题、货号、产地、外链）", "站外产品链接"],
-    ["每件装数量（多件装才改，默认 1）", "piecesPerPack"],
+    ["每件装数量（仅多件装商品需修改，默认 1）", "piecesPerPack"],
   ] as const) {
     assert.ok(page.includes(summary), `缺少折叠：${summary}`);
     assert.ok(page.includes(keep), `折叠里把字段弄丢了：${keep}`);

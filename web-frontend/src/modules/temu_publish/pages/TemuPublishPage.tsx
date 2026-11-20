@@ -3547,21 +3547,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               {mandatory.missing.length > 0 ? (
                 <p className="temu-mandatory-line is-bad">
                   还缺 {mandatory.missing.length} 个必填属性：
-                  {mandatory.missing.map((item) => item.name || `pid=${item.pid}`).join("、")}
+                  {mandatory.missing.map((item) => item.name || "未命名属性").join("、")}
                 </p>
               ) : (
                 <p className="temu-mandatory-line is-ok">必填属性都已填写</p>
               )}
-              <p className="temu-mandatory-src">
-                来源：{mandatory.source}
-                {String(mandatory.result?.unsupported || "")
-                  ? "（网关暂不支持按类目查必填配置，已改为本地属性校验）"
-                  : ""}
-              </p>
-              <details className="temu-mandatory-raw">
-                <summary>查看原始返回</summary>
-                <pre className="temu-json">{JSON.stringify(mandatory.result, null, 2)}</pre>
-            </details>
+              {String(mandatory.result?.unsupported || "") ? (
+                <p className="temu-mandatory-src">平台暂不支持按类目查询必填项，已改用本地属性校验。</p>
+              ) : null}
             </div>
           )}
 
@@ -4123,7 +4116,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             ) : null}
 
             <details className="temu-advanced">
-              <summary>备注（不提交，只留档）</summary>
+              <summary>备注（不随商品提交，仅本地留存）</summary>
               <textarea
                 className="temu-input"
                 rows={3}
@@ -4419,7 +4412,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             </div>
             {/* 每件装数量：只有标题写 4 Pack / 12Pcs 这类多件装才需要，默认 1 单件装 */}
             <details className="temu-more">
-              <summary>每件装数量（多件装才改，默认 1）</summary>
+              <summary>每件装数量（仅多件装商品需修改，默认 1）</summary>
                 <label className="temu-field">
                   <span>
                     每件装数量

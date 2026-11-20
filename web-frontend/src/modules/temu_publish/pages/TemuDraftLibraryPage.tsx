@@ -2452,12 +2452,12 @@ export function TemuDraftLibraryPage({
                     {publishConfirm.guessedAttrs.length > 0 ? (
                       <details className="temu-batch-confirm-guess">
                         <summary>
-                          属性纯猜{" "}
+                          属性为自动推测，共{" "}
                           {publishConfirm.guessedAttrs.reduce(
                             (sum, item) => sum + item.items.length,
                             0,
                           )}{" "}
-                          项（{publishConfirm.guessedAttrs.length} 条）—— 发之前扫一眼
+                          项（{publishConfirm.guessedAttrs.length} 条）——提交前请核对
                         </summary>
                         <ul>
                           {publishConfirm.guessedAttrs.map((row) => (
