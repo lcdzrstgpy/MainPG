@@ -203,8 +203,11 @@ export function SizeChartDialog({
           : [],
       });
       if (result.id > 0) {
+        // 建完直接就用：不用再点「用这张」，表单立刻拿到模板 ID（存档可选）
+        const next = selectedIds.includes(result.id) ? selectedIds : [...selectedIds, result.id];
+        onApply(next.join(","));
         setEditing({ ...editing, name, templateId: String(result.id) });
-        setCreating(`✅ 已在 Temu 建表（模板 ID ${result.id}），点「保存模板」存进库`);
+        setCreating(`✅ 已在 Temu 建表（模板 ID ${result.id}），已自动选用；点「保存模板」可存进模板库`);
       } else {
         setCreating("Temu 接受了请求但没回模板 ID，去卖家后台「尺码表模板」确认后手动填 ID");
       }

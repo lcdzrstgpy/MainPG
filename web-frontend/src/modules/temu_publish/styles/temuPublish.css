@@ -7332,6 +7332,14 @@ textarea.temu-input {
   line-height: 1.6;
 }
 
+.temu-batch-sizechart {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+
 /* 待人工向导条：逐条补完的进度与操作 */
 .temu-manual-wizard {
   display: flex;

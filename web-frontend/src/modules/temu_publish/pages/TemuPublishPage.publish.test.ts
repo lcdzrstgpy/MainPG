@@ -398,7 +398,7 @@ test("草稿库：批量发布要套模板、逐条提交、失败进记录", ()
   assert.match(library, /const variant = variantTemplates\.find\(\(item\) => item\.name === variantTpl\) \?\? null;\n    const tasks: BatchTask\[\] = groups\.flatMap/);
   assert.match(library, /接口非幂等：重复提交会在店铺里多出商品/);
   assert.match(library, /for \(const \[index, task\] of tasks\.entries\(\)\)/);
-  assert.match(library, /await temuPublishApi\.publish\(draft\);/);
+  assert.match(library, /return temuPublishApi\.publish\(draft\);/);
   assert.match(library, /localStore\.addFailure\(\{/);
 
   // 组装：一个颜色一个 SKC，价格/尺寸取模板批量值优先
@@ -824,7 +824,7 @@ test("失败批量重试：勾选 → 清旧估填 → 回库自动勾选 → �
   assert.match(batch, /if \(BUSINESS_REJECT_HINT\.test\(message\)\) return false;/);
   assert.match(library, /if \(!isTransientPublishError\(first\) \|\| batchAbortRef\.current \|\| batchStopRequested\(\)\) \{/);
   assert.match(library, /网络抖动，2 秒后重试一次/);
-  assert.match(library, /result = await temuPublishApi\.publish\(draft\);/);
+  assert.match(library, /result = await runOnce\(\);/);
 });
 
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
@@ -1029,7 +1029,7 @@ test("批量发布与单条发布同一套规矩（货号清洗/详情图尺寸/
 test("批量发布的提示与商品 id 不能静默丢掉", () => {
   const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
 
-  assert.match(library, /result = await temuPublishApi\.publish\(draft\);/);
+  assert.match(library, /result = await runOnce\(\);/);
   assert.match(library, /if \(result\.warnings\?\.length\) \{/);
   assert.match(library, /const warnText = warned/);
   assert.match(library, /const idText = publishedIds\.length/);
@@ -2860,6 +2860,14 @@ test("尺码表模板库：选模板填 ID / 建表辅助（行从变种带、�
   assert.match(dialog, /record\[String\(element\.id\)\] = row\.values\[editing\.columns\.indexOf\(element\.name\)\]/);
   assert.match(dialog, /const isBody = \(item: \{ type\?: string \}\) => String\(item\.type \?\? "1"\) === "2";/);
   assert.match(dialog, /body_elements: bodyElements\.map/);
+
+  // 尺码表收尾：批量配置里也有模板库入口；建表成功自动应用
+  const batchConfig = readFileSync(new URL("../components/BatchManualConfig.tsx", import.meta.url), "utf8");
+  assert.match(batchConfig, /尺码表模板…/);
+  assert.match(batchConfig, /<SizeChartDialog/);
+  assert.match(batchConfig, /sizeTemplates,/);
+  assert.match(dialog, /已自动选用；点「保存模板」可存进模板库/);
+  assert.match(dialog, /const next = selectedIds\.includes\(result\.id\) \? selectedIds : \[\.\.\.selectedIds, result\.id\];\n        onApply\(next\.join\(","\)\);/);
 
   // 模板是店铺级：记归属 + 跨店警示；删除要确认
   assert.match(dialog, /shopId: shopId \|\| editing\.shopId/);

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { SizeChartDialog } from "./SizeChartDialog";
 import { TemuPropertyForm } from "./TemuPropertyForm";
 import { DEFAULT_SHIPMENT_DAYS, ShipmentDaysPicker } from "./ShipmentDaysPicker";
 import { temuPublishApi } from "../api/temuPublishApi";
@@ -16,6 +17,7 @@ import type {
   TemuCategoryPath,
   TemuFreightTemplate,
   TemuParentSpec,
+  TemuSizeChartInfo,
   TemuWarehouseGroup,
 } from "../types";
 import { categoryPathFromDto, categoryPathLabel } from "../utils/categoryPath";
@@ -76,6 +78,18 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
   const [path, setPath] = useState<TemuCategory[]>([]);
   const [attributes, setAttributes] = useState<TemuAttributes | null>(null);
   const [picks, setPicks] = useState<AttrPickMap>({});
+  /** 尺码表模板：批量环节也能现场建/选（以前只有单件发布页能捕获） */
+  const [sizeTemplates, setSizeTemplates] = useState("");
+  const [sizeChart, setSizeChart] = useState<TemuSizeChartInfo | null>(null);
+  const [sizeChartOpen, setSizeChartOpen] = useState(false);
+  const [sizeChartLoading, setSizeChartLoading] = useState(false);
+  const leafCatId = path.length ? Number(path[path.length - 1].catId) : 0;
+
+  // 换类目 = 换尺码组：旧的模板 ID 不能带到新类目去
+  useEffect(() => {
+    setSizeTemplates("");
+    setSizeChart(null);
+  }, [leafCatId]);
   /**
    * 估好的属性只在「预填那一次」铺：之后用户手动换类目时 pid 全变了，
    * 再铺就是往新类目里塞一堆不存在的 pid。
@@ -207,7 +221,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       warehouseId,
       shipmentDays,
       origin: "CN",
-      sizeTemplates: "",
+      sizeTemplates,
       isCustom: false,
       isSensitive: false,
       colorParentId: colorSpec?.parentSpecId,
@@ -216,7 +230,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       sizeParentName: sizeSpec?.parentSpecName,
       savedAt: new Date().toLocaleString("zh-CN"),
     });
-  }, [configReady, path, picks, freightId, warehouseId, shipmentDays, specs, onChange]);
+  }, [configReady, path, picks, freightId, warehouseId, shipmentDays, specs, sizeTemplates, onChange]);
 
   return (
     <div className="temu-batch-manual">
@@ -262,6 +276,38 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
 
       {path.length > 0 && (
         <p className="temu-batch-picked">已选类目：{categoryPathLabel(path)}</p>
+      )}
+
+      {path.length > 0 && leafCatId > 0 && (
+        <div className="temu-batch-sizechart">
+          <button
+            type="button"
+            className="temu-btn temu-btn-sm"
+            disabled={sizeChartLoading}
+            onClick={async () => {
+              if (sizeChart) {
+                setSizeChartOpen(true);
+                return;
+              }
+              setSizeChartLoading(true);
+              try {
+                setSizeChart(await temuPublishApi.sizeCharts(leafCatId));
+                setSizeChartOpen(true);
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : "取尺码表信息失败");
+              } finally {
+                setSizeChartLoading(false);
+              }
+            }}
+          >
+            {sizeChartLoading ? "取尺码表信息…" : "尺码表模板…"}
+          </button>
+          <span className="temu-muted">
+            {sizeTemplates
+              ? `已选模板 ID：${sizeTemplates}`
+              : "服装/鞋类必填；不需要尺码表的类目可跳过"}
+          </span>
+        </div>
       )}
 
       {path.length > 0 && (
@@ -322,6 +368,28 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
       </div>
 
       {error ? <p className="temu-confirm-warn">{error}</p> : null}
+
+      {/* 批量环节的尺码表模板库：不用先跑去单件发布页捕获一次 */}
+      {sizeChartOpen && sizeChart && leafCatId > 0 ? (
+        <SizeChartDialog
+          open
+          onClose={() => setSizeChartOpen(false)}
+          catId={leafCatId}
+          classId={sizeChart.class_id ?? 0}
+          shopId=""
+          shopName=""
+          categoryElements={(sizeChart.elements ?? []).map((item) => ({
+            id: item.id,
+            name: item.name,
+            type: item.type,
+          }))}
+          requiredElements={sizeChart.required_elements ?? []}
+          categorySizes={sizeChart.sizes ?? []}
+          initialSizes={[]}
+          currentIds={sizeTemplates}
+          onApply={setSizeTemplates}
+        />
+      ) : null}
     </div>
   );
 }

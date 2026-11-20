@@ -1864,16 +1864,22 @@ export function TemuDraftLibraryPage({
           text: `${index + 1}/${tasks.length}${groupText} · ${label}`,
         });
         try {
-          const draft = await buildDraftForPublish(
-            entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
-            itemTemplate,
-            variant,
-          );
+          // 「组装 + 提交」整体算一次尝试：组装里有图片上传（每张都过网关），
+          // 它和提交一样会被网络抖动打中，所以重试必须包住整段，不能只包 publish。
+          // 图片有 imageCache（按 源图+形状 缓存），重试不会重复上传。
+          const runOnce = async () => {
+            const draft = await buildDraftForPublish(
+              entryPrefill(entry, categoryMemo, attrPrefills, imageEdits, skuFields),
+              itemTemplate,
+              variant,
+            );
+            return temuPublishApi.publish(draft);
+          };
           let result: Awaited<ReturnType<typeof temuPublishApi.publish>>;
           try {
-            result = await temuPublishApi.publish(draft);
+            result = await runOnce();
           } catch (first) {
-            // 网络抖动 / 网关超时 / 限流：同一条草稿重试一次大概率就过。
+            // 网络抖动 / 网关超时 / 限流：同一条重试一次大概率就过。
             // 业务拒绝和「停止」不重试；万一首次其实已上架，台账的「重复提交」会挡下来。
             if (!isTransientPublishError(first) || batchAbortRef.current || batchStopRequested()) {
               throw first;
@@ -1884,7 +1890,7 @@ export function TemuDraftLibraryPage({
             });
             await new Promise((resolve) => setTimeout(resolve, 2000));
             if (batchAbortRef.current || batchStopRequested()) throw first;
-            result = await temuPublishApi.publish(draft);
+            result = await runOnce();
           }
           const goodsId = pickGoodsId(result.result);
           if (goodsId) publishedIds.push(goodsId);
