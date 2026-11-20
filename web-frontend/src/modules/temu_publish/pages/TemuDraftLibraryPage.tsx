@@ -150,7 +150,7 @@ const EDIT_FIELDS: Array<{ key: keyof TemuDraftEdit; label: string; placeholder?
 ];
 
 /**
- * 这条草稿还缺什么才能直接发（发布 payload 里缺了会被 Temu 拒的字段）。
+ * 这条草稿还缺什么才能直接发（提交内容里缺失会被平台驳回的字段）。
  *
  * 依据 docs/temu-goods-add-成功样例.json 的必填结构 + 实测清单：
  * 类目 / 申报价 / 货号 / 重量 / 三边尺寸 是硬性前置，库存 0 允许（商品建出来是不可售）。
@@ -2654,7 +2654,7 @@ export function TemuDraftLibraryPage({
                   <th className="col-stock" title="库存 0 也能建品，只是不可售">
                     库存
                   </th>
-                  <th className="col-spec" title="发布 payload 里的长/宽/高（cm）与重量（g），缺了会被拒">
+                  <th className="col-spec" title="长 / 宽 / 高（cm）与重量（g）；缺失将导致平台驳回">
                     尺寸 · 重量
                   </th>
                   <th

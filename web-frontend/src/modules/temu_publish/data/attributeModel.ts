@@ -400,7 +400,7 @@ export function attributeDiffText(diff: AttributeDiff, limit = 5): string {
     parts.push(`「${diff.staleChoices.slice(0, limit).join("、")}」原来的选择已失效（已清空）`);
   }
   if (diff.removed.length) {
-    parts.push(`「${diff.removed.slice(0, limit).join("、")}」Temu 已经删掉了`);
+    parts.push(`「${diff.removed.slice(0, limit).join("、")}」已被平台移除`);
   }
   return parts.join("；");
 }

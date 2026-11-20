@@ -322,7 +322,7 @@ test("describeAttributeDiff：只报真正变了的项，没变就说没变", ()
   // 旧表有、新表删掉的属性也要说
   const removedDiff = describeAttributeDiff(base, { properties: [next.properties[1]] } as TemuAttributes, {});
   assert.ok(removedDiff.removed.includes("材料"));
-  assert.ok(attributeDiffText(removedDiff).includes("Temu 已经删掉了"));
+  assert.ok(attributeDiffText(removedDiff).includes("已被平台移除"));
 });
 
 test("remapAttrPicks：只是 vid 被重建、选值文字没变 → 自动对上，不用用户重选", () => {

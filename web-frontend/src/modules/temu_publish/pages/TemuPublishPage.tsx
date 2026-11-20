@@ -3620,7 +3620,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     <div className="temu-cat-selected-main">
                       <span className="temu-cat-selected-label">已选类目</span>
                       <strong>{categoryPath.map(categoryName).join(" / ")}</strong>
-                      <span className="temu-cat-selected-id">id {leaf.catId}</span>
+                      <span className="temu-cat-selected-id">类目 ID {leaf.catId}</span>
                     </div>
                     <button
                       type="button"
@@ -3895,7 +3895,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <span>更多选项（英文标题、货号、产地、外链）</span>
                 {(form.isSensitive || form.isCustom) && (
                   <em className="temu-muted">
-                    {[form.isSensitive ? "敏感货已开" : "", form.isCustom ? "定制已开" : ""]
+                    {[form.isSensitive ? "敏感产品已开" : "", form.isCustom ? "定制已开" : ""]
                       .filter(Boolean)
                       .join("、")}
                   </em>
@@ -3944,7 +3944,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               <label className="temu-field">
                 <span>
                   产地
-                  <em className="temu-muted">两位国家代码，提交为 productOrigin</em>
+                  <em className="temu-muted">两位国家代码（如 CN）</em>
                 </span>
                 <input
                   className="temu-input"
@@ -3960,7 +3960,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   className="temu-input"
                   value={form.externalUrl}
                   onChange={(event) => patch({ externalUrl: event.target.value })}
-                  placeholder="可选，https:// 开头的商品页地址，提交为 outerGoodsUrl"
+                  placeholder="可选：商品详情页链接（以 https:// 开头）"
                 />
               </label>
             </div>
@@ -4090,7 +4090,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 ) : null}
             </div>
             {/* 合规开关平铺：藏在「校验发布」的原始返回折叠里等于让人漏填，
-                敏感货/定制填错的后果是直接被 Temu 拒或被判违规。 */}
+                敏感产品/定制属性填写错误的后果是被平台驳回或判定违规。 */}
             <div className="temu-flags">
               <label className={`temu-flag${form.isSensitive ? " is-on" : ""}`}>
                 <input
@@ -4099,8 +4099,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   onChange={(event) => patch({ isSensitive: event.target.checked })}
                 />
                 <span>
-                  <strong>敏感货</strong>
-                  <em>带电 / 液体 / 粉末等，提交为 isSensitive</em>
+                  <strong>敏感产品</strong>
+                  <em>带电、液体、粉末类商品，需依法申报</em>
                 </span>
               </label>
               <label className={`temu-flag${form.isCustom ? " is-on" : ""}`}>

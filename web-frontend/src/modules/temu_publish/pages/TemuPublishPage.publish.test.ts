@@ -44,6 +44,14 @@ test("发布商品：检查必填与发布复用同一份草稿，避免两条�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 界面文案红线（2026-11-20 用户反馈）：不许露裸字段名，统一「敏感产品」，失败提示用正式表述
+  assert.ok(!/提交为 [a-zA-Z]/.test(page), "「提交为 xxx」这类裸字段说明不许出现在界面上");
+  assert.ok(!page.includes("敏感货"), "统一使用「敏感产品」这一正式称谓");
+  assert.match(page, /<strong>敏感产品<\/strong>/);
+  assert.ok(!readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8").includes("发布 payload"), "草稿库不许出现 payload 术语");
+  const explain = readFileSync(new URL("../data/errorExplain.ts", import.meta.url), "utf8");
+  assert.ok(!/去修这条|别手填|瞎猜|白搭/.test(explain), "失败提示用正式表述，不用口语");
+  assert.ok(!explain.includes("人话"), "注释/文案不再用「人话」这种表述");
   // 排障界面（图片地址原文 / 预览请求体 / 复制 JSON）不摆给用户（2026-11-20 删）
   assert.ok(!page.includes("高级：图片地址原文"), "「图片地址原文」面板不要了");
   assert.ok(!page.includes("预览请求体"), "「预览请求体」调试入口不要了");
@@ -1089,8 +1097,8 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
   );
   assert.match(batch, /if \(!colorAxis && !sizeAxis\) \{/);
   // 变种值发不出去必须报错，不许静默吞成单 SKU
-  assert.match(batch, /这些变种会被吞成单个 SKU/);
-  assert.match(batch, /这个类目不支持颜色\/尺码规格/);
+  assert.match(batch, /未补齐时变种将被合并为单一 SKU/);
+  assert.match(batch, /该类目不支持颜色\/尺码规格/);
   assert.match(batch, /main_specs: \[\],\n\s*skus: \[skuFields\(singleCode, \[\], colors\[0\], sizes\[0\]\)\],/);
   assert.ok(
     batch.indexOf("if (!colorAxis && !sizeAxis) {") < batch.indexOf("const colorSpec = colorAxis"),

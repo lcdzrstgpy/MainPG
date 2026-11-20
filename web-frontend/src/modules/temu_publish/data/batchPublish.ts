@@ -198,8 +198,8 @@ export async function buildDraftForPublish(
   const firstRaw = apparel ? await localDataUrl(carouselSources[0] ?? "") : null;
   if (apparel && !firstRaw) {
     throw new Error(
-      "服饰类目的素材图必须单独是 1:1 方图，而这张轮播图不是本地成品图（外链 / 已是图床地址），没法另裁。" +
-        "请在草稿库换成本地成品图，或用「发布商品」页单件发。",
+      "服饰类目的素材图须为独立的 1:1 方图，当前轮播图不是本地成品图（外链或图床地址），无法自动裁剪。" +
+        "请在草稿库更换为本地成品图，或在「发布商品」页单件提交。",
     );
   }
   // 限并发：批量里每条都有十几张图，串行的话 30 条就是几百次排队往返
@@ -477,8 +477,8 @@ export async function buildDraftForPublish(
     if (colors.length > 0 || sizes.length > 0) {
       throw new Error(
         canCustomSpecs
-          ? "产品模板缺少颜色/尺码父规格：补上再发，否则这些变种会被吞成单个 SKU"
-          : `这个类目不支持颜色/尺码规格（最多 ${specDimLimit} 个规格维度），草稿里的变种值发不出去：换个类目，或清掉变种值按单 SKU 发`,
+          ? "产品模板缺少颜色/尺码父规格；未补齐时变种将被合并为单一 SKU，请补齐后重新提交"
+          : `该类目不支持颜色/尺码规格（最多 ${specDimLimit} 个规格维度），草稿中的变种值无法提交：请更换类目，或清除变种值后按单 SKU 提交`,
       );
     }
     if (saleIndex.size > 0) {
