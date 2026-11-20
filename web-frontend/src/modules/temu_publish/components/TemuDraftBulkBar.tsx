@@ -189,7 +189,7 @@ export function TemuDraftBulkBar({
             <button
               type="button"
               className="temu-bulk-action"
-              title="打开整页批量编辑：勾上要改的字段，逐行改完保存"
+              title="打开整页批量编辑：勾选要修改的项，逐行修改后保存"
               onClick={onBatchEdit}
             >
               批量编辑
@@ -232,7 +232,7 @@ export function TemuDraftBulkBar({
               type="button"
               className="temu-bulk-action"
               disabled={disabledNoSelection}
-              title="选字段 → 填一个值 → 批量应用到勾选的草稿"
+              title="选择项 → 填写一个值 → 批量应用到所选草稿"
               onClick={() => openPanel("fields")}
             >
               批量改字段

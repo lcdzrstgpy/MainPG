@@ -18,7 +18,7 @@ test("失败原因翻译：真实台账里的 8 类都要说人话 + 修法", ()
     [
       "bg.glo.goods.add: 重量不符合类目2~1000000g限制，无法售卖",
       /重量超出/,
-      /kg 数值填入 g/,
+      /kg 计的数值/,
     ],
     [
       "bg.glo.goods.add: Preview image cannot be empty;",

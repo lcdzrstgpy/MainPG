@@ -2608,7 +2608,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (rows.length > 1) {
         warnings.push(
           `该类目没有销售属性（不能建颜色/尺码变种）：只提交第 1 行，后面 ${rows.length - 1} 行已忽略。`
-            + " 规格会由后端自动补「款式：默认」占位。",
+            + " 系统将自动补充「款式：默认」规格。",
         );
       }
       const row = rows[0];
@@ -2842,7 +2842,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           // 逐个单发全都能复现，所以清缓存、重选属性怎么弄都没用。
           // 后端现在补的是真实规格（颜色 + 该类目合法的值），正常不会再撞这个错。
           throw new Error(
-            "已清掉本地的类目/属性缓存，但重新加载后属性定义没有变化 —— 跟属性表新旧无关。"
+            "已刷新本地类目与属性数据；重新加载后属性定义未发生变化——与属性表版本无关。"
               + "这个类目如果本来就没有销售属性（桌布、桌旗、餐垫、化妆包这类），"
               + "问题多半在自动补的那条规格上：把类目 id 发给开发排查，"
               + "或者先在变种区手动选一个规格值再提交。",
@@ -3527,7 +3527,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     .join(" · ") || "标题/图片已填好，核对后补类目即可"}
                 </span>
                 {prefillInfo.needsReview?.length ? (
-                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（草稿带来的占位值/参考价，提交前请自己确认）</em>
+                  <em>需人工核对：{prefillInfo.needsReview.join("、")}（草稿带入的预填值与参考价，提交前请核对）</em>
                 ) : null}
               </div>
               {onOpenDraftLibrary && (
@@ -3711,7 +3711,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                         className="temu-link"
                         onClick={() => void refreshCategoryTree()}
                         disabled={busy !== ""}
-                        title="在 Temu 后台修改类目或其必填属性后，点击此处立即刷新（无需等待缓存过期）"
+                        title="在 Temu 后台修改类目或其必填属性后，点击此处立即刷新（无需等待自动刷新周期）"
                       >
                         刷新类目树
                       </button>
@@ -4697,7 +4697,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     <span>
                       {publishConfirm.kind === "submit"
                         ? "提交后将在店铺中真实创建商品"
-                        : "后端台账发现 24 小时内提交过同一条"}
+                        : "系统检测到 24 小时内已提交过相同商品"}
                     </span>
                   </div>
                   <button type="button" onClick={() => setPublishConfirm(null)} aria-label="关闭">

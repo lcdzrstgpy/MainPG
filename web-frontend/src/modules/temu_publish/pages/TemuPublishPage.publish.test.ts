@@ -1862,7 +1862,7 @@ test("类目属性被 Temu 改过（6000002）：自动重拉属性表，并点�
   assert.match(publish, /Temu 后台改过这个类目的属性定义：\$\{detail\}/);
   // 没差异 → 说明属性表没变，真凶在规格（无销售属性类目补的假规格）。
   // 提示必须把这条指出来，不能再让用户「等 1-2 分钟再刷」白等。
-  assert.match(publish, /属性定义没有变化/);
+  assert.match(publish, /属性定义未发生变化/);
   assert.match(publish, /本来就没有销售属性/);
   // 别再对着终端用户说「把程序更新到最新版」——他自己就是最新版，这句等于推卸
   assert.doesNotMatch(publish, /把程序和本地后端都更新到最新版/);
@@ -3286,7 +3286,7 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /const openFix = \(items: \{ id: string; blocked: string\[\] \}\[\]\) => \{/);
   assert.match(library, /title="只列这一条去改，缺的列会高亮"/);
   assert.match(library, /title="被拦的条目只列出来改：缺哪列高亮哪列"/);
-  assert.match(library, /title="仅列出未通过预检的条目以便修正，缺失字段将高亮显示"/);
+  assert.match(library, /title="仅列出未通过预检的条目以便修正，缺失项将高亮显示"/);
   assert.match(library, /focusFields=\{batchFix\?\.page === "edit" \? batchFix\.fields : undefined\}/);
   assert.match(library, /批量编辑只列这些行、高亮缺的列/);
   assert.match(library, /模板「\{group\.template\?\.name \?\? "自动"\}」/);

@@ -41,7 +41,7 @@ const RULES: Rule[] = [
   {
     match: /重量不符合类目|重量.*限制/,
     human: "商品重量超出该类目允许范围",
-    fix: "请按提示中的克数范围修正；常见原因为以 kg 数值填入 g 字段（相差 1000 倍）",
+    fix: "请按提示中的克数范围修正；常见原因为将以 kg 计的数值填入以 g 计的重量栏（相差 1000 倍）",
   },
   {
     match: /Preview image cannot be empty/i,

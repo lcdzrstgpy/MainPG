@@ -2429,7 +2429,7 @@ export function TemuDraftLibraryPage({
                                 setPublishConfirm(null);
                                 openFix(items);
                               }}
-                              title="仅列出未通过预检的条目以便修正，缺失字段将高亮显示"
+                              title="仅列出未通过预检的条目以便修正，缺失项将高亮显示"
                             >
                               去补
                             </button>
@@ -2659,7 +2659,7 @@ export function TemuDraftLibraryPage({
                   </th>
                   <th
                     className="col-ready"
-                    title="草稿自身字段齐不齐；产品属性跟【能不能发】无关，一律要在发布页填"
+                    title="草稿自身信息是否完整；产品属性与能否发布无关，需在发布页填写"
                   >
                     草稿字段
                   </th>
