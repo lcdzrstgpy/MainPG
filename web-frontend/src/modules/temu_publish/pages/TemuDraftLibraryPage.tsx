@@ -4,6 +4,11 @@ import { createPortal } from "react-dom";
 import { httpBlob } from "../../../transport/http/client";
 import { temuPublishApi } from "../api/temuPublishApi";
 import { TemuDraftBulkBar, type BulkField } from "../components/TemuDraftBulkBar";
+import {
+  backupSummaryText,
+  exportTemuPublishBackup,
+  importTemuPublishBackup,
+} from "../data/backupStore";
 import { localStore, parsePublishError } from "../data/localStore";
 import type { DraftCategoryMemo, ProductTemplate, VariantTemplate } from "../data/localStore";
 import { BatchManualConfig } from "../components/BatchManualConfig";
@@ -646,6 +651,9 @@ export function TemuDraftLibraryPage({
   /** 输入框里的即时值；防抖 300ms 后才写进 query 触发请求 */
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
+  /** 备份导出/导入的反馈（信息性，不是错误） */
+  const [backupNote, setBackupNote] = useState("");
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [productTemplates, setProductTemplates] = useState<ProductTemplate[]>(() =>
     localStore.productTemplates(),
   );
@@ -2186,6 +2194,52 @@ export function TemuDraftLibraryPage({
         ) : null}
 
         <div className="temu-library-head-actions">
+          <button
+            type="button"
+            className="temu-btn"
+            title="把产品模板、变种模板、属性估填、失败台账、尺码表模板打包成一个文件（可发给同事或带到新电脑）"
+            onClick={() => {
+              const { blob, filename, counts } = exportTemuPublishBackup();
+              const url = URL.createObjectURL(blob);
+              const anchor = document.createElement("a");
+              anchor.href = url;
+              anchor.download = filename;
+              anchor.click();
+              URL.revokeObjectURL(url);
+              setBackupNote(`已导出：${backupSummaryText(counts)}`);
+            }}
+          >
+            导出备份
+          </button>
+          <button
+            type="button"
+            className="temu-btn"
+            title="导入备份文件；同名模板以文件里的为准，其余保留"
+            onClick={() => importInputRef.current?.click()}
+          >
+            导入备份
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              try {
+                const summary = await importTemuPublishBackup(file);
+                setBackupNote(`已导入：${backupSummaryText(summary.merged)}（同名以文件为准）`);
+                // 模板与列表立刻反映导入结果
+                setProductTemplates(localStore.productTemplates());
+                setVariantTemplates(localStore.variantTemplates());
+                void load(true);
+              } catch (cause) {
+                setBackupNote(cause instanceof Error ? cause.message : "导入失败，请检查文件");
+              }
+            }}
+          />
           {onOpenHistory ? (
             <button type="button" className="temu-btn" onClick={onOpenHistory}>
               发布历史
@@ -2199,6 +2253,12 @@ export function TemuDraftLibraryPage({
           </button>
         </div>
       </header>
+
+      {backupNote ? (
+        <p className="temu-muted temu-library-backup-note" role="status" aria-live="polite">
+          {backupNote}
+        </p>
+      ) : null}
 
       {wizard
         ? (() => {

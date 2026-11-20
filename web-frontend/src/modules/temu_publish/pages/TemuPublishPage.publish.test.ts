@@ -50,10 +50,10 @@ test("发布商品：检查必填与发布复用同一份成品，避免两条�
   assert.match(backup, /export async function importTemuPublishBackup/);
   assert.match(backup, /同键以导入为准/);
   assert.match(backup, /BACKUP_FORMAT = "temu-publish-backup"/);
-  const dialogs = readFileSync(new URL("../components/TemplateDialogs.tsx", import.meta.url), "utf8");
-  assert.match(dialogs, /导出备份/);
-  assert.match(dialogs, /导入备份/);
-  assert.match(page, /onImported=/);
+  // 按钮放成品库页头（藏在载入弹窗里没人找得到，2026-11-20 用户反馈）
+  const librarySrc = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  assert.match(librarySrc, /导出备份/);
+  assert.match(librarySrc, /导入备份/);
   // 界面不许露接口名/内部 ID（2026-11-20 第四轮：catsmandatory.get、pid= 兜底）
   assert.ok(!page.includes("来源：{mandatory.source}"), "禁显示裸接口名");
   assert.ok(!page.includes("pid=${item.pid}"), "缺项兜底不许露 pid");
