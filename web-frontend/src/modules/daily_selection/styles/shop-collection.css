@@ -505,3 +505,196 @@
   background-size: 11px 7px;
   cursor: pointer;
 }
+
+/* ── 采集创建行：平台可手动切换，与链接自动识别共存 ── */
+.shop-create-field { display: grid; gap: 6px; min-width: 0; }
+.shop-create-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  color: var(--theme-text-secondary, #527089);
+  font-size: .74rem;
+}
+.shop-collection-create .shop-platform-switch {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #f2f7fb);
+}
+.shop-collection-create .shop-platform-switch button {
+  min-height: 0;
+  padding: 3px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--theme-text-secondary, #527089);
+  font-size: .7rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+}
+.shop-collection-create .shop-platform-switch button:hover { color: var(--theme-text-primary, #13233a); }
+.shop-collection-create .shop-platform-switch button.is-active {
+  background: var(--theme-module-surface-raised, #fff);
+  color: var(--theme-accent, #0aa6cc);
+  box-shadow: 0 2px 6px rgba(16, 60, 96, .14);
+}
+
+/* ── 空批次引导：三球入口之后的每个采集页都要有内容，不能只剩一行灰字 ── */
+.shop-onboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(200px, .82fr);
+  align-items: center;
+  gap: 26px;
+  /* 采集页没有数据时也要撑住版面，避免表单下面留一大片空白 */
+  min-height: clamp(300px, calc(100vh - 440px), 520px);
+  margin: 6px 16px 0;
+  padding: 26px 28px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse 56% 92% at 94% 6%, rgba(37, 189, 163, .11), transparent 70%),
+    radial-gradient(ellipse 62% 100% at 2% 102%, rgba(56, 169, 214, .11), transparent 70%),
+    linear-gradient(135deg, var(--theme-module-surface-raised, #fff), var(--theme-module-surface-soft, #f7fafc));
+}
+.shop-onboard-copy { min-width: 0; display: grid; gap: 7px; }
+.shop-onboard-eyebrow {
+  color: var(--theme-accent, #0aa6cc);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .6rem;
+  font-weight: 800;
+  letter-spacing: .16em;
+}
+.shop-onboard-copy > strong { color: var(--theme-text-primary, #13233a); font-size: 1.16rem; font-weight: 850; letter-spacing: .01em; }
+.shop-onboard-copy > p { margin: 0; max-width: 560px; color: var(--theme-text-secondary, #527089); font-size: .78rem; line-height: 1.65; }
+.shop-onboard-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 13px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.shop-onboard-steps li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 12px 11px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 78%, transparent);
+}
+.shop-onboard-steps b {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  color: var(--theme-accent, #0a7f9e);
+  background: var(--theme-module-surface-tint, #eaf8ff);
+  font-size: .62rem;
+  font-weight: 850;
+}
+.shop-onboard-steps span { display: grid; gap: 3px; min-width: 0; }
+.shop-onboard-steps strong { color: var(--theme-text-primary, #13233a); font-size: .78rem; font-weight: 800; }
+.shop-onboard-steps small { color: var(--theme-text-secondary, #6d8499); font-size: .68rem; line-height: 1.45; }
+.shop-onboard-inputs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 13px; }
+.shop-onboard-inputs span {
+  padding: 4px 10px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 999px;
+  color: var(--theme-text-secondary, #527089);
+  background: var(--theme-module-surface-raised, #fff);
+  font-size: .66rem;
+}
+.shop-onboard-side { display: grid; justify-items: center; gap: 10px; min-width: 0; }
+.shop-onboard-art { width: 100%; max-width: 268px; height: auto; }
+.shop-onboard-note { max-width: 240px; color: var(--theme-text-secondary, #7a8fa3); font-size: .66rem; line-height: 1.5; text-align: center; }
+
+/* ── 已建批次但还没有商品：给一个可见的「正在扫描」状态，而不是一行说明 ── */
+.shop-pending {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 12px 0 0;
+  padding: 20px 22px;
+  border: 1px dashed var(--theme-module-border-strong, #b9dcee);
+  border-radius: 16px;
+  background:
+    radial-gradient(ellipse 60% 120% at 8% 50%, rgba(56, 169, 214, .1), transparent 70%),
+    color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 74%, transparent);
+}
+.shop-pending > div { display: grid; gap: 4px; min-width: 0; }
+.shop-pending strong { color: var(--theme-text-primary, #13233a); font-size: .86rem; }
+.shop-pending p { margin: 0; color: var(--theme-text-secondary, #527089); font-size: .74rem; line-height: 1.6; }
+.shop-pending small { color: var(--theme-text-secondary, #7a8fa3); font-size: .68rem; }
+.shop-pending-radar { position: relative; flex: none; width: 46px; height: 46px; display: grid; place-items: center; border-radius: 50%; border: 1px solid rgba(56, 169, 214, .32); }
+.shop-pending-radar i { position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(37, 189, 163, .45); animation: shop-pending-pulse 2.4s ease-out infinite; }
+.shop-pending-radar i:nth-child(2) { animation-delay: .8s; }
+.shop-pending-radar i:nth-child(3) { animation-delay: 1.6s; }
+.shop-pending-radar::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--theme-accent, #0aa6cc); }
+.shop-pending.is-done { border-style: solid; }
+.shop-pending.is-done .shop-pending-radar i { animation: none; opacity: .25; }
+.shop-pending.is-done .shop-pending-radar::after { background: var(--theme-text-secondary, #8fa4b6); }
+@keyframes shop-pending-pulse {
+  0% { transform: scale(.55); opacity: .85; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* ── 插件采集：有批次但未选中时，直接给出可点的批次列表 ── */
+.plugin-batch-quick {
+  display: grid;
+  gap: 10px;
+  margin: 8px 16px 0;
+  padding: 20px 22px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 16px;
+  background: var(--theme-module-surface-raised, #fff);
+}
+.plugin-batch-quick-head { display: grid; gap: 3px; }
+.plugin-batch-quick-head strong { color: var(--theme-text-primary, #13233a); font-size: .92rem; }
+.plugin-batch-quick-head small { color: var(--theme-text-secondary, #527089); font-size: .72rem; }
+.plugin-batch-quick-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 9px; }
+.plugin-batch-quick-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid var(--theme-module-border, #d8e9f3);
+  border-radius: 12px;
+  background: var(--theme-module-surface-soft, #f7fafc);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease;
+}
+.plugin-batch-quick-list button:hover { border-color: var(--theme-accent, #0aa6cc); background: var(--theme-module-surface-tint, #eaf8ff); }
+.plugin-batch-quick-list button span { min-width: 0; display: grid; gap: 3px; }
+.plugin-batch-quick-list button strong { overflow: hidden; color: var(--theme-text-primary, #13233a); font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-batch-quick-list button small { color: var(--theme-text-secondary, #527089); font-size: .68rem; }
+.plugin-batch-quick-list button b { flex: none; color: var(--theme-accent, #0aa6cc); font-size: .76rem; }
+
+@media (max-width: 1020px) {
+  .shop-onboard { grid-template-columns: minmax(0, 1fr); gap: 18px; padding: 22px; }
+  .shop-onboard-side { justify-items: start; }
+  .shop-onboard-art { max-width: 224px; }
+  .shop-onboard-note { text-align: left; }
+}
+@media (max-width: 680px) {
+  .shop-onboard { margin: 6px 12px 0; padding: 18px 16px; }
+  .shop-onboard-steps { grid-template-columns: minmax(0, 1fr); }
+  .shop-onboard-side { display: none; }
+  .shop-pending { flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; }
+}
+
+/* 弱机 / 减少动效：扫描波纹停下（纯装饰） */
+html[data-perf-mode="on"] .shop-pending-radar i { animation: none; opacity: .3; }
+@media (prefers-reduced-motion: reduce) {
+  .shop-pending-radar i { animation: none; opacity: .3; }
+}

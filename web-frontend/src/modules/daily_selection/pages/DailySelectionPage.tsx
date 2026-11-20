@@ -15,10 +15,10 @@ import {
   startSkuRepull,
 } from "../api/dailySelectionApi";
 import { getApiToken } from "../../../shared/api/apiClient";
-import { toUserMessage } from "../../../transport/http/client";
+import { apiUrl, toUserMessage } from "../../../transport/http/client";
 import { ShopCollectionPanel, type ShopCollectionPanelHandle } from "../components/ShopCollectionPanel";
 import { PluginOneboundCapturePanel, type PluginOneboundCapturePanelHandle } from "../components/PluginOneboundCapturePanel";
-import { CollectionModeCard, type CollectionModeSlide } from "../components/CollectionModeCard";
+import { CollectionEntryGate } from "../components/CollectionEntryGate";
 import {
   CANDIDATE_SORT_OPTIONS,
   candidateAttributeEntries,
@@ -35,23 +35,6 @@ import {
   type CandidateSortKey,
 } from "../data/candidatePresentation";
 
-/** 三个采集入口的背景轮播素材。定向=合规商品图；整店/插件=脱敏后的平台页截图（店名与供应商已模糊）。 */
-const COLLECTION_MODE_SLIDES: Record<"daily" | "shop" | "plugin", CollectionModeSlide[]> = {
-  daily: [
-    { src: "/assets/daily-selection/desk.jpg" },
-    { src: "/assets/daily-selection/pet.jpg" },
-    { src: "/assets/daily-selection/case.jpg" },
-    { src: "/assets/daily-selection/garden.jpg" },
-  ],
-  shop: [
-    { src: "/assets/daily-selection/store-1.jpg" },
-    { src: "/assets/daily-selection/store-2.jpg" },
-  ],
-  plugin: [
-    { src: "/assets/daily-selection/search-1.jpg" },
-    { src: "/assets/daily-selection/search-2.jpg" },
-  ],
-};
 import type {
   CollectionMode,
   CollectionPlatform,
@@ -332,7 +315,7 @@ function DailySelectionImage({ runId, url }: { runId: string; url: string }) {
       if (!alive) return;
       setObjectUrl("");
       setState("loading");
-      fetch(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`, {
+      fetch(apiUrl(`/desktop/daily-selection/image?run_id=${encodeURIComponent(runId)}&url=${encodeURIComponent(url)}`), {
         headers: { Authorization: `Bearer ${getApiToken()}` },
       })
         .then((response) => {
@@ -384,6 +367,8 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
   const [internalView, setInternalView] = useState<"directions" | "collection">(view);
   const collectionView = internalView === "collection";
   const [collectionWorkspaceMode, setCollectionWorkspaceMode] = useState<"daily" | "shop" | "plugin">("daily");
+  // 采集入口改成独立界面：默认停在入口，点进某个方式后才显示表单与结果区。
+  const [collectionEntered, setCollectionEntered] = useState(false);
   const [customDirections, setCustomDirections] = useState<Direction[]>(loadCustomDirections);
   const [updatedDefaultDirections, setUpdatedDefaultDirections] = useState<Direction[]>(loadUpdatedDefaultDirections);
   const [removedDefaultDirectionIds, setRemovedDefaultDirectionIds] = useState<string[]>(loadRemovedDefaultDirectionIds);
@@ -1544,66 +1529,51 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
               </div>
             )}
           </section>
+          {!collectionEntered ? (
+            <CollectionEntryGate
+              onEnter={(mode) => {
+                setCollectionWorkspaceMode(mode);
+                setCollectionEntered(true);
+              }}
+            />
+          ) : (
           <section className="daily-collection-surface" aria-label="每日选品采集面板">
-            <div className="collection-entry-intro">
-              <div className="collection-entry-copy">
-                <span className="collection-entry-eyebrow">COLLECTION ENTRY</span>
-                <strong>选择采集入口</strong>
-                <small>三种入口共用同一套筛选、评分与入池规则，切换只改变货源来源。</small>
+            <div className="collection-mode-bar">
+              <button type="button" className="collection-mode-back" onClick={() => setCollectionEntered(false)}>
+                <span aria-hidden="true">←</span> 返回采集入口
+              </button>
+              <div className="collection-mode-current">
+                <strong>
+                  {collectionWorkspaceMode === "shop"
+                    ? "整店采集"
+                    : collectionWorkspaceMode === "plugin"
+                      ? "插件采集"
+                      : "定向采集"}
+                </strong>
+                <small>
+                  {collectionWorkspaceMode === "shop"
+                    ? "整店链接 · 批量筛款"
+                    : collectionWorkspaceMode === "plugin"
+                      ? "浏览器插件 · 一键收录"
+                      : "关键词 / 参考图 · 逐条拉详情"}
+                </small>
               </div>
-              <svg className="collection-entry-art" viewBox="0 0 148 62" aria-hidden="true" focusable="false">
-                <defs>
-                  <linearGradient id="collectionEntryArtStroke" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stopColor="#38a9d6" />
-                    <stop offset="1" stopColor="#19bda3" />
-                  </linearGradient>
-                </defs>
-                <g stroke="url(#collectionEntryArtStroke)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" fill="none">
-                  <path d="M50 52h46" strokeDasharray="3 5" opacity=".55" />
-                  <path d="M60 30 75 22l15 8-15 8z" />
-                  <path d="M60 30v14l15 8 15-8V30" />
-                  <path d="M75 38v14" opacity=".7" />
-                  <circle cx="99" cy="17" r="7.5" />
-                  <path d="M105 23l7 7" />
-                  <path d="M121 35l1.8 4.2 4.2 1.8-4.2 1.8L121 47l-1.8-4.2L115 41l4.2-1.8z" strokeWidth="1.2" />
-                  <path d="M42 18l1.4 3.2 3.2 1.4-3.2 1.4L42 27l-1.4-3.2-3.2-1.4 3.2-1.4z" strokeWidth="1.2" opacity=".75" />
-                </g>
-                <g fill="#19bda3" opacity=".28">
-                  <circle cx="34" cy="42" r="1.4" />
-                  <circle cx="128" cy="18" r="1.2" />
-                  <circle cx="114" cy="52" r="1.1" />
-                </g>
-              </svg>
-            </div>
-            <div
-              className="collection-workspace-tabs"
-              role="tablist"
-              aria-label="采集入口"
-            >
-              <CollectionModeCard
-                label="定向采集"
-                iconClass="icon-search"
-                slides={COLLECTION_MODE_SLIDES.daily}
-                isActive={collectionWorkspaceMode === "daily"}
-                onSelect={() => setCollectionWorkspaceMode("daily")}
-                description="关键词 / 参考图 · 逐条拉详情"
-              />
-              <CollectionModeCard
-                label="整店采集"
-                iconClass="icon-shop"
-                slides={COLLECTION_MODE_SLIDES.shop}
-                isActive={collectionWorkspaceMode === "shop"}
-                onSelect={() => setCollectionWorkspaceMode("shop")}
-                description="整店链接 · 批量筛款"
-              />
-              <CollectionModeCard
-                label="插件采集"
-                iconClass="icon-cloud"
-                slides={COLLECTION_MODE_SLIDES.plugin}
-                isActive={collectionWorkspaceMode === "plugin"}
-                onSelect={() => setCollectionWorkspaceMode("plugin")}
-                description="浏览器插件 · 一键收录"
-              />
+              <div className="collection-mode-switch" role="group" aria-label="切换采集方式">
+                {([
+                  ["daily", "定向"],
+                  ["shop", "整店"],
+                  ["plugin", "插件"],
+                ] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={collectionWorkspaceMode === mode ? "is-active" : ""}
+                    onClick={() => setCollectionWorkspaceMode(mode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
             {collectionWorkspaceMode === "plugin" ? (
               <PluginOneboundCapturePanel ref={pluginCapturePanelRef} isActive={isActive} onOpenDraft={onOpenProductProcessingDraft} onBatchCountChange={setPluginBatchCount} />
@@ -1810,14 +1780,33 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
         )}
         {!activeRun && (
           <div className="candidates-placeholder">
-            <div className="result-empty">
-              <span>{collecting ? "↻" : "⌕"}</span>
-              <strong>{collecting ? collectionProgressMessage : "等待采集结果"}</strong>
-              <p>
-                {collecting
-                  ? `正在采集并拉取详情，完成后候选会按综合分排序展示（${collectionProgress}%）。`
-                  : "选择采集方向并提交条件，候选商品将在这里展示。"}
-              </p>
+            <div className="candidates-hero">
+              <svg className="candidates-hero-art" viewBox="0 0 220 150" aria-hidden="true" focusable="false">
+                <rect x="18" y="46" width="74" height="84" rx="10" fill="rgba(99,203,232,.14)" stroke="#9fd8e9" transform="rotate(-6 55 88)" />
+                <rect x="42" y="30" width="80" height="92" rx="10" fill="#fff" stroke="#bfe4ef" />
+                <rect x="52" y="40" width="60" height="42" rx="6" fill="rgba(56,169,214,.14)" />
+                <path d="M52 92h60M52 102h40" stroke="#9fd8e9" strokeWidth="2" strokeLinecap="round" />
+                <rect x="122" y="54" width="70" height="78" rx="10" fill="rgba(37,189,163,.12)" stroke="#9fd8e9" transform="rotate(6 157 93)" />
+                <circle cx="151" cy="60" r="23" fill="rgba(37,189,163,.08)" stroke="#25bda3" strokeWidth="1.6" />
+                <path d="M167 76l12 12" stroke="#25bda3" strokeWidth="3.6" strokeLinecap="round" />
+                <g stroke="#8fd3e6" strokeWidth="1" strokeDasharray="3 6" opacity=".6">
+                  <path d="M40 130h140" /><path d="M62 140h96" />
+                </g>
+              </svg>
+              <div className="candidates-hero-copy">
+                <span className="candidates-hero-eyebrow">{collecting ? "CANDIDATES · 采集中" : "CANDIDATES · 待采集"}</span>
+                <strong>{collecting ? collectionProgressMessage : "候选商品会出现在这里"}</strong>
+                <p>
+                  {collecting
+                    ? `正在采集并拉取详情，完成后候选会按综合分排序展示（${collectionProgress}%）。`
+                    : "选好方向和条件后点「开始采集」，这里会自动按综合分排出候选。"}
+                </p>
+                <div className="candidates-hero-tips">
+                  <span><b>1</b>方向预设已带出平台与数量，可直接开始</span>
+                  <span><b>2</b>价格、SKU 与风险规则在「高级设置」里调</span>
+                  <span><b>3</b>勾选保留后点「确认入池」进入产品处理</span>
+                </div>
+              </div>
             </div>
             <div className="candidate-skeleton-grid" aria-hidden="true">
               {Array.from({ length: 10 }).map((_, index) => (
@@ -1924,6 +1913,7 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
             </div>
             )}
           </section>
+          )}
         </div>
       )}
       {/* portal 到 body：workspace-tab-panel 的 fill-mode 入场动画创建层叠上下文，

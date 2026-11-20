@@ -221,8 +221,32 @@
 .completeness-toggle:hover { transform: translateY(-1px); border-color: var(--theme-module-border-strong, #83cce2); }
 .completeness-toggle.is-active { border-color: transparent; color: var(--theme-on-primary, #fff); background: var(--theme-primary-button-gradient, linear-gradient(105deg, #0786ec, #0dbdc0)); }
 /* 空态/采集中骨架：先给出结果区的形状，避免整块空白看起来像加载失败 */
-.candidates-placeholder { display: grid; gap: 6px; padding-bottom: 15px; }
-.candidates-placeholder .result-empty { min-height: 150px; }
+.candidates-placeholder { display: grid; gap: 14px; padding-bottom: 15px; }
+
+/* 空态导语：插画 + 三步提示，替代原来居中的一行灰字 */
+.candidates-hero {
+  display: grid;
+  grid-template-columns: minmax(140px, 200px) minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+  margin: 4px 15px 0;
+  padding: 18px 22px;
+  border: 1px solid #dbe9f1;
+  border-radius: 16px;
+  background:
+    radial-gradient(ellipse 54% 100% at 96% 4%, rgba(37, 189, 163, .1), transparent 70%),
+    radial-gradient(ellipse 60% 120% at 0% 100%, rgba(56, 169, 214, .1), transparent 70%),
+    linear-gradient(135deg, #ffffff, #f7fbfd);
+}
+.candidates-hero-art { width: 100%; height: auto; }
+.candidates-hero-copy { min-width: 0; display: grid; gap: 5px; }
+.candidates-hero-eyebrow { color: #0a90b4; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .58rem; font-weight: 800; letter-spacing: .16em; }
+.candidates-hero-copy > strong { color: #1c344b; font-size: 1rem; font-weight: 850; }
+.candidates-hero-copy > p { margin: 0; color: #6d8595; font-size: .76rem; line-height: 1.6; }
+.candidates-hero-tips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.candidates-hero-tips span { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid #dbe9f1; border-radius: 999px; color: #527089; background: #fff; font-size: .66rem; }
+.candidates-hero-tips b { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: #0a7f9e; background: #e8f6fc; font-size: .6rem; font-weight: 850; }
+
 .candidate-skeleton-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; padding: 0 15px; }
 .candidate-skeleton { display: grid; align-content: start; gap: 8px; padding: 0 0 12px; overflow: hidden; border: 1px solid #e3ebf1; border-radius: 11px; background: #fff; }
 .candidate-skeleton > span { display: block; background: #eef3f7; }
@@ -290,6 +314,8 @@
   .results-title .select-all-button,
   .results-title .confirm-button { flex: 1 1 118px; }
   .candidate-skeleton-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .candidates-hero { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
+  .candidates-hero-art { max-width: 168px; }
 }
 
 @container daily-results (max-width: 420px) {
@@ -668,3 +694,563 @@
   .candidate-detail-footer { flex-direction: column; align-items: stretch; }
   .candidate-detail-footer > div { justify-content: flex-end; }
 }
+
+/* ---- 采集入口独立界面 v2（2026-11-05）----
+   西文：三个圆泡按韦恩图交错叠压（尺寸/高度/角度都刻意不等），带网格、扫描线、角标与渐变描边环；
+   交互：悬停放大并让其余后退，光标跟随柔光 + canvas 光粒拖影，点圆泡先出说明再进入。
+   性能：动画只碰 transform / opacity；拖影由单张 canvas 绘制（粒子上限 26、空闲停 rAF）；
+   柔光用 transform 位移而非 top/left；弹层不用 backdrop-filter；
+   html[data-perf-mode="on"]（流畅模式）下装饰层整体关闭。 */
+.collection-gate {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: clamp(580px, calc(100vh - 250px), 800px);
+  margin: 14px 14px 0;
+  padding: 26px 22px 24px;
+  overflow: hidden;
+  contain: layout paint style;
+  border: 1px solid color-mix(in srgb, var(--theme-module-border, #d8e5ee) 66%, transparent);
+  border-radius: 24px;
+  background:
+    radial-gradient(ellipse 46% 42% at 50% 44%, rgba(255, 255, 255, .58), transparent 72%),
+    radial-gradient(ellipse 62% 54% at 50% -6%, rgba(56, 169, 214, .1), transparent 74%),
+    radial-gradient(ellipse 54% 48% at 8% 96%, rgba(25, 189, 163, .09), transparent 74%),
+    radial-gradient(ellipse 50% 46% at 94% 92%, rgba(244, 168, 186, .09), transparent 74%),
+    linear-gradient(168deg, rgba(255, 255, 255, .5), rgba(245, 251, 255, .3) 58%, rgba(240, 249, 249, .26));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8), inset 0 -60px 90px -70px rgba(16, 96, 130, .16);
+}
+
+/* 网格底纹：静态、只画一次，弱机上也没有额外开销 */
+.collection-gate-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(56, 169, 214, .09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 169, 214, .09) 1px, transparent 1px);
+  background-size: 34px 34px;
+  mask-image: radial-gradient(ellipse 72% 68% at 50% 46%, #000 22%, transparent 78%);
+  opacity: .8;
+  pointer-events: none;
+}
+
+.collection-gate-sky {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, .9) 0 1.5px, transparent 2px),
+    radial-gradient(circle at 72% 34%, rgba(255, 255, 255, .75) 0 1.2px, transparent 2px),
+    radial-gradient(circle at 44% 78%, rgba(255, 255, 255, .65) 0 1px, transparent 2px);
+  background-size: 180px 180px, 240px 240px, 200px 200px;
+  opacity: .75;
+  pointer-events: none;
+}
+
+/* 扫描线：只做 transform，合成层动画 */
+.collection-gate-scan {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 0;
+  height: 128px;
+  background: linear-gradient(180deg, transparent, rgba(86, 200, 232, .16) 62%, rgba(86, 200, 232, 0));
+  animation: collection-gate-scan 7.5s linear infinite;
+  pointer-events: none;
+}
+@keyframes collection-gate-scan {
+  from { transform: translate3d(0, -140px, 0); }
+  to { transform: translate3d(0, 780px, 0); }
+}
+
+/* 光标柔光：位置由 JS 写 transform，transition 只留一点点缓动做“跟手” */
+.collection-gate-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 340px;
+  height: 340px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(56, 169, 214, .2), rgba(25, 189, 163, .08) 46%, transparent 68%);
+  transform: translate3d(-500px, -500px, 0);
+  transition: transform .08s linear;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.collection-gate-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+}
+
+.collection-gate-bubbles { position: absolute; inset: 0; pointer-events: none; }
+.collection-gate-bubbles i {
+  position: absolute;
+  left: calc(5% + var(--bubble-index) * 10.4%);
+  bottom: calc(-8% + var(--bubble-index) * 2.6%);
+  width: calc(6px + var(--bubble-index) * 1.7px);
+  height: calc(6px + var(--bubble-index) * 1.7px);
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 30%, rgba(255, 255, 255, .95), rgba(120, 200, 228, .32) 60%, transparent 72%);
+  opacity: .5;
+  animation: collection-bubble-rise calc(10s + var(--bubble-index) * 1.4s) linear infinite;
+  animation-delay: calc(var(--bubble-index) * -1.8s);
+}
+@keyframes collection-bubble-rise {
+  0% { transform: translate3d(0, 0, 0) scale(.8); opacity: 0; }
+  14% { opacity: .55; }
+  100% { transform: translate3d(26px, -80vh, 0) scale(1.12); opacity: 0; }
+}
+
+/* 四角角标：科技感全靠这几笔静态描边 */
+.collection-gate-frame { position: absolute; inset: 12px; pointer-events: none; }
+.collection-gate-frame i {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(56, 169, 214, .45);
+  border-radius: 4px;
+}
+.collection-gate-frame i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+.collection-gate-frame i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+.collection-gate-frame i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+.collection-gate-frame i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+
+.collection-gate-head { position: relative; z-index: 2; display: grid; gap: 5px; justify-items: center; text-align: center; }
+.collection-gate-eyebrow {
+  color: #4b93ad;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .6rem;
+  font-weight: 700;
+  letter-spacing: .18em;
+}
+.collection-gate-head h2 { margin: 0; color: #0f2e33; font-size: 1.34rem; font-weight: 850; letter-spacing: .01em; }
+.collection-gate-head p { margin: 0; max-width: 480px; color: #6d8595; font-size: .78rem; line-height: 1.6; }
+.collection-gate-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 3px 10px;
+  border: 1px solid rgba(25, 189, 163, .32);
+  border-radius: 999px;
+  background: rgba(25, 189, 163, .08);
+  color: #12867a;
+  font-size: .66rem;
+  letter-spacing: .04em;
+}
+.collection-gate-status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #19bda3;
+  box-shadow: 0 0 0 3px rgba(25, 189, 163, .18);
+  animation: collection-gate-pulse 2.4s ease-in-out infinite;
+}
+@keyframes collection-gate-pulse {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+/* 三个圆泡：圆心按黄金分割近似摆放（水平 0.24 / 0.5 / 0.76，垂直 0.285 / 0.725），
+   球径 52% / 48% / 46.5%，上球与两只下球轻微咬合、下球之间留出呼吸缝。 */
+.collection-gate-orbits {
+  position: relative;
+  z-index: 2;
+  width: min(800px, 100%);
+  aspect-ratio: 1 / .92;
+  margin: 10px auto 0;
+}
+
+/* 圆泡背后的柔光：把三个球在视觉上连成一组，背景不再是一块平白 */
+.collection-gate-orbits::before {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  inset: 4% -6% -14%;
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse 52% 46% at 50% 34%, rgba(56, 169, 214, .12), transparent 70%),
+    radial-gradient(ellipse 44% 42% at 26% 74%, rgba(25, 189, 163, .1), transparent 72%),
+    radial-gradient(ellipse 42% 40% at 76% 72%, rgba(244, 168, 186, .1), transparent 72%);
+  pointer-events: none;
+}
+
+/* 落地阴影：三球共用一片很淡的接地暗部，球体不再"浮在空气里" */
+.collection-gate-orbits::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 12%;
+  right: 12%;
+  bottom: 2%;
+  height: 14%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(18, 74, 104, .17), rgba(18, 74, 104, .07) 52%, transparent 78%);
+  pointer-events: none;
+}
+.collection-gate-orb {
+  position: absolute;
+  /* 圆泡内部全是绝对定位，必须显式给高度，否则会塌成 0 高而“看不见” */
+  aspect-ratio: 1;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 50%;
+  /* 立体球体：左上高光 + 底部内阴影 + 外投影，三层叠出球面弧度 */
+  background:
+    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, .95), rgba(255, 255, 255, .28) 40%, rgba(226, 243, 250, .18) 68%);
+  box-shadow:
+    inset 0 18px 32px -12px rgba(255, 255, 255, .95),
+    inset 0 -30px 50px -18px rgba(14, 76, 106, .34),
+    0 30px 58px -10px rgba(16, 72, 102, .26),
+    0 10px 22px -10px rgba(16, 72, 102, .2);
+  cursor: pointer;
+  /* 兜底为可见：入场只靠 keyframes 从 0 淡入，万一动画被全局偏好关掉也不会整块消失 */
+  opacity: 1;
+  animation:
+    collection-gate-orb-in .42s cubic-bezier(.22, .9, .28, 1.06) forwards,
+    collection-gate-orb-float-a var(--float-duration, 11s) ease-in-out infinite;
+  animation-delay: .04s, .8s;
+  transition: scale .28s cubic-bezier(.22, .8, .32, 1), box-shadow .28s ease, opacity .28s ease;
+  /* 只给 3 个球提升为合成层，局部提升、不做全局 will-change */
+  will-change: translate, scale;
+}
+
+/* 浮动：只动 translate（走合成线程），三个球各走一条轨迹——有斜向、有横向漂移，
+   不再整齐地上下齐步走；振幅 6–10px、周期 10–14s，几乎不耗帧。 */
+@keyframes collection-gate-orb-float-a {
+  0%, 100% { translate: 0 0; }
+  32% { translate: var(--float-x, 5px) calc(var(--float-y, 8px) * -1); }
+  64% { translate: calc(var(--float-x, 5px) * -.6) calc(var(--float-y, 8px) * .32); }
+}
+@keyframes collection-gate-orb-float-b {
+  0%, 100% { translate: 0 0; }
+  26% { translate: calc(var(--float-x, 5px) * -.85) calc(var(--float-y, 8px) * -.45); }
+  56% { translate: calc(var(--float-x, 5px) * .3) calc(var(--float-y, 8px) * -.9); }
+  82% { translate: calc(var(--float-x, 5px) * .6) 2px; }
+}
+@keyframes collection-gate-orb-float-c {
+  0%, 100% { translate: 0 0; }
+  30% { translate: calc(var(--float-x, 5px) * -.7) calc(var(--float-y, 8px) * -.6); }
+  66% { translate: calc(var(--float-x, 5px) * .85) 3px; }
+}
+
+/* 高光点：球体左上的一小块反光，让圆看起来“鼓”起来 */
+.collection-gate-orb::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 12%;
+  left: 18%;
+  width: 34%;
+  height: 24%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, .92), rgba(255, 255, 255, 0));
+  opacity: .75;
+  pointer-events: none;
+}
+.collection-gate-orb--0 {
+  z-index: 2;
+  width: 52%;
+  top: 28.5%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-1.5deg);
+  animation-name: collection-gate-orb-in, collection-gate-orb-float-a;
+  animation-delay: .04s, .6s;
+  --float-x: 6px;
+  --float-y: 9px;
+  --float-duration: 12.5s;
+}
+.collection-gate-orb--1 {
+  z-index: 3;
+  width: 48%;
+  top: 72.5%;
+  left: 24.3%;
+  transform: translate(-50%, -50%) rotate(1.6deg);
+  animation-name: collection-gate-orb-in, collection-gate-orb-float-b;
+  animation-delay: .14s, 1.6s;
+  --float-x: 5px;
+  --float-y: 7px;
+  --float-duration: 10.5s;
+}
+.collection-gate-orb--2 {
+  z-index: 1;
+  width: 46.5%;
+  top: 72.5%;
+  left: 75.7%;
+  transform: translate(-50%, -50%) rotate(-1deg);
+  animation-name: collection-gate-orb-in, collection-gate-orb-float-c;
+  animation-delay: .24s, 2.4s;
+  --float-x: 7px;
+  --float-y: 8px;
+  --float-duration: 13.5s;
+}
+@keyframes collection-gate-orb-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.collection-gate-orb-media { position: absolute; inset: 0; }
+.collection-gate-orb-media img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: .56;
+  filter: saturate(.94);
+  transition: opacity .3s ease, transform .6s ease;
+}
+.collection-gate-orb-media img:not(:first-child) { opacity: 0; }
+
+/* 渐变描边环：conic 渐变 + mask 抠出 2px 环，悬停时缓慢旋转（transform 动画） */
+.collection-gate-orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 120deg, rgba(56, 169, 214, .7), rgba(25, 189, 163, .18) 38%, rgba(255, 255, 255, .9) 52%, rgba(56, 169, 214, .55));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px));
+  opacity: .55;
+  pointer-events: none;
+}
+.collection-gate-orb:hover .collection-gate-orb-ring,
+.collection-gate-orb:focus-visible .collection-gate-orb-ring {
+  opacity: 1;
+  animation: collection-gate-ring-spin 6s linear infinite;
+}
+@keyframes collection-gate-ring-spin {
+  to { transform: rotate(360deg); }
+}
+
+.collection-gate-orb-body {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 4px;
+  padding: 11%;
+  text-align: center;
+  color: #0f2e33;
+  background: radial-gradient(circle at 50% 46%, rgba(255, 255, 255, .84), rgba(255, 255, 255, .46) 58%, transparent 76%);
+}
+.collection-gate-orb-body .iconfont { font-size: 1.5rem; color: #1389b8; }
+.collection-gate-orb-body strong { font-size: 1.04rem; font-weight: 850; letter-spacing: .02em; }
+.collection-gate-orb-body small { color: #6d8595; font-size: .72rem; line-height: 1.4; }
+
+.collection-gate-orb:hover,
+.collection-gate-orb:focus-visible {
+  z-index: 5;
+  scale: 1.06;
+  outline: none;
+  box-shadow:
+    0 26px 54px rgba(20, 78, 110, .22),
+    0 0 0 1px rgba(86, 200, 232, .45),
+    0 0 34px rgba(86, 200, 232, .28);
+}
+.collection-gate-orb:hover .collection-gate-orb-media img:first-child,
+.collection-gate-orb:focus-visible .collection-gate-orb-media img:first-child { opacity: .74; transform: scale(1.05); }
+
+/* 悬停时其余圆泡后退：只改 opacity / scale，不碰布局 */
+.collection-gate.has-hover .collection-gate-orb:not(:hover):not(:focus-visible) { opacity: .55; scale: .97; }
+
+/* ---- 进入后的顶部方式条 ---- */
+.collection-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 14px 14px 0;
+  padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--theme-module-border, #d8e5ee) 70%, transparent);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .8);
+}
+.collection-mode-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: rgba(15, 60, 90, .05);
+  color: #4b6b80;
+  font-size: .74rem;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease;
+}
+.collection-mode-back:hover { background: rgba(15, 60, 90, .1); color: #0f2e33; }
+.collection-mode-current { display: grid; gap: 1px; min-width: 0; }
+.collection-mode-current strong { color: #0f2e33; font-size: .88rem; }
+.collection-mode-current small { color: #7a8fa3; font-size: .68rem; }
+.collection-mode-switch {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: auto;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(15, 60, 90, .06);
+}
+.collection-mode-switch button {
+  padding: 4px 13px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #5d7890;
+  font-size: .74rem;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+}
+.collection-mode-switch button:hover { color: #0f2e33; }
+.collection-mode-switch button.is-active { background: #fff; color: #0b6f96; box-shadow: 0 2px 6px rgba(16, 60, 96, .12); }
+
+@container daily-page (max-width: 760px) {
+  .collection-gate { min-height: 0; padding: 18px 14px 20px; }
+  .collection-gate-head h2 { font-size: 1.1rem; }
+  .collection-gate-frame { display: none; }
+  .collection-gate-orbits { aspect-ratio: auto; display: grid; gap: 12px; width: 100%; margin-top: 10px; }
+  .collection-gate-orb {
+    position: relative;
+    width: 100%;
+    aspect-ratio: auto;
+    min-height: 84px;
+    border-radius: 18px;
+    opacity: 1;
+    animation: none;
+    transform: none;
+  }
+  .collection-gate-orb--0,
+  .collection-gate-orb--1,
+  .collection-gate-orb--2 { top: auto; right: auto; bottom: auto; left: auto; }
+  .collection-gate-orb:hover,
+  .collection-gate-orb:focus-visible { scale: 1; }
+  .collection-gate-orb-body { position: relative; grid-auto-flow: column; place-content: center; gap: 8px; padding: 16px; }
+  .collection-gate-orb-body small { display: none; }
+  .collection-gate-panel { position: relative; left: auto; bottom: auto; width: 100%; margin-top: 12px; transform: none; }
+  .collection-gate.has-hover .collection-gate-orb:not(:hover):not(:focus-visible) { opacity: 1; scale: 1; }
+  .collection-mode-bar { flex-wrap: wrap; gap: 8px; }
+  .collection-mode-switch { margin-left: 0; width: 100%; }
+  .collection-mode-switch button { flex: 1; }
+}
+
+/* 流畅模式 / 减少动效：关装饰，保留布局与文字 */
+.collection-gate.is-calm .collection-gate-scan,
+.collection-gate.is-calm .collection-gate-bubbles,
+.collection-gate.is-calm .collection-gate-glow { display: none; }
+html[data-perf-mode="on"] .collection-gate-scan,
+html[data-perf-mode="on"] .collection-gate-bubbles,
+html[data-perf-mode="on"] .collection-gate-glow,
+html[data-perf-mode="on"] .collection-gate-canvas { display: none; }
+html[data-perf-mode="on"] .collection-gate-grid { opacity: .35; }
+html[data-perf-mode="on"] .collection-gate-orb { animation: none; opacity: 1; will-change: auto; }
+html[data-perf-mode="on"] .collection-gate-orb-ring { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .collection-gate-scan,
+  .collection-gate-bubbles i,
+  .collection-gate-status i { animation: none; }
+  .collection-gate-glow,
+  .collection-gate-canvas { display: none; }
+  .collection-gate-orb,
+  .collection-gate-orb-media img,
+  .collection-gate-panel { transition: none; animation: none; opacity: 1; }
+  .collection-gate-orb { will-change: auto; }
+}
+
+/* ---- 入口装饰层（2026-11-05 第三版）----
+   三球之外的留白用「同心水波纹 + 底部波浪 + 两侧竖排小注」填掉；
+   全部是静态 SVG / 纯 CSS，不参与动画，弱机上也不增加开销。 */
+.collection-gate-ripple {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  top: 53%;
+  width: min(680px, 88%);
+  translate: -50% -50%;
+  pointer-events: none;
+}
+
+.collection-gate-waves {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 132px;
+  opacity: .9;
+  pointer-events: none;
+}
+
+.collection-gate-aside {
+  position: absolute;
+  z-index: 3;
+  top: 52%;
+  translate: 0 -50%;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: #93a9ba;
+  font-size: .6rem;
+  letter-spacing: .2em;
+  writing-mode: vertical-rl;
+  pointer-events: none;
+}
+.collection-gate-aside b { color: #4b93ad; font-weight: 700; letter-spacing: .22em; }
+.collection-gate-aside i { width: 1px; height: 34px; background: linear-gradient(rgba(56, 169, 214, .5), transparent); }
+.collection-gate-aside--left { left: 26px; }
+.collection-gate-aside--right { right: 26px; }
+
+/* 气泡内的说明文字：原来弹层里的介绍收进来，三行截断 */
+.collection-gate-orb-body { gap: 3px; padding: 8% 11% 9%; }
+.collection-gate-orb-tagline { color: #58798d; font-size: .74rem; line-height: 1.35; }
+.collection-gate-orb-note {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 94%;
+  margin-top: 2px;
+  color: #7d93a6;
+  font-size: .63rem;
+  line-height: 1.5;
+}
+.collection-gate-orb-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(19, 137, 184, .1);
+  color: #0d7fa8;
+  font-size: .62rem;
+  letter-spacing: .02em;
+  opacity: .75;
+  transition: opacity .2s ease, background-color .2s ease, transform .2s ease;
+}
+.collection-gate-orb-enter i { font-style: normal; }
+.collection-gate-orb:hover .collection-gate-orb-enter,
+.collection-gate-orb:focus-visible .collection-gate-orb-enter {
+  opacity: 1;
+  background: rgba(19, 137, 184, .18);
+  transform: translateX(2px);
+}
+
+@container daily-page (max-width: 1180px) {
+  .collection-gate-aside { display: none; }
+}
+
+@container daily-page (max-width: 760px) {
+  .collection-gate-ripple,
+  .collection-gate-waves { display: none; }
+  .collection-gate-orb-note { -webkit-line-clamp: 3; }
+  .collection-gate-orb-enter { margin-top: 2px; }
+}
+
+html[data-perf-mode="on"] .collection-gate-ripple,
+html[data-perf-mode="on"] .collection-gate-waves { opacity: .55; }

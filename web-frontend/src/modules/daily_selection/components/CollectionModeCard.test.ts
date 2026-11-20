@@ -4,6 +4,8 @@ import test from "node:test";
 
 const card = readFileSync(new URL("./CollectionModeCard.tsx", import.meta.url), "utf8");
 const page = readFileSync(new URL("../pages/DailySelectionPage.tsx", import.meta.url), "utf8");
+/** 采集入口清单已迁到 EntryGate（圆盘选择器）：素材与标签都在这里 */
+const gate = readFileSync(new URL("./CollectionEntryGate.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles/daily-selection.css", import.meta.url), "utf8");
 const shopStyles = readFileSync(new URL("../styles/shop-collection.css", import.meta.url), "utf8");
 
@@ -29,7 +31,7 @@ test("采集入口卡：选中清晰白字 / 未选中模糊黑字，文字居�
 });
 
 test("采集入口卡：三个入口各自有背景素材，且文件真实存在", () => {
-  const srcs = [...page.matchAll(/src: "(\/assets\/daily-selection\/[^"]+)"/g)].map((m) => m[1]);
+  const srcs = [...gate.matchAll(/src: "(\/assets\/daily-selection\/[^"]+)"/g)].map((m) => m[1]);
   assert.ok(srcs.length >= 8, `背景素材应 ≥8 张（定向 4 + 整店 2 + 插件 2），实际 ${srcs.length}`);
   for (const src of srcs) {
     const file = new URL(`../../../../public${src}`, import.meta.url);
@@ -37,9 +39,12 @@ test("采集入口卡：三个入口各自有背景素材，且文件真实存�
   }
   // 三个入口的标签必须原样保留且可读
   for (const label of ["定向采集", "整店采集", "插件采集"]) {
-    assert.ok(page.includes(`label="${label}"`), `缺少入口标签 ${label}`);
+    assert.ok(gate.includes(`label: "${label}"`), `缺少入口标签 ${label}`);
   }
-  assert.match(page, /<CollectionModeCard/);
+  // 入口定义必须带轮播素材（三组 SLIDES）
+  for (const group of ["SLIDES.daily", "SLIDES.shop", "SLIDES.plugin"]) {
+    assert.ok(gate.includes(`slides: ${group}`), `缺少素材组 ${group}`);
+  }
 });
 
 test("采集入口卡：旧高特异性规则不得回归（会顶掉卡片内边距，图被挤出白边）", () => {
