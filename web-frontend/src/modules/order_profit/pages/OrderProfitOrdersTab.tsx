@@ -25,6 +25,22 @@ const STATUS_PATTERN: Record<Exclude<OrderStatusPreset, "all">, RegExp> = {
   cancelled: /已取消|取消/,
 };
 
+// Temu 订单接口有时只返回数字状态码：仅把已确认的码翻译成中文，其余保留原始码并加说明。
+const STATUS_CODE_TEXT: Record<string, string> = { "2": "待发货", "5": "已签收" };
+
+function statusLabel(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text) return "—";
+  if (!/^\d+$/.test(text)) return text;
+  return STATUS_CODE_TEXT[text] || `状态码 ${text}`;
+}
+
+function statusHint(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  if (!text || !/^\d+$/.test(text) || STATUS_CODE_TEXT[text]) return "";
+  return "Temu 接口返回的原始状态码，暂未映射为中文";
+}
+
 function defaultFilters() {
   return {
     months: [] as string[],
@@ -157,9 +173,10 @@ export function OrderProfitOrdersTab({
         const haystack = `${order.parent_order_sn} ${order.items.map((item) => item.sub_order_sn).join(" ")}`;
         if (!numbers.some((value) => haystack.includes(value))) return false;
       }
-      if (applied.salesZero && Number(order.sales_payback) !== 0) return false;
-      if (applied.profitStatus === "profit" && Number(order.profit) < 0) return false;
-      if (applied.profitStatus === "loss" && Number(order.profit) >= 0) return false;
+      // 缺失值（null）不属于「为 0」，避免把没采到当成 0 参与筛选。
+      if (applied.salesZero && (order.sales_payback == null || Number(order.sales_payback) !== 0)) return false;
+      if (applied.profitStatus === "profit" && (order.profit == null || order.profit < 0)) return false;
+      if (applied.profitStatus === "loss" && (order.profit == null || order.profit >= 0)) return false;
       if (applied.country !== "all" && order.site !== applied.country) return false;
       if (applied.penalty === "has" && Number(order.penalty) <= 0) return false;
       if (applied.penalty === "none" && Number(order.penalty) > 0) return false;
@@ -197,16 +214,15 @@ export function OrderProfitOrdersTab({
   useEffect(() => {
     setPage(1);
   }, [status, applied, pageSize, sortKey, sortDir]);
-  // 先给结论：订单量、GMV、回款、利润；成本与费用拆到「成本明细」里，避免一屏十个数字。
+  // 先给结论：订单量、回款、利润；成本与费用拆到「成本明细」里，避免一屏十个数字。
   const primaryCards = useMemo(
     () => [
       { label: "订单数", value: numberText(summary?.order_count), tone: "is-info", hint: "当前月份与筛选条件下", glyph: "orders" as ShopDataGlyphName },
-      { label: "GMV", value: money(summary?.gmv_total), tone: "", hint: "商品成交总额（人民币）", glyph: "money" as ShopDataGlyphName },
       { label: "销售回款", value: money(summary?.sales_payback), tone: "is-positive", hint: "Temu 已回款的销售额", glyph: "wallet" as ShopDataGlyphName },
       {
         label: "总利润",
         value: money(summary?.profit),
-        tone: (summary?.profit || 0) >= 0 ? "is-positive" : "is-negative",
+        tone: summary?.profit == null ? "" : summary.profit >= 0 ? "is-positive" : "is-negative",
         hint: summary?.profit_rate === null || summary?.profit_rate === undefined
           ? "回款 - 成本 - 费用"
           : `利润率 ${(summary.profit_rate * 100).toFixed(1)}%`,
@@ -218,10 +234,18 @@ export function OrderProfitOrdersTab({
   const secondaryCards = useMemo(
     () => [
       { label: "已结算总额", value: money(summary?.settled_total), tone: "is-positive" },
-      { label: "销售冲回", value: money(-(summary?.sales_reversal || 0)), tone: "is-negative" },
+      {
+        label: "销售冲回",
+        value: money(summary?.sales_reversal == null ? null : -summary.sales_reversal),
+        tone: "is-negative",
+      },
       { label: "采购成本", value: money(summary?.purchase_cost), tone: "" },
       { label: "头程运费", value: money(summary?.head_freight), tone: "" },
-      { label: "尾程面单费用", value: money(-(summary?.tail_freight || 0)), tone: "" },
+      {
+        label: "尾程面单费用",
+        value: money(summary?.tail_freight == null ? null : -summary.tail_freight),
+        tone: "",
+      },
       { label: "平台罚款", value: money(-(summary?.penalty || 0)), tone: "is-negative" },
       { label: "广告费用", value: money(-(summary?.ad_cost || 0)), tone: "is-negative" },
     ],
@@ -254,14 +278,14 @@ export function OrderProfitOrdersTab({
   };
   const exportCsv = () => {
     const headers = [
-      "店铺", "PO单号", "子订单数", "国家", "订单状态", "订单时间", "SKU数", "件数",
-      "GMV", "销售回款", "销售冲回", "运费回款", "运费冲回", "采购成本", "头程", "尾程", "总利润",
+      "店铺", "PO单号", "子订单数", "订单状态", "订单时间", "SKU数", "件数",
+      "销售回款", "运费回款", "采购成本", "尾程", "总利润",
     ];
     const lines = visibleOrders.map((row) => [
-      row.shop_name || row.mall_id, row.parent_order_sn, row.sub_order_count, row.site,
+      row.shop_name || row.mall_id, row.parent_order_sn, row.sub_order_count,
       row.order_status, row.order_time, row.sku_count, row.item_count,
-      row.gmv_total, row.sales_payback, row.sales_reversal, row.freight_payback,
-      row.freight_reversal, row.purchase_cost, row.head_freight, row.tail_freight, row.profit,
+      row.sales_payback, row.freight_payback,
+      row.purchase_cost, row.tail_freight, row.profit,
     ]);
     const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
     const text = "\uFEFF" + [headers, ...lines].map((line) => line.map(escape).join(",")).join("\r\n");
@@ -476,17 +500,12 @@ export function OrderProfitOrdersTab({
                 <th className="op-col-exp" />
                 <th>店铺</th>
                 <th>PO-单号</th>
-                <th>站点</th>
                 <th>订单状态</th>
                 <th><button type="button" className={`op-th-sort ${sortKey === "order_time" ? "is-active" : ""}`} onClick={() => toggleSort("order_time")}>订单时间<i>{sortArrow("order_time")}</i></button></th>
                 <th><button type="button" className={`op-th-sort ${sortKey === "item_count" ? "is-active" : ""}`} onClick={() => toggleSort("item_count")}>SKU/件数<i>{sortArrow("item_count")}</i></button></th>
-                <th className="op-num"><button type="button" className={`op-th-sort ${sortKey === "gmv_total" ? "is-active" : ""}`} onClick={() => toggleSort("gmv_total")}>GMV<i>{sortArrow("gmv_total")}</i></button></th>
                 <th className="op-num"><button type="button" className={`op-th-sort ${sortKey === "sales_payback" ? "is-active" : ""}`} onClick={() => toggleSort("sales_payback")}>销售回款<i>{sortArrow("sales_payback")}</i></button></th>
-                <th className="op-num">销售冲回</th>
                 <th className="op-num">运费回款</th>
-                <th className="op-num">运费冲回</th>
                 <th className="op-num">采购成本</th>
-                <th className="op-num">头程</th>
                 <th className="op-num">尾程</th>
                 <th className="op-num"><button type="button" className={`op-th-sort ${sortKey === "profit" ? "is-active" : ""}`} onClick={() => toggleSort("profit")}>总利润<i>{sortArrow("profit")}</i></button></th>
               </tr>
@@ -494,7 +513,7 @@ export function OrderProfitOrdersTab({
             <tbody>
               {!visibleOrders.length && !loading ? (
                 <tr>
-                  <td colSpan={16}>
+                  <td colSpan={11}>
                     <EmptyBlock
                       compact
                       art="orders"
@@ -604,27 +623,22 @@ function FragmentRow({
           </div>
         </td>
         <td className="op-mono">{row.parent_order_sn}</td>
-        <td>{row.site || "—"}</td>
         <td>
-          <span className="op-badge">{row.order_status || "—"}</span>
+          <span className="op-badge" title={statusHint(row.order_status)}>{statusLabel(row.order_status)}</span>
         </td>
         <td className="op-muted">{row.order_time || "—"}</td>
         <td>{row.sku_count} / {row.item_count}</td>
-        <td className="op-num">{money(row.gmv_total)}</td>
         <td className="op-num">{money(row.sales_payback)}</td>
-        <td className={`op-num is-negative`}>{money(-(row.sales_reversal || 0))}</td>
         <td className="op-num">{money(row.freight_payback)}</td>
-        <td className={`op-num is-negative`}>{money(-(row.freight_reversal || 0))}</td>
         <td className="op-num">
           <EditableCost row={row} shop={shop} onSaved={onCostSaved} />
         </td>
-        <td className="op-num">{money(row.head_freight)}</td>
-        <td className="op-num">{money(-(row.tail_freight || 0))}</td>
+        <td className="op-num">{money(row.tail_freight == null ? null : -row.tail_freight)}</td>
         <td className={`op-num ${amountTone(row.profit)}`}>{money(row.profit)}</td>
       </tr>
       {open ? (
         <tr className="op-detail-row">
-          <td colSpan={16}>
+          <td colSpan={11}>
             <div className="op-sub-table-wrap">
               <table className="op-table op-sub-table">
                 <thead>
@@ -635,7 +649,6 @@ function FragmentRow({
                     <th>商品</th>
                     <th className="op-num">件数</th>
                     <th className="op-num">申报价</th>
-                    <th className="op-num">GMV</th>
                     <th className="op-num">尾程(CNY)</th>
                     <th className="op-num">采购成本</th>
                     <th className="op-num">预估利润</th>
@@ -654,7 +667,6 @@ function FragmentRow({
                       <td className="op-title" title={item.goods_name}>{item.goods_name || "—"}</td>
                       <td className="op-num">{item.quantity}</td>
                       <td className="op-num">{money(item.declared_price)}</td>
-                      <td className="op-num">{money(item.gmv_cny)}</td>
                       <td className="op-num">{money(item.tail_freight_cny)}</td>
                       <td className="op-num">
                         {item.purchase_cost_cny === null || item.purchase_cost_cny === undefined ? (

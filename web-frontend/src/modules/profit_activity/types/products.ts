@@ -18,6 +18,8 @@ export type ProfitActivityProduct = {
   selling_price?: number;
   cost_price?: number;
   weight_kg?: number;
+  /** 采集没读到重量时按默认 0.5kg 兜底，这个标记用来提醒人工核对。 */
+  weight_estimated?: boolean;
   net_profit?: number;
   profit_rate?: number;
   source_url?: string;
@@ -61,6 +63,12 @@ export type ProductQueryParams = {
   skcs: string;
   productIds?: string;
 };
+
+/** 产品库可排序的列：入库日期、利润、利润率。 */
+export type ProfitProductsSortKey = "library_created_at" | "net_profit" | "profit_rate";
+export type ProfitProductsSortDir = "asc" | "desc";
+/** 三态排序：无排序 → 倒序 → 正序 → 无排序。 */
+export type ProfitProductsSort = { key: ProfitProductsSortKey; dir: ProfitProductsSortDir } | null;
 
 export type ProductSourceLink = {
   id: number;

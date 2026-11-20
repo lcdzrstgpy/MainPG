@@ -269,6 +269,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       dimensionCard: false,
       // 场景风格：默认花哨（花艺/礼赠/丝绒/镜面），按需再切极简或生活。
       sceneStyle: 'ornate',
+      // 麻将专业模式默认关闭；开启后默认仍走 AI 生图，需要时再切 3D 渲染。
+      mahjongMode: false,
+      mahjongRender: 'ai',
     }
   );
   const imageSelection: PhotoSelection = {
@@ -642,8 +645,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTaskId]);
 
-  // 进入处理设置页即自动检测所选链接的 SKU 规格图可用性：分批调用后端，逐批推进进度，
-  // 全部完成后分类为 source（规格原图可用）/ main（中文水印、无规格图、规格图过多等）。
+  // 进入处理设置页即自动检测所选链接的 SKU 规格图可用性：分批调用后端，逐批推进进度。
+  // 每批返回就立刻写入 skuResults 并解锁 skuCheckDone——**已判干净的草稿当场就能用规格原
+  // 图**，不要让它们跟着 pending_sync 一起回退主图。pending_sync 保持 auto，后台会静默
+  // 补判，用户随时可以开始处理。
   const runSkuAvailabilityCheck = async () => {
     const draftIds = initialDraftIds || [];
     if (!draftIds.length) return;
@@ -667,6 +672,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
           total: draftIds.length,
         });
       }
+      // 分批跑完就立刻宣告完成——哪怕还有 pending_sync。已判 clean 的草稿立刻进 source；
+      // pending_sync 保持 auto，等后端素材物化自动补判。不要为了等少数 pending_sync 让
+      // 多数已经判干净的草稿也回退主图。
+      if (skuCheckRunRef.current !== runId) return;
       setSkuCheckDone(true);
     } catch (err) {
       if (skuCheckRunRef.current !== runId) return;
@@ -679,6 +688,82 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
   // 不再自动检测：这一步要读每张规格图跑 OCR，在低配电脑上会明显拖慢进页面；
   // 改为用户点「开始检测」才跑。不检测/跳过时 SKU 图统一用生成后的主图（见 skuPlan）。
   useEffect(() => () => { skuCheckRunRef.current += 1; }, []);
+
+  // pending_sync 后台静默增量刷新：检测宣告完成后还有"等待同步"草稿时，后端素材物化
+  // 收尾会自动补判。前端每 10 秒只对这些 pending_sync 的 draft 重跑一次 check，拿到
+  // 补判后立刻更新 skuResults → skuPlan → 立刻变成可用/不可用。不阻塞用户开始处理。
+  const skuPendingSyncIds = useMemo(
+    () =>
+      Object.values(skuResults)
+        .filter((item) => item?.status === 'pending_sync')
+        .map((item) => item.draft_id),
+    [skuResults],
+  );
+  useEffect(() => {
+    if (!skuCheckDone || skuCheckSkipped || !isActive) return;
+    if (skuPendingSyncIds.length === 0) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      if (stopped) return;
+      // 隐藏页签降频到 60 秒，节省后端 OCR 资源。
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        timer = setTimeout(refresh, 60_000);
+        return;
+      }
+      try {
+        const data = await checkDraftSkuAvailability(
+          ctx,
+          skuPendingSyncIds,
+          false,
+          skipSkuTextCheck,
+        );
+        if (stopped) return;
+        setSkuResults((prev) => {
+          const next = { ...prev };
+          for (const item of data.results) next[item.draft_id] = item;
+          return next;
+        });
+      } catch {
+        // 刷新失败静默，不打扰用户；下一轮继续。
+      }
+      if (!stopped) timer = setTimeout(refresh, 10_000);
+    };
+    timer = setTimeout(refresh, 10_000);
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [skuCheckDone, skuCheckSkipped, isActive, skuPendingSyncIds.length, ctx, skipSkuTextCheck]);
+
+  // 「全部回退主图」按钮：用户等不及 pending_sync，手动把未定稿的草稿钉死成 main。
+  // 已判 clean/unavailable/skipped 的保持原样不动。
+  const pinSkuAllToMain = () => {
+    if (!initialDraftIds?.length) return;
+    setSkuResults((prev) => {
+      const next: Record<number, DraftSkuAvailabilityItem> = {};
+      for (const id of initialDraftIds) {
+        const existing = prev[id];
+        if (existing && existing.status !== 'pending_sync') {
+          next[id] = existing;
+        } else {
+          next[id] = {
+            draft_id: id,
+            status: 'unavailable',
+            clean: false,
+            sku_image_count: existing?.sku_image_count ?? 0,
+            checked: existing?.checked ?? 0,
+            chinese: existing?.chinese ?? [],
+            failed: 0,
+            reason: 'skipped_user_requested_main',
+            chinese_variant_keys: [],
+            all_sku_chinese: false,
+          };
+        }
+      }
+      return next;
+    });
+  };
 
   const downloadOutput = async (kind: 'dxm' | 'errors' | 'video_manifest', filename: string) => {
     if (!batch) return;
@@ -882,6 +967,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         main_background: options.mainBackground || 'scene',
         // 手选的系统背景底板；空=按品类自动选片段
         background_template: options.backgroundTemplate || '',
+        // 麻将专业模式：AI 只出空白牌，字/花纹由本地图案库回贴。
+        mahjong_mode: options.mahjongMode === true,
+        // 麻将出图方式：ai=AI 生图；3d=本地 Blender 渲染。
+        mahjong_render: options.mahjongRender === '3d' ? '3d' : 'ai',
         // 兼容旧 API 字段；新任务统一走智能生图策略，不再由用户选择。
         image_generation_count: 4,
         // SKU 原图可用性分类（处理设置页检测结果）：写入草稿预检覆盖，导出按此分流。
@@ -1275,6 +1364,35 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   <span>自动烧制尺寸图</span>
                   <span className="verify-sub">第 4 格尺寸卡 · 默认关闭，按品类开启</span>
                 </label>
+                <label className="verify-scope-check verify-inline-check" title="麻将/牌类专用：AI 只画空白牌体，牌面的字与花纹从你的原图抠成图案库后本地回贴，避免 AI 造字错纹。同一批不会重复贴同一个花纹；图案库按品类+标题缓存复用">
+                  <input
+                    type="checkbox"
+                    checked={options.mahjongMode === true}
+                    onChange={(e) => setOptions((p) => ({ ...p, mahjongMode: e.target.checked }))}
+                  />
+                  <span>麻将专业模式</span>
+                  <span className="verify-sub">空白牌体 + 本地图案库回贴 · 不重画字纹</span>
+                </label>
+                {options.mahjongMode === true ? (
+                  <label
+                    className="verify-scope-check verify-inline-check"
+                    title="AI 生图：有台面/场景实景，但牌面字纹仍可能出错；3D 渲染：本地建模渲染牌体与标准牌面（中發白/筒条万），字纹与厚度绝对准确、不会造字，但背景是纯色棚拍。3D 需要本机装有 Blender，找不到会自动回退 AI 生图"
+                  >
+                    <span>麻将出图</span>
+                    <select
+                      value={options.mahjongRender || 'ai'}
+                      onChange={(e) =>
+                        setOptions((p) => ({
+                          ...p,
+                          mahjongRender: e.target.value as ProductProcessingOptions['mahjongRender'],
+                        }))
+                      }
+                    >
+                      <option value="ai">AI 生图（默认）</option>
+                      <option value="3d">3D 渲染 · 字纹/尺寸准确</option>
+                    </select>
+                  </label>
+                ) : null}
               </div>
             </div>
             <ImageComboPicker
@@ -1446,10 +1564,21 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                       <>
                         {' '}另有 <b>{skuPendingSyncCount}</b> 条规格图还在同步，暂不定论——同步完成后会自动补判，
                         判定干净即改用「规格原图」，无需手动重检。
+                        如需立刻开始，可点下面「全部回退主图」钉死；或直接开始处理（未定稿的草稿会在预检页继续跟踪）。
                       </>
                     )}
                     分类已自动预置，可在预检页逐条修改。
                   </p>
+                  {skuPendingSyncCount > 0 && (
+                    <div className="verify-sku-pending-actions">
+                      <button
+                        className="btn-mini"
+                        onClick={pinSkuAllToMain}
+                        title="把所有等待同步的草稿钉死为「改用主图」，不再等待后端补判"
+                      >全部回退主图</button>
+                      <span className="verify-sku-pending-hint">后台正在静默刷新，已有 <b>{skuCleanCount}</b> 条判干净可用；等不及就点「全部回退主图」或直接开始处理。</span>
+                    </div>
+                  )}
                 </>
               )}
             </div>

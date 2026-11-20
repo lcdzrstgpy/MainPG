@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MainPG 安卓伴侣 App · 高保真原型</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ===================== 图标 sprite ===================== -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M5.5 9.5V20h13V9.5"/><path d="M9.8 20v-5.6h4.4V20"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.5a3.6 3.6 0 0 0 5.1 0l3.2-3.2a3.6 3.6 0 0 0-5.1-5.1l-1.3 1.3"/><path d="M14 10.5a3.6 3.6 0 0 0-5.1 0l-3.2 3.2a3.6 3.6 0 0 0 5.1 5.1l1.3-1.3"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3.5 8.5A2 2 0 0 1 5.5 6.5h1.7l1.3-2h6l1.3 2h1.7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6.5 10a5.5 5.5 0 0 1 11 0c0 4 1.5 5.5 1.5 5.5H5S6.5 14 6.5 10"/><path d="M10.2 18.5a2 2 0 0 0 3.6 0"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="3.7"/><path d="M4.8 20c.6-3.6 3.6-5.6 7.2-5.6s6.6 2 7.2 5.6"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9.5 5.5 16 12l-6.5 6.5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.6 9.8 17.4 19 8"/></symbol>
+  <symbol id="i-check-c" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6"/><path d="M8.4 12.3 11 14.9l4.8-5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.6V12l3.2 1.9"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 8v4.6"/><path d="M12 15.9v.1"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7.6 18.5a4.1 4.1 0 0 1-.4-8.2 5.6 5.6 0 0 1 10.8.6 3.7 3.7 0 0 1-.6 7.4z"/></symbol>
+  <symbol id="i-cloud-up" viewBox="0 0 24 24"><path d="M7.6 17.5a4.1 4.1 0 0 1-.4-8.2 5.6 5.6 0 0 1 10.8.6 3.7 3.7 0 0 1-.6 7.4z"/><path d="M12 15.6v-5"/><path d="M9.8 12.4 12 10.2l2.2 2.2"/></symbol>
+  <symbol id="i-qr" viewBox="0 0 24 24"><rect x="4" y="4" width="6.4" height="6.4" rx="1.4"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.4"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.4"/><path d="M13.6 13.6h2.6v2.6"/><path d="M20 13.6v3.2"/><path d="M13.6 20h6.4"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4 2.5 5.1 5.6.8-4 3.9 1 5.6L12 16.7 6.9 19.4l1-5.6-4-3.9 5.6-.8z"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><rect x="3.6" y="6.4" width="16.8" height="12" rx="2.6"/><path d="M3.6 10.6h16.8"/><circle cx="16.4" cy="14.6" r="1.1"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.4" width="14" height="9.6" rx="2.4"/><path d="M8.4 10.4V8a3.6 3.6 0 0 1 7.2 0v2.4"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 8V6a2 2 0 0 0-2-2H6.6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5.9a2 2 0 0 0 2-2v-2"/><path d="M10.5 12h10"/><path d="M17.6 9.2 20.4 12l-2.8 2.8"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.6" cy="6.2" r="2.6"/><circle cx="6.4" cy="12" r="2.6"/><circle cx="17.6" cy="17.8" r="2.6"/><path d="m8.8 10.8 6.5-3.3"/><path d="m8.8 13.2 6.5 3.3"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.6" y="5" width="16.8" height="14" rx="2.4"/><circle cx="9" cy="10" r="1.7"/><path d="m4.5 17.5 4.6-4.3 3.6 3.2 3-2.5 3.8 3.6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.6v12.8"/><path d="M5.6 12h12.8"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.9"/><path d="M19.2 14.4a1.7 1.7 0 0 0 .3 1.9l.1.1a1.9 1.9 0 1 1-2.7 2.7l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 1.9 1.9 0 1 1-3.8 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a1.9 1.9 0 1 1-2.7-2.7l.1-.1a1.7 1.7 0 0 0-1.2-2.9 1.9 1.9 0 1 1 0-3.8 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a1.9 1.9 0 1 1 2.7-2.7l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.6 1.9 1.9 0 1 1 3.8 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a1.9 1.9 0 1 1 2.7 2.7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6 1 1.9 1.9 0 1 1 0 3.8 1.7 1.7 0 0 0-1.6 1z"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 24 24"><path d="M4.6 10.4A7.4 7.4 0 0 1 17 6.6l2.4 2.2"/><path d="M19.4 13.6A7.4 7.4 0 0 1 7 17.4l-2.4-2.2"/><path d="M19.4 4.4v4.4H15"/><path d="M4.6 19.6v-4.4H9"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.6" y="3" width="10.8" height="18" rx="2.6"/><path d="M10.6 5.6h2.8"/><path d="M12 18.2v.1"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.6" width="18" height="12" rx="2.2"/><path d="M9 20h6"/><path d="M12 16.6V20"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.4"/><path d="m16 16 4 4"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.6 19.4h3.6l9.3-9.3a1.9 1.9 0 0 0 0-2.7l-.9-.9a1.9 1.9 0 0 0-2.7 0l-9.3 9.3z"/><path d="m14.6 7.6 2.4 2.4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5.4 7.4h13.2"/><path d="M8.6 7.4V5.6a1.4 1.4 0 0 1 1.4-1.4h4a1.4 1.4 0 0 1 1.4 1.4v1.8"/><path d="M6.8 7.4l.8 11a1.6 1.6 0 0 0 1.6 1.5h5.6a1.6 1.6 0 0 0 1.6-1.5l.8-11"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.6" y="8.6" width="11" height="11" rx="2.2"/><path d="M15.4 5.4a2.2 2.2 0 0 0-2-2H6.6a2.2 2.2 0 0 0-2.2 2.2v6.8a2.2 2.2 0 0 0 2 2"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6.4 3.6h7.2l4.8 4.8v12H6.4z"/><path d="M13.6 3.6v4.8h4.8"/><path d="M9.4 13h5.2"/><path d="M9.4 16.4h5.2"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3.4" y="5.6" width="17.2" height="12.8" rx="2.4"/><path d="m4.2 7.4 7.8 5.4 7.8-5.4"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5.6"/><path d="m6.4 11.2 5.6-5.6 5.6 5.6"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v13.4"/><path d="m6.4 12.8 5.6 5.6 5.6-5.6"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9.4a13 13 0 0 1 18 0"/><path d="M6.2 12.8a8.6 8.6 0 0 1 11.6 0"/><path d="M9.4 16.2a4.2 4.2 0 0 1 5.2 0"/><path d="M12 19.4v.1"/></symbol>
+  <symbol id="i-signal" viewBox="0 0 24 24"><path d="M4 18.4v-3.2"/><path d="M9.4 18.4v-6.6"/><path d="M14.8 18.4v-9.6"/><path d="M20.2 18.4V6.4"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.6 12a7.6 7.6 0 1 1-2.4-5.5"/><path d="M19.8 5.4v4.4h-4.4"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4.6 19.4h3.6l9.3-9.3a1.9 1.9 0 0 0 0-2.7l-.9-.9a1.9 1.9 0 0 0-2.7 0l-9.3 9.3z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.6 19 6v5.6c0 4-3 7.2-7 8.8-4-1.6-7-4.8-7-8.8V6z"/><path d="m9.2 12 2 2 3.6-3.8"/></symbol>
+  <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="M4.6 10.4v3.2a1.6 1.6 0 0 0 1.6 1.6h1.6l6.8 3.6V5.2L7.8 8.8H6.2a1.6 1.6 0 0 0-1.6 1.6z"/><path d="M17.6 9.4a3.4 3.4 0 0 1 0 5.2"/></symbol>
+  <symbol id="i-comment" viewBox="0 0 24 24"><path d="M20 12.8c0 3.7-3.6 6.7-8 6.7-.9 0-1.8-.1-2.6-.4L5 20.6l1.2-3.6C5.2 15.8 4 14.4 4 12.8 4 9.1 7.6 6.1 12 6.1s8 3 8 6.7z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 11v5.4"/><path d="M12 7.9v.1"/></symbol>
+</svg>
+
+<div class="stage">
+
+  <!-- ===================== 评审面板 ===================== -->
+  <aside class="panel">
+    <h1>MainPG 安卓伴侣 App</h1>
+    <p class="sub">高保真可点击原型 · v1 · 仅浅色</p>
+
+    <h2>一级 Tab</h2>
+    <div class="grp">
+      <button data-tab="home">首页</button>
+      <button data-tab="capture">采集</button>
+      <button data-tab="camera">拍照</button>
+      <button data-tab="inbox">消息</button>
+      <button data-tab="mine">我的</button>
+    </div>
+
+    <h2>二级页</h2>
+    <div class="grp">
+      <button data-go="s-announce">公告详情</button>
+      <button data-go="s-collect-detail">采集详情</button>
+      <button data-go="s-compose">商品组合</button>
+      <button data-go="s-msg-detail">消息详情</button>
+      <button data-go="s-device">设备绑定</button>
+      <button data-go="s-points">积分中心</button>
+      <button data-go="s-signin">签到记录</button>
+      <button data-go="s-topup">在线充值</button>
+      <button data-go="s-topup-order">充值下单</button>
+      <button data-go="s-ledger">流水明细</button>
+      <button data-go="s-settings">设置</button>
+      <button data-go="s-password">修改密码</button>
+      <button data-go="s-login">登录页</button>
+    </div>
+
+    <h2>待确认项</h2>
+    <ul class="notes">
+      <li><b>R8 单端登录</b>：现云端会互踢，需支持手机 + PC 并存；本原型在登录页留了「强制登录」入口用于演示。</li>
+      <li><b>R9 设备绑定</b>：4 个云端接口未建，二维码为占位，未接真实配对。</li>
+      <li><b>R2 支付宝回跳</b>：<code>return_url</code> 现为 PC 的 127.0.0.1，手机不可达，下单页按 <code>native_qr / page_pay</code> 两态预留。</li>
+      <li><b>R5 拍照中转</b>：6 个移动端端点未建；生命周期「pending(TTL≤24h) → PC 拉取 → ack → 立即删除」在拍照页有文案说明。</li>
+      <li>采集记录是否需 <code>site</code> 字段（区分淘宝 / 1688 / 天猫 / Temu）待后端确认。</li>
+    </ul>
+  </aside>
+
+  <!-- ===================== 手机 ===================== -->
+  <div class="device">
+    <div class="device-screen" id="screen">
+
+      <!-- 状态栏 -->
+      <div class="statusbar" id="statusbar">
+        <span class="num">9:41</span>
+        <span class="sb-right">
+          <svg><use href="#i-signal"/></svg>
+          <svg><use href="#i-wifi"/></svg>
+          <span class="sb-battery"></span>
+        </span>
+      </div>
+
+      <div class="app-body" id="appBody">
+
+        <!-- ========== 1. 登录 ========== -->
+        <section class="screen" id="s-login">
+          <div class="login-wrap">
+            <div class="login-logo">M</div>
+            <div class="login-h">登录 MainPG</div>
+            <div class="login-s">手机号 / 邮箱与 PC 端工作台通用</div>
+
+            <div class="field">
+              <div class="fl-lab">账号</div>
+              <div class="input">
+                <svg><use href="#i-user"/></svg>
+                <input type="text" value="seller@haocoming.top" readonly>
+              </div>
+            </div>
+            <div class="field">
+              <div class="fl-lab">密码</div>
+              <div class="input">
+                <svg><use href="#i-lock"/></svg>
+                <input type="password" value="12345678" readonly>
+              </div>
+            </div>
+
+            <button class="btn btn--primary btn--block" data-action="login" style="margin-top:22px">登 录</button>
+            <button class="btn btn--ghost btn--block" data-action="force-login" style="margin-top:10px">演示：已在其他设备登录 → 强制登录</button>
+
+            <div class="hint" style="text-align:center;margin-top:16px">
+              登录后可在「我的 → 设备绑定」扫码配对 PC 端工作台<br>
+              未配对时 App 走云端通道，配对后自动切换局域网通道
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 2. 首页 ========== -->
+        <section class="screen screen--home screen--tab" id="s-home">
+          <div class="home-top">
+            <div class="hero-top">
+              <span class="ht-ico"><svg><use href="#i-monitor"/></svg></span>
+              <div class="ht-txt">
+                <div class="ht-1">DESKTOP-8K2M</div>
+                <div class="ht-2">已有 2 台 PC 绑定 · 最近活跃 3 分钟前</div>
+              </div>
+              <span class="hero-pill"><span class="dot"></span>PC 在线</span>
+            </div>
+            <div class="hero-metrics">
+              <div class="hm">
+                <div class="hm-v">12</div>
+                <div class="hm-k">今日采集</div>
+              </div>
+              <div class="hm">
+                <div class="hm-v">3</div>
+                <div class="hm-k">待同步</div>
+              </div>
+              <div class="hm">
+                <div class="hm-v" id="homePoints">1280</div>
+                <div class="hm-k">可用积分</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="quick">
+            <div class="quick-item" data-tab="capture">
+              <span class="qi-ico"><svg><use href="#i-link"/></svg></span>
+              <div class="qi-t">去采集</div>
+              <div class="qi-s">粘贴链接</div>
+            </div>
+            <div class="quick-item" data-tab="camera">
+              <span class="qi-ico"><svg><use href="#i-camera"/></svg></span>
+              <div class="qi-t">去拍照</div>
+              <div class="qi-s">拍完即同步</div>
+            </div>
+            <div class="quick-item" data-action="signin">
+              <span class="qi-ico"><svg><use href="#i-star"/></svg></span>
+              <div class="qi-t">去签到</div>
+              <div class="qi-s">＋50 积分</div>
+            </div>
+          </div>
+
+          <div class="section-head">
+            <span class="sh-t">我的积分</span>
+            <span class="sh-more" data-go="s-points">明细 <svg style="width:13px;height:13px"><use href="#i-chev"/></svg></span>
+          </div>
+          <div class="points-card">
+            <div class="pc-left">
+              <div class="pc-num" id="homePoints2">1280<span>积分</span></div>
+              <div class="pc-k" id="signState">今日未签到 · 连续 4 天</div>
+            </div>
+            <button class="btn btn--primary btn--sm pc-btn" id="signBtn" data-action="signin">签到</button>
+          </div>
+
+          <div class="banner" data-go="s-announce">
+            <span class="bn-ico"><svg><use href="#i-megaphone"/></svg></span>
+            <div class="bn-txt">
+              <div class="bn-1">v1.5.2 更新公告</div>
+              <div class="bn-2">新增拍照直传 PC 商品组合、采集失败重试…</div>
+            </div>
+            <svg class="bn-chev"><use href="#i-chev"/></svg>
+          </div>
+
+          <div class="section-head">
+            <span class="sh-t">采集动态</span>
+            <span class="sh-more" data-tab="capture">全部 <svg style="width:13px;height:13px"><use href="#i-chev"/></svg></span>
+          </div>
+          <div class="feed">
+            <div class="feed-item" data-go="s-collect-detail">
+              <span class="fi-thumb"><svg><use href="#i-image"/></svg></span>
+              <div class="fi-body">
+                <div class="fi-t">夏季冰丝凉感床单三件套 1.8m 双人款</div>
+                <div class="fi-m"><span class="tag tag--ok">已同步</span><span>淘宝 · 09:32</span></div>
+              </div>
+            </div>
+            <div class="feed-item" data-go="s-collect-detail">
+              <span class="fi-thumb"><svg><use href="#i-image"/></svg></span>
+              <div class="fi-body">
+                <div class="fi-t">加厚竹纤维砧板 抗菌防霉 家用厨房切菜板</div>
+                <div class="fi-m"><span class="tag tag--brand">已入队</span><span>1688 · 09:05</span></div>
+              </div>
+            </div>
+            <div class="feed-item" data-go="s-collect-detail">
+              <span class="fi-thumb"><svg><use href="#i-image"/></svg></span>
+              <div class="fi-body">
+                <div class="fi-t">纯棉短袖 T 恤 男女同款 夏季宽松圆领</div>
+                <div class="fi-m"><span class="tag tag--danger">同步失败</span><span>Temu · 08:47</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 3. 采集 ========== -->
+        <section class="screen screen--tab" id="s-capture">
+          <div class="navbar">
+            <span style="width:30px"></span>
+            <span class="nav-title">采集</span>
+            <button class="nav-btn" data-go="s-collect-detail"><svg><use href="#i-info"/></svg></button>
+          </div>
+
+          <div class="page">
+            <div class="paste-card">
+              <div class="paste-box" id="pasteBox" data-action="fill-link">
+                <div class="pb-ph">粘贴淘宝 / 1688 / 天猫 / Temu 商品链接…</div>
+              </div>
+              <div class="paste-actions">
+                <button class="btn btn--line" data-action="paste">从剪贴板粘贴</button>
+                <button class="btn btn--primary" data-action="collect">采集并同步</button>
+              </div>
+            </div>
+
+            <div class="share-tip">
+              <span class="st-ico"><svg><use href="#i-share"/></svg></span>
+              <div class="st-t">在淘宝 / 1688 App 内点「<b>分享</b>」选 MainPG，链接会自动出现在这里，<b>无需手动粘贴</b>。</div>
+            </div>
+
+            <div class="group-title">采集记录</div>
+            <div id="recList">
+              <div class="rec" data-go="s-collect-detail">
+                <span class="rc-thumb"><svg><use href="#i-image"/></svg></span>
+                <div class="rc-body">
+                  <div class="rc-t">夏季冰丝凉感床单三件套 1.8m 双人款</div>
+                  <div class="rc-m">
+                    <span class="tag tag--ok"><svg><use href="#i-check"/></svg>已同步</span>
+                    <span class="tag">淘宝</span>
+                    <span class="rc-time num">09:32</span>
+                  </div>
+                </div>
+              </div>
+              <div class="rec" data-go="s-collect-detail">
+                <span class="rc-thumb"><svg><use href="#i-image"/></svg></span>
+                <div class="rc-body">
+                  <div class="rc-t">加厚竹纤维砧板 抗菌防霉 家用厨房切菜板</div>
+                  <div class="rc-m">
+                    <span class="tag tag--brand"><svg><use href="#i-clock"/></svg>已入队</span>
+                    <span class="tag">1688</span>
+                    <span class="rc-time num">09:05</span>
+                  </div>
+                </div>
+              </div>
+              <div class="rec" data-go="s-collect-detail">
+                <span class="rc-thumb"><svg><use href="#i-image"/></svg></span>
+                <div class="rc-body">
+                  <div class="rc-t">纯棉短袖 T 恤 男女同款 夏季宽松圆领</div>
+                  <div class="rc-m">
+                    <span class="tag tag--danger"><svg><use href="#i-alert"/></svg>同步失败</span>
+                    <span class="tag">Temu</span>
+                    <span class="rc-time num">08:47</span>
+                  </div>
+                </div>
+              </div>
+              <div class="rec" data-go="s-collect-detail">
+                <span class="rc-thumb"><svg><use href="#i-image"/></svg></span>
+                <div class="rc-body">
+                  <div class="rc-t">折叠收纳箱 大容量衣物整理箱 加厚带盖</div>
+                  <div class="rc-m">
+                    <span class="tag tag--ok"><svg><use href="#i-check"/></svg>已同步</span>
+                    <span class="tag">天猫</span>
+                    <span class="rc-time num">昨天</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="hint">链接采集后进入 PC 端草稿池，AI 处理与上架在 PC 完成。</div>
+          </div>
+        </section>
+
+        <!-- ========== 4. 拍照 ========== -->
+        <section class="screen screen--dark screen--tab" id="s-camera">
+          <div class="navbar">
+            <span style="width:30px"></span>
+            <span class="nav-title">拍照</span>
+            <button class="nav-btn" data-go="s-device"><svg><use href="#i-monitor"/></svg></button>
+          </div>
+
+          <div class="page" style="padding-top:0">
+            <div class="cam-stage">
+              <span class="cs-grid"></span>
+              <div class="cs-frame">
+                <svg><use href="#i-camera"/></svg>
+                <span class="cf-t">将商品放入取景框</span>
+              </div>
+              <div class="cs-tip">自动裁剪去背景 · 原图仅在服务器留存至同步完成</div>
+            </div>
+
+            <div class="cam-actions">
+              <button class="ca" data-action="album"><svg><use href="#i-image"/></svg>相册</button>
+              <button class="ca ca--main" data-action="shoot"><svg><use href="#i-camera"/></svg>拍照上传</button>
+            </div>
+
+            <div class="cam-sec">
+              <div class="cs-head">
+                <span class="csh-t">归属商品组合</span>
+                <span class="csh-m" data-go="s-compose">更换 <svg><use href="#i-chev"/></svg></span>
+              </div>
+              <div class="combo-pick" data-go="s-compose">
+                <span class="cp-ico"><svg><use href="#i-doc"/></svg></span>
+                <div class="cp-body">
+                  <div class="cp-t" id="comboName">夏季床品 · 4 件套合集</div>
+                  <div class="cp-s">已关联 PC 草稿 4 个 SKU · 拍完自动入组</div>
+                </div>
+                <svg class="cp-chev"><use href="#i-chev"/></svg>
+              </div>
+            </div>
+
+            <div class="cam-sec">
+              <div class="cs-head">
+                <span class="csh-t">上传队列</span>
+                <span class="csh-m" data-action="shoot"><svg><use href="#i-plus"/></svg>添加</span>
+              </div>
+              <div id="queueList">
+                <div class="queue-item">
+                  <span class="qi-thumb"><svg><use href="#i-image"/></svg></span>
+                  <div class="qb">
+                    <div class="qb-t">IMG_20261008_0938.jpg</div>
+                    <div class="qb-s ok">已同步 · 服务器副本已删除</div>
+                  </div>
+                  <span class="tag tag--ok">完成</span>
+                </div>
+                <div class="queue-item">
+                  <span class="qi-thumb"><svg><use href="#i-image"/></svg></span>
+                  <div class="qb">
+                    <div class="qb-t">IMG_20261008_0937.jpg</div>
+                    <div class="qb-s">中转中 · TTL 剩余 23 小时</div>
+                  </div>
+                  <span class="tag tag--brand">中转</span>
+                </div>
+                <div class="queue-item">
+                  <span class="qi-thumb"><svg><use href="#i-image"/></svg></span>
+                  <div class="qb">
+                    <div class="qb-t">IMG_20261008_0936.jpg</div>
+                    <div class="qb-s warn">PC 离线 · 待拉取</div>
+                  </div>
+                  <span class="tag tag--warn">待拉取</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="cam-note">
+              服务器不做长期存储：照片 commit 后进入短期中转（TTL ≤ 24 小时），PC 端拉取并 ack 后立即删除。
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 5. 消息 ========== -->
+        <section class="screen screen--tab" id="s-inbox">
+          <div class="navbar">
+            <span style="width:30px"></span>
+            <span class="nav-title">消息</span>
+            <button class="nav-btn" id="readAllBtn" data-action="readall" title="全部已读"><svg><use href="#i-check-c"/></svg></button>
+          </div>
+
+          <div class="segment" id="inboxSeg">
+            <button class="on" data-seg="ann">公告</button>
+            <button data-seg="fb">反馈回复</button>
+          </div>
+
+          <div class="page" style="padding-top:8px">
+            <div class="seg-panel on" id="panel-ann">
+              <div class="msg" data-go="s-announce">
+                <span class="ms-unread"></span>
+                <span class="ms-ico"><svg><use href="#i-megaphone"/></svg></span>
+                <div class="ms-body">
+                  <div class="ms-top">
+                    <span class="ms-t">v1.5.2 版本更新公告</span>
+                    <span class="ms-time num">10:12</span>
+                  </div>
+                  <div class="ms-d">本次更新新增拍照直传 PC 商品组合、采集失败一键重试，并修复了批量处理偶发中断的问题。</div>
+                </div>
+              </div>
+              <div class="msg" data-go="s-announce">
+                <span class="ms-unread"></span>
+                <span class="ms-ico warn"><svg><use href="#i-alert"/></svg></span>
+                <div class="ms-body">
+                  <div class="ms-top">
+                    <span class="ms-t">积分规则调整通知（定向）</span>
+                    <span class="ms-time num">昨天</span>
+                  </div>
+                  <div class="ms-d">自本月起，基础版每日签到积分由 30 调整为 50，体验版维持 20 不变。此公告仅你与已绑定 PC 可见。</div>
+                </div>
+              </div>
+              <div class="msg" data-go="s-announce">
+                <span class="ms-ico ok"><svg><use href="#i-cloud"/></svg></span>
+                <div class="ms-body">
+                  <div class="ms-top">
+                    <span class="ms-t">服务维护完成</span>
+                    <span class="ms-time num">10-05</span>
+                  </div>
+                  <div class="ms-d">云端消息服务已完成升级，历史公告与反馈记录均已保留。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="seg-panel" id="panel-fb">
+              <div class="msg" data-go="s-msg-detail">
+                <span class="ms-unread"></span>
+                <span class="ms-ico"><svg><use href="#i-comment"/></svg></span>
+                <div class="ms-body">
+                  <div class="ms-top">
+                    <span class="ms-t">关于 Temu 采集失败的回复</span>
+                    <span class="ms-time num">09:20</span>
+                  </div>
+                  <div class="ms-d">官方回复：该页面结构已变更，插件已发新版，请更新后重试；如仍失败可提供商品链接。</div>
+                </div>
+              </div>
+              <div class="msg" data-go="s-msg-detail">
+                <span class="ms-ico"><svg><use href="#i-comment"/></svg></span>
+                <div class="ms-body">
+                  <div class="ms-top">
+                    <span class="ms-t">充值到账确认</span>
+                    <span class="ms-time num">10-06</span>
+                  </div>
+                  <div class="ms-d">你提交的 100 元充值订单已完成，积分已到账，可在「我的 → 流水明细」查看。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 6. 我的 ========== -->
+        <section class="screen screen--tab" id="s-mine">
+          <div class="navbar">
+            <span style="width:30px"></span>
+            <span class="nav-title">我的</span>
+            <span style="width:30px"></span>
+          </div>
+
+          <div class="mine-head">
+            <span class="avatar">卖</span>
+            <div class="mh-body">
+              <div class="mh-n">卖家小号 001</div>
+              <div class="mh-e">seller@haocoming.top</div>
+              <div class="mh-tags">
+                <span class="tag tag--brand">基础版</span>
+                <span class="tag tag--ok">有效期至 2026-12-31</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="mine-list">
+            <div class="row" data-go="s-device">
+              <span class="rk"><svg><use href="#i-monitor"/></svg></span>
+              <div class="rt">
+                <div class="rt-main">设备绑定</div>
+                <div class="rt-sub">2 台 PC 已绑定 · 扫码配对 / 解绑</div>
+              </div>
+              <span class="rv">管理 <svg><use href="#i-chev"/></svg></span>
+            </div>
+            <div class="row" data-go="s-points">
+              <span class="rk"><svg><use href="#i-star"/></svg></span>
+              <div class="rt">
+                <div class="rt-main">积分中心</div>
+                <div class="rt-sub">签到领积分 · 查看明细</div>
+              </div>
+              <span class="rv num" id="minePoints">1280 <svg><use href="#i-chev"/></svg></span>
+            </div>
+            <div class="row" data-go="s-topup">
+              <span class="rk"><svg><use href="#i-wallet"/></svg></span>
+              <div class="rt">
+                <div class="rt-main">在线充值</div>
+                <div class="rt-sub">支付宝 · 套餐与订单</div>
+              </div>
+              <span class="rv"><svg><use href="#i-chev"/></svg></span>
+            </div>
+          </div>
+
+          <div class="mine-list">
+            <div class="row" data-action="rename">
+              <span class="rk"><svg><use href="#i-pen"/></svg></span>
+              <div class="rt"><div class="rt-main">修改用户名</div></div>
+              <span class="rv">卖家小号 001 <svg><use href="#i-chev"/></svg></span>
+            </div>
+            <div class="row" data-go="s-password">
+              <span class="rk"><svg><use href="#i-lock"/></svg></span>
+              <div class="rt"><div class="rt-main">修改密码</div></div>
+              <span class="rv"><svg><use href="#i-chev"/></svg></span>
+            </div>
+            <div class="row" data-go="s-settings">
+              <span class="rk"><svg><use href="#i-settings"/></svg></span>
+              <div class="rt"><div class="rt-main">设置</div></div>
+              <span class="rv"><svg><use href="#i-chev"/></svg></span>
+            </div>
+          </div>
+
+          <div class="mine-list">
+            <div class="row row--mid row--danger" data-action="logout">
+              <span class="rt"><div class="rt-main">退出登录</div></span>
+            </div>
+          </div>
+
+          <div class="hint" style="text-align:center;margin-top:14px">MainPG 安卓伴侣 App v1.5.2</div>
+        </section>
+
+        <!-- ========== 7. 公告详情 ========== -->
+        <section class="screen" id="s-announce">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">公告详情</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="detail-hero">
+            <h3>v1.5.2 版本更新公告</h3>
+            <div class="dh-meta">
+              <span class="tag tag--brand">版本更新</span>
+              <span>2026-10-08 10:12</span>
+              <span>· 全员可见</span>
+            </div>
+          </div>
+          <div class="detail-body">
+            <p>本次更新为安卓伴侣 App 与 PC 端工作台的联合发布，主要包含以下内容：</p>
+            <p><b>1. 拍照直传商品组合</b><br>拍照后可直接选择归属的商品组合，照片经云端短期中转，PC 端拉取并确认后立即删除服务器副本，不做长期存储。</p>
+            <p><b>2. 采集失败一键重试</b><br>采集记录中同步失败的条目支持重试，重试不重复计数。</p>
+            <p><b>3. 修复与优化</b><br>修复批量处理偶发中断；修复部分机型底部导航遮挡内容的问题。</p>
+            <p>如遇到问题，可在「消息 → 反馈回复」中提交，我们会在 1 个工作日内答复。</p>
+          </div>
+          <div class="env-note">该公告为全员公告（<b>account_id 为空</b>）；定向公告仅推送给指定账号及其已绑定 PC。</div>
+        </section>
+
+        <!-- ========== 8. 采集详情 ========== -->
+        <section class="screen" id="s-collect-detail">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">采集详情</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="detail-hero">
+            <h3>夏季冰丝凉感床单三件套 1.8m 双人款</h3>
+            <div class="dh-meta">
+              <span class="tag tag--ok"><svg><use href="#i-check"/></svg>已同步</span>
+              <span class="tag">淘宝</span>
+            </div>
+          </div>
+          <div class="card" style="margin:12px 14px 0;padding:4px 16px">
+            <div class="kv"><span class="k">采集方式</span><span class="v">分享转发</span></div>
+            <div class="kv"><span class="k">采集时间</span><span class="v num">2026-10-08 09:32:14</span></div>
+            <div class="kv"><span class="k">同步目标</span><span class="v">DESKTOP-8K2M（局域网）</span></div>
+            <div class="kv"><span class="k">草稿池位置</span><span class="v">待处理 / 第 1 页</span></div>
+            <div class="kv"><span class="k">图片数量</span><span class="v num">9 张 · 主图 5 详情 4</span></div>
+            <div class="kv"><span class="k">SKU 数量</span><span class="v num">6 个</span></div>
+          </div>
+          <div class="page" style="padding-top:14px">
+            <div class="field">
+              <div class="fl-lab">原始链接</div>
+              <div class="input">
+                <input type="text" value="https://item.taobao.com/item.htm?id=7281xxxxxx" readonly>
+                <button class="nav-btn" data-action="copy"><svg><use href="#i-copy"/></svg></button>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px">
+              <button class="btn btn--line" style="flex:1" data-action="copy">复制链接</button>
+              <button class="btn btn--ghost" style="flex:1" data-action="recollect">重新采集</button>
+            </div>
+            <div class="hint">重新采集会覆盖该条记录的图片与 SKU 信息，已生成的上架草稿不受影响。</div>
+          </div>
+        </section>
+
+        <!-- ========== 9. 选择商品组合 ========== -->
+        <section class="screen screen--dark" id="s-compose">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">选择商品组合</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="page" style="padding-top:6px">
+            <div class="cam-sec" style="padding:0">
+              <div class="cs-head">
+                <span class="csh-t">来自 PC 端草稿池</span>
+                <span class="csh-m" data-action="refresh"><svg><use href="#i-refresh"/></svg>刷新</span>
+              </div>
+              <div id="comboList">
+                <div class="combo-pick" data-action="pick-combo" data-name="夏季床品 · 4 件套合集" style="margin-bottom:10px">
+                  <span class="cp-ico"><svg><use href="#i-doc"/></svg></span>
+                  <div class="cp-body">
+                    <div class="cp-t">夏季床品 · 4 件套合集</div>
+                    <div class="cp-s">4 个 SKU · 已采集 12 张图</div>
+                  </div>
+                  <svg class="cp-chev"><use href="#i-chev"/></svg>
+                </div>
+                <div class="combo-pick" data-action="pick-combo" data-name="厨房竹制砧板系列" style="margin-bottom:10px">
+                  <span class="cp-ico"><svg><use href="#i-doc"/></svg></span>
+                  <div class="cp-body">
+                    <div class="cp-t">厨房竹制砧板系列</div>
+                    <div class="cp-s">3 个 SKU · 已采集 8 张图</div>
+                  </div>
+                  <svg class="cp-chev"><use href="#i-chev"/></svg>
+                </div>
+                <div class="combo-pick" data-action="pick-combo" data-name="夏季短袖 T 恤专场" style="margin-bottom:10px">
+                  <span class="cp-ico"><svg><use href="#i-doc"/></svg></span>
+                  <div class="cp-body">
+                    <div class="cp-t">夏季短袖 T 恤专场</div>
+                    <div class="cp-s">6 个 SKU · 已采集 21 张图</div>
+                  </div>
+                  <svg class="cp-chev"><use href="#i-chev"/></svg>
+                </div>
+                <div class="combo-pick" data-action="pick-combo" data-name="收纳整理箱专区">
+                  <span class="cp-ico"><svg><use href="#i-doc"/></svg></span>
+                  <div class="cp-body">
+                    <div class="cp-t">收纳整理箱专区</div>
+                    <div class="cp-s">2 个 SKU · 已采集 6 张图</div>
+                  </div>
+                  <svg class="cp-chev"><use href="#i-chev"/></svg>
+                </div>
+              </div>
+            </div>
+            <div class="cam-note" style="margin-top:20px">商品组合由 PC 端创建并同步到云端，App 只做选择与归属，不在手机端编辑 SKU。</div>
+          </div>
+        </section>
+
+        <!-- ========== 10. 消息详情 ========== -->
+        <section class="screen" id="s-msg-detail">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">反馈回复</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="detail-hero">
+            <h3>关于 Temu 采集失败的回复</h3>
+            <div class="dh-meta">
+              <span class="tag tag--brand">官方回复</span>
+              <span>2026-10-08 09:20</span>
+            </div>
+          </div>
+
+          <div class="page" style="padding-top:14px">
+            <div class="card" style="padding:14px 16px">
+              <div style="display:flex;gap:10px">
+                <span class="avatar" style="width:32px;height:32px;border-radius:10px;font-size:13px;background:#eef1f6;color:var(--t2)">我</span>
+                <div style="flex:1">
+                  <div style="font-size:12px;color:var(--t3)" class="num">2026-10-07 18:40</div>
+                  <div style="font-size:13.5px;line-height:1.6;margin-top:4px">Temu 的商品链接采集一直提示解析失败，附件是截图，麻烦看下。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="padding:14px 16px">
+              <div style="display:flex;gap:10px">
+                <span class="avatar" style="width:32px;height:32px;border-radius:10px;font-size:13px">M</span>
+                <div style="flex:1">
+                  <div style="font-size:12px;color:var(--t3)" class="num">2026-10-08 09:20</div>
+                  <div style="font-size:13.5px;line-height:1.65;margin-top:4px">该页面结构已变更，浏览器插件已发布新版。请更新插件后重试；如仍失败，把商品链接发给我们，可手动补录。</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="field" style="margin-top:16px">
+              <div class="input">
+                <input type="text" placeholder="继续回复…" readonly>
+                <button class="nav-btn" data-action="send"><svg><use href="#i-arrow-up"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 11. 设备绑定 ========== -->
+        <section class="screen" id="s-device">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">设备绑定</span>
+            <span style="width:30px"></span>
+          </div>
+
+          <div class="page" style="padding-top:8px">
+            <div class="card" style="padding:18px 16px">
+              <div class="qr-box">
+                <span class="qr-grid"></span>
+                <span class="qr-mark">M</span>
+              </div>
+              <div style="text-align:center">
+                <div style="font-size:15px;font-weight:600">扫码配对 PC 端工作台</div>
+                <div style="font-size:12px;color:var(--t3);margin-top:5px">打开 PC 端「设置 → 设备绑定」扫码，或输入配对码</div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px">
+                <span class="num" style="font-size:22px;font-weight:700;letter-spacing:.16em;color:var(--brand)">8 4 1 9 2 6</span>
+                <span class="tag">10:00 后失效</span>
+              </div>
+              <button class="btn btn--ghost btn--block" style="margin-top:14px" data-action="refresh-code">刷新配对码</button>
+            </div>
+
+            <div class="group-title">已绑定设备</div>
+            <div class="dev-card">
+              <span class="dc-ico"><svg><use href="#i-monitor"/></svg></span>
+              <div class="dc-b">
+                <div class="dc-t">DESKTOP-8K2M <span class="dot" style="margin-left:4px"></span></div>
+                <div class="dc-s">局域网 192.168.1.24 · 3 分钟前活跃</div>
+              </div>
+              <button class="btn btn--danger btn--sm" data-action="unbind">解绑</button>
+            </div>
+            <div class="dev-card">
+              <span class="dc-ico"><svg><use href="#i-monitor"/></svg></span>
+              <div class="dc-b">
+                <div class="dc-t">OFFICE-PC-03 <span class="dot dot--off" style="margin-left:4px"></span></div>
+                <div class="dc-s">未在线 · 上次活跃 2026-10-05</div>
+              </div>
+              <button class="btn btn--danger btn--sm" data-action="unbind">解绑</button>
+            </div>
+
+            <div class="env-note">同一账号可在多台 PC 绑定；绑定后 App 优先走局域网通道（采集 / AI 处理 / 草稿池），局域网不可达时回落云端通道（账号 / 充值 / 消息）。</div>
+          </div>
+        </section>
+
+        <!-- ========== 12. 积分中心 ========== -->
+        <section class="screen" id="s-points">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">积分中心</span>
+            <span style="width:30px"></span>
+          </div>
+
+          <div class="page" style="padding-top:8px">
+            <div class="card" style="padding:18px 16px;background:linear-gradient(150deg,#3d7bff,#2456e0);color:#fff;border-radius:var(--r-xl)">
+              <div style="font-size:12.5px;opacity:.82">可用积分</div>
+              <div class="num" id="pointsBig" style="font-size:34px;font-weight:700;letter-spacing:-.02em;margin-top:2px">1280</div>
+              <div style="display:flex;gap:16px;margin-top:14px;font-size:12px;opacity:.85">
+                <span>今日已用 <b class="num">86</b></span>
+                <span>本月累计 <b class="num">3,240</b></span>
+              </div>
+            </div>
+
+            <div class="group-title">每日任务</div>
+            <div class="list">
+              <div class="row" data-action="signin">
+                <span class="rk"><svg><use href="#i-star"/></svg></span>
+                <div class="rt">
+                  <div class="rt-main">每日签到</div>
+                  <div class="rt-sub" id="signState2">连续 4 天 · 今日未领</div>
+                </div>
+                <span class="rv"><span class="tag tag--brand" id="signTag">＋50</span></span>
+              </div>
+              <div class="row">
+                <span class="rk"><svg><use href="#i-star"/></svg></span>
+                <div class="rt">
+                  <div class="rt-main">基础版每日额外领取</div>
+                  <div class="rt-sub">每日 1 次 · 100 积分</div>
+                </div>
+                <span class="rv"><span class="tag tag--ok">已领取</span></span>
+              </div>
+              <div class="row" data-action="ad">
+                <span class="rk"><svg><use href="#i-megaphone"/></svg></span>
+                <div class="rt">
+                  <div class="rt-main">观看广告视频</div>
+                  <div class="rt-sub">每日 3 次 · 每次 20 积分（预告）</div>
+                </div>
+                <span class="rv"><span class="tag">未开放</span></span>
+              </div>
+            </div>
+
+            <div class="group-title">其他</div>
+            <div class="list">
+              <div class="row" data-go="s-signin">
+                <span class="rk"><svg><use href="#i-clock"/></svg></span>
+                <div class="rt"><div class="rt-main">签到记录</div></div>
+                <span class="rv"><svg><use href="#i-chev"/></svg></span>
+              </div>
+              <div class="row" data-go="s-ledger">
+                <span class="rk"><svg><use href="#i-doc"/></svg></span>
+                <div class="rt"><div class="rt-main">积分明细</div></div>
+                <span class="rv"><svg><use href="#i-chev"/></svg></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 13. 签到记录 ========== -->
+        <section class="screen" id="s-signin">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">签到记录</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="page" style="padding-top:10px">
+            <div class="card" style="padding:16px">
+              <div style="display:flex;align-items:baseline;justify-content:space-between">
+                <div>
+                  <div style="font-size:12.5px;color:var(--t3)">连续签到</div>
+                  <div class="num" style="font-size:26px;font-weight:700;margin-top:2px">4 <span style="font-size:13px;font-weight:500;color:var(--t3)">天</span></div>
+                </div>
+                <div style="text-align:right">
+                  <div style="font-size:12.5px;color:var(--t3)">本月累计</div>
+                  <div class="num" style="font-size:26px;font-weight:700;margin-top:2px">6 <span style="font-size:13px;font-weight:500;color:var(--t3)">次</span></div>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:16px" id="signGrid">
+                <span class="sign-day on">1</span>
+                <span class="sign-day on">2</span>
+                <span class="sign-day">3</span>
+                <span class="sign-day on">4</span>
+                <span class="sign-day on">5</span>
+                <span class="sign-day">6</span>
+                <span class="sign-day on">7</span>
+                <span class="sign-day">8</span>
+              </div>
+            </div>
+            <div class="group-title">最近记录</div>
+            <div class="list" id="signLog">
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">每日签到</div><div class="lg-s num">2026-10-07 08:12</div></div>
+                <span class="lg-v plus">＋30</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">每日签到</div><div class="lg-s num">2026-10-06 07:58</div></div>
+                <span class="lg-v plus">＋30</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">每日签到</div><div class="lg-s num">2026-10-05 09:31</div></div>
+                <span class="lg-v plus">＋30</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 14. 在线充值 ========== -->
+        <section class="screen" id="s-topup">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">在线充值</span>
+            <button class="nav-btn" data-go="s-ledger"><svg><use href="#i-doc"/></svg></button>
+          </div>
+          <div class="page" style="padding-top:8px">
+            <div class="card" style="padding:14px 16px">
+              <div style="display:flex;align-items:center;gap:12px">
+                <span class="dc-ico" style="width:40px;height:40px;border-radius:12px;background:var(--brand-weak);color:var(--brand);display:flex;align-items:center;justify-content:center;flex:0 0 auto"><svg style="width:20px;height:20px"><use href="#i-star"/></svg></span>
+                <div style="flex:1">
+                  <div style="font-size:12.5px;color:var(--t3)">当前积分</div>
+                  <div class="num" style="font-size:20px;font-weight:700">1,280</div>
+                </div>
+                <span class="tag tag--brand">基础版</span>
+              </div>
+            </div>
+
+            <div class="group-title">选择套餐</div>
+            <div id="planList">
+              <div class="plan on" data-action="pick-plan" data-name="100 元 / 10,000 积分">
+                <div class="pl-l">
+                  <div class="pl-t">100 元 <span class="tag tag--brand">热门</span></div>
+                  <div class="pl-s">到账 10,000 积分 · 约 0.01 元 / 积分</div>
+                </div>
+                <div class="pl-p">¥100</div>
+                <span class="pl-radio"><svg><use href="#i-check"/></svg></span>
+              </div>
+              <div class="plan" data-action="pick-plan" data-name="50 元 / 4,800 积分">
+                <div class="pl-l">
+                  <div class="pl-t">50 元</div>
+                  <div class="pl-s">到账 4,800 积分</div>
+                </div>
+                <div class="pl-p">¥50</div>
+                <span class="pl-radio"><svg><use href="#i-check"/></svg></span>
+              </div>
+              <div class="plan" data-action="pick-plan" data-name="200 元 / 21,000 积分">
+                <span class="pl-flag">赠 8%</span>
+                <div class="pl-l">
+                  <div class="pl-t">200 元</div>
+                  <div class="pl-s">到账 21,000 积分 · 含赠送 1,000</div>
+                </div>
+                <div class="pl-p">¥200</div>
+                <span class="pl-radio"><svg><use href="#i-check"/></svg></span>
+              </div>
+              <div class="plan" data-action="pick-plan" data-name="500 元 / 55,000 积分">
+                <span class="pl-flag">赠 10%</span>
+                <div class="pl-l">
+                  <div class="pl-t">500 元</div>
+                  <div class="pl-s">到账 55,000 积分 · 含赠送 5,000</div>
+                </div>
+                <div class="pl-p">¥500</div>
+                <span class="pl-radio"><svg><use href="#i-check"/></svg></span>
+              </div>
+            </div>
+
+            <div class="env-note">充值走支付宝。支付结果以云端回调为准，到账后再刷新积分；订单未支付 30 分钟后自动关闭。</div>
+          </div>
+          <div style="position:sticky;bottom:0;padding:12px 14px 18px;background:linear-gradient(transparent,var(--bg) 24%)">
+            <button class="btn btn--primary btn--block" data-go="s-topup-order">去支付 · <span id="planPrice">¥100</span></button>
+          </div>
+        </section>
+
+        <!-- ========== 15. 充值下单 ========== -->
+        <section class="screen" id="s-topup-order">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">确认下单</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="page" style="padding-top:10px">
+            <div class="card" style="padding:6px 16px">
+              <div class="kv"><span class="k">套餐</span><span class="v" id="orderPlan">100 元 / 10,000 积分</span></div>
+              <div class="kv"><span class="k">到账积分</span><span class="v num">10,000</span></div>
+              <div class="kv"><span class="k">支付金额</span><span class="v num" style="font-size:19px;font-weight:700;color:var(--brand)" id="orderPrice">¥100.00</span></div>
+              <div class="kv"><span class="k">支付方式</span><span class="v">支付宝</span></div>
+            </div>
+
+            <div class="group-title">支付方式</div>
+            <div class="list">
+              <div class="row on" data-action="pick-pay">
+                <span class="rk"><svg><use href="#i-qr"/></svg></span>
+                <div class="rt">
+                  <div class="rt-main">扫码支付（native_qr）</div>
+                  <div class="rt-sub">App 内直接调起支付宝收银台</div>
+                </div>
+                <span class="rv"><svg><use href="#i-check"/></svg></span>
+              </div>
+              <div class="row" data-action="pick-pay">
+                <span class="rk"><svg><use href="#i-phone"/></svg></span>
+                <div class="rt">
+                  <div class="rt-main">网页收银台（page_pay）</div>
+                  <div class="rt-sub">跳转浏览器支付后回跳</div>
+                </div>
+                <span class="rv"><svg><use href="#i-chev"/></svg></span>
+              </div>
+            </div>
+
+            <div class="env-note">风险 R2：PC 端 <code>return_url</code> 现为 <code>127.0.0.1:8010</code>，手机不可达。需云端支持可配置回跳地址，否则扫码支付完成后 App 无法自动收到结果，只能轮询订单状态。</div>
+
+            <button class="btn btn--primary btn--block" style="margin-top:20px" data-action="pay">确认支付</button>
+          </div>
+        </section>
+
+        <!-- ========== 16. 流水明细 ========== -->
+        <section class="screen" id="s-ledger">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">流水明细</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="segment" style="margin-top:8px">
+            <button class="on">全部</button>
+            <button>收入</button>
+            <button>支出</button>
+          </div>
+          <div class="page" style="padding-top:8px">
+            <div class="group-title">2026-10</div>
+            <div class="list">
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">每日签到</div><div class="lg-s num">10-07 08:12</div></div>
+                <span class="lg-v plus">＋30</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">AI 批量处理扣费</div><div class="lg-s num">10-07 10:24 · 批次 #4821</div></div>
+                <span class="lg-v minus">－86</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">在线充值</div><div class="lg-s num">10-06 21:03 · 订单 20261006210301</div></div>
+                <span class="lg-v plus">＋10,000</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">基础版每日额外领取</div><div class="lg-s num">10-06 09:00</div></div>
+                <span class="lg-v plus">＋100</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">AI 图片生成扣费</div><div class="lg-s num">10-05 16:41</div></div>
+                <span class="lg-v minus">－240</span>
+              </div>
+            </div>
+            <div class="group-title">2026-09</div>
+            <div class="list">
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">每日签到</div><div class="lg-s num">09-30 07:44</div></div>
+                <span class="lg-v plus">＋30</span>
+              </div>
+              <div class="ledger">
+                <div class="lg-b"><div class="lg-t">套餐到期续费</div><div class="lg-s num">09-28 12:10 · 基础版 月付</div></div>
+                <span class="lg-v minus">－2,000</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 17. 设置 ========== -->
+        <section class="screen" id="s-settings">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">设置</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="page" style="padding-top:10px">
+            <div class="group-title">连接</div>
+            <div class="list">
+              <div class="row" data-go="s-device">
+                <span class="rk"><svg><use href="#i-monitor"/></svg></span>
+                <div class="rt"><div class="rt-main">已绑定 PC</div><div class="rt-sub">2 台</div></div>
+                <span class="rv"><svg><use href="#i-chev"/></svg></span>
+              </div>
+              <div class="row" data-action="switch-lan">
+                <span class="rk"><svg><use href="#i-sync"/></svg></span>
+                <div class="rt"><div class="rt-main">仅使用局域网通道</div><div class="rt-sub">关闭后无网络时回落到云端</div></div>
+                <span class="rv"><span class="switch off" id="lanSwitch"><i></i></span></span>
+              </div>
+              <div class="row" data-action="copy-host">
+                <span class="rk"><svg><use href="#i-cloud"/></svg></span>
+                <div class="rt"><div class="rt-main">PC 服务地址</div><div class="rt-sub num">http://192.168.1.24:8010</div></div>
+                <span class="rv"><svg><use href="#i-copy"/></svg></span>
+              </div>
+            </div>
+
+            <div class="group-title">通知</div>
+            <div class="list">
+              <div class="row" data-action="switch">
+                <span class="rk"><svg><use href="#i-bell"/></svg></span>
+                <div class="rt"><div class="rt-main">公告与反馈推送</div></div>
+                <span class="rv"><span class="switch on"><i></i></span></span>
+              </div>
+              <div class="row" data-action="switch">
+                <span class="rk"><svg><use href="#i-camera"/></svg></span>
+                <div class="rt"><div class="rt-main">同步完成提醒</div></div>
+                <span class="rv"><span class="switch on"><i></i></span></span>
+              </div>
+            </div>
+
+            <div class="group-title">安全与关于</div>
+            <div class="list">
+              <div class="row" data-go="s-password">
+                <span class="rk"><svg><use href="#i-lock"/></svg></span>
+                <div class="rt"><div class="rt-main">修改密码</div></div>
+                <span class="rv"><svg><use href="#i-chev"/></svg></span>
+              </div>
+              <div class="row" data-action="clear-cache">
+                <span class="rk"><svg><use href="#i-trash"/></svg></span>
+                <div class="rt"><div class="rt-main">清除本地缓存</div></div>
+                <span class="rv num">18.4 MB</span>
+              </div>
+              <div class="row" data-action="check-update">
+                <span class="rk"><svg><use href="#i-refresh"/></svg></span>
+                <div class="rt"><div class="rt-main">检查更新</div></div>
+                <span class="rv num">v1.5.2 <svg><use href="#i-chev"/></svg></span>
+              </div>
+              <div class="row">
+                <span class="rk"><svg><use href="#i-shield"/></svg></span>
+                <div class="rt"><div class="rt-main">隐私政策</div></div>
+                <span class="rv"><svg><use href="#i-chev"/></svg></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========== 18. 修改密码 ========== -->
+        <section class="screen" id="s-password">
+          <div class="navbar">
+            <button class="nav-btn" data-back><svg><use href="#i-back"/></svg></button>
+            <span class="nav-title">修改密码</span>
+            <span style="width:30px"></span>
+          </div>
+          <div class="page" style="padding-top:18px">
+            <div class="field">
+              <div class="fl-lab">当前密码</div>
+              <div class="input">
+                <svg><use href="#i-lock"/></svg>
+                <input type="password" value="12345678" readonly>
+              </div>
+            </div>
+            <div class="field">
+              <div class="fl-lab">新密码</div>
+              <div class="input">
+                <svg><use href="#i-lock"/></svg>
+                <input type="password" placeholder="8-20 位，含字母与数字" readonly>
+              </div>
+            </div>
+            <div class="field">
+              <div class="fl-lab">确认新密码</div>
+              <div class="input">
+                <svg><use href="#i-lock"/></svg>
+                <input type="password" placeholder="再次输入新密码" readonly>
+              </div>
+            </div>
+            <button class="btn btn--primary btn--block" style="margin-top:20px" data-action="save-password">保存</button>
+            <div class="env-note">密码与 PC 端工作台共用同一账号体系，修改后需在其他设备重新登录。</div>
+          </div>
+        </section>
+
+      </div><!-- /app-body -->
+
+      <!-- ========== 底部导航 ========== -->
+      <div class="dock hidden" id="dock">
+        <div class="tabbar">
+          <button class="tab" data-tab="home"><svg><use href="#i-home"/></svg>首页</button>
+          <button class="tab" data-tab="capture"><svg><use href="#i-link"/></svg>采集</button>
+          <span class="tab-gap"></span>
+          <button class="tab" data-tab="inbox">
+            <svg><use href="#i-bell"/></svg>消息
+            <span class="tb-badge" id="tabBadge">2</span>
+          </button>
+          <button class="tab" data-tab="mine"><svg><use href="#i-user"/></svg>我的</button>
+        </div>
+        <button class="fab" id="fab" data-tab="camera"><svg><use href="#i-camera"/></svg></button>
+      </div>
+
+      <!-- Toast -->
+      <div class="toast-wrap"><div class="toast" id="toast"></div></div>
+
+    </div><!-- /device-screen -->
+  </div><!-- /device -->
+
+</div><!-- /stage -->
+
+<script src="app.js"></script>
+</body>
+</html>

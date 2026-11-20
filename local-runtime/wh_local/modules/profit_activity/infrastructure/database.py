@@ -90,6 +90,7 @@ def _migrate_legacy_tables(engine: Engine) -> None:
             "source_groups_json": "TEXT NOT NULL DEFAULT '[]'",
             "source_url": "TEXT NOT NULL DEFAULT ''",
             "refund_rate": "NUMERIC NOT NULL DEFAULT 0",
+            "weight_estimated": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "profit_activity_runs": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},
         "profit_activity_decisions": {"workspace_id": "TEXT NOT NULL DEFAULT 'default'"},

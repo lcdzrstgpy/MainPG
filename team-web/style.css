@@ -837,10 +837,10 @@ body {
 }
 .boss-chip.is-danger b { color: var(--danger); }
 
-/* ---------- 四张结论卡 ---------- */
+/* ---------- 三张结论卡 ---------- */
 .boss-hero {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 .boss-card {

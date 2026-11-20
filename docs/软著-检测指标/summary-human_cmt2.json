@@ -1,0 +1,144 @@
+{
+  "file": "软著-程序鉴别材料-wh_local-高危对抗样本-注释强化V2.docx",
+  "total_lines": 3000,
+  "pages": 60,
+  "header_present": true,
+  "page_field": true,
+  "avg_code_per_page": 42.5,
+  "avg_comment_per_page": 2.1,
+  "avg_blank_per_page": 5.3,
+  "comment_pct": 4.2,
+  "comment_lines": 127,
+  "comment_unique": 119,
+  "comment_repeat": 8,
+  "comment_avg_len": 35.6,
+  "inline_count": 71,
+  "inline_unique": 56,
+  "inline_repeat": 15,
+  "total_banners": 0,
+  "total_debug_todo": 6,
+  "sum_def": 93,
+  "sum_class": 7,
+  "ident_count": 8503,
+  "ident_unique": 1537,
+  "top_idents": [
+    {
+      "name": "str",
+      "count": 213
+    },
+    {
+      "name": "get",
+      "count": 154
+    },
+    {
+      "name": "isinstance",
+      "count": 104
+    },
+    {
+      "name": "Mapping",
+      "count": 103
+    },
+    {
+      "name": "value",
+      "count": 98
+    },
+    {
+      "name": "div",
+      "count": 96
+    },
+    {
+      "name": "Any",
+      "count": 84
+    },
+    {
+      "name": "item",
+      "count": 77
+    },
+    {
+      "name": "_text",
+      "count": 75
+    },
+    {
+      "name": "candidate",
+      "count": 71
+    },
+    {
+      "name": "skc_id",
+      "count": 68
+    },
+    {
+      "name": "quote",
+      "count": 67
+    },
+    {
+      "name": "items",
+      "count": 66
+    },
+    {
+      "name": "raw",
+      "count": 64
+    },
+    {
+      "name": "const",
+      "count": 62
+    }
+  ],
+  "pages_under50_code": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    9,
+    10,
+    11,
+    13,
+    14,
+    15,
+    16,
+    17,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60
+  ]
+}

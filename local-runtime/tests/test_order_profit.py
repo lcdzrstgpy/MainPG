@@ -83,7 +83,9 @@ def test_ingest_merges_list_and_detail_and_computes_profit(tmp_path: Path) -> No
     orders = service.orders("default")
     assert orders["summary"]["order_count"] == 1
     assert orders["summary"]["settled_total"] == pytest.approx(95.07)
-    assert orders["summary"]["profit"] == pytest.approx(75.63)
+    # 采购成本缺失时不能拿 0 当成本：利润保持 None，交给前端显示“待补”，避免虚高。
+    assert orders["summary"]["profit"] is None
+    assert orders["summary"]["purchase_cost"] is None
     assert orders["orders"][0]["parent_order_sn"] == "PO-1"
 
     daily = service.daily("default")
@@ -839,3 +841,118 @@ def test_repository_startup_survives_missing_migrations(
         assert not repo._table_exists(conn, "profit_shops")
         # 与订单利润无关的表仍应建好，保证账号页可用。
         assert repo._table_exists(conn, "store_accounts")
+
+
+def test_browser_launcher_finds_bundled_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """冻结版要把插件打进包：优先用随包目录，并取版本号最大的一份。"""
+    from wh_local.modules.order_profit import browser_launcher
+
+    repo = tmp_path / "repo"
+    for name in ("W-H-browser-extension-v0.1.99", "W-H-browser-extension-v0.1.150"):
+        folder = repo / name
+        folder.mkdir(parents=True)
+        (folder / "manifest.json").write_text("{}", encoding="utf-8")
+    meipass = tmp_path / "meipass"
+    meipass.mkdir()
+    monkeypatch.setattr(browser_launcher, "_repo_root", lambda: repo)
+    monkeypatch.setattr(browser_launcher.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(browser_launcher.sys, "_MEIPASS", str(meipass), raising=False)
+
+    # 仓库里有多个版本时取版本号最大的，而不是按字符串排序。
+    assert browser_launcher.find_extension_dir().name == "W-H-browser-extension-v0.1.150"
+
+    # 打包后插件在 _internal/browser-extension，优先于仓库目录。
+    bundled = meipass / "browser-extension"
+    bundled.mkdir()
+    (bundled / "manifest.json").write_text("{}", encoding="utf-8")
+    assert browser_launcher.find_extension_dir() == bundled
+
+
+def test_normalize_order_time_handles_common_formats() -> None:
+    """月份筛选依赖 order_time 的 YYYY-MM 前缀，插件给的多种格式都要归一。"""
+    from wh_local.modules.order_profit.service import _normalize_order_time
+
+    assert _normalize_order_time("2026/9/5") == "2026-09-05 00:00:00"
+    assert _normalize_order_time("2026年10月5日 12:30") == "2026-10-05 12:30:00"
+    assert _normalize_order_time("2026-10-05T12:30:44+08:00") == "2026-10-05 12:30:44"
+    assert _normalize_order_time("") == ""
+
+
+def test_order_ranking_merges_skc_and_filters_month(tmp_path: Path) -> None:
+    """爆品榜：按 SKC 合并同链接的 SKU，并按月份过滤、按指标排序。"""
+    from wh_local.modules.order_profit.repository import OrderProfitRepository
+
+    repo = OrderProfitRepository(tmp_path / "order_profit.sqlite3")
+
+    def add(parent: str, sub: str, sku: str, skc: str, qty: int, when: str, payback: float) -> None:
+        # 订单行表的文本列都是 NOT NULL：upsert 会把缺省键写成 NULL，所以这里要显式给空串。
+        item = {column: "" for column in (
+            "skc_code", "ext_code", "image_url",
+            "declared_currency", "gmv_currency", "tail_currency", "tracking_no",
+            "order_status", "order_status_code", "site", "shop_name", "mall_id",
+            "cost_source", "match_status", "source", "captured_at",
+        )}
+        item.update(
+            {
+                "batch_id": "",
+                "command_id": 0,
+                "parent_order_sn": parent,
+                "sub_order_sn": sub,
+                "sku_id": sku,
+                "skc_id": skc,
+                "goods_name": f"商品 {skc}",
+                "quantity": qty,
+                "order_time": when,
+                "sales_payback": payback,
+            }
+        )
+        repo.upsert_item("default", item)
+
+    add("PO-1", "S1", "SKU-A", "SKC-1", 2, "2026-09-03 10:00:00", 100)
+    add("PO-2", "S2", "SKU-B", "SKC-1", 3, "2026-09-20 10:00:00", 150)
+    add("PO-3", "S3", "SKU-C", "SKC-2", 1, "2026-10-01 10:00:00", 60)
+
+    rows = repo.list_order_ranking("default", months=["2026-09"])
+    assert [row["key"] for row in rows] == ["SKC-1"]
+    assert rows[0]["quantity"] == 5
+    assert rows[0]["order_count"] == 2
+
+    sku_rows = repo.list_order_ranking(
+        "default", months=["2026-09", "2026-10"], group_by="sku"
+    )
+    assert {row["key"] for row in sku_rows} == {"SKU-A", "SKU-B", "SKU-C"}
+
+    by_payback = repo.list_order_ranking("default", months=["2026-09"], metric="payback")
+    assert by_payback[0]["payback"] == pytest.approx(250)
+
+
+def test_ranking_route_returns_links_and_skus(tmp_path: Path) -> None:
+    """/orders/ranking 的接口契约：月份过滤 + 链接/SKU 两种归并。"""
+    service = _service(tmp_path)
+    app = FastAPI()
+    app.include_router(create_order_profit_router(service), prefix="/api")
+    client = TestClient(app)
+    headers = {"X-Workspace-ID": "default"}
+    service._ingest("default", SimpleNamespace(command_id=106), _capture_result())
+
+    link_body = client.get(
+        "/api/order-profit/orders/ranking?months=2026-10&group_by=link",
+        headers=headers,
+    ).json()
+    assert link_body["group_by"] == "link"
+    assert link_body["rows"] and link_body["rows"][0]["key"] == "SKC-1"
+    assert link_body["total_quantity"] >= 1
+
+    sku_body = client.get(
+        "/api/order-profit/orders/ranking?months=2026-10&group_by=sku",
+        headers=headers,
+    ).json()
+    assert sku_body["rows"][0]["key"] == "SKU-1"
+
+    empty_body = client.get(
+        "/api/order-profit/orders/ranking?months=2025-01",
+        headers=headers,
+    ).json()
+    assert empty_body["rows"] == []

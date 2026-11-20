@@ -7,6 +7,7 @@ import { PageHero } from "../components/ShopDataPrimitives";
 import { OrderProfitAccountsTab } from "./OrderProfitAccountsTab";
 import { OrderProfitCaptureTab } from "./OrderProfitCaptureTab";
 import { OrderProfitFinanceTab } from "./OrderProfitFinanceTab";
+import { OrderProfitHotProductsTab } from "./OrderProfitHotProductsTab";
 import { OrderProfitOrdersTab } from "./OrderProfitOrdersTab";
 import { OrderProfitOverviewTab } from "./OrderProfitOverviewTab";
 import { OrderProfitRecordsTab } from "./OrderProfitRecordsTab";
@@ -79,7 +80,10 @@ const SUB_TABS: Record<BoardView, SubTab[]> = {
     { key: "traffic", label: "流量分析", resource: "traffic", hint: "曝光、点击、访客与渠道构成，判断流量从哪来。" },
     { key: "sales", label: "销量分析", resource: "sales", hint: "销量、售罄与库存健康，判断货卖得动不动。" },
   ],
-  orders: [],
+  orders: [
+    { key: "orders", label: "订单明细", hint: "按状态和月份查看每一单的钱从哪来、成本花在哪。" },
+    { key: "hot", label: "爆品统计", hint: "选月份看卖得最好的商品链接与 SKU。" },
+  ],
   funds: [
     { key: "finance", label: "对账流水", resource: "finance", hint: "推广服务费、罚款与结算的逐笔流水。" },
     { key: "settlement", label: "结算回款", resource: "settlement", hint: "按 PO 单查看销售与运费回款、冲回。" },
@@ -368,12 +372,19 @@ export function OrderProfitPage({
         {board === "overview" && subView === "sales" ? (
           <OrderProfitSalesTab isActive={isActive} refreshToken={dataVersion} shop={shopScope} />
         ) : null}
-        {board === "orders" ? (
+        {board === "orders" && subView === "orders" ? (
           <OrderProfitOrdersTab
             isActive={isActive}
             refreshToken={dataVersion}
             shop={shopScope}
             onOpenCapture={onOpenCapture}
+          />
+        ) : null}
+        {board === "orders" && subView === "hot" ? (
+          <OrderProfitHotProductsTab
+            isActive={isActive}
+            refreshToken={dataVersion}
+            shop={shopScope}
           />
         ) : null}
         {board === "funds" && subView === "finance" ? (

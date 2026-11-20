@@ -1,0 +1,30 @@
+{
+  "id": "us_mahjong_gold_glitter",
+  "label": "美式金亮片亚克力麻将（160/166 张）",
+  "note": "参数来自该商品 800px 单牌特写与全套总表的实测：牌体金色与墨色为采样值，厚度/分层按同页两张牌的截面比例估。",
+  "size_mm": [30.0, 42.0, 19.0],
+  "bevel_mm": 1.5,
+  "layers": [
+    {
+      "name": "face",
+      "thickness_ratio": 0.42,
+      "color": "#F1EFE8",
+      "finish": "gloss"
+    },
+    {
+      "name": "body",
+      "thickness_ratio": 0.58,
+      "color": "#C4A946",
+      "finish": "glitter"
+    }
+  ],
+  "face": {
+    "cover": 0.86,
+    "index_box": [0.05, 0.03, 0.10, 0.10]
+  },
+  "ink": ["#B5292E", "#2A3534", "#1A6A3E"],
+  "art": {
+    "source": "program",
+    "set": "us_mahjong_v1"
+  }
+}

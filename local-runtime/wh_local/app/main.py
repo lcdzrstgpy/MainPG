@@ -601,6 +601,16 @@ def create_app(database_path: Path | None = None) -> FastAPI:
         clipforge_service = getattr(runtime_app.state, "clipforge_service", None)
         source_sync_worker = getattr(runtime_app.state, "source_image_sync_worker", None)
         pod_log_task = getattr(runtime_app.state, "pod_log_upload_task", None)
+        team_rollup_task = getattr(runtime_app.state, "team_rollup_task", None)
+        if team_rollup_task is not None:
+            logger.info("lifespan step: starting team_rollup_task")
+            team_rollup_task.start()
+            logger.info("lifespan step: team_rollup_task started")
+        auto_capture_task = getattr(runtime_app.state, "auto_capture_task", None)
+        if auto_capture_task is not None:
+            logger.info("lifespan step: starting auto_capture_task")
+            auto_capture_task.start()
+            logger.info("lifespan step: auto_capture_task started")
         if shop_worker is not None:
             logger.info("lifespan step: starting shop_worker")
             shop_worker.start()

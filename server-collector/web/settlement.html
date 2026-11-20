@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>结算明细</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --line: #e3e9f2;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --dim: #9aa4b2;
+    --primary: #2f6fed;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar h1 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; }
+  .topbar .meta { color: var(--muted); font-size: 12px; flex: 1; }
+  .topbar input[type="search"] {
+    width: 240px;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+  }
+  .topbar input[type="search"]:focus { outline: 2px solid #cfe0ff; border-color: var(--primary); }
+  button, .link {
+    font: inherit;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  button:hover, .link:hover { border-color: #c7d4e6; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  button.primary:disabled { opacity: .6; cursor: default; }
+  main { padding: 16px 24px 40px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .table-wrap { overflow: auto; max-height: calc(100vh - 280px); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    padding: 10px 14px;
+    border-bottom: 1px solid #eef2f7;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    background: #f8fafc;
+    color: var(--muted);
+    font-weight: 600;
+    z-index: 1;
+  }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num.neg { color: var(--danger); }
+  td.num.zero { color: var(--dim); }
+  tbody tr:hover { background: #fafcff; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .goods { max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+  .totals {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fbfcfe;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .totals b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .totals b.neg { color: var(--danger); }
+  .foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .foot .grow { flex: 1; }
+  .empty { padding: 40px; text-align: center; color: var(--dim); }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 22px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fbfcfe;
+    font-size: 12.5px;
+  }
+  .filters .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .filters .label { color: var(--muted); }
+  .filters input, .filters select {
+    font: inherit;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text);
+  }
+  .filters input[type="date"] { color: var(--text); }
+  .pages { display: inline-flex; align-items: center; gap: 6px; }
+  .pages button { padding: 5px 10px; min-width: 32px; }
+  .pages button:disabled { opacity: .45; cursor: default; }
+  .chip {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1 id="title">结算明细</h1>
+  <span class="meta" id="meta">加载中…</span>
+  <input id="search" type="search" placeholder="搜索 PO / SKU / 商品名" />
+  <button type="button" id="export">导出 CSV</button>
+  <a class="link" href="./">返回</a>
+</div>
+
+<main>
+  <div class="card">
+    <div class="filters">
+      <div class="group">
+        <span class="label">采集周期</span>
+        <select id="days">
+          <option value="7">近 7 天</option>
+          <option value="30" selected>近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+        <button type="button" class="primary" id="collect">采集</button>
+      </div>
+      <div class="group">
+        <span class="label">到账日期</span>
+        <input type="date" id="dateFrom" />
+        <span class="label">至</span>
+        <input type="date" id="dateTo" />
+        <button type="button" id="clearDate">清除</button>
+      </div>
+    </div>
+    <div class="totals" id="totals"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>PO 单号</th>
+            <th>商品</th>
+            <th>SKU</th>
+            <th class="num">件数</th>
+            <th class="num">申报价</th>
+            <th class="num">销售回款</th>
+            <th class="num">销售冲回</th>
+            <th class="num">运费回款</th>
+            <th class="num">运费冲回</th>
+            <th class="num">结算金额</th>
+            <th class="num">罚款</th>
+            <th class="num">笔数</th>
+            <th>交易类型</th>
+            <th>到账时间</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>没有数据</div>
+    </div>
+    <div class="foot">
+      <span id="pageInfo"></span>
+      <span class="grow"></span>
+      <div class="pages">
+        <button type="button" id="prev">上一页</button>
+        <span id="pageNums"></span>
+        <button type="button" id="next">下一页</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = new URL("api/", document.baseURI).pathname.replace(/\/$/, "");
+const params = new URLSearchParams(location.search);
+const accountId = params.get("account") || "";
+const view = {
+  account: null, settle: {}, rows: [], filtered: [], entryCounts: {},
+  page: 1, size: 100, from: "", to: "", collecting: false,
+};
+
+function escapeHtml(text) {
+  return String(text == null ? "" : text).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[ch]);
+}
+
+function cell(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return escapeHtml(String(value));
+}
+
+function money(value, currency) {
+  if (value === null || value === undefined || value === "") return "-";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  const code = String(currency || "CNY").toUpperCase();
+  return `${code === "CNY" ? "¥" : `${code} `}${number.toFixed(2)}`;
+}
+
+function amountCell(value, currency) {
+  const number = Number(value || 0);
+  const cls = number < 0 ? " num neg" : (number === 0 ? " num zero" : " num");
+  return `<td class="${cls.trim()}">${money(number, currency)}</td>`;
+}
+
+function setStatus(text) {
+  document.getElementById("meta").textContent = text;
+}
+
+function sumOf(rows, key) {
+  return rows.reduce((total, row) => total + Number(row[key] || 0), 0);
+}
+
+function summaryChips() {
+  const rows = view.filtered;
+  const settle = view.settle || {};
+  const entries = Object.values(view.entryCounts).reduce((total, count) => total + count, 0);
+  const penalty = sumOf(rows, "penalty_amount");
+  document.getElementById("totals").innerHTML =
+    `<span>结算金额 <b>${money(sumOf(rows, "settlement_amount"), "CNY")}</b></span>` +
+    `<span>销售回款 <b>${money(sumOf(rows, "sales_payback"), "CNY")}</b></span>` +
+    `<span>运费回款 <b>${money(sumOf(rows, "freight_payback"), "CNY")}</b></span>` +
+    `<span>冲回 <b>${money(sumOf(rows, "sales_reversal") + sumOf(rows, "freight_reversal"), "CNY")}</b></span>` +
+    `<span>罚款 <b class="${penalty < 0 ? "neg" : ""}">${money(penalty, "CNY")}</b></span>` +
+    `<span>PO 数 <b>${rows.length}</b></span>` +
+    `<span>笔数 <b>${entries}</b></span>` +
+    `<span>文件 <b>${cell(settle.file)}</b></span>`;
+}
+
+function applyFilters() {
+  const keyword = document.getElementById("search").value.trim().toLowerCase();
+  view.filtered = view.rows.filter((row) => {
+    const date = String(row.arrive_time || "").slice(0, 10);
+    if (view.from && (!date || date < view.from)) return false;
+    if (view.to && (!date || date > view.to)) return false;
+    if (!keyword) return true;
+    return [row.parent_order_sn, row.sku_id, row.goods_name, (row.trade_types || []).join(" ")]
+      .some((value) => String(value || "").toLowerCase().includes(keyword));
+  });
+  view.page = 1;
+  summaryChips();
+  paint();
+}
+
+function paint() {
+  const total = view.filtered.length;
+  const pages = Math.max(1, Math.ceil(total / view.size));
+  if (view.page > pages) view.page = pages;
+  const start = (view.page - 1) * view.size;
+  const slice = view.filtered.slice(start, start + view.size);
+  document.getElementById("rows").innerHTML = slice.map((row) => {
+    const currency = row.currency || "CNY";
+    const count = view.entryCounts[row.parent_order_sn] || 0;
+    return `<tr>
+      <td class="mono">${cell(row.parent_order_sn)}</td>
+      <td class="goods" title="${cell(row.goods_name)}">${cell(row.goods_name)}</td>
+      <td class="mono">${cell(row.sku_id)}</td>
+      <td class="num">${row.quantity === null || row.quantity === undefined ? "-" : cell(row.quantity)}</td>
+      <td class="num">${row.declared_price === null || row.declared_price === undefined ? "-" : money(row.declared_price, currency)}</td>
+      ${amountCell(row.sales_payback, currency)}
+      ${amountCell(row.sales_reversal, currency)}
+      ${amountCell(row.freight_payback, currency)}
+      ${amountCell(row.freight_reversal, currency)}
+      ${amountCell(row.settlement_amount, currency)}
+      ${amountCell(row.penalty_amount, currency)}
+      <td class="num">${count}</td>
+      <td>${(row.trade_types || []).length ? `<span class="chip">${escapeHtml((row.trade_types || []).join(" / "))}</span>` : "-"}</td>
+      <td>${cell(row.arrive_time)}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("empty").hidden = total > 0;
+  document.getElementById("pageInfo").textContent =
+    total ? `共 ${total} 个 PO · 第 ${view.page}/${pages} 页` : "共 0 个 PO";
+  document.getElementById("pageNums").textContent = `${view.page} / ${pages}`;
+  document.getElementById("prev").disabled = view.page <= 1;
+  document.getElementById("next").disabled = view.page >= pages;
+}
+
+function exportCsv() {
+  const heads = ["PO 单号", "商品", "SKU", "件数", "申报价", "销售回款", "销售冲回", "运费回款", "运费冲回", "结算金额", "罚款", "笔数", "交易类型", "到账时间", "币种"];
+  const lines = [heads.join(",")];
+  view.filtered.forEach((row) => {
+    const count = view.entryCounts[row.parent_order_sn] || 0;
+    const fields = [
+      row.parent_order_sn || "", row.goods_name || "", row.sku_id || "", row.quantity || "",
+      row.declared_price === null || row.declared_price === undefined ? "" : row.declared_price,
+      row.sales_payback || 0, row.sales_reversal || 0, row.freight_payback || 0,
+      row.freight_reversal || 0, row.settlement_amount || 0, row.penalty_amount || 0,
+      count, (row.trade_types || []).join(" / "), row.arrive_time || "", row.currency || "",
+    ];
+    lines.push(fields.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","));
+  });
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `结算明细_${accountId || "unknown"}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function applyAccount(account) {
+  view.account = account || null;
+  view.settle = (account && account.last_settlement) || {};
+  const entries = Array.isArray(view.settle.entries) ? view.settle.entries : [];
+  view.entryCounts = {};
+  entries.forEach((entry) => {
+    const po = entry.parent_order_sn || "";
+    if (po) view.entryCounts[po] = (view.entryCounts[po] || 0) + 1;
+  });
+  view.rows = Array.isArray(view.settle.rows) ? view.settle.rows : [];
+  document.getElementById("title").textContent =
+    `${(account && (account.shop_name || account.alias)) || "结算明细"} · 结算明细`;
+  if (!account) {
+    setStatus("未找到该店铺");
+  } else if (view.settle.ok) {
+    setStatus(`对账中心 · ${view.settle.file || ""} · 抓取于 ${account.settlement_at || "—"}`);
+  } else if (view.settle.ok === false) {
+    setStatus(view.settle.error || "抓取失败");
+  } else {
+    setStatus("尚未抓取结算资金，点「采集」开始");
+  }
+  const empty = document.getElementById("empty");
+  if (!view.rows.length) {
+    document.getElementById("rows").innerHTML = "";
+    document.getElementById("totals").innerHTML = "";
+    document.getElementById("pageInfo").textContent = "";
+    document.getElementById("pageNums").textContent = "";
+    empty.hidden = false;
+    empty.textContent = account ? (view.settle.ok ? "该周期没有结算记录" : "还没有数据，点「采集」抓取") : "未找到该店铺";
+    return;
+  }
+  empty.hidden = true;
+  applyFilters();
+}
+
+async function fetchState() {
+  const response = await fetch(`${API}/state`);
+  if (!response.ok) throw new Error(`加载失败：HTTP ${response.status}`);
+  return response.json();
+}
+
+function findAccount(state) {
+  return (state.accounts || []).find((item) => item.id === accountId) || null;
+}
+
+async function load() {
+  try {
+    const state = await fetchState();
+    applyAccount(findAccount(state));
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function collect() {
+  if (!accountId || view.collecting) return;
+  const days = Number(document.getElementById("days").value) || 30;
+  const button = document.getElementById("collect");
+  view.collecting = true;
+  button.disabled = true;
+  setStatus("已提交采集任务…");
+  let started = false;
+  try {
+    const response = await fetch(`${API}/accounts/${accountId}/settlement`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.detail || detail.message || `HTTP ${response.status}`);
+    }
+    started = true;
+  } catch (error) {
+    setStatus(`采集失败：${error.message}`);
+  }
+  if (started) await waitJob();
+  view.collecting = false;
+  button.disabled = false;
+}
+
+async function waitJob() {
+  for (let tick = 0; tick < 240; tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    let state;
+    try {
+      state = await fetchState();
+    } catch (error) {
+      continue;
+    }
+    const account = findAccount(state);
+    const job = (account && account.job) || {};
+    if (job.status === "running") {
+      setStatus(`抓取中… ${job.step || ""}`);
+      continue;
+    }
+    applyAccount(account);
+    return;
+  }
+  setStatus("等待超时，稍后刷新页面查看结果");
+}
+
+document.getElementById("search").addEventListener("input", applyFilters);
+document.getElementById("dateFrom").addEventListener("change", (event) => {
+  view.from = event.target.value;
+  applyFilters();
+});
+document.getElementById("dateTo").addEventListener("change", (event) => {
+  view.to = event.target.value;
+  applyFilters();
+});
+document.getElementById("clearDate").addEventListener("click", () => {
+  view.from = "";
+  view.to = "";
+  document.getElementById("dateFrom").value = "";
+  document.getElementById("dateTo").value = "";
+  applyFilters();
+});
+document.getElementById("prev").addEventListener("click", () => { view.page -= 1; paint(); });
+document.getElementById("next").addEventListener("click", () => { view.page += 1; paint(); });
+document.getElementById("export").addEventListener("click", exportCsv);
+document.getElementById("collect").addEventListener("click", collect);
+load();
+</script>
+</body>
+</html>

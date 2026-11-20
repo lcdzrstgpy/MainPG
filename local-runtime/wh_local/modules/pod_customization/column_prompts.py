@@ -29,9 +29,16 @@ from .contracts import ArtDirection, BusinessFields, IP_EXCLUDED_ELEMENTS, Scene
 from .prompt_anchor_blocks import (
     ANCHOR_BINDING as _ANCHOR_BINDING,
     ANCHOR_CONTINUITY as _ANCHOR_CONTINUITY,
+    ANCHOR_CONTINUITY_DEEP_FOCUS as _ANCHOR_CONTINUITY_DEEP_FOCUS,
     CAMERA_MUST_DIFFER as _CAMERA_MUST_DIFFER,
     OUTPUT_FORMAT_LOCK as _OUTPUT_FORMAT_LOCK,
     RIGID_ARTWORK_LOCK as _RIGID_ARTWORK_LOCK,
+)
+from ..product_processing.domain.precision_prompts import (
+    PRECISION_STANDARD,
+    build_precision_sheet_prompt,
+    lens_lock_block,
+    normalize_precision_class,
 )
 from .prompts import (
     _COLOR_IMPACT_BLOCK,
@@ -467,16 +474,23 @@ def _b2_block(
     role: str,
     direction: str,
     flat_product: bool,
+    precision: str = PRECISION_STANDARD,
 ) -> list[str]:
+    focus_clause = (
+        "a macro round is expected to have shallow focus"
+        if precision == PRECISION_STANDARD
+        else "focus must stay deep and the whole product must remain in focus"
+    )
     lines = [
         f"=== PART 2 · ROUND {ROLE_LABELS.get(role, role)} SCENE & COMPOSITION — camera only ===",
         "ROUND SHOOTING DIRECTION (all four quadrants of this sheet share it):",
         direction,
         "Framing-only clause: the sentence above changes only the camera — angle, shot distance, crop, "
-        "framing and depth of field (a macro round is expected to have shallow focus). Scene, set "
+        f"framing and depth of field ({focus_clause}). Scene, set "
         "surface, light direction, colour temperature and contrast must stay identical to the four "
         "reference images.",
         _CAMERA_MUST_DIFFER,
+        lens_lock_block(require_product_fill=False) if precision != PRECISION_STANDARD else "",
     ]
     if flat_product:
         lines.extend((
@@ -484,7 +498,7 @@ def _b2_block(
             "TOP-DOWN flat lays; never a corner, rim, side profile or three-quarter view.",
             "The product stays flat on the tabletop with no overhang, drape, thickness or 3D structure.",
         ))
-    return lines
+    return [line for line in lines if line]
 
 
 _DEFAULT_MATERIAL_DIRECTION = (
@@ -528,6 +542,7 @@ def _material_round_lines(
     *,
     composition: Mapping[str, Mapping[str, str]] | None,
     flat_product: bool,
+    precision: str = PRECISION_STANDARD,
 ) -> list[str]:
     """素材图轮：只继承产品与图案，场景重置为纯白棚拍；构图模板仅提供机位。"""
     direction = _material_round_direction(composition, flat_product=flat_product)
@@ -570,6 +585,8 @@ def _material_round_lines(
             "The product stays flat on the white surface with no overhang, drape, thickness or 3D "
             "structure.",
         ))
+    if precision != PRECISION_STANDARD:
+        lines.append(lens_lock_block())
     return lines
 
 
@@ -583,11 +600,14 @@ def build_column_round_prompt(
     group_index: int = 1,
     attempt: int = 1,
     flat_product: bool = False,
+    precision_class: str = PRECISION_STANDARD,
+    detail_units: int = 0,
 ) -> str:
     """拼装某一轮实际提交的完整提示词。
 
     ``recipes`` 必须是该组的 4 个配方（顺序 = 象限顺序）；``composition`` 为
-    ``panel_1..4 → {zh, en}`` 的冻结快照。
+    ``panel_1..4 → {zh, en}`` 的冻结快照。``precision_class`` 非 standard 时，
+    主图轮改用精小品模板（去场景/浅景深，锁正交深焦），派生轮只追加镜头锁。
     """
     if attempt not in {1, 2}:
         raise ValueError("attempt must be 1 or 2")
@@ -595,6 +615,17 @@ def build_column_round_prompt(
         raise ValueError("column round prompt requires exactly four style recipes")
     if role not in (PRIMARY_ROLE, *DERIVED_ROLES):
         raise ValueError(f"unknown column role: {role}")
+
+    precision = normalize_precision_class(precision_class)
+    if precision != PRECISION_STANDARD and role == PRIMARY_ROLE:
+        return build_precision_sheet_prompt(
+            facts=(base_prompt,),
+            panel_blocks=[_style_block(recipe) for recipe in recipes],
+            precision_class=precision,
+            attempt=attempt,
+            flat_product=flat_product,
+            detail_units=detail_units,
+        )
 
     if role == PRIMARY_ROLE:
         parts: list[str] = [base_prompt.rstrip(), ""]
@@ -634,7 +665,7 @@ def build_column_round_prompt(
         )
     elif role == "hero":
         parts = _material_round_lines(
-            composition=composition, flat_product=flat_product
+            composition=composition, flat_product=flat_product, precision=precision
         )
     else:
         direction = _round_direction(
@@ -648,7 +679,11 @@ def build_column_round_prompt(
             _OUTPUT_FORMAT_LOCK,
             _ANCHOR_BINDING,
             _RIGID_ARTWORK_LOCK,
-            _ANCHOR_CONTINUITY,
+            (
+                _ANCHOR_CONTINUITY_DEEP_FOCUS
+                if precision != PRECISION_STANDARD
+                else _ANCHOR_CONTINUITY
+            ),
             _QUADRANT_ISOLATION_LOCK,
             _NO_QUADRANT_LABELS,
             "GEOMETRY LOCK: keep the silhouette, seam lines, panel divisions, hardware positions and "
@@ -659,7 +694,11 @@ def build_column_round_prompt(
             "one quadrant's artwork into another quadrant.",
             "",
         ]
-        lines.extend(_b2_block(role=role, direction=direction, flat_product=flat_product))
+        lines.extend(
+            _b2_block(
+                role=role, direction=direction, flat_product=flat_product, precision=precision
+            )
+        )
         # 方向句在前文容易被锚点锁稀释，末尾再钉一次（模型对结尾指令同样敏感）。
         lines.extend((
             "",

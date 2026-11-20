@@ -1,0 +1,148 @@
+背景底板提示词 v2（分 5 批，每批一条 2×2 四宫格）
+=========================================================================
+怎么用
+-------------------------------------------------------------------------
+1. 一次只发一批（一条消息），等出图、检查、切图、命名完，再发下一批。
+2. 每条都是自包含的：风格、光照、四格布局、禁止项全写在里面，不需要再补上下文。
+3. 出图后**不用手工切图**：把 5 张四宫格存到桌面（保持原名 Temu上架白底图要求.png / 要求1..4.png），
+   在 local-runtime 目录执行：
+       python devtools/prepare_backgrounds.py
+   脚本会：裁掉底部「豆包AI生成」水印（裁底部 9% 再等比拉回，木纹/水磨石上也不会留下涂抹痕迹）
+   → 切四象限 → 统一 1200×1200 → 按 id 命名存到 web-frontend/public/assets/backgrounds/*.jpg。
+4. 哪一格不合格，就把该条里 "a 2x2 grid of four equal square cells" 改成
+   "one single square product-photography backdrop"，只留那一格的描述，单独补一张；
+   补的那张单独裁好、按 id 覆盖同名 jpg 即可。
+
+通用要求（已写进每条提示词，这里给你核对用）
+-------------------------------------------------------------------------
+- 四格等分、互相独立，不要分隔线、不要白边、不要拼贴缝；
+- 每格都是空的：无产品、无道具、无植物、无家具、无手、无人、无文字、无水印；
+- 平视机位、无夸张透视；5200K 柔和日光，左上主光、右侧补光，低反差；
+- 每格底部约 15% 轻微压暗，形成柔和的落地影，方便后面贴产品；
+- 材质细节清晰、渐变平滑（不要色带），不要暗角，不要人为光斑（节庆两格除外）。
+
+
+=========================================================================
+第 1 批（发这一条）
+=========================================================================
+Photorealistic empty product-photography backdrops arranged as a 2x2 grid of four equal,
+independent square cells on one square 1:1 canvas. No borders, no dividers, no white
+gutters, no collage seams; each cell is a complete empty scene with its own floor
+transition, not a continuation of its neighbour. Camera at product eye level, straight-on,
+no dramatic perspective. Soft even 5200K daylight from the upper left with gentle fill and
+low-contrast shadows; the bottom 15% of every cell darkens slightly into a soft grounded
+shadow. Completely empty in all four cells: no product, no props, no plants, no furniture,
+no hands, no people, no text, no watermark, no logo. Fine material detail, smooth gradients
+without banding, no vignette, no artificial bokeh.
+- Top-left: warm white seamless studio sweep (#FAF7F2) with a barely visible warm gray
+  gradient rising from the bottom edge, matte paper sheen.
+- Top-right: soft fog gray seamless sweep (#E9EBEE to #DDE1E5) with a gentle vertical
+  gradient and a smooth, shadowless floor curve.
+- Bottom-left: oatmeal beige seamless paper (#EFE6D8 to #E2D5C2) with a fine matte fiber
+  texture and a subtle paper roll curve at the top edge.
+- Bottom-right: pale apricot gradient backdrop (#FBEADF to #F2D7C3), clean and warm, with a
+  very soft light pool behind the centre.
+切图命名：bg_warm_white.jpg / bg_fog_gray.jpg / bg_oatmeal.jpg / bg_pale_apricot.jpg
+
+
+=========================================================================
+第 2 批（发这一条）
+=========================================================================
+Photorealistic empty product-photography backdrops arranged as a 2x2 grid of four equal,
+independent square cells on one square 1:1 canvas. No borders, no dividers, no white
+gutters, no collage seams; each cell is a complete empty scene with its own floor
+transition, not a continuation of its neighbour. Camera at product eye level, straight-on,
+no dramatic perspective. Soft even 5200K daylight from the upper left with gentle fill and
+low-contrast shadows; the bottom 15% of every cell darkens slightly into a soft grounded
+shadow. Completely empty in all four cells: no product, no props, no plants, no furniture,
+no hands, no people, no text, no watermark, no logo. Fine material detail, smooth gradients
+without banding, no vignette, no artificial bokeh.
+- Top-left: cool light gray seamless sweep (#F2F5F8 to #E1E6EC), neutral and clean, with a
+  crisp but soft floor curve and no colour cast.
+- Top-right: ivory paper backdrop (#FFFAF2 to #F4EAD9) with fine paper fibers, a soft floor
+  transition and a very slight curl shadow at the bottom edge.
+- Bottom-left: warm gray plaster wall (#ECE5DD) with a soft window-light gradient falling
+  from the upper left and a matte, slightly uneven trowel texture.
+- Bottom-right: coarse warm gray paper (#ECE3D6 to #DDD1BF) with visible fiber grain and a
+  soft, wide shadow pooling at the base.
+切图命名：bg_cool_gray.jpg / bg_paper_ivory.jpg / bg_plaster_warm.jpg / bg_paper_coarse.jpg
+
+
+=========================================================================
+第 3 批（发这一条）
+=========================================================================
+Photorealistic empty product-photography backdrops arranged as a 2x2 grid of four equal,
+independent square cells on one square 1:1 canvas. No borders, no dividers, no white
+gutters, no collage seams; each cell is a complete empty scene with its own floor
+transition, not a continuation of its neighbour. Camera at product eye level, straight-on,
+no dramatic perspective. Soft even 5200K daylight from the upper left with gentle fill and
+low-contrast shadows; the bottom 15% of every cell darkens slightly into a soft grounded
+shadow. Completely empty in all four cells: no product, no props, no plants, no furniture,
+no hands, no people, no text, no watermark, no logo. Fine material detail, smooth gradients
+without banding, no vignette, no artificial bokeh.
+- Top-left: light oak tabletop (#E9D3AC to #DCC29A) meeting an off-white wall, fine straight
+  grain running toward the camera, soft edge where surface meets wall.
+- Top-right: dark walnut tabletop (#5D3D29 to #472C1C) meeting a deep warm gray wall, rich
+  open grain and a soft reflection of the light source.
+- Bottom-left: warm gray honed stone surface (#DCD5CA to #CFC7BB) meeting a soft plaster
+  wall, fine matte mottling, no gloss, gentle edge shadow.
+- Bottom-right: warm terrazzo surface (#EFEAE1 base) with small neutral chips in beige,
+  gray and warm white, matte finish and a soft floor-to-wall transition.
+切图命名：bg_oak_light.jpg / bg_walnut.jpg / bg_stone_warm.jpg / bg_terrazzo.jpg
+
+
+=========================================================================
+第 4 批（发这一条）
+=========================================================================
+Photorealistic empty product-photography backdrops arranged as a 2x2 grid of four equal,
+independent square cells on one square 1:1 canvas. No borders, no dividers, no white
+gutters, no collage seams; each cell is a complete empty scene with its own floor
+transition, not a continuation of its neighbour. Camera at product eye level, straight-on,
+no dramatic perspective. Soft even 5200K daylight from the upper left with gentle fill and
+low-contrast shadows; the bottom 15% of every cell darkens slightly into a soft grounded
+shadow. Completely empty in all four cells: no product, no props, no plants, no furniture,
+no hands, no people, no text, no watermark, no logo. Fine material detail, smooth gradients
+without banding, no vignette, no artificial bokeh.
+- Top-left: white marble surface (#FAFAF9 to #F1F0EE) with soft, sparse gray veining and a
+  matte polished finish, faint reflection only.
+- Top-right: draped ivory linen backdrop (#F2EBDF to #E6DBC9) with gentle natural folds and
+  soft side light grazing the weave.
+- Bottom-left: natural cotton canvas backdrop (#E9DFCD to #DBCFB9) with a tight visible
+  weave, warm neutral tone and a soft fold line near the bottom.
+- Bottom-right: deep charcoal green velvet (#2F3A35) with a soft sheen highlight rolling
+  across the folds and a rich, dark falloff toward the edges.
+切图命名：bg_marble_white.jpg / bg_linen.jpg / bg_canvas.jpg / bg_velvet.jpg
+
+
+=========================================================================
+第 5 批（发这一条；这一批允许柔和光斑）
+=========================================================================
+Photorealistic empty product-photography backdrops arranged as a 2x2 grid of four equal,
+independent square cells on one square 1:1 canvas. No borders, no dividers, no white
+gutters, no collage seams; each cell is a complete empty scene with its own floor
+transition, not a continuation of its neighbour. Camera at product eye level, straight-on,
+no dramatic perspective. Soft even 5200K daylight from the upper left with gentle fill and
+low-contrast shadows; the bottom 15% of every cell darkens slightly into a soft grounded
+shadow. Completely empty in all four cells: no product, no props, no plants as subjects, no
+furniture, no hands, no people, no text, no watermark, no logo. Fine material detail, smooth
+gradients without banding, no vignette.
+- Top-left: minimal plaster arch niche (#F4F0EA wall, #E3DCD1 inside) in a warm white wall,
+  soft gradient shadow inside the arch, empty centre.
+- Top-right: two-tier pale stone display steps (#F6F2EA upper, #ECE5D9 lower) against a soft
+  warm gray wall, gentle edge shadows, empty top surface.
+- Bottom-left: festive backdrop with evergreen pine branches in soft focus and warm bokeh
+  lights only along the left and top edges, clean empty centre, no ornaments as subjects.
+- Bottom-right: deep green velvet (#26402F to #1A2E22) with a hint of gold satin-ribbon
+  bokeh at the right edge and a clean, empty centre.
+切图命名：bg_arch.jpg / bg_steps.jpg / bg_pine.jpg / bg_gift_velvet.jpg
+
+
+=========================================================================
+每批自查（出图后 30 秒过一遍）
+=========================================================================
+1. 四格是否真的等分、没有分隔线 / 白边 / 拼贴缝？
+2. 每格是否真的空？常见误入：杯子、托盘、花枝、椅子、边框文字。
+3. 四格明暗是否一致？不能一格偏黄一格偏蓝。
+4. 每格底部有没有柔和的落地影？没有的话贴产品会像“飘”在图上。
+5. 切出来是否 1:1、长边 ≥1200px、边缘没有残留的邻格内容？
+6. 有不合格的格子，单独补一张（见文件开头的做法），不要整批重出。

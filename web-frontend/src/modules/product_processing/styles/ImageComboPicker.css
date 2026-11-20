@@ -645,3 +645,17 @@
     grid-template-columns: 1fr;
   }
 }
+
+
+/* V2 出图风格卡（页面顶部五选一） */
+.v2-style-head { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 8px; }
+.v2-style-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.v2-style-card { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 10px 12px; border: 1px solid rgba(120, 80, 80, 0.18); border-radius: 12px; background: rgba(255, 255, 255, 0.72); cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
+.v2-style-card:hover { border-color: rgba(160, 80, 80, 0.45); }
+.v2-style-card.is-active { border-color: #a33; box-shadow: 0 0 0 1px #a33 inset; }
+.v2-style-card-title { display: flex; align-items: center; gap: 6px; }
+.v2-style-card-title strong { font-size: 0.9rem; }
+.v2-style-card-title em { font-style: normal; font-size: 0.66rem; color: #a33; border: 1px solid rgba(170, 51, 51, 0.35); border-radius: 999px; padding: 0 6px; }
+.v2-style-card-for { font-size: 0.72rem; opacity: 0.7; }
+.v2-style-card small { font-size: 0.72rem; opacity: 0.62; line-height: 1.35; }
+@media (max-width: 1100px) { .v2-style-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

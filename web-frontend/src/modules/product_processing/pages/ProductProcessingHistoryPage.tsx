@@ -55,6 +55,28 @@ function canEnterPrecheck(task: TaskHistoryItem): boolean {
   return task.success_count > 0 && ["completed", "completed_with_review", "partial_failure", "cancelled"].includes(task.status);
 }
 
+/**
+ * 历史批次的展示名：批次号 + 采集批次名（与「采集批次」下拉同一套命名，
+ * 如「选品·1688·狗衣服·11-12 14:08」）。旧版每行都叫「产品处理任务」，
+ * 既认不出批次也看不出处理了什么。
+ */
+function taskDisplayName(task: TaskHistoryItem): string {
+  const names = task.batch_names ?? [];
+  if (!names.length) return `#${task.task_id} · 手动导入`;
+  const extra = names.length > 1 ? ` +${names.length - 1} 个批次` : "";
+  return `#${task.task_id} · ${names[0]}${extra}`;
+}
+
+/** 悬停提示：列出全部采集批次，再补前几个商品的「货号 + 标题」。 */
+function taskDisplayHint(task: TaskHistoryItem): string {
+  const samples = (task.sample_items || []).filter((item) => item.title.trim());
+  const lines = [
+    ...(task.batch_names ?? []).map((name) => `批次：${name}`),
+    ...samples.map((item) => (item.skc ? `${item.skc} ${item.title}` : item.title)),
+  ];
+  return lines.join("\n") || task.title || `处理任务 #${task.task_id}`;
+}
+
 export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Props) {
   const ctx = api();
   const [tasks, setTasks] = useState<TaskHistoryItem[]>([]);
@@ -202,7 +224,7 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
                   <i className={`iconfont ${statusIcon(task.status)}`} />
                 </span>
                 <div className="processing-history-primary">
-                  <strong title={task.title}>{task.title || `处理任务 #${task.task_id}`}</strong>
+                  <strong title={taskDisplayHint(task)}>{taskDisplayName(task)}</strong>
                   <span className={`verify-badge status-${task.status}`}>{statusLabel(task.status)}</span>
                   <span>{task.target_site} · {task.target_language_label}</span>
                 </div>

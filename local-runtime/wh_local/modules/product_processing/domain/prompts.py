@@ -31,7 +31,7 @@ GRID_RUNTIME_CONTRACT = """NON-OVERRIDABLE FOUR-GRID RUNTIME CONTRACT:
 - PANEL ROLES (hard rules): Panel 4 (bottom-right) is ALWAYS the dimension-annotation background - a clean true orthographic front, side or top view of the complete product on a plain calm surface with 12%-18% clear space, never a 45-degree three-quarter view; never render measurements, numbers, units, arrows, rulers, scales or labels. Panel 1 is the straight-on marketplace hero, and Panels 1-3 must be three genuinely different framings of the same product.
 - PANEL 2 SCALE ANCHOR (hard rule): carry one culture-neutral, universally recognised size reference in the same focal plane at true relative scale - preferably an A4 sheet or a phone (a coin or standard mug is acceptable), never lettering that could be mistaken for added copy. Never use a hand, palm, finger or person as the scale reference. It is exempt from the prop budget and must never occlude, crop or out-shout the product.
 - PANEL 3 BENEFIT PROOF (hard rule): show the single strongest physical selling point of this exact product actually working, provable from the reference - a lid seal seating, fibres drawing in water, a wall-thickness cross-section, a buckle engaging, a base gripping. Name the one benefit it proves, AND point at exactly where in the frame it is visible; if either answer fails, re-render the panel.
-- NO RENDERED TEXT: render zero AI-added visible text - no added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, UI or measurement marks, and add no copy after splitting. The only exception is the small decorative sticker or kraft tag allowed in Panels 2-4 by the scene plan: one or two short generic English words such as NEW, HANDMADE or SAMPLE, never on the product, never a brand name, price, rating, claim, slogan or logo. Panel 1 stays completely text-free. Preserve only markings physically printed on the real sellable product."""
+- NO RENDERED TEXT: render zero AI-added visible text in every panel - no letters, words, numbers, captions, titles, labels, stickers, tags, price cards, slogans, badges, logos, watermarks, arrows, rulers, UI or measurement marks. This ban applies to every panel, prop and background: only markings physically printed on the real sellable product in the reference may appear."""
 
 
 GRID_PROMPT_PRIORITY = """PROMPT PRIORITY (weights; on conflict the higher weight wins):
@@ -39,7 +39,7 @@ P0 35% product fidelity, grid and separator geometry, hands-free.
 P1 25% panel roles and the SCENE PLAN places.
 P2 20% per-panel camera, light direction, light ratio and colour temperature.
 P3 15% prop budget (at least four per panel) and set dressing.
-P4 5% decorative stickers and labels, one short generic English word only.
+P4 5% decorative props with zero text.
 TEMPLATE LOCK: the selected template's photographic type (studio / lifestyle / flat-lay / environment) is mandatory - never fall back to a generic centred studio product shot."""
 
 
@@ -57,7 +57,7 @@ GRID_FINAL_GATE = """FINAL GATE - check every line before returning the image; a
 2 Panel 1: pure white seamless, 78%-85%, no text, no room.
 3 Panels 2-4: three different places, at least four props each - FAIL on a repeated set, an empty table or two crops of one room.
 4 Panels 2-3: product centre on the 38% or 62% golden lines - FAIL if it sits on the centre lines.
-5 Hands and text: no hand, finger, arm or person; one small sticker with one English word per panel 2-4 only, never on the product.
+5 Hands and text: no hand, finger, arm or person; no sticker, tag, label or added word anywhere; only printing that exists on the product.
 6 Fidelity: same silhouette, colour, material, structure and visible quantity as the reference.
 7 Template check: {template_check}"""
 
@@ -231,7 +231,7 @@ ARK_GRID_IMAGE_PROMPT_D = """本套是「环境远景」风格的四宫格商品
 SINGLE_IMAGE_RUNTIME_CONTRACT = """NON-OVERRIDABLE SINGLE-IMAGE RUNTIME CONTRACT:
 - This request produces exactly ONE standalone 2048 x 2048 marketplace image, not a grid, collage, contact sheet, or multi-panel layout. This runtime layout overrides any earlier four-grid wording.
 - Image role for this request: {panel_role}. Make it a complete finished carousel image with the whole sellable product or verified complete set visible, sharp, unobstructed, and comfortably inside an 8%-12% safe margin.
-- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. Preserve only markings physically printed on the real product.
+- Zero added text anywhere: no caption, title, label, sticker, tag, price card, slogan, badge, logo, watermark, arrow, ruler or measurement mark. The only words allowed are those physically printed on the real sellable product in the reference.
 - Do not crop product parts, merge products, invent accessories, or use a continuous poster composition. The result must remain useful by itself after local normalization."""
 
 
@@ -239,7 +239,7 @@ TWO_IMAGE_RUNTIME_CONTRACT = """NON-OVERRIDABLE TWO-IMAGE RUNTIME CONTRACT:
 - This request produces ONE 2048 x 1024 landscape transport image containing exactly TWO equal, independent square marketplace images, placed left and right. This runtime layout overrides any earlier four-grid wording.
 - Put a narrow neutral separator exactly at the 50% vertical center. Keep it clean and straight, but do not add any horizontal divider, outer frame, labels, panel numbers, or other layout graphics.
 - Left image role: {left_panel_role}. Right image role: {right_panel_role}. Each side must show a complete finished product composition, with all sellable product parts within an 8%-12% safe margin. Nothing may cross the center separator.
-- Generate zero added letters, words, numbers, labels, slogans, badges, logos, watermarks, arrows, rulers, or measurement marks. Preserve only markings physically printed on the real product.
+- Zero added text anywhere: no caption, title, label, sticker, tag, price card, slogan, badge, logo, watermark, arrow, ruler or measurement mark. The only words allowed are those physically printed on the real sellable product in the reference.
 - The two sides will be split locally. Do not make one continuous poster, shared background, shared prop, or shared shadow across both sides."""
 
 

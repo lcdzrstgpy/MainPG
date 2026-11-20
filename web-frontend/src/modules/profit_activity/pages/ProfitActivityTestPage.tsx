@@ -784,6 +784,12 @@ export function ProfitActivityTestPage({ isActive = true, prefill }: { isActive?
     if (!productImage) {
       throw new Error("请选择商品主图。");
     }
+    // 亏损商品二次确认：净利润为负时用户多半是重量/成本没核对。
+    const previewNet = Number(calculation?.preview?.net_profit);
+    if (Number.isFinite(previewNet) && previewNet < 0) {
+      const ok = window.confirm(`按当前售价/成本/重量算出的净利润是 ${previewNet.toFixed(2)} 元（亏损）。仍然入库吗？`);
+      if (!ok) return;
+    }
     const sourceGroups = [productForm.source_url, ...productForm.source_urls]
       .map((url) => url.trim())
       .filter(Boolean)

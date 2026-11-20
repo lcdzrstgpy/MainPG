@@ -1021,6 +1021,88 @@
   box-shadow: none;
 }
 
+/* 活动过滤结果：卡内嵌块同样走主题纸面 + 胶囊，替掉固定的浅蓝白。
+   产品资料导入结果走 portal（不在 .profit-test-page 内），仍由弹窗那套主题规则负责。 */
+.profit-test-page .profit-import-summary {
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--theme-module-border, #d8e7f2);
+  border-radius: 16px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 26%, transparent),
+      color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 50%, transparent)
+    ),
+    var(--theme-module-surface, #fff);
+  box-shadow: none;
+}
+
+.profit-test-page .profit-import-summary-head strong {
+  color: var(--theme-text-primary, #18334d);
+  font-size: 13px;
+}
+
+.profit-test-page .profit-import-summary-head span {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  color: var(--theme-accent, #07966f);
+  background: color-mix(in srgb, var(--theme-accent, #07966f) 14%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.profit-test-page .profit-import-summary .profit-formula-note {
+  margin: 0;
+  color: var(--theme-text-muted, #70869b);
+  font-size: 12px;
+}
+
+.profit-test-page .profit-import-summary .profit-warn {
+  padding: 9px 13px;
+  border: 1px solid color-mix(in srgb, var(--theme-warning, #efaa17) 42%, transparent);
+  border-radius: 14px;
+  color: var(--theme-warning, #8a5b0d);
+  background: color-mix(in srgb, var(--theme-warning, #efaa17) 12%, var(--theme-module-surface, #fff));
+  font-size: 12px;
+}
+
+.profit-test-page .profit-import-stats div {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  padding: 11px 14px;
+  border: 1px solid var(--theme-module-border, #e2edf5);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-module-surface-raised, #fff) 62%, transparent);
+  text-align: center;
+}
+
+.profit-test-page .profit-import-stats span,
+.profit-test-page .profit-import-stats em {
+  color: var(--theme-text-muted, #70869b);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.profit-test-page .profit-import-stats strong {
+  margin: 0;
+  color: var(--theme-text-primary, #14304b);
+  font-size: 1.3rem;
+}
+
+/* 可申报 / 剔除保留语义色，但换成跟随主题的语义 token（暗色主题下不会糊成深绿/深红）。 */
+.profit-test-page .profit-import-stats strong.profit-good {
+  color: var(--theme-success, #07966f) !important;
+}
+
+.profit-test-page .profit-import-stats strong.profit-bad {
+  color: var(--theme-danger, #d9565f) !important;
+}
+
 .profit-test-page :is(.profit-threshold-box, .profit-filter-history) {
   border-color: var(--theme-module-border, #d8e7f2);
   border-radius: 14px;
@@ -1209,6 +1291,11 @@
   /* 历史记录行可能换行，胶囊端部弧线会切到内容，回落连续圆角。 */
   .profit-test-page .profit-filter-history-item {
     border-radius: 14px;
+  }
+
+  /* 三个统计胶囊窄屏放不下，改为整行排列。 */
+  .profit-test-page .profit-import-stats {
+    grid-template-columns: 1fr;
   }
 }
 

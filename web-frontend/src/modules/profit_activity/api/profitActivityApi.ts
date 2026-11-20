@@ -1,4 +1,4 @@
-import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import type { ProductQueryParams, ProductSources, ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite, ProfitProductsSortKey } from "../types/products";
 import {
   AUTH_RETRY_MANAGED,
   getAuthToken,
@@ -97,6 +97,47 @@ export async function listProfitActivityProducts(params: ProductQueryParams) {
   });
   const data = await request<{ products: ProfitActivityProduct[] }>(`/api/profit-activity/products?${query}`);
   return data.products ?? [];
+}
+
+/**
+ * 产品库分页查询：筛选/排序/计数都在后端做。
+ * 传了商品 ID 时后端走"按 ID 全量匹配"分支（不再分页），其余按 offset/limit 分页。
+ */
+export async function listProfitActivityProductsPage(params: {
+  sites: ProfitActivitySite[];
+  scope: ProfitActivityScope;
+  productIds?: string;
+  sourceType?: "manual" | "price_verification" | "all";
+  store?: string;
+  keyword?: string;
+  /** 排序列：入库日期 / 利润 / 利润率；留空表示默认顺序。 */
+  sortBy?: ProfitProductsSortKey | "";
+  sortDir?: "asc" | "desc" | "";
+  offset: number;
+  limit: number;
+}): Promise<{ products: ProfitActivityProduct[]; total: number; storeOptions: string[]; paged: boolean }> {
+  const query = new URLSearchParams({
+    sites: params.sites.join(","),
+    scope: params.scope,
+    product_ids: params.productIds ?? "",
+    source_type: params.sourceType && params.sourceType !== "all" ? params.sourceType : "",
+    store: params.store ?? "",
+    keyword: params.keyword ?? "",
+    sort_by: params.sortBy ?? "",
+    sort_dir: params.sortDir ?? "",
+    offset: String(params.offset),
+    limit: String(params.limit),
+  });
+  const data = await request<{ products: ProfitActivityProduct[]; total?: number; store_options?: string[]; paged?: boolean }>(
+    `/api/profit-activity/products?${query}`,
+  );
+  return {
+    products: data.products ?? [],
+    total: Number(data.total ?? data.products?.length ?? 0),
+    storeOptions: data.store_options ?? [],
+    // 旧后端不支持服务端分页时返回 false，前端自行按 offset/limit 切片兜底。
+    paged: data.paged === true,
+  };
 }
 
 export async function listProfitActivitySites() {

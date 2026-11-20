@@ -1,4 +1,4 @@
-import { getAuthToken, httpJson } from "../../../transport/http/client";
+import { apiUrl, getAuthToken, httpJson } from "../../../transport/http/client";
 
 /** 迁移包内容清单：个人中心的「数据迁移」卡片用它告诉用户这一包会带走什么。 */
 export type MigrationPlan = {
@@ -88,7 +88,7 @@ export async function uploadMigrationArchive(file: File): Promise<MigrationJob> 
   const body = new FormData();
   body.append("archive", file);
   const token = getAuthToken();
-  const response = await fetch("/api/migration/import", {
+  const response = await fetch(apiUrl("/api/migration/import"), {
     method: "POST",
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body,

@@ -211,6 +211,7 @@ class OrderProfitRepository:
             for path in migration_files:
                 conn.executescript(path.read_text(encoding="utf-8"))
             self._ensure_store_accounts(conn)
+            self._ensure_auto_capture(conn)
             # 迁移脚本缺失（例如打包漏了 migrations 目录）时不能把整个后端拖崩：
             # 只记录错误并跳过依赖订单利润表的升级步骤。
             if not self._table_exists(conn, "profit_shops"):
@@ -223,6 +224,7 @@ class OrderProfitRepository:
                 return
             self._ensure_shop_store_codes(conn)
             self._ensure_item_manual_costs(conn)
+            self._ensure_settlement_fields(conn)
             self._upgrade_shop_scoped_tables(conn)
             # 必须在按店铺重建快照表之后再补列：重建用的是旧 DDL，会丢新增字段。
             self._ensure_store_metrics_fields(conn)
@@ -266,6 +268,27 @@ class OrderProfitRepository:
         )
 
     @staticmethod
+    def _ensure_auto_capture(conn: sqlite3.Connection) -> None:
+        """自动同步（定时采集）配置与最近一次执行结果。
+
+        独立建表、不依赖 migrations 目录：与 store_accounts 一样属于
+        「开箱即用」的本地配置，缺表不该影响主程序启动。
+        """
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS order_profit_auto_capture (
+                workspace_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                interval_minutes INTEGER NOT NULL DEFAULT 120,
+                auto_open_browser INTEGER NOT NULL DEFAULT 1,
+                last_run_at TEXT NOT NULL DEFAULT '',
+                last_result_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+
+    @staticmethod
     def _ensure_store_metrics_fields(conn: sqlite3.Connection) -> None:
         """店铺首页「商品上新状态」四块指标（老库平滑加列）。"""
         columns = {
@@ -281,6 +304,25 @@ class OrderProfitRepository:
         for name, ddl in additions.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE store_metrics ADD COLUMN {name} {ddl}")
+
+    @staticmethod
+    def _ensure_settlement_fields(conn: sqlite3.Connection) -> None:
+        """财务明细导出新增的结算字段（老库平滑加列）。"""
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info('order_settlements')").fetchall()
+        }
+        additions = {
+            "settlement_amount": "REAL",
+            "penalty_amount": "REAL",
+            "batch_no": "TEXT NOT NULL DEFAULT ''",
+            "flow_id": "TEXT NOT NULL DEFAULT ''",
+            "doc_no": "TEXT NOT NULL DEFAULT ''",
+            "arrive_time": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE order_settlements ADD COLUMN {name} {ddl}")
 
     @staticmethod
     def _ensure_item_manual_costs(conn: sqlite3.Connection) -> None:
@@ -405,6 +447,79 @@ class OrderProfitRepository:
                 (workspace_id, usd_cny_rate, commission_rate, head_unit_price_cny, _now()),
             )
         return self.settings(workspace_id)
+
+    # ---------- 自动同步（定时采集） ----------
+
+    def auto_capture_settings(self, workspace_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT enabled, interval_minutes, auto_open_browser, last_run_at, "
+                "last_result_json, updated_at FROM order_profit_auto_capture "
+                "WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchone()
+        if row is None:
+            return {
+                "enabled": False,
+                "interval_minutes": 120,
+                "auto_open_browser": True,
+                "last_run_at": "",
+                "last_result": {},
+                "updated_at": "",
+            }
+        try:
+            result = json.loads(row["last_result_json"] or "{}")
+        except (TypeError, ValueError):
+            result = {}
+        return {
+            "enabled": bool(row["enabled"]),
+            "interval_minutes": int(row["interval_minutes"] or 120),
+            "auto_open_browser": bool(row["auto_open_browser"]),
+            "last_run_at": str(row["last_run_at"] or ""),
+            "last_result": result if isinstance(result, dict) else {},
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def save_auto_capture_settings(
+        self,
+        workspace_id: str,
+        *,
+        enabled: bool,
+        interval_minutes: int,
+        auto_open_browser: bool,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO order_profit_auto_capture "
+                "(workspace_id, enabled, interval_minutes, auto_open_browser, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET "
+                "enabled = excluded.enabled, "
+                "interval_minutes = excluded.interval_minutes, "
+                "auto_open_browser = excluded.auto_open_browser, "
+                "updated_at = excluded.updated_at",
+                (
+                    workspace_id,
+                    1 if enabled else 0,
+                    int(interval_minutes),
+                    1 if auto_open_browser else 0,
+                    _now(),
+                ),
+            )
+        return self.auto_capture_settings(workspace_id)
+
+    def record_auto_capture_run(
+        self, workspace_id: str, *, ran_at: str, result: dict[str, Any]
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO order_profit_auto_capture "
+                "(workspace_id, last_run_at, last_result_json, updated_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET "
+                "last_run_at = excluded.last_run_at, "
+                "last_result_json = excluded.last_result_json, "
+                "updated_at = excluded.updated_at",
+                (workspace_id, ran_at, json.dumps(result, ensure_ascii=False), _now()),
+            )
 
     # ---------- batches ----------
     def batch_for_command(self, workspace_id: str, command_id: int) -> dict[str, Any] | None:
@@ -649,6 +764,98 @@ class OrderProfitRepository:
                 (*values, max(1, min(limit, 120))),
             ).fetchall()
         return [str(row["month"]) for row in rows]
+
+    def list_order_ranking(
+        self,
+        workspace_id: str,
+        *,
+        month: str = "",
+        months: list[str] | None = None,
+        shop: str = "",
+        group_by: str = "link",
+        metric: str = "quantity",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """按「商品链接」或「SKU」聚合销量排行。
+
+        Temu 订单行没有单独的链接字段：SKC 就是商品（链接）维度，同一 SKC 下的
+        尺码/颜色是不同 SKU。所以 group_by=link 时按 skc_id → skc_code → ext_code
+        → 商品名依次回退；group_by=sku 时按 sku_id 聚合。
+        """
+        time_expr = "COALESCE(NULLIF(order_time, ''), substr(captured_at, 1, 19))"
+        where = ["workspace_id = ?"]
+        values: list[Any] = [workspace_id]
+        if shop:
+            where.append("shop_name = ?")
+            values.append(_text(shop))
+        if month:
+            where.append(f"substr({time_expr}, 1, 7) = ?")
+            values.append(month)
+        if months:
+            wanted = [str(item) for item in months if str(item)]
+            if wanted:
+                where.append(f"substr({time_expr}, 1, 7) IN ({', '.join('?' * len(wanted))})")
+                values.extend(wanted)
+        if group_by == "sku":
+            key_expr = (
+                "COALESCE(NULLIF(sku_id, ''), NULLIF(skc_id, ''), "
+                "NULLIF(goods_name, ''), parent_order_sn)"
+            )
+        else:
+            key_expr = (
+                "COALESCE(NULLIF(skc_id, ''), NULLIF(skc_code, ''), NULLIF(ext_code, ''), "
+                "NULLIF(goods_name, ''), NULLIF(sku_id, ''), parent_order_sn)"
+            )
+        order_expr = (
+            "SUM(COALESCE(sales_payback, 0))"
+            if metric == "payback"
+            else "SUM(COALESCE(quantity, 0))"
+        )
+        clause = " AND ".join(where)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {key_expr} AS item_key,
+                       MAX(goods_name) AS goods_name,
+                       MAX(image_url) AS image_url,
+                       MAX(skc_id) AS skc_id,
+                       MAX(sku_id) AS sku_id,
+                       MAX(skc_code) AS skc_code,
+                       SUM(COALESCE(quantity, 0)) AS quantity,
+                       COUNT(DISTINCT parent_order_sn) AS order_count,
+                       COUNT(*) AS item_count,
+                       SUM(COALESCE(gmv_cny, 0)) AS gmv,
+                       SUM(COALESCE(sales_payback, 0)) AS payback,
+                       SUM(COALESCE(profit_estimate_cny, 0)) AS profit,
+                       COUNT(gmv_cny) AS gmv_count,
+                       COUNT(sales_payback) AS payback_count,
+                       COUNT(profit_estimate_cny) AS profit_count
+                FROM order_profit_items
+                WHERE {clause}
+                GROUP BY item_key
+                HAVING SUM(COALESCE(quantity, 0)) > 0
+                ORDER BY {order_expr} DESC, SUM(COALESCE(quantity, 0)) DESC
+                LIMIT ?
+                """,
+                (*values, max(1, min(limit, 200))),
+            ).fetchall()
+        return [
+            {
+                "key": _text(row["item_key"]),
+                "goods_name": _text(row["goods_name"]),
+                "image_url": _text(row["image_url"]),
+                "skc_id": _text(row["skc_id"]),
+                "sku_id": _text(row["sku_id"]),
+                "skc_code": _text(row["skc_code"]),
+                "quantity": int(row["quantity"] or 0),
+                "order_count": int(row["order_count"] or 0),
+                "item_count": int(row["item_count"] or 0),
+                "gmv": _round(_float(row["gmv"]), 2) if row["gmv_count"] else None,
+                "payback": _round(_float(row["payback"]), 2) if row["payback_count"] else None,
+                "profit": _round(_float(row["profit"]), 2) if row["profit_count"] else None,
+            }
+            for row in rows
+        ]
 
     def latest_order_date(self, workspace_id: str) -> str:
         with self._connect() as conn:
@@ -930,8 +1137,9 @@ class OrderProfitRepository:
                     "INSERT INTO order_settlements "
                     "(id, workspace_id, parent_order_sn, status, currency, sales_payback, "
                     "sales_reversal, freight_payback, freight_reversal, declared_price, "
-                    "quantity, goods_name, site, shop_name, captured_at, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "quantity, goods_name, site, shop_name, captured_at, created_at, updated_at, "
+                    "settlement_amount, penalty_amount, batch_no, flow_id, doc_no, arrive_time) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(workspace_id, parent_order_sn, status, currency) DO UPDATE SET "
                     "sales_payback = excluded.sales_payback, "
                     "sales_reversal = excluded.sales_reversal, "
@@ -942,6 +1150,12 @@ class OrderProfitRepository:
                     "goods_name = excluded.goods_name, "
                     "shop_name = excluded.shop_name, "
                     "captured_at = excluded.captured_at, "
+                    "settlement_amount = excluded.settlement_amount, "
+                    "penalty_amount = excluded.penalty_amount, "
+                    "batch_no = excluded.batch_no, "
+                    "flow_id = excluded.flow_id, "
+                    "doc_no = excluded.doc_no, "
+                    "arrive_time = excluded.arrive_time, "
                     "updated_at = excluded.updated_at",
                     (
                         uuid.uuid4().hex,
@@ -961,6 +1175,12 @@ class OrderProfitRepository:
                         _text(captured_at) or now,
                         now,
                         now,
+                        _float(row.get("settlement_amount")),
+                        _float(row.get("penalty_amount")),
+                        _text(row.get("batch_no")),
+                        _text(row.get("flow_id")),
+                        _text(row.get("doc_no")),
+                        _text(row.get("arrive_time")),
                     ),
                 )
                 written += 1
@@ -1001,27 +1221,34 @@ class OrderProfitRepository:
             values.append(_text(status))
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT sales_payback, sales_reversal, freight_payback, freight_reversal "
+                "SELECT sales_payback, sales_reversal, freight_payback, freight_reversal, "
+                "settlement_amount, penalty_amount "
                 f"FROM order_settlements WHERE {' AND '.join(where)}",
                 values,
             ).fetchall()
         totals = {
             "po_count": len(rows),
+            "settlement_amount": 0.0,
+            "penalty_amount": 0.0,
             "sales_payback": 0.0,
             "sales_reversal": 0.0,
             "freight_payback": 0.0,
             "freight_reversal": 0.0,
         }
         for row in rows:
+            totals["settlement_amount"] += _float(row["settlement_amount"]) or 0
+            totals["penalty_amount"] += _float(row["penalty_amount"]) or 0
             totals["sales_payback"] += _float(row["sales_payback"]) or 0
             totals["sales_reversal"] += _float(row["sales_reversal"]) or 0
             totals["freight_payback"] += _float(row["freight_payback"]) or 0
             totals["freight_reversal"] += _float(row["freight_reversal"]) or 0
         totals["total_payback"] = (
             totals["sales_payback"] + totals["freight_payback"]
-            - totals["sales_reversal"] - totals["freight_reversal"]
+            + totals["sales_reversal"] + totals["freight_reversal"]
         )
         for key in (
+            "settlement_amount",
+            "penalty_amount",
             "sales_payback",
             "sales_reversal",
             "freight_payback",

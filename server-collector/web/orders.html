@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>订单明细</title>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --line: #e3e9f2;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --dim: #9aa4b2;
+    --primary: #2f6fed;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .topbar .meta { color: var(--muted); font-size: 12px; flex: 1; }
+  .topbar input {
+    width: 260px;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+  }
+  .topbar input:focus { outline: 2px solid #cfe0ff; border-color: var(--primary); }
+  button, .link {
+    font: inherit;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  button:hover, .link:hover { border-color: #c7d4e6; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  main { padding: 16px 24px 40px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .table-wrap { overflow: auto; max-height: calc(100vh - 240px); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    padding: 10px 14px;
+    border-bottom: 1px solid #eef2f7;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    background: #f8fafc;
+    color: var(--muted);
+    font-weight: 600;
+    z-index: 1;
+  }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.num.neg { color: var(--danger); }
+  td.num.strong { font-weight: 600; }
+  td.goods { max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+  .gcell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .thumb {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: 8px;
+    object-fit: cover;
+    background: #f2f5f9;
+    border: 1px solid #eef2f7;
+  }
+  .thumb.ph { display: inline-block; }
+  .gname { min-width: 0; }
+  .gname .en {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .gname .zh {
+    display: block;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .totals {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fbfcfe;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .totals b { color: var(--text); font-variant-numeric: tabular-nums; }
+  tbody tr:hover { background: #fafcff; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .foot .grow { flex: 1; }
+  .empty { padding: 40px; text-align: center; color: var(--dim); }
+  .chip {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 20px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #fbfcfe;
+    font-size: 12.5px;
+  }
+  .filters .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .filters .label { color: var(--muted); }
+  .pill {
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--muted);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .pill.on { border-color: var(--primary); color: var(--primary); background: #eef4ff; font-weight: 600; }
+  .shop {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    cursor: pointer;
+    color: var(--muted);
+  }
+  .shop input { margin: 0; cursor: pointer; }
+  .shop.on { border-color: var(--primary); color: var(--primary); background: #eef4ff; }
+  .pages { display: inline-flex; align-items: center; gap: 6px; }
+  .pages button { padding: 5px 10px; min-width: 32px; }
+  .pages button.on { border-color: var(--primary); color: #fff; background: var(--primary); }
+  .pages button:disabled { opacity: .45; cursor: default; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1 id="title">订单明细</h1>
+  <span class="meta" id="meta">加载中…</span>
+  <input id="search" placeholder="搜索订单号 / SKU / 物流单号" />
+  <button type="button" id="export">导出 CSV</button>
+  <a class="link" href="./">返回</a>
+</div>
+
+<main>
+  <div class="card">
+    <div class="filters">
+      <div class="group" id="statusFilter"><span class="label">状态</span></div>
+      <div class="group" id="shopFilter"><span class="label">店铺</span></div>
+    </div>
+    <div class="totals" id="totals"></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>店铺</th>
+            <th>父订单号</th>
+            <th>子订单号</th>
+            <th>商品</th>
+            <th>SKU</th>
+            <th class="num">数量</th>
+            <th class="num">申报价</th>
+            <th class="num">单件成本</th>
+            <th class="num">销售回款</th>
+            <th class="num">销售冲回</th>
+            <th class="num">运费回款</th>
+            <th class="num">运费冲回</th>
+            <th class="num">实际收入</th>
+            <th>状态</th>
+            <th>下单时间</th>
+            <th>物流单号</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>没有数据</div>
+    </div>
+    <div class="foot">
+      <span id="pageInfo"></span>
+      <span class="grow"></span>
+      <div class="pages">
+        <button type="button" id="prev">上一页</button>
+        <span id="pageNums" class="pages"></span>
+        <button type="button" id="next">下一页</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = new URL("api/", document.baseURI).pathname.replace(/\/$/, "");
+const params = new URLSearchParams(location.search);
+const accountId = params.get("account") || "";
+const STATUSES = ["", "待发货", "已发货", "已签收", "已取消"];
+const view = {
+  rows: [], filtered: [], page: 1, size: 100, label: "", capturedAt: "",
+  zh: {}, zhTried: new Set(), translating: false,
+  status: "", accounts: [], selected: new Set(), cache: {},
+};
+
+function escapeHtml(text) {
+  return String(text == null ? "" : text).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[ch]);
+}
+
+function cell(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return escapeHtml(String(value));
+}
+
+function money(value, currency) {
+  if (value === null || value === undefined || value === "") return "-";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return `${currency === "CNY" || !currency ? "¥" : ""}${number.toFixed(2)}`;
+}
+
+function formatTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
+}
+
+function thumb(url) {
+  if (!url) return `<span class="thumb ph"></span>`;
+  return `<img class="thumb" loading="lazy" src="${API}/image?url=${encodeURIComponent(url)}" alt="">`;
+}
+
+function goodsCell(row) {
+  const name = String(row.goods_name || "");
+  const zh = view.zh[name] || "";
+  return `<div class="gcell">${thumb(row.image_url)}<div class="gname">` +
+    `<div class="en" title="${cell(name)}">${cell(name)}</div>` +
+    (zh ? `<span class="zh" title="${cell(zh)}">${cell(zh)}</span>` : "") +
+    `</div></div>`;
+}
+
+// 中文标题是异步补的：先把英文渲染出来，翻好了再局部刷新一次。
+function ensureTranslations() {
+  if (view.translating) return;
+  const pending = [];
+  view.rows.forEach((row) => {
+    const name = String(row.goods_name || "").trim();
+    if (name && !view.zh[name] && !view.zhTried.has(name) && !/[\u4e00-\u9fff]/.test(name) && !pending.includes(name)) {
+      pending.push(name);
+    }
+  });
+  if (!pending.length) return;
+  pending.forEach((name) => view.zhTried.add(name));
+  view.translating = true;
+  fetch(`${API}/translate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texts: pending.slice(0, 60) }),
+  })
+    .then((response) => (response.ok ? response.json() : {}))
+    .then((data) => {
+      Object.assign(view.zh, data.items || {});
+      paint();
+    })
+    .catch(() => {})
+    .finally(() => { view.translating = false; });
+}
+
+function renderFilters() {
+  const statusBox = document.getElementById("statusFilter");
+  statusBox.innerHTML = `<span class="label">状态</span>` + STATUSES.map(
+    (status) => `<button type="button" class="pill${view.status === status ? " on" : ""}" data-status="${status}">${status || "全部"}</button>`,
+  ).join("");
+  const shopBox = document.getElementById("shopFilter");
+  shopBox.innerHTML = `<span class="label">店铺</span>` + view.accounts.map(
+    (account) => `<label class="shop${view.selected.has(account.id) ? " on" : ""}">` +
+      `<input type="checkbox" data-shop="${escapeHtml(account.id)}"${view.selected.has(account.id) ? " checked" : ""}>` +
+      `${cell(account.name)}</label>`,
+  ).join("");
+}
+
+function applyFilters() {
+  const keyword = document.getElementById("search").value.trim().toLowerCase();
+  view.filtered = view.rows.filter((row) => {
+    if (view.status && String(row.order_status || "") !== view.status) return false;
+    if (!keyword) return true;
+    return [row.parent_order_sn, row.sub_order_sn, row.sku_id, row.skc_id, row.tracking_no,
+      row.goods_name, view.zh[row.goods_name], row.shop_name]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword));
+  });
+  view.page = 1;
+  paint();
+}
+
+async function fetchOrders(accountId) {
+  if (view.cache[accountId]) return view.cache[accountId];
+  const data = await fetch(`${API}/accounts/${encodeURIComponent(accountId)}/orders`).then(
+    async (response) => {
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "读取失败");
+      return response.json();
+    },
+  );
+  const payload = data.payload || {};
+  const name = (view.accounts.find((item) => item.id === accountId) || {}).name || "";
+  const result = {
+    rows: (payload.items || []).map((row) => ({ ...row, account_id: accountId, shop_name: name })),
+    capturedAt: data.captured_at || "",
+    summary: payload.summary || {},
+    detailsCount: Number(payload.details_count || 0),
+  };
+  view.cache[accountId] = result;
+  return result;
+}
+
+async function loadSelected() {
+  const ids = Array.from(view.selected);
+  if (!ids.length) {
+    view.rows = [];
+    view.filtered = [];
+    view.capturedAt = "";
+    document.getElementById("meta").textContent = "请至少勾选一个店铺";
+    paint();
+    return;
+  }
+  document.getElementById("meta").textContent = "加载中…";
+  try {
+    const results = await Promise.all(ids.map((id) => fetchOrders(id)));
+    view.rows = results.flatMap((item) => item.rows);
+    const latest = results.map((item) => item.capturedAt).filter(Boolean).sort().pop() || "";
+    const details = results.reduce((acc, item) => acc + item.detailsCount, 0);
+    const orders = results.reduce((acc, item) => acc + (Number(item.summary.order_count) || item.rows.length), 0);
+    view.capturedAt = latest;
+    document.getElementById("meta").textContent =
+      `采集于 ${formatTime(latest)} · ${ids.length} 家店铺 · 订单 ${orders} 条` +
+      (details ? ` · 详情已补齐 ${details} 单` : "");
+    applyFilters();
+  } catch (error) {
+    document.getElementById("meta").textContent = String(error.message || error);
+  }
+}
+
+function paint() {
+  const total = view.filtered.length;
+  const pages = Math.max(1, Math.ceil(total / view.size));
+  view.page = Math.min(Math.max(1, view.page), pages);
+  const start = (view.page - 1) * view.size;
+  const slice = view.filtered.slice(start, start + view.size);
+  document.getElementById("rows").innerHTML = slice
+    .map(
+      (row) => `<tr>
+        <td>${cell(row.shop_name)}</td>
+        <td class="mono">${cell(row.parent_order_sn)}</td>
+        <td class="mono">${cell(row.sub_order_sn)}</td>
+        <td class="goods">${goodsCell(row)}</td>
+        <td class="mono">${cell(row.sku_id)}</td>
+        <td class="num">${cell(row.quantity)}</td>
+        <td class="num">${money(row.declared_price, row.declared_currency)}</td>
+        <td class="num">${row.unit_cost == null ? `<span class="chip">待填</span>` : money(row.unit_cost, "CNY")}</td>
+        <td class="num">${money(row.sales_payback)}</td>
+        <td class="num neg">${money(row.sales_reversal)}</td>
+        <td class="num">${money(row.freight_payback)}</td>
+        <td class="num neg">${money(row.freight_reversal)}</td>
+        <td class="num strong">${money(row.estimated_income)}</td>
+        <td>${row.order_status ? `<span class="chip">${cell(row.order_status)}</span>` : "-"}</td>
+        <td>${cell(row.order_time)}</td>
+        <td class="mono">${cell(row.tracking_no)}</td>
+      </tr>`,
+    )
+    .join("");
+  document.getElementById("empty").hidden = total > 0;
+  const sum = (key) =>
+    view.filtered.reduce((acc, row) => {
+      const value = Number(row[key]);
+      return acc + (Number.isFinite(value) ? value : 0);
+    }, 0);
+  const yuan = (value) => `¥${value.toFixed(2)}`;
+  document.getElementById("totals").innerHTML = [
+    ["申报价", yuan(sum("declared_price"))],
+    ["销售回款", yuan(sum("sales_payback"))],
+    ["销售冲回", yuan(sum("sales_reversal"))],
+    ["运费回款", yuan(sum("freight_payback"))],
+    ["运费冲回", yuan(sum("freight_reversal"))],
+    ["实际收入", yuan(sum("estimated_income"))],
+  ]
+    .map(([label, value]) => `<span>${label} <b>${value}</b></span>`)
+    .join("") +
+    `<span style="margin-left:auto">金额/状态取自订单详情页；销售回款在平台结算后才出现，物流单号对不满 5 天的订单平台会隐藏</span>`;
+  document.getElementById("pageInfo").textContent =
+    `第 ${view.page}/${pages} 页 · 共 ${total} 条`;
+  const numbers = [];
+  const from = Math.max(1, view.page - 2);
+  const to = Math.min(pages, view.page + 2);
+  for (let index = from; index <= to; index += 1) {
+    numbers.push(`<button type="button" class="${index === view.page ? "on" : ""}" data-page="${index}">${index}</button>`);
+  }
+  document.getElementById("pageNums").innerHTML = numbers.join("");
+  document.getElementById("prev").disabled = view.page <= 1;
+  document.getElementById("next").disabled = view.page >= pages;
+  ensureTranslations();
+}
+
+async function load() {
+  try {
+    const state = await fetch(`${API}/state`).then((response) => (response.ok ? response.json() : {}));
+    view.accounts = (state.accounts || []).map((account) => ({
+      id: String(account.id || ""),
+      name: String(account.shop_name || account.alias || account.phone_tail || account.id || ""),
+    })).filter((account) => account.id);
+    if (accountId) {
+      view.selected = new Set(view.accounts.some((account) => account.id === accountId) ? [accountId] : []);
+    } else {
+      view.selected = new Set(view.accounts.map((account) => account.id));
+    }
+    renderFilters();
+    await loadSelected();
+  } catch (error) {
+    document.getElementById("meta").textContent = String(error.message || error);
+  }
+}
+
+document.getElementById("search").addEventListener("input", () => { applyFilters(); });
+
+document.getElementById("statusFilter").addEventListener("click", (event) => {
+  const target = event.target.closest("button[data-status]");
+  if (!target) return;
+  view.status = target.dataset.status || "";
+  renderFilters();
+  applyFilters();
+});
+
+document.getElementById("shopFilter").addEventListener("change", (event) => {
+  const input = event.target.closest("input[data-shop]");
+  if (!input) return;
+  if (input.checked) view.selected.add(input.dataset.shop);
+  else view.selected.delete(input.dataset.shop);
+  renderFilters();
+  loadSelected();
+});
+
+document.getElementById("prev").addEventListener("click", () => { view.page -= 1; paint(); });
+document.getElementById("next").addEventListener("click", () => { view.page += 1; paint(); });
+document.getElementById("pageNums").addEventListener("click", (event) => {
+  const target = event.target.closest("button[data-page]");
+  if (!target) return;
+  view.page = Number(target.dataset.page) || 1;
+  paint();
+});
+
+document.getElementById("export").addEventListener("click", () => {
+  const header = [
+    "店铺", "父订单号", "子订单号", "商品", "SKU", "SKC", "数量",
+    "申报价", "销售回款", "销售冲回", "运费回款", "运费冲回", "实际收入",
+    "币种", "状态", "下单时间", "物流单号",
+  ];
+  const lines = [header.join(",")];
+  view.filtered.forEach((row) => {
+    const values = [
+      row.shop_name, row.parent_order_sn, row.sub_order_sn, row.goods_name, row.sku_id, row.skc_id,
+      row.quantity, row.declared_price, row.sales_payback, row.sales_reversal,
+      row.freight_payback, row.freight_reversal, row.estimated_income,
+      row.declared_currency, row.order_status, row.order_time, row.tracking_no,
+    ].map((value) => `"${String(value == null ? "" : value).replace(/"/g, '""')}"`);
+    lines.push(values.join(","));
+  });
+  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const tag = view.selected.size === 1 ? Array.from(view.selected)[0].slice(0, 8) : "multi";
+  link.download = `orders-${tag}-${Date.now()}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+});
+
+load();
+</script>
+</body>
+</html>

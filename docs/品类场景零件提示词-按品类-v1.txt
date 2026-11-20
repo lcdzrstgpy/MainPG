@@ -1,0 +1,141 @@
+品类场景 + 零件提示词 v1（按品类，12 类 · 富集版）
+用途：AI 处理出图时，按主体识别出的品类取对应一组，替换原提示词里的 Scene 段。
+规则：Scene 只写台面/背景/景深（不写光）；零件数量跟场景风格走：极简 1、生活 3、智能 4、花哨最多 6。
+格式：Scene: {场景}; Set: {摆位} {零件}, ...;（零件为空时省略 Set）
+词预算：极简 20 / 生活 28 / 智能 32 / 花哨 40 词
+固定摆位（按零件顺序）：upper-left → lower-right → upper-right → along-left → along-right → upper-center
+四格零件档位：minimal=[0,0,minimal,minimal]  lifestyle=[0,0,lifestyle,lifestyle]  smart=[0,0,lifestyle,ornate]  ornate=[0,0,ornate,ornate]
+
+=====================================================================
+01 家居与厨房  home_kitchen
+=====================================================================
+主 Scene: warm oak countertop, warm gray plaster wall, shallow depth
+备选 Scene: linen-draped shelf, soft white wall, mid depth
+默认 Set（生活 3 件）: walnut cutting board, white ceramic dish, eucalyptus sprig
+候选池（花哨 6 件）: walnut cutting board, white ceramic dish, eucalyptus sprig, warm gray stone slab, kraft paper sheet, rattan storage box
+合并（生活）: Scene: warm oak countertop, warm gray plaster wall, shallow depth; Set: upper-left walnut cutting board, lower-right white ceramic dish, upper-right eucalyptus sprig;
+合并（花哨）: Scene: warm oak countertop, warm gray plaster wall, shallow depth; Set: upper-left walnut cutting board, lower-right white ceramic dish, upper-right eucalyptus sprig, along-left warm gray stone slab, along-right kraft paper sheet, upper-center rattan storage box;
+
+=====================================================================
+02 服装与配饰  apparel_accessories
+=====================================================================
+主 Scene: pale oak bench, warm white wall, shallow depth
+备选 Scene: stone ledge, soft gray backdrop, shallow depth
+默认 Set（生活 3 件）: oak hanger, washed linen cloth, brass clip
+候选池（花哨 6 件）: oak hanger, washed linen cloth, brass clip, warm gray stone slab, kraft paper sheet, frosted glass cup
+合并（生活）: Scene: pale oak bench, warm white wall, shallow depth; Set: upper-left oak hanger, lower-right washed linen cloth, upper-right brass clip;
+合并（花哨）: Scene: pale oak bench, warm white wall, shallow depth; Set: upper-left oak hanger, lower-right washed linen cloth, upper-right brass clip, along-left warm gray stone slab, along-right kraft paper sheet, upper-center frosted glass cup;
+
+=====================================================================
+03 宠物用品  pet_supplies
+=====================================================================
+主 Scene: low wool rug on light wood floor, soft white wall, low camera
+备选 Scene: entryway tile, warm gray wall, low camera
+默认 Set（生活 3 件）: woven floor mat, white ceramic dish, eucalyptus sprig
+候选池（花哨 6 件）: woven floor mat, white ceramic dish, eucalyptus sprig, light oak block, warm gray stone slab, rattan storage box
+合并（生活）: Scene: low wool rug on light wood floor, soft white wall, low camera; Set: upper-left woven floor mat, lower-right white ceramic dish, upper-right eucalyptus sprig;
+合并（花哨）: Scene: low wool rug on light wood floor, soft white wall, low camera; Set: upper-left woven floor mat, lower-right white ceramic dish, upper-right eucalyptus sprig, along-left light oak block, along-right warm gray stone slab, upper-center rattan storage box;
+
+=====================================================================
+04 办公与文具  office_stationery
+=====================================================================
+主 Scene: light oak desk, warm gray paper backdrop, strict top-down
+备选 Scene: white laminate desk, pale gray wall, slight top-down
+默认 Set（生活 3 件）: warm gray paper stack, light oak block, brass clip
+候选池（花哨 6 件）: warm gray paper stack, light oak block, brass clip, white ceramic dish, cork coaster, frosted glass cup
+合并（生活）: Scene: light oak desk, warm gray paper backdrop, strict top-down; Set: upper-left warm gray paper stack, lower-right light oak block, upper-right brass clip;
+合并（花哨）: Scene: light oak desk, warm gray paper backdrop, strict top-down; Set: upper-left warm gray paper stack, lower-right light oak block, upper-right brass clip, along-left white ceramic dish, along-right cork coaster, upper-center frosted glass cup;
+
+=====================================================================
+05 运动户外  sports_outdoor
+=====================================================================
+主 Scene: pale oak deck, muted greenery backdrop, mid depth
+备选 Scene: concrete floor, overcast gray backdrop, low angle
+默认 Set（生活 3 件）: rolled yoga mat, washed linen cloth, warm gray stone slab
+候选池（花哨 6 件）: rolled yoga mat, washed linen cloth, warm gray stone slab, light oak block, brass clip, kraft paper sheet
+合并（生活）: Scene: pale oak deck, muted greenery backdrop, mid depth; Set: upper-left rolled yoga mat, lower-right washed linen cloth, upper-right warm gray stone slab;
+合并（花哨）: Scene: pale oak deck, muted greenery backdrop, mid depth; Set: upper-left rolled yoga mat, lower-right washed linen cloth, upper-right warm gray stone slab, along-left light oak block, along-right brass clip, upper-center kraft paper sheet;
+
+=====================================================================
+06 汽车用品  auto_accessories
+=====================================================================
+主 Scene: charcoal trunk carpet, dark gray trim, tight crop
+备选 Scene: garage concrete, graphite wall, tight crop
+默认 Set（生活 3 件）: microfiber towel, warm gray stone slab, brass clip
+候选池（花哨 6 件）: microfiber towel, warm gray stone slab, brass clip, light oak block, kraft paper sheet, dark leather tray
+合并（生活）: Scene: charcoal trunk carpet, dark gray trim, tight crop; Set: upper-left microfiber towel, lower-right warm gray stone slab, upper-right brass clip;
+合并（花哨）: Scene: charcoal trunk carpet, dark gray trim, tight crop; Set: upper-left microfiber towel, lower-right warm gray stone slab, upper-right brass clip, along-left light oak block, along-right kraft paper sheet, upper-center dark leather tray;
+
+=====================================================================
+07 工具与五金  hand_tools
+=====================================================================
+主 Scene: oiled workbench, gray pegboard wall, mid depth
+备选 Scene: concrete floor, plaster wall point, low angle
+默认 Set（生活 3 件）: pegboard square, light oak block, warm gray stone slab
+候选池（花哨 6 件）: pegboard square, light oak block, warm gray stone slab, concrete cube, kraft paper sheet, washed linen cloth
+合并（生活）: Scene: oiled workbench, gray pegboard wall, mid depth; Set: upper-left pegboard square, lower-right light oak block, upper-right warm gray stone slab;
+合并（花哨）: Scene: oiled workbench, gray pegboard wall, mid depth; Set: upper-left pegboard square, lower-right light oak block, upper-right warm gray stone slab, along-left concrete cube, along-right kraft paper sheet, upper-center washed linen cloth;
+
+=====================================================================
+08 纯物理配件  passive_tech
+=====================================================================
+主 Scene: matte white desk, charcoal backdrop, shallow depth
+备选 Scene: charcoal felt surface, light gray backdrop, top-down
+默认 Set（生活 3 件）: felt sleeve, light oak block, brass clip
+候选池（花哨 6 件）: felt sleeve, light oak block, brass clip, warm gray stone slab, kraft paper sheet, frosted glass cup
+合并（生活）: Scene: matte white desk, charcoal backdrop, shallow depth; Set: upper-left felt sleeve, lower-right light oak block, upper-right brass clip;
+合并（花哨）: Scene: matte white desk, charcoal backdrop, shallow depth; Set: upper-left felt sleeve, lower-right light oak block, upper-right brass clip, along-left warm gray stone slab, along-right kraft paper sheet, upper-center frosted glass cup;
+
+=====================================================================
+09 美妆个护工具  beauty_tools
+=====================================================================
+主 Scene: white marble vanity, pale pink-gray wall, shallow depth
+备选 Scene: acrylic shelf, clean white backdrop, top-down
+默认 Set（生活 3 件）: acrylic tray, washed linen cloth, frosted glass cup
+候选池（花哨 6 件）: acrylic tray, washed linen cloth, frosted glass cup, white ceramic dish, cork coaster, pale marble coaster
+合并（生活）: Scene: white marble vanity, pale pink-gray wall, shallow depth; Set: upper-left acrylic tray, lower-right washed linen cloth, upper-right frosted glass cup;
+合并（花哨）: Scene: white marble vanity, pale pink-gray wall, shallow depth; Set: upper-left acrylic tray, lower-right washed linen cloth, upper-right frosted glass cup, along-left white ceramic dish, along-right cork coaster, upper-center pale marble coaster;
+
+=====================================================================
+10 成人玩具游戏  adult_games
+=====================================================================
+主 Scene: walnut table, deep green felt inlay, warm dark backdrop
+备选 Scene: dark leather side table, charcoal wall, top-down
+默认 Set（生活 3 件）: green felt mat, light oak block, brass clip
+候选池（花哨 6 件）: green felt mat, light oak block, brass clip, warm gray stone slab, kraft paper sheet, matte black ceramic cup
+合并（生活）: Scene: walnut table, deep green felt inlay, warm dark backdrop; Set: upper-left green felt mat, lower-right light oak block, upper-right brass clip;
+合并（花哨）: Scene: walnut table, deep green felt inlay, warm dark backdrop; Set: upper-left green felt mat, lower-right light oak block, upper-right brass clip, along-left warm gray stone slab, along-right kraft paper sheet, upper-center matte black ceramic cup;
+
+=====================================================================
+11 园艺庭院工具  garden_tools
+=====================================================================
+主 Scene: weathered potting bench, mossy stone backdrop, mid depth
+备选 Scene: dark soil bed edge, painted railing backdrop, low angle
+默认 Set（生活 3 件）: terracotta pot, kraft paper sheet, eucalyptus sprig
+候选池（花哨 6 件）: terracotta pot, kraft paper sheet, eucalyptus sprig, warm gray stone slab, light oak block, rattan storage box
+合并（生活）: Scene: weathered potting bench, mossy stone backdrop, mid depth; Set: upper-left terracotta pot, lower-right kraft paper sheet, upper-right eucalyptus sprig;
+合并（花哨）: Scene: weathered potting bench, mossy stone backdrop, mid depth; Set: upper-left terracotta pot, lower-right kraft paper sheet, upper-right eucalyptus sprig, along-left warm gray stone slab, along-right light oak block, upper-center rattan storage box;
+
+=====================================================================
+12 通用兜底  general
+=====================================================================
+主 Scene: neutral plaster corner, pale gray paper backdrop, soft floor transition, shallow depth
+备选 Scene: neutral seamless sweep, soft gray gradient backdrop, top-down
+默认 Set（生活 3 件）: light oak block, washed linen cloth, warm gray stone slab
+候选池（花哨 6 件）: light oak block, washed linen cloth, warm gray stone slab, white ceramic dish, brass clip, kraft paper sheet
+合并（生活）: Scene: neutral plaster corner, pale gray paper backdrop, soft floor transition, shallow depth; Set: upper-left light oak block, lower-right washed linen cloth, upper-right warm gray stone slab;
+合并（花哨）: Scene: neutral plaster corner, pale gray paper backdrop, soft floor transition, shallow depth; Set: upper-left light oak block, lower-right washed linen cloth, upper-right warm gray stone slab, along-left white ceramic dish, along-right brass clip, upper-center kraft paper sheet;
+
+=====================================================================
+冲突处理（最多换 1 次，换不了就删件，删件后用候选池补位）
+=====================================================================
+1. 主体是木制品：去掉 oak block / cutting board / hanger，改用 warm gray stone slab 或 kraft paper sheet。
+2. 主体是白色或陶瓷：去掉 white ceramic dish / acrylic tray / matte black ceramic cup / terracotta pot，改用 warm gray stone slab 或 brass clip。
+3. 主体是绿色植物类：去掉 eucalyptus sprig，改用 kraft paper sheet。
+4. 主体是布料纺织：去掉 washed linen cloth，改用 warm gray stone slab。
+5. 主体与零件同色系：直接删掉该零件，不要替换（颜色可由白/灰/黑/绿/木色/沙色等词推断）。
+6. 商品本体就是某个零件（瑜伽垫、花盆、笔记本、水杯、杯垫等）：删掉该零件，用候选池补位。
+7. 标题含 仿/假/贴皮/faux：不按真材质换件，只做去重与本体撞件删除。
+8. 花哨档 6 件必须来自 6 个不同材质族（木/陶瓷/石/布/纸/金属/植物/玻璃/软木/混凝土/皮革/藤编）。
+
+素材齐备后：把零件 PNG 填进 PROP_ASSETS，Set 段自动缩成 supplied prop cutouts，提示词再省约 25 词。

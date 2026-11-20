@@ -7,7 +7,8 @@
     <script>
       (() => {
         const recoveryKey = "mainpg_asset_recovery_v1";
-        const assetPathPrefix = "/assets/";
+        // 跟随部署前缀：根路径部署是 /assets/，子路径部署（/workbench/）自动变成 /workbench/assets/。
+        const assetPathPrefix = new URL("assets/", document.baseURI).pathname;
 
         const recover = () => {
           if (window.sessionStorage.getItem(recoveryKey) === "retrying") return;

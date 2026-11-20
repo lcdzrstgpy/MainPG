@@ -18,6 +18,8 @@ import "./shared/styles/alpine-meadow.css";
 import "./shared/styles/ink-tap.css";
 import "./shared/styles/dessert-tap.css";
 import "./shared/styles/framework-flow.css";
+// 产品处理 / 商品自定义 / 店铺数据的统一交互层（hover、按下、焦点、页面淡入）。
+import "./shared/styles/motion.css";
 import "./shared/styles/ads.css";
 import "./modules/product_processing/styles/product-processing.css";
 import "./modules/ai_video/styles/aiVideoPage.css";

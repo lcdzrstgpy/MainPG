@@ -604,6 +604,36 @@
   flex-shrink: 0;
 }
 
+/* 草稿池手动精小品标注：轻量胶囊，不抢主操作按钮的视觉权重。 */
+.pool-precision {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid #e2d9f3;
+  background: #f6f2fd;
+  color: #6a4f9c;
+  font-size: 0.66rem;
+  font-weight: 800;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.pool-precision input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #7c5cc4;
+  cursor: pointer;
+}
+
+.pool-precision input:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .pool-source-link {
   display: inline-flex;
   align-items: center;
@@ -1690,6 +1720,10 @@
   display: grid;
   gap: 16px;
   border: 1px solid var(--theme-module-border, #e2edf5);
+  /* 一页几十张卡片时，屏幕外的卡片跳过布局与绘制（滚回来再算），
+     避免每次输入/滚动都重排整页。数字只是占位高度，浏览器记住实际尺寸后会用实测值。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 560px;
 }
 
 .precheck-card.is-edited {
@@ -5791,6 +5825,26 @@
   color: #0a8fca;
 }
 
+/* 等待同步的操作面板：后台静默刷新 pending_sync，同时给用户"全部回退主图"按钮 */
+.verify-sku-pending-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff8e6;
+  border: 1px solid #ffe199;
+}
+.verify-sku-pending-hint {
+  color: #8a6a00;
+  font-size: .78rem;
+  line-height: 1.5;
+}
+.verify-sku-pending-hint b {
+  color: #c48800;
+}
+
 /* 用途说明：这一步决定 SKU 图能否复用原图链接 */
 .verify-sku-check-purpose {
   margin: 8px 0 0;
@@ -5857,11 +5911,29 @@
   .verify-sku-progress-bar { transition: none; }
 }
 
-/* 「开始检测」按钮收成与勾选项同高，避免撑高标题行 */
+/* 「开始检测」按钮：与工作台主题按钮同款（圆角胶囊 + 品牌渐变） */
 .verify-sku-check-head .primary.verify-sku-start {
-  padding: 7px 12px;
+  padding: 7px 14px;
   font-size: .74rem;
   white-space: nowrap;
+  border: 0;
+  border-radius: 999px;
+  background: var(--theme-primary-button-gradient, #0a8fca);
+  color: var(--theme-on-primary, #fff);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--theme-primary, #0a8fca) 22%, transparent);
+  transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+}
+
+.verify-sku-check-head .primary.verify-sku-start:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--theme-primary, #0a8fca) 28%, transparent);
+}
+
+.verify-sku-check-head .primary.verify-sku-start:disabled {
+  background: var(--theme-module-surface-soft, #f5f8fb);
+  color: #9caaba;
+  box-shadow: none;
+  transform: none;
 }
 
 /* 已跳过 / 尚未检测 提示条 */
