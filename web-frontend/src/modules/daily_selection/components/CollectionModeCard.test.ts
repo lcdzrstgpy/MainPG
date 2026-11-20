@@ -47,6 +47,16 @@ test("采集入口卡：三个入口各自有背景素材，且文件真实存�
   }
 });
 
+test("每日选品 hero 跟主题：不许硬编码深色底 + 白字（浅底主题下像贴黑板）", () => {
+  const hero = styles.slice(styles.indexOf(".daily-page-heading {"), styles.indexOf(".daily-page-heading-actions"));
+  // 底色/边框/文字全部走主题变量：浅色主题是纸感、深色主题自然变深
+  assert.match(hero, /background: linear-gradient\(118deg, color-mix\(in srgb, var\(--theme-module-surface-tint/);
+  assert.match(hero, /\.daily-page-heading h1 \{[^}]*color: var\(--theme-text-primary/);
+  assert.match(hero, /\.daily-page-heading p \{[^}]*color: var\(--theme-text-secondary/);
+  assert.doesNotMatch(hero, /#fff;/, "hero 不许写死白色（2026-11-20 用户实测：深绿底贴浅色主题违和）");
+  assert.doesNotMatch(hero, /#0a497f 0%, #0d7fba/, "旧的深蓝绿渐变不许回来");
+});
+
 test("采集入口卡：旧高特异性规则不得回归（会顶掉卡片内边距，图被挤出白边）", () => {
   // 2026-10-24 实测：shop-collection.css 里的 `.collection-workspace-tabs button`
   // （border-radius:999px + padding:12px 20px）会压掉卡片圆角与内边距，图就被挤出白边。

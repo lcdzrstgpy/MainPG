@@ -1,19 +1,22 @@
 .daily-selection-page { display: grid; gap: 18px; color: #17283f; }
-.daily-page-heading { min-height: 142px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: clamp(24px, 3vw, 34px); overflow: hidden; border: 1px solid #1b91bd; border-radius: 18px; color: #fff; background: linear-gradient(118deg, #0a497f 0%, #0d7fba 56%, #20b9ac 100%); box-shadow: 0 14px 34px rgba(12, 91, 139, .18); }
-.daily-page-heading h1 { margin: 2px 0 4px; color: #fff; font-size: clamp(1.9rem, 3vw, 2.65rem); letter-spacing: -.045em; }
-.daily-page-heading p { margin: 0; color: #d9f1fb; }
-.daily-page-heading .daily-kicker { color: #9de7f3; font-size: .68rem; font-weight: 850; letter-spacing: .14em; }
-.daily-page-heading .back-to-collection-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 10px 16px; color: #fff; background: rgba(255,255,255,.14); font-size: .86rem; font-weight: 800; cursor: pointer; }
-.daily-page-heading .back-to-collection-button:hover { background: rgba(255,255,255,.26); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
-.daily-page-heading .preset-entry-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; padding: 10px 16px; color: #fff; background: rgba(255,255,255,.14); font-size: .86rem; font-weight: 800; cursor: pointer; }
-.daily-page-heading .preset-entry-button:hover { background: rgba(255,255,255,.26); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
+/* hero 卡跟主题走：原实现硬编码深蓝绿渐变 + 白字，在浅底主题（水墨/暖阳橙）
+   里像贴了块黑板，2026-11-20 用户实测反馈。用主题表面色 + 边框 + 文字变量，
+   深色主题下自然变深底，浅色主题下保持纸感。 */
+.daily-page-heading { min-height: 142px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: clamp(24px, 3vw, 34px); overflow: hidden; border: 1px solid var(--theme-card-border, #d6e4ee); border-radius: 18px; color: var(--theme-text-primary, #1a3551); background: linear-gradient(118deg, color-mix(in srgb, var(--theme-module-surface-tint, #eaf8ff) 72%, var(--theme-card-bg-solid, #fff)) 0%, var(--theme-card-bg-solid, #fff) 58%, color-mix(in srgb, var(--theme-module-surface-soft, #f7fafc) 82%, var(--theme-card-bg-solid, #fff)) 100%); box-shadow: 0 14px 34px var(--theme-module-shadow, rgba(12, 91, 139, .12)); }
+.daily-page-heading h1 { margin: 2px 0 4px; color: var(--theme-text-primary, #1a3551); font-size: clamp(1.9rem, 3vw, 2.65rem); letter-spacing: -.045em; }
+.daily-page-heading p { margin: 0; color: var(--theme-text-secondary, #527089); }
+.daily-page-heading .daily-kicker { color: var(--theme-text-muted, #6f849a); font-size: .68rem; font-weight: 850; letter-spacing: .14em; }
+.daily-page-heading .back-to-collection-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid var(--theme-icon-button-border, #d7e3ed); border-radius: 11px; padding: 10px 16px; color: var(--theme-text-secondary, #466079); background: var(--theme-icon-button-bg, #fff); font-size: .86rem; font-weight: 800; cursor: pointer; }
+.daily-page-heading .back-to-collection-button:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); box-shadow: 0 8px 18px var(--theme-module-shadow, rgba(7,48,83,.12)); }
+.daily-page-heading .preset-entry-button { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid var(--theme-icon-button-border, #d7e3ed); border-radius: 11px; padding: 10px 16px; color: var(--theme-text-secondary, #466079); background: var(--theme-icon-button-bg, #fff); font-size: .86rem; font-weight: 800; cursor: pointer; }
+.daily-page-heading .preset-entry-button:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); box-shadow: 0 8px 18px var(--theme-module-shadow, rgba(7,48,83,.12)); }
 .daily-page-heading .preset-entry-button span { color: inherit; font-size: .92rem; letter-spacing: 0; }
 .daily-page-heading-actions { display: flex; align-items: stretch; flex-direction: column; gap: 9px; }
 .daily-page-heading .preset-entry-button,
 .daily-page-heading .shop-batch-manager-trigger { width: 168px; min-height: 42px; justify-content: center; padding: 10px 16px; font-size: .86rem; }
-.daily-page-heading .shop-batch-manager-trigger { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid rgba(255,255,255,.45); border-radius: 11px; color: #fff; background: rgba(255,255,255,.1); font-weight: 800; cursor: pointer; }
-.daily-page-heading .shop-batch-manager-trigger:hover { background: rgba(255,255,255,.24); box-shadow: 0 8px 18px rgba(7,48,83,.2); }
-.daily-page-heading .shop-batch-manager-trigger b { display: grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; color: #0a497f; background: #fff; font-size: .65rem; }
+.daily-page-heading .shop-batch-manager-trigger { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid var(--theme-icon-button-border, #d7e3ed); border-radius: 11px; color: var(--theme-text-secondary, #466079); background: var(--theme-icon-button-bg, #fff); font-weight: 800; cursor: pointer; }
+.daily-page-heading .shop-batch-manager-trigger:hover { background: var(--theme-sidebar-hover-bg, #f0f7fb); box-shadow: 0 8px 18px var(--theme-module-shadow, rgba(7,48,83,.12)); }
+.daily-page-heading .shop-batch-manager-trigger b { display: grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; color: var(--theme-primary, #0a497f); background: var(--theme-card-bg-solid, #fff); font-size: .65rem; border: 1px solid var(--theme-card-border, #d6e4ee); }
 .daily-message { position: fixed; top: 18px; right: 22px; z-index: 1000; display: flex; align-items: center; gap: 10px; max-width: 400px; padding: 12px 16px; border: 1px solid; border-radius: 12px; font-size: .87rem; box-shadow: 0 14px 34px rgba(26, 73, 108, .18); animation: daily-toast-in .28s ease-out; }
 @keyframes daily-toast-in { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 .daily-message > span { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; color: #fff; font-weight: 850; }
