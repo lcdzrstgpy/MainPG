@@ -948,7 +948,7 @@ test("多件装：每件装数量填 4/12 才发 productSkuMultiPackReq", () => 
   assert.ok(page.includes("选太短会被判延迟发货"));
   assert.ok(page.includes("Temu 半托管预设"), "界面要说清 9 天是 Temu 预设，不是我们编的");
   // 自定义档点了没填：要指名道姓，不能只甩一句「发货时效必须大于 0」
-  assert.match(page, /请选择「承诺发货时效」；选了自定义就填一个大于 0 的天数/);
+  assert.match(page, /请选择「承诺发货时效」；选择自定义时，请填写大于 0 的天数/);
   assert.match(page, /shipment_limit_seconds: Number\(shipmentDays\) \* 86400,/);
 });
 
@@ -1112,7 +1112,7 @@ test("批量发布同样支持单 SKU 类目（不再无脑 createSpec）", () =
   assert.match(batch, /\[colorSpec, sizeSpec\]\.filter\(Boolean\) as TemuSkuDraft\["specs"\]/);
   assert.match(batch, /main_specs: colorSpec \? \[colorSpec\] : \[\],/);
   // 有预设值的类目仍然不许自建：匹不上预设直接报错，别拿错值硬发
-  assert.match(batch, /Temu 只认类目预设值/);
+  assert.match(batch, /仅支持类目预设值/);
   // 自建出来的规格值跨条目复用，别在店铺规格库里堆几十个同名「黑色」
   assert.match(batch, /const createdSpecCache = new Map</);
   assert.match(batch, /const shared = createdSpecCache\.get\(cacheKey\);/);
@@ -2711,7 +2711,7 @@ test("金属质感：高光/暗边/描边三层都由变量控制，深色主题
 
 test("类目没有预设值时必须自建规格，不能报「只认预设值」", () => {
   // 截图复现：化妆包这类自定义规格类目，界面写着「可以自己填写（Temu 按自定义规格收）」，
-  // 点提交却回「「黑」不是该 颜色 的合法值：Temu 只认类目预设值」—— 永远发不出去。
+  // 点提交却回「「黑」不是该 颜色 的合法值：仅支持类目预设值」—— 永远发不出去。
   // 批量发布那边一直有自建分支，单个发布漏了。
   const panel = readFileSync(new URL("../components/PublishSkuPanel.tsx", import.meta.url), "utf8");
   assert.match(panel, /这个类目没有\$\{label\}预设值，可以自己填写（Temu 按自定义规格收）/);

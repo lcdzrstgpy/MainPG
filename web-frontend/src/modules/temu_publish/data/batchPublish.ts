@@ -158,7 +158,7 @@ export async function buildDraftForPublish(
   // 整批每一条都变成「Cannot read properties of undefined」，看不出真实原因。
   const templatePath = productTemplate.categoryPath ?? [];
   const categoryIds = templatePath.map((item) => item.catId);
-  if (!categoryIds.length) throw new Error("产品模板里没有类目");
+  if (!categoryIds.length) throw new Error("产品模板缺少类目");
   const leaf = categoryIds[categoryIds.length - 1];
 
   /**
@@ -179,10 +179,10 @@ export async function buildDraftForPublish(
       : productTemplate.attrs ?? {};
 
   const carouselSource = splitList(prefill.images.join("\n"));
-  // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」）。提前拦，
+  // 平台强制要求至少 3 张（网关实测回「轮播图最少 3 张」）。提前拦，
   // 不然图全传完才被拒，批量里还看不出是哪一步的问题
   if (carouselSource.length < 3) {
-    throw new Error(`成品轮播图不足 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
+    throw new Error(`成品轮播图不足 3 张（当前 ${carouselSource.length} 张）：平台强制要求`);
   }
   /**
    * 主图比例按类目走：服饰（= 必须有尺码表）3:4，其它 1:1。
@@ -267,8 +267,8 @@ export async function buildDraftForPublish(
   const widthCmBase = positive(batch?.widthCm || prefill.widthCm || "", "宽度");
   const heightCmBase = positive(batch?.heightCm || prefill.heightCm || "", "高度");
   const warehouseId = productTemplate.warehouseId;
-  if (!warehouseId) throw new Error("产品模板里没有默认发货仓库");
-  if (!productTemplate.freightId) throw new Error("产品模板里没有运费模板");
+  if (!warehouseId) throw new Error("产品模板缺少默认发货仓库");
+  if (!productTemplate.freightId) throw new Error("产品模板缺少运费模板");
 
   const colorParent = productTemplate.colorParentId ?? 0;
   const sizeParent = productTemplate.sizeParentId ?? 0;
@@ -312,7 +312,7 @@ export async function buildDraftForPublish(
     // 该类目压根没有预设值（或模板里填的是自定义值）时才自建，避免每条成品都建一遍
     if (options.length) {
       throw new Error(
-        `「${name}」不是「${parentName}」的合法值：Temu 只认类目预设值`,
+        `「${name}」不是「${parentName}」的合法取值：仅支持类目预设值`,
       );
     }
     // 跨条目复用：同一批里「黑色」会出现在几十条成品上，不复用就在规格库里堆一堆同名值
@@ -336,7 +336,7 @@ export async function buildDraftForPublish(
 
   // 属性表拿不到就别硬发：属性是全类目必填项，没有它连 pid/refPid 都还原不了
   if (Object.keys(templateAttrs).length && !attrs) {
-    throw new Error("类目属性表没取到，无法组装属性（批量发布要靠它确认 pid/refPid），请重试");
+    throw new Error("未能获取类目属性定义，无法组装商品属性，请重试");
   }
   /**
    * 属性 payload。

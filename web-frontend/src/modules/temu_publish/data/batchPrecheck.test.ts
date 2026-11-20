@@ -49,7 +49,7 @@ test("预检：正常的成品不该报任何阻塞项", () => {
   assert.deepEqual(result.blocked, []);
 });
 
-test("预检：轮播不足 3 张要说清当前几张（Temu 硬性要求）", () => {
+test("预检：轮播不足 3 张要说清当前几张（平台强制要求）", () => {
   const result = precheckBatchItem(makePrefill({ images: ["/media/a.png"] }), makeTemplate(), null);
   assert.equal(result.blocked.length, 1);
   assert.match(result.blocked[0], /轮播图只有 1 张/);

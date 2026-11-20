@@ -2187,7 +2187,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     parentSpec: TemuParentSpec | null,
     specName: string,
   ): Promise<TemuSkuSpec> => {
-    if (!parentSpec) throw new Error("Temu 父规格列表为空，无法创建规格");
+    if (!parentSpec) throw new Error("平台未返回可用的规格定义，暂时无法创建规格");
     const name = specName.trim();
     if (!name) throw new Error("规格名称不能为空");
 
@@ -2214,7 +2214,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       const specId = Number(created.specId ?? 0);
       if (!specId) {
         throw new Error(
-          `${parentSpec.parentSpecName}「${name}」建成自定义规格失败（Temu 没返回 spec_id），重试一次；` +
+          `${parentSpec.parentSpecName}「${name}」创建自定义规格失败（平台未返回规格 ID），请重试一次；` +
             "仍失败就去 Temu 卖家中心确认这个类目还能不能加自定义规格",
         );
       }
@@ -2253,7 +2253,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     } catch (cause) {
       const brief = text.length > 120 ? `${text.slice(0, 120)}…` : text;
       const reason = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(`${label}读不到：${brief}（${reason}）。请换一张${label}再试。`);
+      throw new Error(`${label}读取失败：${brief}（${reason}）。请更换${label}后重试。`);
     }
   };
 
@@ -2372,7 +2372,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const composeDraft = async (): Promise<TemuGoodsDraft> => {
     const warnings: string[] = [];
     if (!status?.configured.ready) {
-      throw new Error("请先在「店铺凭证」里配置 client、token 与店铺 access_token");
+      throw new Error("请先在「店铺凭证」中完成店铺授权配置");
     }
     const leaf = categoryPath[categoryPath.length - 1];
     if (!leaf?.isLeaf) throw new Error("请选择到叶子类目");
@@ -2382,10 +2382,10 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       throw new Error(`产品标题超过 ${TITLE_MAX_CHARS} 字符（Temu 上限，当前 ${form.title.trim().length}）`);
     }
     const carouselSource = splitLines(form.carousel);
-    // Temu 硬性要求至少 3 张（网关实测回「轮播图最少 3 张」），界面上也是这么写的。
+    // 平台强制要求至少 3 张（网关实测回「轮播图最少 3 张」），界面上也是这么写的。
     // 以前只拦空，1~2 张能一路传到网关才被拒 —— 白等一轮图片上传。
     if (carouselSource.length < 3) {
-      throw new Error(`轮播图至少 3 张（当前 ${carouselSource.length} 张）：Temu 硬性要求`);
+      throw new Error(`轮播图至少 3 张（当前 ${carouselSource.length} 张）：平台强制要求`);
     }
     if (carouselSource.length > 10) throw new Error("轮播图最多 10 张");
     // 成品带入 / 手填 URL 也要守上限（上传路径已经挡过，这里兜底）
@@ -2401,7 +2401,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     // 直接甩一句「发货时效必须大于 0」用户看不出是哪里没填
     const shipmentDays = form.shipmentDays.trim();
     if (!/^\d+$/.test(shipmentDays) || Number(shipmentDays) <= 0) {
-      throw new Error("请选择「承诺发货时效」；选了自定义就填一个大于 0 的天数（如 12）");
+      throw new Error("请选择「承诺发货时效」；选择自定义时，请填写大于 0 的天数（如 12）");
     }
     // 产品货号会拼进 SKC / SKU 货号，含中文或符号 Temu 直接拒
     const productCode = cleanExtCode(form.productCode);
@@ -2492,7 +2492,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       });
 
     if (!rows.length) throw new Error("至少需要一个变种");
-    if (rows.length > 20) throw new Error("Temu 多变种上限 20 个");
+    if (rows.length > 20) throw new Error("平台限制：变种数量上限为 20 个");
     const colorParent = parentSpecs.find((item) => item.parentSpecId === colorParentId) ?? null;
     const sizeParent = parentSpecs.find((item) => item.parentSpecId === sizeParentId) ?? null;
 
@@ -2666,7 +2666,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           main_specs: [colorSpec],
           skus,
         });
-        if (colorIndex > 20) throw new Error("Temu 一次最多 20 个颜色（SKC）");
+        if (colorIndex > 20) throw new Error("平台限制：单个商品最多 20 个颜色");
       }
     }
 
@@ -2832,7 +2832,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           if (detail) {
             // 只有 vid 重建、选值文字没变 → 已经自动沿用，不用用户动手
             throw new Error(
-              `Temu 卖家中心改过这个类目的属性定义：${detail}。原来的选择已经自动沿用，直接再点一次提交即可。`,
+              `Temu 卖家中心已变更该类目的属性定义：${detail}。原有选择已自动沿用，请再次提交。`,
             );
           }
           // 重拉后没差异：说明属性表本身没变，问题在别处。
