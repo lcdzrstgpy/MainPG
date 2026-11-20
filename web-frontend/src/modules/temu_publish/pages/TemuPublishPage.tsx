@@ -2372,7 +2372,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   const composeDraft = async (): Promise<TemuGoodsDraft> => {
     const warnings: string[] = [];
     if (!status?.configured.ready) {
-      throw new Error("请先在「店铺凭证」中完成店铺授权配置");
+      throw new Error("请先在「店铺凭证」中完成店铺授权（access_token）配置");
     }
     const leaf = categoryPath[categoryPath.length - 1];
     if (!leaf?.isLeaf) throw new Error("请选择到叶子类目");
