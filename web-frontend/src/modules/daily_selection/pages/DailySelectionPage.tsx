@@ -1368,18 +1368,13 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
       )}
       {!collectionView && (
         <>
-      <section className="daily-page-heading">
-        <div>
-          <p className="daily-kicker">DAILY PRODUCT DISCOVERY</p>
-          <h1>每日选品</h1>
-          <p>关键词或参考图驱动商品采集，筛选后确认进入产品处理。</p>
-        </div>
-        {!onOpenCollection && (
+      {!onOpenCollection && (
+        <div className="daily-view-back-row">
           <button type="button" className="back-to-collection-button" onClick={() => setInternalView("collection")}>
             <span aria-hidden="true">←</span> 返回采集
           </button>
-        )}
-      </section>
+        </div>
+      )}
 
       <section className="daily-panel direction-panel">
         <div className="daily-panel-title">
@@ -1503,32 +1498,13 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
 
       {collectionView && (
         <div className="daily-collection-workspace">
-          <section className="daily-page-heading">
-            <div>
-              <p className="daily-kicker">DAILY PRODUCT DISCOVERY</p>
-              <h1>每日选品</h1>
-              <p>关键词或参考图驱动商品采集，筛选后确认进入产品处理。</p>
+          {!onOpenCollection && (
+            <div className="daily-collection-quick-actions">
+              <button type="button" className="preset-entry-button" onClick={() => setInternalView("directions")}>
+                <span aria-hidden="true">▦</span> 模板预设
+              </button>
             </div>
-            {(!onOpenCollection || collectionWorkspaceMode === "shop" || collectionWorkspaceMode === "plugin") && (
-              <div className="daily-page-heading-actions">
-                {!onOpenCollection && (
-                  <button type="button" className="preset-entry-button" onClick={() => setInternalView("directions")}>
-                    <span aria-hidden="true">▦</span> 模板预设
-                  </button>
-                )}
-                {collectionWorkspaceMode === "shop" && (
-                  <button type="button" className="shop-batch-manager-trigger" onClick={() => shopCollectionPanelRef.current?.openBatchManager()}>
-                    <span className="iconfont icon-time-circle" aria-hidden="true"></span> 批次管理 <b>{shopBatchCount}</b>
-                  </button>
-                )}
-                {collectionWorkspaceMode === "plugin" && (
-                  <button type="button" className="shop-batch-manager-trigger" onClick={() => pluginCapturePanelRef.current?.openBatchManager()}>
-                    <span className="iconfont icon-time-circle" aria-hidden="true"></span> 批次管理 <b>{pluginBatchCount}</b>
-                  </button>
-                )}
-              </div>
-            )}
-          </section>
+          )}
           {!collectionEntered ? (
             <CollectionEntryGate
               onEnter={(mode) => {
@@ -1558,6 +1534,16 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                       : "关键词 / 参考图 · 逐条拉详情"}
                 </small>
               </div>
+              {collectionWorkspaceMode === "shop" && (
+                <button type="button" className="shop-batch-manager-trigger" onClick={() => shopCollectionPanelRef.current?.openBatchManager()}>
+                  <span className="iconfont icon-time-circle" aria-hidden="true"></span> 批次管理 <b>{shopBatchCount}</b>
+                </button>
+              )}
+              {collectionWorkspaceMode === "plugin" && (
+                <button type="button" className="shop-batch-manager-trigger" onClick={() => pluginCapturePanelRef.current?.openBatchManager()}>
+                  <span className="iconfont icon-time-circle" aria-hidden="true"></span> 批次管理 <b>{pluginBatchCount}</b>
+                </button>
+              )}
               <div className="collection-mode-switch" role="group" aria-label="切换采集方式">
                 {([
                   ["daily", "定向"],

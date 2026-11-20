@@ -47,14 +47,19 @@ test("采集入口卡：三个入口各自有背景素材，且文件真实存�
   }
 });
 
-test("每日选品 hero 跟主题：不许硬编码深色底 + 白字（浅底主题下像贴黑板）", () => {
-  const hero = styles.slice(styles.indexOf(".daily-page-heading {"), styles.indexOf(".daily-page-heading-actions"));
-  // 底色/边框/文字全部走主题变量：浅色主题是纸感、深色主题自然变深
-  assert.match(hero, /background: linear-gradient\(118deg, color-mix\(in srgb, var\(--theme-module-surface-tint/);
-  assert.match(hero, /\.daily-page-heading h1 \{[^}]*color: var\(--theme-text-primary/);
-  assert.match(hero, /\.daily-page-heading p \{[^}]*color: var\(--theme-text-secondary/);
-  assert.doesNotMatch(hero, /#fff;/, "hero 不许写死白色（2026-11-20 用户实测：深绿底贴浅色主题违和）");
-  assert.doesNotMatch(hero, /#0a497f 0%, #0d7fba/, "旧的深蓝绿渐变不许回来");
+test("每日选品不再挂大 hero：标题靠侧栏/页签，动作按钮挪到原位", () => {
+  // 2026-11-20 用户定调：浅底主题下深绿 hero 违和，干脆删掉整块。
+  assert.ok(!page.includes("daily-page-heading"), "hero 元素不许回来");
+  assert.ok(!page.includes("DAILY PRODUCT DISCOVERY"), "hero 里的 kicker 文案一并删除");
+  // 功能按钮不能跟着 hero 一起消失：返回采集 / 模板预设 / 批次管理 各有新家
+  assert.match(page, /daily-view-back-row/);
+  assert.match(page, /返回采集/);
+  assert.match(page, /daily-collection-quick-actions/);
+  assert.match(page, /模板预设/);
+  assert.match(page, /批次管理/);
+  // 样式侧：hero 规则已清，新动作行走主题变量
+  assert.ok(!styles.includes(".daily-page-heading {"), "hero 样式应删除");
+  assert.match(styles, /\.daily-collection-quick-actions \.preset-entry-button,[\s\S]*?var\(--theme-icon-button-bg/);
 });
 
 test("采集入口卡：旧高特异性规则不得回归（会顶掉卡片内边距，图被挤出白边）", () => {
