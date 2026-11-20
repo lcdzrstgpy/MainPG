@@ -7340,6 +7340,25 @@ textarea.temu-input {
   margin: 6px 0;
 }
 
+.temu-backup-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--theme-text-secondary, #466079);
+}
+
+.temu-backup-body strong {
+  color: var(--theme-text-primary, #1a3551);
+}
+
+.temu-backup-note {
+  margin: 0;
+  color: var(--theme-text-muted, #6f849a);
+  font-size: 12px;
+}
+
 /* 待人工向导条：逐条补完的进度与操作 */
 .temu-manual-wizard {
   display: flex;
