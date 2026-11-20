@@ -323,8 +323,8 @@ test("我的店铺：凭证按登录账号隔离，可解绑且未绑定时给�
   assert.match(page, /title: "停用当前店铺？"/);
   assert.match(page, /const next = await temuPublishApi\.clearSettings\(\);/);
   // 未绑定时顶部横幅 + 顶部 chip 都是「绑定我的店铺」，不能只是报“凭证未配置”
-  assert.match(page, /还没绑定你的 Temu 店铺/);
-  assert.match(page, /去绑定我的店铺/);
+  assert.match(page, /尚未绑定 Temu 店铺/);
+  assert.match(page, /绑定店铺/);
   assert.match(page, /"绑定我的店铺"/);
   // 服务商凭据只显示「已配置/未配置」，不把 client/token 掩码摆出来
   assert.match(page, /const gatewayReady = !!\(status\?\.configured\.yl_client/);

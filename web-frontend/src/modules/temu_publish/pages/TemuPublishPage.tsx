@@ -3322,7 +3322,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
             <div className="temu-shop-list">
               <div className="temu-shop-list-head">
                 <strong>已保存的店铺（{status?.shops?.length ?? 0}）</strong>
-                <span className="temu-muted">换店点「切换到这家」，不用重新贴 token</span>
+                <span className="temu-muted">切换店铺请点「切换到这家」，无需重新填写授权</span>
               </div>
               {(status?.shops ?? []).map((shop) => (
                 <div className={`temu-shop-row${shop.active ? " is-active" : ""}`} key={shop.id}>
@@ -3370,7 +3370,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           ) : null}
           <label className="temu-field">
             <span>
-              新增店铺：粘贴 access_token
+              新增店铺：粘贴店铺授权码（access_token）
               <em className="temu-muted">
                 Temu 后台：系统管理 → 授权管理 → 获取授权（对接系统选「启邦国际跨境分销运营管理系统」），
                 复制 access_token 后面的整串。保存前会先打一次网关校验，通过才存进列表
@@ -3497,14 +3497,14 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
           {statusLoaded && !ready && (
             <div className="temu-bind-banner">
               <div>
-                <strong>还没绑定你的 Temu 店铺</strong>
+                <strong>尚未绑定 Temu 店铺</strong>
                 <p>
-                  发布用的是当前登录账号名下的 access_token。
-                  填一次就行，之后这个账号发商品只会进你自己的店铺，不会用别人的。
+                  发布时将使用当前登录账号所绑定的店铺授权（access_token）。完成绑定后，
+                  通过该账号发布的商品仅会进入所绑定的店铺。
                 </p>
               </div>
               <button type="button" className="temu-btn temu-btn-primary" onClick={() => setSettingsOpen(true)}>
-                去绑定我的店铺
+                绑定店铺
               </button>
             </div>
           )}
