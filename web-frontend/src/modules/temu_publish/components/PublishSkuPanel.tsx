@@ -1134,7 +1134,7 @@ export function PublishSkuPanel({
           </div>
           {rows.length === 0 && (
             <p className="temu-empty">
-              {singleSku ? "还没有 SKU：点上面的「生成变种」补一行。" : "还没有变种：填好上面的尺码，点「生成变种」。"}
+              {singleSku ? "暂无 SKU：点击上方「生成变种」添加一行。" : "暂无变种：填写上方尺码后点击「生成变种」。"}
             </p>
           )}
           {rows.map((row) => (

@@ -2796,7 +2796,7 @@ export function TemuDraftLibraryPage({
                         const guessedInPrefill =
                           estimated && prefill ? Number(prefill.guessed ?? 0) : 0;
                         const pendingHint = !leafForEntry
-                          ? "还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性"
+                          ? "尚未设置 Temu 类目：点击「用于发布」选择一次，之后将按类目自动填充属性"
                           : "属性正在按类目估算（同类目仅请求一次），请稍候或刷新";
                         if (!missing.length) {
                           return (

@@ -208,7 +208,7 @@ export function TemuDraftBulkBar({
               disabled={batchRunning || disabledNoSelection}
               title={
                 templateCount === 0
-                  ? "还没有产品模板：去发布页「保存产品模板」"
+                  ? "暂无产品模板：请在发布页「保存产品模板」"
                   : "套用已保存的产品模板（分类+属性+物流）"
               }
               onClick={() => onPickTemplate("product")}
@@ -221,7 +221,7 @@ export function TemuDraftBulkBar({
               disabled={batchRunning || disabledNoSelection}
               title={
                 templateCount === 0
-                  ? "还没有变种模板：去发布页「保存变种模板」"
+                  ? "暂无变种模板：请在发布页「保存变种模板」"
                   : "套用已保存的变种模板（规格轴+价格+尺寸）"
               }
               onClick={() => onPickTemplate("variant")}

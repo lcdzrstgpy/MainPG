@@ -266,8 +266,8 @@ export function TemuPublishHistoryPage({
   const emptyText = appliedKeyword
     ? `没有匹配「${appliedKeyword}」的记录，换个关键词试试（标题、商品 id、类目名都能搜）。`
     : tab === "success"
-      ? "还没有成功发布过商品。从成品库挑一条发布成功后，这里会记下商品 id。"
-      : "还没有失败记录 —— 失败时这里会显示 Temu 的原话和错误码，方便照着改。";
+      ? "暂无发布成功记录。从成品库发布商品成功后，此处将记录商品 ID。"
+      : "暂无失败记录——发布失败时，此处将显示平台原始提示与错误码。";
 
   async function handleCopy(key: string, text: string) {
     const ok = await copyText(text);

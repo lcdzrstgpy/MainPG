@@ -4252,7 +4252,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 </span>
                 {sizeChart.info?.required && !sizeChart.has ? (
                   <p className="temu-sizechart-warn">
-                    <strong>店里还没有可用的尺码表。</strong>
+                    <strong>店铺暂无可用尺码表。</strong>
                     {sizeChart.info.required_elements?.length
                       ? `Temu 要求必填测量项：${sizeChart.info.required_elements.join("、")}。`
                       : ""}

@@ -1770,7 +1770,7 @@ test("成品库不能标「可发」：产品属性成品库不存，只能在�
   assert.match(library, /<span className="temu-ready is-ok">字段齐<\/span>/);
   assert.match(library, /<span className="temu-ready is-pending">属性待填<\/span>/);
   // 没估上时要说明「为什么」：没类目就去选一次，正在估就等一下
-  assert.match(library, /还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性/);
+  assert.match(library, /尚未设置 Temu 类目：点击「用于发布」选择一次，之后将按类目自动填充属性/);
   assert.match(library, /属性正在按类目估算（同类目仅请求一次），请稍候或刷新/);
   // 估上了要说清「其中几项是猜的」，否则「已估 8」会被读成「都填对了」
   assert.match(library, /其中 \$\{guessedInPrefill\} 项是凭类目猜的/);
@@ -2535,7 +2535,7 @@ test("服装类目「必须有尺码表但店里没建」要显式提示，不�
   // 用户连填模板 ID 的地方都没有。
   const page = readFileSync(new URL("./TemuPublishPage.tsx", import.meta.url), "utf8");
 
-  assert.match(page, /店里还没有可用的尺码表/);
+  assert.match(page, /店铺暂无可用尺码表/);
   assert.match(page, /Temu 要求必填测量项：\$\{sizeChart\.info\.required_elements\.join\("、"\\?\)\}/);
   assert.match(page, /商品管理 → 尺码表模板/);
   assert.match(page, /该尺码组可选尺码：/);
