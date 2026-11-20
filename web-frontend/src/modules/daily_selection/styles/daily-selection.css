@@ -699,7 +699,8 @@
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
   min-height: clamp(580px, calc(100vh - 250px), 800px);
-  margin: 14px 14px 0;
+  /* 删掉页面大 hero 后（2026-11-20），14px 上边距会在页签和入口之间留一条空带 */
+  margin: 0 14px;
   padding: 26px 22px 24px;
   overflow: hidden;
   contain: layout paint style;
