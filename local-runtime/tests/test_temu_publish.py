@@ -222,7 +222,7 @@ def test_build_payload_rejects_invalid_property_value(tmp_path: Path) -> None:
     service = TemuPublishService(tmp_path / "runtime.sqlite3", client=StubCatalogClient())
     draft = _draft(properties=[GoodsPropertyInput(pid=1, vid=999)])
 
-    with pytest.raises(ValueError, match="不在可选值内"):
+    with pytest.raises(ValueError, match="不在可选范围内"):
         service.build_goods_payload(draft)
 
 

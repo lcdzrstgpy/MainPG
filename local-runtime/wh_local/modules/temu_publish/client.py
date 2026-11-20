@@ -258,7 +258,7 @@ class TemuProductClient:
             "configItems": [1, 2, 3],
         }
         if not body["bindSiteIds"]:
-            raise ValueError("必填项校验需要至少一个站点 id（bindSiteIds 不能为空）")
+            raise ValueError("必填项校验需至少一个站点 ID")
         # 同一个签名 bug：空数组会让网关算出的 sign 对不上，
         # 所以没有属性时整个字段不发（这个接口长期 `sign is invalid` 就是这个原因）。
         # 实测（2026-11-03）：空数组不发之后签名错误消失，但这类目会回
@@ -366,7 +366,7 @@ class TemuProductClient:
         result = self.create_spec(parent_id, name)
         spec_id = int((result or {}).get("specId") or 0)
         if spec_id <= 0:
-            raise RuntimeError("Temu 没有返回新建规格的 specId")
+            raise RuntimeError("平台未返回新建规格的 ID")
         spec = {
             "parentSpecId": parent_id,
             "parentSpecName": parent_name,
@@ -532,7 +532,7 @@ class TemuProductClient:
         # 顶层空数组会让网关签名对不上（回 7000015 sign is invalid），
         # 与其让用户看到「签名无效」，不如直接说清是站点 id 没给
         if not normalized:
-            raise ValueError("取运费模板需要至少一个站点 id（siteIds 不能为空）")
+            raise ValueError("获取运费模板需至少一个站点 ID")
         return self.call(
             "bg.glo.logistics.template.get",
             {"siteIds": normalized},
@@ -543,7 +543,7 @@ class TemuProductClient:
     def warehouses(self, site_ids: list[int], supplier_id: int | None = None) -> dict[str, Any]:
         normalized = sorted({int(value) for value in site_ids if int(value) > 0})
         if not normalized:
-            raise ValueError("取仓库列表需要至少一个站点 id（siteIdList 不能为空）")
+            raise ValueError("获取仓库列表需至少一个站点 ID")
         payload: dict[str, Any] = {"siteIdList": normalized}
         if supplier_id:
             payload["supplierId"] = int(supplier_id)

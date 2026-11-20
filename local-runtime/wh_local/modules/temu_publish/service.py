@@ -584,7 +584,7 @@ class TemuPublishService:
         credentials = self.store.load()
         if not credentials.complete():
             raise TemuCredentialMissing(
-                "Temu 发布凭证未配置完整：需要服务商 client/token 与店铺 access_token"
+                "平台发布凭证未配置完整：需要服务商凭据与店铺授权（access_token）"
             )
         key = (credentials.client, credentials.token, credentials.access_token)
         if self._client is None or self._client_key != key:
@@ -646,7 +646,7 @@ class TemuPublishService:
             raise ValueError("店铺 access_token 不能为空")
         creds = self.store.load()
         if not (creds.client and creds.token):
-            raise TemuCredentialMissing("服务商 client/token 还没配置，无法校验店铺 token")
+            raise TemuCredentialMissing("服务商凭据尚未配置，无法校验店铺授权")
         probe = TemuProductClient(
             TemuCredentials(client=creds.client, token=creds.token, access_token=token),
             timeout=30,
@@ -655,7 +655,7 @@ class TemuPublishService:
         info = probe.token_info()
         resolved_name = str(mall_name or info.get("mallName") or "").strip()
         if not resolved_name and not info:
-            raise ValueError("这条 token 没有返回店铺信息，请确认是店铺的 access_token")
+            raise ValueError("该授权未返回店铺信息，请确认填写的是店铺的 access_token")
         self.store.save_shop(token, resolved_name, actor_id)
         self._reset_client()
         return {**self.settings_status(), "verified": True, "mall_name": resolved_name}
@@ -817,7 +817,7 @@ class TemuPublishService:
             raise ValueError(f"图片下载失败：{exc}") from exc
         content_type = str(response.headers.get("content-type") or "").split(";")[0].strip().lower()
         if content_type and not content_type.startswith("image/"):
-            raise ValueError(f"URL 不是图片（content-type={content_type}）")
+            raise ValueError(f"该地址不是有效图片（类型：{content_type}）")
         limit = 20 * 1024 * 1024
         buffer = bytearray()
         for chunk in response.iter_content(64 * 1024):
@@ -847,7 +847,7 @@ class TemuPublishService:
         try:
             catalog = self.client().attributes(int(draft.category_ids[-1]))
         except Exception as exc:  # noqa: BLE001 - 取不到不阻断组装，但要告警
-            warnings.append(f"类目属性获取失败（规格声明只能退回父规格 id）：{exc}")
+            warnings.append(f"类目属性获取失败，规格声明已退回父级规格：{exc}")
         if draft.validate_catalog and catalog is not None:
             _validate_against_catalog(draft, catalog, warnings)
         if not (catalog or {}).get("properties"):
@@ -882,7 +882,7 @@ class TemuPublishService:
             try:
                 fallback_spec = self.client().ensure_default_spec(preferred_color, catalog)
             except Exception as exc:  # noqa: BLE001 - 兜底失败仍要能组装（会带告警）
-                warnings.append(f"自动创建兜底规格失败：{exc}")
+                warnings.append(f"自动创建默认规格失败：{exc}")
         payload = _assemble_payload(draft, warnings, catalog, fallback_spec)
 
         sku_prices = [
@@ -1265,7 +1265,7 @@ class TemuPublishService:
         try:
             result = self.client().size_chart_create(payload)
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Temu 建表被拒：{exc}") from exc
+            raise RuntimeError(f"尺码表创建被平台拒绝：{exc}") from exc
         rows = result.get("sizeSpecDataList") if isinstance(result, dict) else None
         entry = next(
             (item for item in (self._size_table_entry(row) for row in (rows or [])) if item),
@@ -1449,14 +1449,14 @@ def _assemble_payload(
 ) -> dict[str, Any]:
     category_ids = [int(value) for value in draft.category_ids]
     if any(value <= 0 for value in category_ids):
-        raise ValueError("category_ids 必须是正整数")
+        raise ValueError("类目 ID 必须为正整数")
     _validate_https_urls("carouselImageUrls", draft.carousel_image_urls)
     # 轮播图至少 3 张：网关实测会回「轮播图最少 3 张」，补到 3 张后错误才往前推进
     # （docs/temu-接口实测清单-20261028.md）。放在 https 校验之后 ——
     # 格式错先报格式，别让「只有 1 张」把真正的原因盖住。
     if len(draft.carousel_image_urls) < 3:
         raise ValueError(
-            f"轮播图至少 3 张（当前 {len(draft.carousel_image_urls)} 张），Temu 会直接拒"
+            f"轮播图至少 3 张（当前 {len(draft.carousel_image_urls)} 张），否则平台将直接拒绝"
         )
     _validate_https_urls("outerPackageImageReqs", draft.outer_package_image_urls, required=False)
     _validate_https_urls("goodsLayerDecorationReqs", draft.detail_image_urls, required=False)
@@ -1487,7 +1487,7 @@ def _assemble_payload(
     if not site_ids:
         site_ids = sorted({int(sku.site_id) for skc in draft.skcs for sku in skc.skus})
     if not site_ids:
-        raise ValueError("缺少站点 ID（site_ids 或 SKU.site_id）")
+        raise ValueError("缺少站点 ID")
 
     cat_fields = {
         f"cat{index}Id": (category_ids[index - 1] if index <= len(category_ids) else 0)
@@ -1773,7 +1773,7 @@ def _validate_against_catalog(
 ) -> None:
     properties = catalog.get("properties")
     if not isinstance(properties, list):
-        warnings.append("类目属性返回结构异常，跳过必填校验。")
+        warnings.append("类目属性数据异常，已跳过必填校验。")
         return
     # 已提交的属性按 (pid, refPid) 索引：服装类目同 pid 多条（面料克重1/2、里料克重）
     # 只按 pid 建字典会互相覆盖，等于只校验了最后一条。
@@ -1815,7 +1815,7 @@ def _validate_against_catalog(
         # 同 pid 多条属性时按 refPid 精确取，否则会拿「里料克重」的规则校验「面料克重1」
         catalog_item = _catalog_property_of(catalog_index, pid, ref_pid)
         if catalog_item is None:
-            warnings.append(f"属性 pid={pid} 不在当前类目属性表中，请确认是否误填。")
+            warnings.append(f"属性「{pid}」不在当前类目属性表中，请确认是否误填。")
             continue
         label = _property_label(catalog_item)
         values = catalog_item.get("values") or []
@@ -1837,7 +1837,7 @@ def _validate_against_catalog(
                 raise ValueError(f"属性「{label}」既没有选值也没有填数值")
             continue
         if allowed and int(item.vid) not in allowed:
-            raise ValueError(f"属性「{label}」的 vid={item.vid} 不在可选值内")
+            raise ValueError(f"属性「{label}」的取值不在可选范围内")
 
 
 def _property_label(item: dict[str, Any]) -> str:
@@ -2218,12 +2218,12 @@ def _i18n_title(title: str, title_en: str, warnings: list[str]) -> dict[str, Any
     english = str(title_en or "").strip()
     if english:
         if any("\u4e00" <= ch <= "\u9fff" for ch in english):
-            warnings.append("英文标题里含中文，Temu 可能判「英文标题不合规」，提交前请改。")
+            warnings.append("英文标题中包含中文，可能被平台判定为标题不合规，提交前请修改。")
         return {"productI18nReqs": [{"language": "en", "productName": english}]}
     if not text:
         return {}
     if any("\u4e00" <= ch <= "\u9fff" for ch in text):
-        warnings.append("标题含中文，未生成英文标题（productI18nReqs）；Temu 美国站通常要英文标题，提交前请改。")
+        warnings.append("标题包含中文，未生成英文标题；美国站通常要求英文标题，提交前请修改。")
         return {}
     return {"productI18nReqs": [{"language": "en", "productName": text}]}
 
