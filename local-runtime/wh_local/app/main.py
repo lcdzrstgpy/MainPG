@@ -44,6 +44,7 @@ from ..config import (
     ensure_data_dir_ready,
 )
 from ..customer.auth_service import SQLiteCustomerAuthService
+from ..local_host_guard import LocalHostGuardMiddleware, cors_allow_origins
 from ..customer.collect_credentials import CollectCredentialsError, request_collect_credentials
 from ..customer.contracts import CustomerAuthPermissionError
 from ..customer.db_store import SQLiteCustomerSessionStore
@@ -683,13 +684,16 @@ def create_app(database_path: Path | None = None) -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_allow_origins(),
         # 鉴权走 Authorization: Bearer 头，不依赖 cookie；关闭 allow_credentials
         # 避免 Starlette 回显任意 Origin 并放行跨域带凭据请求（同源防护形同虚设）。
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Host 回环校验放在最外层（后 add 的包得更外）：连 preflight 也一起挡，
+    # 堵 DNS rebinding —— 见 local_host_guard 模块头的背景说明。
+    app.add_middleware(LocalHostGuardMiddleware)
     # 桌面端：前端页面关闭后自动终止后端进程（服务器环境不启用 watchdog）。
     runtime_exit = _RuntimeExitController()
     if runtime_exit.enabled:
