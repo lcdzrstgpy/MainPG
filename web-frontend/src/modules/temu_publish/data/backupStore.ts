@@ -63,6 +63,18 @@ function readRaw(key: string): unknown {
   }
 }
 
+/**
+ * 会话级/瞬态键：不进备份。批量心跳（batch_running_at）如果被带进备份文件，
+ * 在新电脑上导入后会误判「上一批还在跑」，把批量发布锁住几分钟。
+ */
+const EPHEMERAL_KEYS = new Set([
+  "temu_publish_batch_running_at",
+  "temu_publish_batch_stop",
+  "temu_library_focus_draft_v1",
+  "temu_library_retry_v1",
+  "temu_batch_edit_pending_v1",
+]);
+
 /** 当前账号名下所有 temu_* 存档（基名 → 原始键名） */
 function scopedKeys(): Array<{ base: string; key: string }> {
   const suffix = `:${storageScope()}`;
@@ -70,7 +82,9 @@ function scopedKeys(): Array<{ base: string; key: string }> {
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index) ?? "";
     if (!key.startsWith("temu_") || !key.endsWith(suffix)) continue;
-    found.push({ base: key.slice(0, key.length - suffix.length), key });
+    const base = key.slice(0, key.length - suffix.length);
+    if (EPHEMERAL_KEYS.has(base)) continue;
+    found.push({ base, key });
   }
   return found;
 }
@@ -149,7 +163,7 @@ export async function importTemuPublishBackup(file: File): Promise<ImportSummary
   const merged: BackupCounts = {};
   const skipped: string[] = [];
   for (const [base, value] of Object.entries(payload.items)) {
-    if (!base.startsWith("temu_")) {
+    if (!base.startsWith("temu_") || EPHEMERAL_KEYS.has(base)) {
       skipped.push(base);
       continue;
     }

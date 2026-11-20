@@ -102,7 +102,7 @@ export function BackupDialog({
               if (!file) return;
               try {
                 const summary = await importTemuPublishBackup(file);
-                setNote(`已导入：${backupSummaryText(summary.merged)}（同名以文件为准）`);
+                setNote(`已导入并合并，当前总数：${backupSummaryText(summary.merged)}`);
                 onImported?.();
               } catch (cause) {
                 setNote(cause instanceof Error ? cause.message : "导入失败，请检查文件");
