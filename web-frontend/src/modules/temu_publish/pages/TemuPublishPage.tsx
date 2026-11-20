@@ -1750,7 +1750,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (!categoryQuery.trim()) throw new Error("请输入类目关键词");
       const response = await matchCategoryWithRetry(categoryQuery.trim());
       if (!response) {
-        throw new Error("类目匹配服务暂时不可用（已重试 3 次），稍后再试，或直接用「分类浏览」逐级选");
+        throw new Error("类目匹配服务暂不可用（已重试 3 次），请稍后重试，或使用「分类浏览」逐级选择");
       }
       setMatchPaths(response.categoryPathDTOS ?? []);
     });
@@ -1883,7 +1883,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
         title: "停用当前店铺？",
         message:
           "停用当前店铺：发布时会提示还没绑定。\n" +
-          "这家店会留在「已保存的店铺」列表里，想再用点一下「切换到这家」即可，不用重新贴 token。",
+          "该店铺将保留在「已保存的店铺」列表中；如需再次使用，点击「切换到这家」即可，无需重新填写授权。",
         confirmText: "停用",
         danger: true,
       });
@@ -2455,7 +2455,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     if (apparel && !materialSource) {
       throw new Error(
         "服饰类目的产品素材图要单独填一张 1:1（宽 ≥800px）的方图：" +
-          "轮播图是 3:4 竖图，直接当素材图会被 Temu 拒。请上传一张或在「产品素材图」里填地址。",
+          "当前轮播图为 3:4 竖图，不能直接作为素材图（将被平台驳回）。请上传素材图，或在「产品素材图」中填写地址。",
       );
     }
     const material = materialSource
@@ -2516,7 +2516,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       if (suggested > 0 && price > 0 && suggested * 20 < price) {
         warnings.push(
           `${at}建议售价 ${row.suggestedPrice} 元远小于申报价 ${row.supplierPrice} 元：` +
-            "确认一下是不是少填了一位（两个都是元，不用换算）。",
+            "请确认是否少填一位数字（两项单位均为元，无需换算）。",
         );
       }
       const rawSkuCode = row.extCode.trim();
@@ -3308,7 +3308,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                 <button
                   type="button"
                   className="temu-help-dot"
-                  title="怎么拿 access_token？点这里看步骤和图"
+                  title="如何获取 access_token：点击此处查看步骤与图示"
                   aria-label="怎么拿 access_token"
                   onClick={() => setTokenHelpOpen(true)}
                 >
@@ -3650,7 +3650,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
                     {(titleMatching || titleMatches.length > 0) && (
                       <div className="temu-title-match">
-                        <span>{titleMatching ? "正在按标题匹配类目…" : "按标题推荐（点一下切换）"}</span>
+                        <span>{titleMatching ? "正在按标题匹配类目…" : "按标题推荐（点击切换）"}</span>
                         {titleMatches.slice(0, 3).map((dto, index) => {
                           const path = categoryPathFromDto(dto);
                           if (!path.length) return null;
@@ -3711,7 +3711,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                         className="temu-link"
                         onClick={() => void refreshCategoryTree()}
                         disabled={busy !== ""}
-                        title="Temu 后台改过类目或该类目的必填属性后点这里，不用等缓存过期"
+                        title="在 Temu 后台修改类目或其必填属性后，点击此处立即刷新（无需等待缓存过期）"
                       >
                         刷新类目树
                       </button>
@@ -3826,7 +3826,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                           type="button"
                           className="temu-link-button"
                           onClick={reRunAttributeAutofill}
-                          title="标题或描述改过之后点这里，按当前文本重新识别"
+                          title="修改标题或描述后点击，按当前文本重新识别"
                         >
                           按标题重新识别
                         </button>
@@ -3926,7 +3926,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   产品货号
                   <em className="temu-muted">
                     {form.productCode.trim() && form.productCode.trim() !== productCode
-                      ? `含中文/符号，提交时会去掉 → ${productCode || "（空，请重填）"}`
+                      ? `含中文或符号，提交时将自动移除 → ${productCode || "（空，请重新填写）"}`
                       : "ParentSKU，变种货号会用它拼前缀"}
                   </em>
                 </span>
@@ -3984,7 +3984,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <button
                     type="button"
                     className="temu-btn is-small"
-                    title="从「AI 处理 / POD 定制」的成品里直接挑，不用先存成本地文件"
+                    title="从「AI 处理 / POD 定制」的成品中选择，无需先保存为本地文件"
                     onClick={() => setPickerSlot(slot.key)}
                   >
                     从成品库挑图
@@ -4280,7 +4280,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                           type="button"
                           className={`temu-sizechart-chip${picked ? " is-picked" : ""}`}
                           onClick={() => toggleSizeTemplate(table.id)}
-                          title={picked ? "再点一下移除" : `填入模板 ID ${table.id}`}
+                          title={picked ? "再次点击移除" : `填入模板 ID ${table.id}`}
                         >
                           {table.name || "尺码表"}
                           <em>{table.id}</em>
@@ -4614,7 +4614,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   type="button"
                   className="temu-btn temu-btn-primary temu-btn-sm"
                   onClick={startNextItem}
-                  title="清掉标题/图片/货号/变种；类目、属性、运费模板、仓库都留着"
+                  title="清除标题/图片/货号/变种；类目、属性、运费模板与仓库将保留"
                 >
                   <BtnIcon path={ICON_NEXT} />
                   发下一条
@@ -4696,7 +4696,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                     <strong>{publishConfirm.kind === "submit" ? "确认提交发布" : "可能重复提交"}</strong>
                     <span>
                       {publishConfirm.kind === "submit"
-                        ? "提交后是真的在店铺里创建商品"
+                        ? "提交后将在店铺中真实创建商品"
                         : "后端台账发现 24 小时内提交过同一条"}
                     </span>
                   </div>
@@ -4790,7 +4790,7 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               </header>
 
               <p className="temu-help-lead">
-                发布商品用的是 <strong>Temu 卖家后台</strong>签发的 access_token，不是你登录工作台的账号。
+                发布商品使用 <strong>Temu 卖家后台</strong>签发的 access_token，与工作台登录账号无关。
                 跟着下面三步在自己的店铺后台走一次，之后一直用这个 token 发布，直到它过期。
               </p>
 
@@ -4820,8 +4820,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <strong>点「获取授权」→ 选「启邦国际跨境分销运营管理系统」→ 确认</strong>
                 </div>
                 <p>
-                  点页面里的「获取授权」。弹窗里「请选择对接系统」的下拉<strong>可以直接打字</strong>：
-                  输入<strong>「启邦国际跨境分销运营管理系统」</strong>并选中它（我们的对接系统，别选成别的），
+                  点击页面中的「获取授权」；在弹窗「请选择对接系统」下拉框中<strong>可直接输入文字</strong>：
+                  输入并选择 <strong>「启邦国际跨境分销运营管理系统」</strong>（请勿选择其他系统），
                   再点「确认」。
                 </p>
                 <img

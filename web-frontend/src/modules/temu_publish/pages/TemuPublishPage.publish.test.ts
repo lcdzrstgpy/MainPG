@@ -26,7 +26,7 @@ test("发布商品：提交前必须人工确认（外部副作用，不允许�
   assert.match(page, /const confirmPublish = async \(\) => \{/);
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
   // 弹窗要说明后果：真实创建 + 不重试
-  assert.match(page, /真的在店铺里创建商品/);
+  assert.match(page, /将在店铺中真实创建商品/);
   assert.match(page, /不支持重试/);
   // 发布流程内不再用原生 confirm（店铺删除等其它位置不受影响）
   const publishFlow = page.slice(
@@ -564,7 +564,7 @@ test("标题自动匹配类目：防抖匹配、没手动选过才自动套用",
   assert.match(page, /if \(categoryTouchedRef\.current\) return;/);
   assert.match(page, /applyCategoryRef\.current\(firstLeaf, \{ auto: true \}\)/);
   // 界面上给出推荐并可切换
-  assert.match(page, /按标题推荐（点一下切换）/);
+  assert.match(page, /按标题推荐（点击切换）/);
   assert.match(page, /className="temu-title-match"/);
 });
 
@@ -853,7 +853,7 @@ test("健壮性：类目匹配重试、传图并发、初始化各自降级、�
   assert.match(page, /await new Promise\(\(resolve\) => setTimeout\(resolve, 800 \* \(attempt \+ 1\)\)\)/);
   assert.match(page, /queries\.map\(\(text\) => matchCategoryWithRetry\(text\)\)/);
   assert.match(page, /const response = await matchCategoryWithRetry\(categoryQuery\.trim\(\)\);/);
-  assert.match(page, /类目匹配服务暂时不可用（已重试 3 次）/);
+  assert.match(page, /类目匹配服务暂不可用（已重试 3 次）/);
 
   // 2) 传图并发 3 且结果保序（进度不变，只是不再排队）；工具已抽到 data/concurrency.ts 并有行为测试
   const concurrency = readFileSync(new URL("../data/concurrency.ts", import.meta.url), "utf8");
@@ -1147,7 +1147,7 @@ test("货号只发字母数字（中文/符号会让 Temu 直接拒）", () => {
   // 产品货号含中文：清洗后为空就报错，否则提示被改成了什么
   assert.match(page, /产品货号只能包含字母、数字、- 和 _（不能含中文或其它符号）/);
   assert.match(page, /产品货号里的中文\/符号已自动去掉/);
-  assert.match(page, /含中文\/符号，提交时会去掉/);
+  assert.match(page, /含中文或符号，提交时将自动移除/);
 
   // 每个出口都用清洗后的值：SKC 货号、变种前缀、SKU 货号
   assert.match(page, /ext_code: \(productCode \|\| "SKC"\)\.slice\(0, 120\),/);
@@ -1767,7 +1767,7 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
   assert.match(library, /<span className="temu-ready is-pending">属性待填<\/span>/);
   // 没估上时要说明「为什么」：没类目就去选一次，正在估就等一下
   assert.match(library, /还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性/);
-  assert.match(library, /属性正在按类目估（同类目只请求一次），稍等一下或刷新/);
+  assert.match(library, /属性正在按类目估算（同类目仅请求一次），请稍候或刷新/);
   // 估上了要说清「其中几项是猜的」，否则「已估 8」会被读成「都填对了」
   assert.match(library, /其中 \$\{guessedInPrefill\} 项是凭类目猜的/);
 
@@ -1781,7 +1781,7 @@ test("草稿库不能标「可发」：产品属性草稿库不存，只能在�
   // 勾了多条但类目不一致 → 必须说清原因，否则用户只看到类目是空的、以为坏了
   assert.match(library, /const batchCategoryConflict = useMemo\(\(\) => \{/);
   assert.match(library, /有 \$\{missing\} 条还没匹配到 Temu 类目，整批没法共用一套属性/);
-  assert.match(library, /勾选的草稿不在同一个叶子类目/);
+  assert.match(library, /所选草稿不属于同一叶子类目/);
   assert.match(library, /\{batchCategoryConflict && \(/);
   // 只要有一条没类目就不预填：整批套一个类目会把那条塞错
   assert.match(library, /if \(paths\.some\(\(path\) => !path\?\.length\)\) return \[\];/);
@@ -3074,7 +3074,7 @@ test("批量发布：先预检再提交，发不出去的默认跳过", () => {
   assert.match(library, /const \s*\[skipBroken, setSkipBroken\] = useState\(true\)/);
   assert.match(library, /const runnableTargets = skipBroken/);
   assert.match(library, /className="temu-batch-precheck"/);
-  assert.match(library, /跳过发不出去的 \{blockedPrecheck\.length\} 条/);
+  assert.match(library, /跳过未通过预检的 \{blockedPrecheck\.length\} 条/);
   assert.match(library, /可发 \{batchTargets\.length - blockedPrecheck\.length\} 条 · 预计失败/);
   // 提交的也是按预检过滤后的 tasks（每条还带着自己那组的模板），不是全部勾选
   assert.match(library, /const tasks: BatchTask\[\] = groups\.flatMap\(\(group, groupIndex\) =>/);
@@ -3155,7 +3155,7 @@ test("批量发布：切页/刷新前发起的那批还在跑，不许再开一�
   // 开批前查跨实例标记（本实例的 state 可能根本不知道那批）：点按钮就拦，别等填完模板
   assert.match(library, /const openBatchDialog = async \(\) => \{[\s\S]{0,400}batchRunningElsewhere\(\)/);
   assert.match(library, /if \(batchRunningElsewhere\(\)\) \{/);
-  assert.match(library, /并行提交会把同一批草稿重复上架/);
+  assert.match(library, /并行提交会导致同一批草稿重复上架/);
 
   // 开批写标记、每轮心跳、finally 一定要清
   assert.match(library, /writeBatchStore\(BATCH_RUN_KEY, String\(Date\.now\(\)\)\);/);
@@ -3169,7 +3169,7 @@ test("批量发布：切页/刷新前发起的那批还在跑，不许再开一�
   // 切回来要认领：进度条 + 停止按钮放回来，心跳停了就放开并刷新
   assert.match(library, /if \(!batchRunningElsewhere\(\)\) return;/);
   assert.match(library, /另一处发起的批量发布还在提交…/);
-  assert.match(library, /上一次批量发布已结束（在别的页签 \/ 切页前跑完的）/);
+  assert.match(library, /上一次批量发布已结束（在其它页签或切换页面前完成）/);
 });
 
 test("失败原因说人话：黑话翻译 + 修法 + 原文留着复制", () => {
@@ -3280,13 +3280,13 @@ test("批量发布：没选模板时按每条草稿自己的类目分组，匹�
   assert.match(library, /blockedItems,/);
   assert.match(library, /groupRunnable < group\.entries\.length \? /);
   assert.match(library, /另有 \{publishConfirm\.total - publishConfirm\.runnable\}/);
-  assert.match(library, /条没过预检也会提交，大概率失败进「发布历史」/);
+  assert.match(library, /条未通过预检也将提交，预计会失败并记入「发布历史」/);
   // 「去补」：被拦条目带着原因跳批量编辑（只列这些行、高亮缺的列），图片问题去图片页
   assert.match(library, /precheckFixTarget/);
   assert.match(library, /const openFix = \(items: \{ id: string; blocked: string\[\] \}\[\]\) => \{/);
   assert.match(library, /title="只列这一条去改，缺的列会高亮"/);
   assert.match(library, /title="被拦的条目只列出来改：缺哪列高亮哪列"/);
-  assert.match(library, /title="只列发不出去的条目去改，缺的列会高亮"/);
+  assert.match(library, /title="仅列出未通过预检的条目以便修正，缺失字段将高亮显示"/);
   assert.match(library, /focusFields=\{batchFix\?\.page === "edit" \? batchFix\.fields : undefined\}/);
   assert.match(library, /批量编辑只列这些行、高亮缺的列/);
   assert.match(library, /模板「\{group\.template\?\.name \?\? "自动"\}」/);
@@ -3338,7 +3338,7 @@ test("批量编辑是独立整页（勾字段 → 表格逐行改 → 只保存�
   assert.match(page, /选择批量编辑的信息/);
   assert.match(page, /onClick=\{\(\) => setActiveColumn\(column\)\}/);
   assert.match(page, /批量改/);
-  assert.match(page, /只是从这张表里去掉，草稿本身不动/);
+  assert.match(page, /仅从当前表格中移除，不影响草稿本身/);
   assert.match(page, /if \(value === ""\) delete merged\[key\];/);
   // 表头里绝不放输入框（之前标签+规则+输入框挤一行，糊成一团）
   assert.doesNotMatch(page, /temu-batch-edit-head-fill/);

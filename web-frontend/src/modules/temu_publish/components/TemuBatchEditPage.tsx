@@ -718,7 +718,7 @@ export function TemuBatchEditPage({
                     type="button"
                     className="temu-link"
                     onClick={() => setRemoved((current) => [...current, entry.id])}
-                    title="只是从这张表里去掉，草稿本身不动"
+                    title="仅从当前表格中移除，不影响草稿本身"
                   >
                     移除
                   </button>

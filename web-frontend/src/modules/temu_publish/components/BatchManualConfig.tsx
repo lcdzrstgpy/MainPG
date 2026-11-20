@@ -133,7 +133,7 @@ export function BatchManualConfig({ onChange, initialPath, initialPicks }: Props
     try {
       const result = await temuPublishApi.matchCategory(text, SITE_ID);
       setPaths(result.categoryPathDTOS ?? []);
-      if (!result.categoryPathDTOS?.length) setError("没匹配到类目：换个更通用的关键词试试");
+      if (!result.categoryPathDTOS?.length) setError("未匹配到类目：请更换更通用的关键词后重试");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "类目匹配失败");
     } finally {

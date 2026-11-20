@@ -96,7 +96,7 @@ export function BatchColumnDialog({ label, kind, decimals = 0, rows, onApply, on
 
   const hint =
     kind === "text"
-      ? "整列改成同一段文字（留空无法提交；想单独改某一行直接点表格里的格子）"
+      ? "对整列应用相同内容（留空将导致无法提交；如需单独修改某行，请点击表格单元格）"
       : kind === "sku"
         ? "按表格顺序递增生成；勾上「添加变种属性」会追加「-颜色-尺码」"
         : "「按现有」是在每行自己的值上算，不是拿第一行算完套给所有行";
@@ -219,7 +219,7 @@ export function BatchColumnDialog({ label, kind, decimals = 0, rows, onApply, on
             {dupSku ? (
               <em className="temu-col-dialog-warn">生成的货号有重复：把位数调大，或勾上「添加变种属性」</em>
             ) : null}
-            {negative ? <em className="temu-col-dialog-warn">有值算成了负数，检查一下输入</em> : null}
+            {negative ? <em className="temu-col-dialog-warn">存在负数值，请检查输入</em> : null}
           </div>
         </div>
 

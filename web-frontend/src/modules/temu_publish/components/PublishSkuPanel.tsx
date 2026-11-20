@@ -525,7 +525,7 @@ export function PublishSkuPanel({
                     type="button"
                     className={`temu-spec-chip${isPicked ? " is-picked" : ""}`}
                     onClick={() => toggle(name)}
-                    title={isPicked ? "再点一下从列表里移除" : `加入「${name}」`}
+                    title={isPicked ? "再次点击从列表中移除" : `加入「${name}」`}
                   >
                     {swatch ? (
                       <i
@@ -542,7 +542,7 @@ export function PublishSkuPanel({
             </div>
             <div className="temu-spec-panel-foot">
               <p className="temu-spec-panel-note">
-                只能从这些值里选（点一下加入、再点移除）。自己造的词 Temu 会判「不合法的{label}」。
+                仅支持从下列取值中选择（点击加入，再次点击移除）；自定义取值将被平台判定为「不合法的{label}」。
               </p>
               {/* 有人要拿全量清单去对表 / 报给运营，给个复制口子，别逼他一个个抄 */}
               <button
@@ -1153,7 +1153,7 @@ export function PublishSkuPanel({
                 <button
                   type="button"
                   className="temu-thumb-edit"
-                  title={row.thumbUrl ? "更换这一行的预览图" : "未单独设置，默认取轮播第一张；点这里可以换图"}
+                  title={row.thumbUrl ? "更换此行的预览图" : "未单独设置，默认使用轮播首图；点击此处可更换图片"}
                   aria-label="更换预览图"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -1404,8 +1404,8 @@ export function PublishSkuPanel({
                   aria-label="删除这一行变种"
                   title={
                     rows.length <= 1
-                      ? "至少保留 1 个变种；整件商品只有一个 SKU 的话，用类目旁的「按规格发」开关关掉多规格"
-                      : "删除这一行（同色最后一行删掉时，上面的颜色列表也会一起移除）"
+                      ? "至少保留 1 个变种；若整件商品仅有一个 SKU，请关闭类目旁的「按规格发」开关"
+                      : "删除此行（删除同色最后一行时，上方颜色列表将一并移除）"
                   }
                 >
                   ×

@@ -17,7 +17,7 @@ import { CAROUSEL_MAX, CAROUSEL_MIN, resolveEntryImages, sameImages } from "../d
 type Mode = "delete" | "cover" | "add" | "trim";
 
 const MODES: Array<{ key: Mode; label: string; hint: string }> = [
-  { key: "delete", label: "删除图片", hint: "按序号删掉每一行的第 N 张" },
+  { key: "delete", label: "删除图片", hint: "按序号删除每一行的第 N 张图片" },
   { key: "cover", label: "切换首图", hint: "把第 N 张移到第一位（首图）" },
   { key: "add", label: "添加图片", hint: "在第 N 张后面插入一个图片地址" },
   { key: "trim", label: "超出移除", hint: "只保留前 N 张，其余全部移除" },

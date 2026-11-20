@@ -136,7 +136,7 @@ export function TemplateLoadDialog({
         <header className="temu-edit-head">
           <div>
             <strong>{title}</strong>
-            <span>点一条直接套用；只补空字段，已经填过的不动</span>
+            <span>点击任一模板即可套用；仅填充空白字段，已填写内容不会被覆盖</span>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             ×

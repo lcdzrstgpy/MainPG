@@ -1317,7 +1317,7 @@ export function TemuDraftLibraryPage({
     if (missing) {
       return `有 ${missing} 条还没匹配到 Temu 类目，整批没法共用一套属性：先单独「用于发布」把它们选好类目，或分批发。`;
     }
-    return "勾选的草稿不在同一个叶子类目（属性按类目定，不同类目不能共用）：关掉弹窗直接点「批量发布」会按类目自动分批跑；要手动配就下面选一个类目、整批按它发。";
+    return "所选草稿不属于同一叶子类目（属性按类目定义，不同类目不可共用）：关闭弹窗直接点「批量发布」将按类目自动分批执行；如需手动配置，请在下方选择类目并整批应用。";
   }, [selected, categoryMemo, batchCommonCategory]);
 
   /**
@@ -1360,7 +1360,7 @@ export function TemuDraftLibraryPage({
       window.clearInterval(timer);
       setBatchState({
         running: false,
-        text: "上一次批量发布已结束（在别的页签 / 切页前跑完的）",
+        text: "上一次批量发布已结束（在其它页签或切换页面前完成）",
       });
       void load();
     }, 2000);
@@ -1611,7 +1611,7 @@ export function TemuDraftLibraryPage({
     // 切页前发起的那批可能还在跑（本实例的 state 不知道）：点按钮就拦，别等填完模板才说
     if (batchRunningElsewhere()) {
       setError(
-        "上一批还在提交（可能是在别的页签 / 切页前发起的）：等它跑完、或点进度条上的「停止」再发 —— 并行提交会把同一批草稿重复上架",
+        "上一批仍在提交中（可能由其它页签或切换页面前发起）：请等待其完成，或点击进度条上的「停止」后再提交——并行提交会导致同一批草稿重复上架",
       );
       return;
     }
@@ -1759,7 +1759,7 @@ export function TemuDraftLibraryPage({
     if (batchState.running) return;
     if (batchRunningElsewhere()) {
       setError(
-        "上一批还在提交（可能是在别的页签 / 切页前发起的）：等它跑完、或点进度条上的「停止」再发 —— 并行提交会把同一批草稿重复上架",
+        "上一批仍在提交中（可能由其它页签或切换页面前发起）：请等待其完成，或点击进度条上的「停止」后再提交——并行提交会导致同一批草稿重复上架",
       );
       return;
     }
@@ -1821,7 +1821,7 @@ export function TemuDraftLibraryPage({
     if (!tasks.length) {
       setError(
         selectedCount
-          ? `勾选的 ${selectedCount} 条都有阻塞问题（见上面的预检），先按原因改掉或关掉「跳过发不出去的」`
+          ? `勾选的 ${selectedCount} 条都有阻塞问题（见上面的预检），请先按原因修正，或关闭「跳过未通过预检的条目」`
           : "先勾选要发布的产品",
       );
       return;
@@ -2429,7 +2429,7 @@ export function TemuDraftLibraryPage({
                                 setPublishConfirm(null);
                                 openFix(items);
                               }}
-                              title="只列发不出去的条目去改，缺的列会高亮"
+                              title="仅列出未通过预检的条目以便修正，缺失字段将高亮显示"
                             >
                               去补
                             </button>
@@ -2438,7 +2438,7 @@ export function TemuDraftLibraryPage({
                       ) : (
                         <p className="temu-confirm-warn">
                           其中 {publishConfirm.total - publishConfirm.runnable}{" "}
-                          条没过预检也会提交，大概率失败进「发布历史」
+                          条未通过预检也将提交，预计会失败并记入「发布历史」
                         </p>
                       )
                     ) : null}
@@ -2641,7 +2641,7 @@ export function TemuDraftLibraryPage({
                   </th>
                   <th className="col-image">图片</th>
                   <th className="col-title">产品</th>
-                  <th className="col-cat" title="Temu 类目：发布前必须选到叶子类目，否则发不出去">
+                  <th className="col-cat" title="Temu 类目：发布前须选择至叶子类目，否则无法提交">
                     Temu 类目
                   </th>
                   <th className="col-sku">货号</th>
@@ -2739,7 +2739,7 @@ export function TemuDraftLibraryPage({
                                 state === "picked"
                                   ? label
                                   : state === "auto"
-                                    ? `按标题自动匹配的类目：${label}（只是大概方向，发布前建议确认）`
+                                    ? `按标题自动匹配的类目：${label}（仅供参考，提交前请确认）`
                                     : state === "draft"
                                       ? `草稿自带的分类：${label}（不是 Temu 类目，发布时还要选一次）`
                                       : "还没选 Temu 类目，发布前必须选到叶子类目"
@@ -2797,7 +2797,7 @@ export function TemuDraftLibraryPage({
                           estimated && prefill ? Number(prefill.guessed ?? 0) : 0;
                         const pendingHint = !leafForEntry
                           ? "还没有 Temu 类目：点「用于发布」选一次，之后会自动按类目估属性"
-                          : "属性正在按类目估（同类目只请求一次），稍等一下或刷新";
+                          : "属性正在按类目估算（同类目仅请求一次），请稍候或刷新";
                         if (!missing.length) {
                           return (
                             <span
@@ -2808,7 +2808,7 @@ export function TemuDraftLibraryPage({
                                     (guessedInPrefill
                                       ? `，其中 ${guessedInPrefill} 项是凭类目猜的（没有依据，取了第一个可用选项）`
                                       : "") +
-                                    "；带入发布页时会直接填好，发布前请核对"
+                                    "；带入发布页后将自动填充，提交前请核对"
                                   : `草稿字段齐了，不用回上游补数据。${pendingHint}`
                               }
                             >
@@ -3080,7 +3080,7 @@ export function TemuDraftLibraryPage({
                           checked={skipBroken}
                           onChange={(event) => setSkipBroken(event.target.checked)}
                         />
-                        跳过发不出去的 {blockedPrecheck.length} 条
+                        跳过未通过预检的 {blockedPrecheck.length} 条
                       </label>
                     ) : null}
                   </div>

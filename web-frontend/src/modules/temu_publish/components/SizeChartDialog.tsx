@@ -438,7 +438,7 @@ export function SizeChartDialog({
                 disabled={Boolean(creating) || !classId}
                 title={
                   classId
-                    ? "实验性：按上方格子直接在 Temu 建表，成功自动填模板 ID（省去后台手建）"
+                    ? "实验功能：按上方表格内容在 Temu 创建尺码表，创建成功后自动填入模板 ID（无需前往卖家后台手动创建）"
                     : "认不出尺码分类 ID，只能去卖家后台建"
                 }
                 onClick={() => void createOnTemu()}
