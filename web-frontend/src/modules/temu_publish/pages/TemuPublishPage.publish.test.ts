@@ -36,15 +36,17 @@ test("发布商品：提交前必须人工确认（外部副作用，不允许�
   assert.doesNotMatch(publishFlow, /window\.confirm\(/);
 });
 
-test("发布商品：build 与 publish 复用同一份草稿，避免两条路径走偏", () => {
+test("发布商品：检查必填与发布复用同一份草稿，避免两条路径走偏", () => {
   assert.match(page, /const composeDraft = async \(\): Promise<TemuGoodsDraft> =>/, "缺少 composeDraft");
-  // build / publish / 类目必填校验三条入口都必须走同一个 composeDraft
+  // 校验必填 / 发布两条入口都必须走同一个 composeDraft（请求体预览是排障用的，已从界面移除）
   const composeCalls = page.match(/await composeDraft\(\)/g) ?? [];
-  assert.ok(composeCalls.length >= 2, `composeDraft 至少被 build 与 publish 复用，实际 ${composeCalls.length}`);
+  assert.ok(composeCalls.length >= 2, `composeDraft 至少被校验与发布复用，实际 ${composeCalls.length}`);
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
-  assert.match(page, /const built = await temuPublishApi\.buildPayload\(draft\);/);
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 排障界面（图片地址原文 / 预览请求体 / 复制 JSON）不摆给用户（2026-11-20 删）
+  assert.ok(!page.includes("高级：图片地址原文"), "「图片地址原文」面板不要了");
+  assert.ok(!page.includes("预览请求体"), "「预览请求体」调试入口不要了");
 });
 
 test("发布商品：接口指向 /publish，按钮提交中要禁用", () => {

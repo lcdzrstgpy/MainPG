@@ -64,7 +64,6 @@ import type { ProductTemplate, VariantTemplate } from "../data/localStore";
 import { TEMU_PUBLISH_PREFILL_EVENT, TEMU_PUBLISH_PREFILL_KEY } from "../types";
 import type {
   TemuAttributes,
-  TemuBuildPayloadResult,
   TemuGoodsDraft,
   TemuPublishResult,
   TemuCategory,
@@ -776,8 +775,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     null | { kind: "product" | "variant"; mode: "save" | "load" }
   >(null);
 
-  const [result, setResult] = useState<TemuBuildPayloadResult | null>(null);
-  const [copied, setCopied] = useState(false);
   /** 成功回执 JSON 的复制反馈 */
   const [receiptCopied, setReceiptCopied] = useState(false);
   const [publishResult, setPublishResult] = useState<TemuPublishResult | null>(null);
@@ -802,8 +799,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     declaredPrice?: string;
   } | null>(null);
 
-  // compose 阶段产生的提醒（如建议售价单位可疑），build 后并到 warnings 里展示
-  const composeWarnings = useRef<string[]>([]);
   const specCache = useRef(new Map<string, TemuSpecCreated>());
   const imageCache = useRef(new Map<string, string>());
   // 详情图统一宽度后的尺寸（key 同 imageCache）
@@ -2376,7 +2371,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
   /** 组装发布草稿（校验 + 图片上传 + 创建规格）。build / 校验 / 发布共用同一份。 */
   const composeDraft = async (): Promise<TemuGoodsDraft> => {
     const warnings: string[] = [];
-    composeWarnings.current = warnings;
     if (!status?.configured.ready) {
       throw new Error("请先在「店铺凭证」里配置 client、token 与店铺 access_token");
     }
@@ -2713,15 +2707,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     };
   };
 
-  const buildPayload = () =>
-    run("build", async () => {
-      const draft = await composeDraft();
-      const built = await temuPublishApi.buildPayload(draft);
-      const extra = composeWarnings.current;
-      setResult({ ...built, warnings: [...built.warnings, ...extra] });
-      setCopied(false);
-    });
-
   /** 发布前校验：问网关这个叶子类目还缺哪些必填属性，不会提交商品。 */
   const checkMandatory = () =>
     run("mandatory", async () => {
@@ -2904,16 +2889,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     }
   };
 
-  const copyPayload = async () => {
-    if (!result) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(result.payload, null, 2));
-      setCopied(true);
-    } catch {
-      setError("复制失败，请手动选中 JSON 复制");
-    }
-  };
-
   /** 发布后去店铺里核对：按 SKC 货号查商品列表，确认真的建成了。 */
   const checkShopGoods = async (extCode: string) => {
     setShopCheck({ loading: true, error: "", items: [] });
@@ -2991,11 +2966,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
     setRows([]);
     setError("");
     setErrorSection("");
-    setResult(null);
     setPublishResult(null);
     setMandatory(null);
     setShowFieldErrors(false);
-    setCopied(false);
     // 上一条草稿的预填数据与来源条必须一起清：
     // 留着的话「rows 为空就消费 prefillRef」的路径会把它重新填回来，
     // 侧栏也还挂着「POD 草稿 · 申报价 ¥xx」。
@@ -4471,24 +4444,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
               step={{ label: "校验发布", hint: "检查必填 → 提交", done: false }}
               index={4}
             />
-            <div className="temu-publish-actions">
-              {/* 检查必填/提交发布统一走右侧检查栏（顶部也留了一个提交），
-                  这里只留排障用的请求体预览/复制，别摆第三份按钮 */}
-              <button type="button" className="temu-btn" onClick={buildPayload} disabled={busy !== ""}>
-                {busy === "build" ? "生成中…" : "预览请求体"}
-              </button>
-              {result && (
-                <>
-                  <span className="temu-muted">
-                    {result.summary.skc_count} 个 SKC / {result.summary.sku_count} 个变种 · 类目{" "}
-                    {result.summary.leaf_cat_id}
-                  </span>
-                  <button type="button" className="temu-btn" onClick={copyPayload}>
-                    {copied ? "已复制" : "复制 JSON"}
-                  </button>
-                </>
-              )}
-            </div>
 
             {publishResult && (
               <div className="temu-publish-done">
@@ -4573,41 +4528,6 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
               </div>
             )}
-
-            {result && result.warnings.length > 0 && (
-              <ul className="temu-warnings">
-                {result.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            )}
-
-            <details className="temu-advanced">
-              <summary>高级：图片地址原文、请求体</summary>
-              <label className="temu-field">
-                <span>轮播图地址（每行一个）</span>
-                <textarea
-                  className="temu-input"
-                  rows={2}
-                  value={form.carousel}
-                  onChange={(event) => patch({ carousel: event.target.value })}
-                  placeholder="https://img.kwcdn.com/..."
-                />
-              </label>
-              <label className="temu-field">
-                <span>外包装图地址</span>
-                <textarea className="temu-input" rows={2} value={form.outerImages} onChange={(event) => patch({ outerImages: event.target.value })} />
-              </label>
-              <label className="temu-field">
-                <span>详情图地址</span>
-                <textarea className="temu-input" rows={2} value={form.detailImages} onChange={(event) => patch({ detailImages: event.target.value })} />
-              </label>
-              {result ? (
-                <pre className="temu-json">{JSON.stringify(result.payload, null, 2)}</pre>
-              ) : (
-                <p className="temu-muted">点上面「预览请求体」后，这里显示即将提交给 Temu 的 goods.add 内容。</p>
-              )}
-            </details>
           </section>
         </div>
 
