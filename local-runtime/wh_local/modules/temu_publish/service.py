@@ -1715,7 +1715,7 @@ def _assemble_payload(
             )
     if any(sku.is_sensitive for skc in draft.skcs for sku in skc.skus):
         warnings.append(
-            "已标记为敏感货：接口的敏感类型（sensitiveTypes）暂未维护，提交后可能被要求补类型。"
+            "已标记为敏感产品：平台敏感类型暂未维护，提交后可能被要求补充类型。"
         )
     if draft.size_template_ids:
         payload["sizeTemplateIds"] = [int(value) for value in draft.size_template_ids]
