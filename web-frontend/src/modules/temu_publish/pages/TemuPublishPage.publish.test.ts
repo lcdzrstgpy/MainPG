@@ -44,6 +44,12 @@ test("发布商品：检查必填与发布复用同一份成品，避免两条�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 批量进度可视化（2026-11-21）：百分比 + 剩余时间 + 进度条
+  const libraryForProgress = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  assert.match(libraryForProgress, /batchEtaText/);
+  assert.match(libraryForProgress, /role="progressbar"/);
+  assert.match(libraryForProgress, /预计剩余/);
+  assert.match(libraryForProgress, /done: index,/);
   // 瞬时重试补漏（2026-11-21）：组装阶段的已知瞬时错误用类型显式标记，
   // 不能被「类目/属性」关键词误判成业务拒绝——文案说「请重试」就要真能重试
   const batchSrc = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");

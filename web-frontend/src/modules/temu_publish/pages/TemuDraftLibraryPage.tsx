@@ -83,6 +83,17 @@ const AUTO_CONCURRENCY = 3;
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** 本机存储按登录账号分 key：换账号不能看到上一个人的编辑/备注/隐藏/分类。 */
+/** 批量剩余时间预估：按已完成条目的平均耗时估算（完成后才显示） */
+function batchEtaText(state: { done?: number; total?: number; startedAt?: number }): string {
+  const { done = 0, total = 0, startedAt = 0 } = state;
+  if (!done || !total || !startedAt) return "";
+  const elapsedSeconds = (Date.now() - startedAt) / 1000;
+  const remainSeconds = Math.round((elapsedSeconds / done) * (total - done));
+  if (remainSeconds < 30) return "，预计剩余不足 1 分钟";
+  if (remainSeconds < 3600) return `，预计剩余约 ${Math.max(1, Math.round(remainSeconds / 60))} 分钟`;
+  return `，预计剩余约 ${Math.floor(remainSeconds / 3600)} 小时 ${Math.round((remainSeconds % 3600) / 60)} 分钟`;
+}
+
 function scoped(key: string): string {
   return `${key}:${localStore.storageScope()}`;
 }
@@ -668,7 +679,14 @@ export function TemuDraftLibraryPage({
   );
   const [productTpl, setProductTpl] = useState("");
   const [variantTpl, setVariantTpl] = useState("");
-  const [batchState, setBatchState] = useState<{ running: boolean; text: string }>({
+  const [batchState, setBatchState] = useState<{
+    running: boolean;
+    text: string;
+    /** 进度可视化：已完成数/总数/开始时间（用于百分比与剩余时间） */
+    done?: number;
+    total?: number;
+    startedAt?: number;
+  }>({
     running: false,
     text: "",
   });
@@ -1834,7 +1852,8 @@ export function TemuDraftLibraryPage({
     batchAbortRef.current = false;
     writeBatchStore(BATCH_STOP_KEY, "");
     writeBatchStore(BATCH_RUN_KEY, String(Date.now()));
-    setBatchState({ running: true, text: `0/${tasks.length}` });
+    const batchStartedAt = Date.now();
+    setBatchState({ running: true, text: `0/${tasks.length}`, done: 0, total: tasks.length, startedAt: batchStartedAt });
     setBatchSkipped([]);
     let ok = 0;
     let fail = 0;
@@ -1865,6 +1884,9 @@ export function TemuDraftLibraryPage({
         setBatchState({
           running: true,
           text: `${index + 1}/${tasks.length}${groupText} · ${label}`,
+          done: index,
+          total: tasks.length,
+          startedAt: batchStartedAt,
         });
         try {
           // 「组装 + 提交」整体算一次尝试：组装里有图片上传（每张都过网关），
@@ -1887,10 +1909,10 @@ export function TemuDraftLibraryPage({
             if (!isTransientPublishError(first) || batchAbortRef.current || batchStopRequested()) {
               throw first;
             }
-            setBatchState({
-              running: true,
+            setBatchState((current) => ({
+              ...current,
               text: `${index + 1}/${tasks.length}${groupText} · ${label} · 网络抖动，2 秒后重试一次`,
-            });
+            }));
             await new Promise((resolve) => setTimeout(resolve, 2000));
             if (batchAbortRef.current || batchStopRequested()) throw first;
             result = await runOnce();
@@ -2354,9 +2376,20 @@ export function TemuDraftLibraryPage({
 
 
           {(batchState.running || batchState.text) && (
+            <div className="temu-batch-progress-wrap">
             <p className="temu-batch-progress">
               {batchState.running ? "批量发布中：" : ""}
               {batchState.text}
+              {batchState.running && batchState.total ? (
+                (() => {
+                  const percent = Math.round(((batchState.done ?? 0) / batchState.total) * 100);
+                  return (
+                    <span className="temu-batch-progress-summary">
+                      （{percent}%{batchEtaText(batchState)}）
+                    </span>
+                  );
+                })()
+              ) : null}
               {batchState.running ? (
                 <button
                   type="button"
@@ -2366,7 +2399,7 @@ export function TemuDraftLibraryPage({
                     batchAbortRef.current = true;
                     writeBatchStore(BATCH_STOP_KEY, "1");
                     setBatchState((current) => ({
-                      running: current.running,
+                      ...current,
                       text: `${current.text} · 正在停止（当前这条发完就停）`,
                     }));
                   }}
@@ -2375,6 +2408,22 @@ export function TemuDraftLibraryPage({
                 </button>
               ) : null}
             </p>
+            {batchState.running && batchState.total ? (
+              <div
+                className="temu-batch-progress-track"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={batchState.total}
+                aria-valuenow={batchState.done ?? 0}
+              >
+                <span
+                  style={{
+                    width: `${Math.round(((batchState.done ?? 0) / batchState.total) * 100)}%`,
+                  }}
+                />
+              </div>
+            ) : null}
+            </div>
           )}
 
           {/*

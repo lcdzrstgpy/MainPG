@@ -7359,6 +7359,31 @@ textarea.temu-input {
   font-size: 12px;
 }
 
+.temu-batch-progress-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.temu-batch-progress-summary {
+  color: var(--theme-text-muted, #6f849a);
+  font-size: 12px;
+}
+
+.temu-batch-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #eef4f8);
+}
+
+.temu-batch-progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--theme-primary, #0a497f);
+  transition: width .3s ease;
+}
+
 /* 待人工向导条：逐条补完的进度与操作 */
 .temu-manual-wizard {
   display: flex;
