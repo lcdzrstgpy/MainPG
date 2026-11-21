@@ -336,7 +336,7 @@ export async function buildDraftForPublish(
 
   // 属性表拿不到就别硬发：属性是全类目必填项，没有它连 pid/refPid 都还原不了
   if (Object.keys(templateAttrs).length && !attrs) {
-    throw new Error("未能获取类目属性定义，无法组装商品属性，请重试");
+    throw new TransientBuildError("未能获取类目属性定义，无法组装商品属性，请重试");
   }
   /**
    * 属性 payload。
@@ -555,10 +555,19 @@ export async function buildDraftForPublish(
 const TRANSIENT_ERROR_HINT =
   /请求超时|超时|timeout|timed out|本地服务无响应|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|请求过于频繁|系统繁忙|rate.?limit|服务不可用|502|503|504/i;
 /** 业务拒绝关键词：命中就绝不重试（Temu 拒绝文案/本地校验文案都会带这些词） */
+/**
+ * 已知瞬时的组装阶段错误：网络抖动导致类目属性表拉不下来等。
+ * 文案含「类目/属性」会被下面的业务拒绝关键词误拦，所以用类型显式标记——
+ * 这类错误本身就该重试，不靠猜文案。
+ */
+export class TransientBuildError extends Error {}
+
 const BUSINESS_REJECT_HINT =
   /重复提交|类目|属性|重量|体积|图片|申报价|建议售价|库存|变种|规格|标题|尺码|敏感词/;
 
 export function isTransientPublishError(cause: unknown): boolean {
+  // 显式标记的组装阶段瞬时错误：直接放行，不走关键词猜测
+  if (cause instanceof TransientBuildError) return true;
   const message = cause instanceof Error ? cause.message : String(cause ?? "");
   if (!message.trim()) return false;
   if (BUSINESS_REJECT_HINT.test(message)) return false;
