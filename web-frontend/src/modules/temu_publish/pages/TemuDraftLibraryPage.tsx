@@ -949,6 +949,19 @@ export function TemuDraftLibraryPage({
     return true;
   });
 
+  /** 排序：默认（后端顺序，最新在前）/ 标题 / 更新时间。只排本页已加载的条目 */
+  const [sortKey, setSortKey] = useState<"default" | "title" | "updated">("default");
+  const sortedEntries = useMemo(() => {
+    if (sortKey === "default") return visibleEntries;
+    const copy = [...visibleEntries];
+    if (sortKey === "title") {
+      copy.sort((a, b) => (a.title || "").localeCompare(b.title || "", "zh"));
+    } else {
+      copy.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+    }
+    return copy;
+  }, [visibleEntries, sortKey]);
+
   /** 向导前进（到队尾就收工） */
   const advanceWizard = () =>
     setWizard((current) => {
@@ -2350,6 +2363,16 @@ export function TemuDraftLibraryPage({
             onPickTemplate={setPicker}
             onClearSelection={() => setSelected(new Set())}
           />
+          <select
+            className="temu-input temu-draft-sort"
+            value={sortKey}
+            aria-label="排序方式"
+            onChange={(event) => setSortKey(event.target.value as typeof sortKey)}
+          >
+            <option value="default">排序：默认</option>
+            <option value="title">排序：标题 A→Z</option>
+            <option value="updated">排序：最近更新</option>
+          </select>
           <label className="temu-draft-search">
             <input
               className="temu-input"
@@ -2739,7 +2762,7 @@ export function TemuDraftLibraryPage({
                 </tr>
               </thead>
               <tbody>
-                {visibleEntries.map((entry) => (
+                {sortedEntries.map((entry) => (
                   <tr key={entry.id} className={selected.has(entry.id) ? "is-selected" : ""}>
                     <td className="col-check">
                       <input

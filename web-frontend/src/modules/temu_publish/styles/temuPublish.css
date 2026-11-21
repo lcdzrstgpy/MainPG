@@ -7388,6 +7388,66 @@ textarea.temu-input {
   flex: none;
 }
 
+.temu-draft-sort {
+  width: auto;
+  min-width: 118px;
+  flex: none;
+}
+
+.temu-trend-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+  max-height: 56vh;
+  overflow: auto;
+}
+
+.temu-trend-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.temu-trend-table th,
+.temu-trend-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--theme-card-border, #e5edf4);
+  text-align: left;
+  color: var(--theme-text-secondary, #466079);
+  white-space: nowrap;
+}
+
+.temu-trend-table th {
+  color: var(--theme-text-muted, #6f849a);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.temu-trend-label {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--theme-text-primary, #1a3551) !important;
+}
+
+.temu-trend-bar {
+  display: inline-block;
+  width: 90px;
+  height: 6px;
+  margin-right: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--theme-module-surface-soft, #eef4f8);
+  vertical-align: middle;
+}
+
+.temu-trend-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--theme-primary, #0a497f);
+}
+
 .temu-lowstock-body {
   display: grid;
   gap: 10px;

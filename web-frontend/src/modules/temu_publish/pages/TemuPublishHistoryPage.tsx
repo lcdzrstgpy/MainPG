@@ -1,3 +1,4 @@
+import { FailureTrendDialog } from "../components/FailureTrendDialog";
 import { LowStockDialog } from "../components/LowStockDialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -144,6 +145,8 @@ export function TemuPublishHistoryPage({
   const [tab, setTab] = useState<Tab>("success");
   /** 低库存清单弹窗 */
   const [lowStockOpen, setLowStockOpen] = useState(false);
+  /** 失败趋势弹窗 */
+  const [trendOpen, setTrendOpen] = useState(false);
   const [items, setItems] = useState<TemuPublishHistoryItem[]>([]);
   const [counts, setCounts] = useState({ success: 0, failed: 0 });
   const [total, setTotal] = useState(0);
@@ -321,6 +324,7 @@ export function TemuPublishHistoryPage({
         </div>
       </header>
       {lowStockOpen ? <LowStockDialog onClose={() => setLowStockOpen(false)} /> : null}
+      {trendOpen ? <FailureTrendDialog onClose={() => setTrendOpen(false)} /> : null}
 
       <div className="temu-history-toolbar">
         <div className="temu-history-tabs" role="tablist">
@@ -354,6 +358,14 @@ export function TemuPublishHistoryPage({
           </button>
         </div>
 
+        <button
+          type="button"
+          className="temu-btn temu-history-lowstock"
+          title="近 30 天失败按原因归堆，看哪类在变多"
+          onClick={() => setTrendOpen(true)}
+        >
+          失败趋势
+        </button>
         <button
           type="button"
           className="temu-btn temu-history-lowstock"

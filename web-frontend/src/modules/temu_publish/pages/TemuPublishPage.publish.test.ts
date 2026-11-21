@@ -44,6 +44,15 @@ test("发布商品：检查必填与发布复用同一份成品，避免两条�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 失败趋势 + 成品库排序（2026-11-21）
+  const trend = readFileSync(new URL("../components/FailureTrendDialog.tsx", import.meta.url), "utf8");
+  assert.match(trend, /近 7 天/);
+  assert.match(trend, /上周/);
+  assert.match(trend, /8~30 天/);
+  assert.match(trend, /shortReasonLabel/);
+  const libraryForSort = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  assert.match(libraryForSort, /排序：标题 A→Z/);
+  assert.match(libraryForSort, /sortedEntries\.map/);
   // 低库存清单（2026-11-21）：接口早就有，界面补上；只读（改库存接口未开通）
   const lowStock = readFileSync(new URL("../components/LowStockDialog.tsx", import.meta.url), "utf8");
   assert.match(lowStock, /lowStockGoods/);
@@ -3080,7 +3089,7 @@ test("成品库：失败过的成品打标 + 只看失败过；历史点「去�
   assert.match(library, /failedIdSet\.has\(entry\.id\) \|\| failedTitleSet\.has\(\(entry\.title \|\| ""\)\.trim\(\)\)/);
   assert.match(library, /const \[onlyFailed, setOnlyFailed\] = useState\(false\);/);
   assert.match(library, /const failedCount = entries\.filter\(\(entry\) => isFailedEntry\(entry\)\)\.length;/);
-  assert.match(library, /\{visibleEntries\.map\(\(entry\) => \(/);
+  assert.match(library, /\{sortedEntries\.map\(\(entry\) => \(/);
   assert.match(library, /className="temu-draft-failed"/);
   assert.match(library, /className={`temu-library-failed-toggle\$\{onlyFailed \? " is-active" : ""\}`}/);
   assert.match(css, /\.temu-library-failed-toggle \{/);
