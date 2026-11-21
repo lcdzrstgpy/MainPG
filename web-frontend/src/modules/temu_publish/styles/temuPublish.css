@@ -7384,6 +7384,10 @@ textarea.temu-input {
   transition: width .3s ease;
 }
 
+.temu-history-lowstock {
+  flex: none;
+}
+
 .temu-lowstock-body {
   display: grid;
   gap: 10px;

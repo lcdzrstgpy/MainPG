@@ -319,9 +319,6 @@ export function TemuPublishHistoryPage({
           <h1>发布历史</h1>
           <p>成功与失败分开记；成功过的成品会自动从成品库移除，避免重复上架。</p>
         </div>
-        <button type="button" className="temu-btn" onClick={() => setLowStockOpen(true)}>
-          低库存清单
-        </button>
       </header>
       {lowStockOpen ? <LowStockDialog onClose={() => setLowStockOpen(false)} /> : null}
 
@@ -356,6 +353,15 @@ export function TemuPublishHistoryPage({
             失败 <em>{failed}</em>
           </button>
         </div>
+
+        <button
+          type="button"
+          className="temu-btn temu-history-lowstock"
+          title="扫描店铺商品，列出存在零库存 SKU 的商品"
+          onClick={() => setLowStockOpen(true)}
+        >
+          低库存清单
+        </button>
 
         <label className="temu-history-search">
           <span className="temu-history-search-icon" aria-hidden="true">⌕</span>
