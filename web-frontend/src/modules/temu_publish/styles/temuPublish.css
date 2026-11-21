@@ -7384,6 +7384,42 @@ textarea.temu-input {
   transition: width .3s ease;
 }
 
+.temu-lowstock-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 16px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.temu-lowstock-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.temu-lowstock-table th,
+.temu-lowstock-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--theme-card-border, #e5edf4);
+  text-align: left;
+  color: var(--theme-text-secondary, #466079);
+}
+
+.temu-lowstock-table th {
+  color: var(--theme-text-muted, #6f849a);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.temu-lowstock-title {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-primary, #1a3551) !important;
+}
+
 /* 待人工向导条：逐条补完的进度与操作 */
 .temu-manual-wizard {
   display: flex;

@@ -44,6 +44,14 @@ test("发布商品：检查必填与发布复用同一份成品，避免两条�
   assert.match(page, /const checked = await temuPublishApi\.checkMandatory\(draft\);/);
   // 不允许任何一处绕过 composeDraft 直接拼 payload
   assert.match(page, /const published = await temuPublishApi\.publish\(draft, job\.kind === "duplicate"\);/);
+  // 低库存清单（2026-11-21）：接口早就有，界面补上；只读（改库存接口未开通）
+  const lowStock = readFileSync(new URL("../components/LowStockDialog.tsx", import.meta.url), "utf8");
+  assert.match(lowStock, /lowStockGoods/);
+  assert.match(lowStock, /Temu 卖家中心/);
+  assert.match(lowStock, /零库存 SKU/);
+  const historySrc = readFileSync(new URL("./TemuPublishHistoryPage.tsx", import.meta.url), "utf8");
+  assert.match(historySrc, /低库存清单/);
+  assert.match(historySrc, /<LowStockDialog/);
   // 批量进度可视化（2026-11-21）：百分比 + 剩余时间 + 进度条
   const libraryForProgress = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
   assert.match(libraryForProgress, /batchEtaText/);

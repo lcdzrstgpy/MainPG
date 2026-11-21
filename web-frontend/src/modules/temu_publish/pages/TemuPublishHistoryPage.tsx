@@ -1,3 +1,4 @@
+import { LowStockDialog } from "../components/LowStockDialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { httpBlob } from "../../../transport/http/client";
@@ -141,6 +142,8 @@ export function TemuPublishHistoryPage({
   onOpenDraftLibrary?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("success");
+  /** 低库存清单弹窗 */
+  const [lowStockOpen, setLowStockOpen] = useState(false);
   const [items, setItems] = useState<TemuPublishHistoryItem[]>([]);
   const [counts, setCounts] = useState({ success: 0, failed: 0 });
   const [total, setTotal] = useState(0);
@@ -316,7 +319,11 @@ export function TemuPublishHistoryPage({
           <h1>发布历史</h1>
           <p>成功与失败分开记；成功过的成品会自动从成品库移除，避免重复上架。</p>
         </div>
+        <button type="button" className="temu-btn" onClick={() => setLowStockOpen(true)}>
+          低库存清单
+        </button>
       </header>
+      {lowStockOpen ? <LowStockDialog onClose={() => setLowStockOpen(false)} /> : null}
 
       <div className="temu-history-toolbar">
         <div className="temu-history-tabs" role="tablist">
