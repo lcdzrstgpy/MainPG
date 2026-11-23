@@ -19,6 +19,7 @@ from .premium_composer import MarketingCopy
 PHOTO_CONTRACT = """HARD RULES:
 - The reference images are the ONLY source of truth for the product. Keep silhouette, proportions, colours, materials, structure, printed markings and every physical detail IDENTICAL. Only scene, background, camera angle and lighting may change.
 - MECHANICAL FIDELITY (red line): reproduce every jaw, blade, tooth, serration, bevel, hinge, rivet, screw, spring, coil, pivot and joint with the same count, same position and same geometry as the reference. Serrations must keep their exact number and spacing. NEVER melt, blur, merge, simplify, smooth away or invent any part; a deformed, blobby or fused jaw is a failed image and must be re-rendered. Keep the tool in the same open/closed state as the reference.
+- PHYSICAL PLAUSIBILITY (red line): no object may pass through, pierce, float around or intersect the product; every prop either rests on the surface or is genuinely gripped between the jaws. No floating fragments, no impossible angles, no extra loose parts. When in doubt, render FEWER props.
 - Render ZERO text of any kind: no letters, words, numbers, labels, logos, watermarks or UI elements. Text will be added later by a layout engine.
 - Realistic commercial product photography, physically plausible light and shadows, sharp focus, no illustration or 3D-render look, no hands or people.
 """
@@ -28,12 +29,18 @@ PHOTO_LAYOUTS: dict[str, str] = {
     "headline_hero": (
         "COMPOSITION: dramatic square product shot on a dark charcoal studio background. "
         "Keep the upper 35% of the frame clean and uncluttered (dark backdrop only) as copy space; "
-        "the product fills the lower 60% at a dynamic three-quarter angle, optionally cutting a thin steel wire."
+        "the product fills the lower 60% at a dynamic three-quarter angle, resting on the surface in its closed state. "
+        "NO wire, NO cable and no action props — a clean hero of the tool itself."
     ),
     "action_proof": (
-        "COMPOSITION: square action close-up — the product actively performing its strongest use case "
-        "(e.g. cutting a steel wire / rope / cable) with crisp detail on the working edge. "
-        "Keep the upper-left 45% of the frame darker and uncluttered as copy space; action happens centre-right and lower."
+        "COMPOSITION: square close-up on a dark workbench, product in the lower-right two thirds. "
+        "If the product is a cutting or gripping tool, the ONLY permitted action is: one single straight piece of wire "
+        "clamped exactly inside the jaws' cutting notch, held in the same plane as the jaw opening, with the two cut ends "
+        "falling away below the jaws in a natural arc. The wire must never pass through the handles, the pivot or the body, "
+        "must never appear as separate disconnected segments, and nothing may float. "
+        "If a physically correct action cannot be rendered, show the tool closed with one short piece of cut wire resting "
+        "on the surface beside it instead. "
+        "Keep the upper-left 45% of the frame darker and uncluttered as copy space."
     ),
     "icon_grid": (
         "COMPOSITION: clean square product hero on a dark background, product centred and fully visible in the middle band "
@@ -43,7 +50,7 @@ PHOTO_LAYOUTS: dict[str, str] = {
     "material_strip": (
         "COMPOSITION: square product shot at a three-quarter angle on a dark workbench, product fills the upper two thirds "
         "with sharp focus on the working edge. Keep the upper-left 35% uncluttered for a headline and the bottom 15% a plain "
-        "dark surface for material pills. Optionally show one piece of the material it cuts near the blade."
+        "dark surface for material pills. No wires, no cut pieces: the material names are rendered later as text pills."
     ),
     "use_cases": (
         "COMPOSITION: square product hero in the centre of a dark studio frame, product fully visible and centred. "
