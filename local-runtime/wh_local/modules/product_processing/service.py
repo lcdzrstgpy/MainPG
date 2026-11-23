@@ -3351,6 +3351,73 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             # 保留 open 记录供后续对账/服务端 TTL 兜底，避免「结算失败被静默吞掉」。
             _mark_freeze_settle_failure(freeze_id, str(exc)[:200])
 
+    def _marketing_reference_values(self, draft: dict[str, Any], *, workspace_id: str) -> list[str]:
+        """精选处理的参考图：组合来源图优先，其次原图 URL（http 校验）。"""
+        try:
+            combo = self._combo_reference_values(draft, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001
+            combo = []
+        if combo:
+            return combo[:2]
+        raw = draft.get("raw_payload") or {}
+        values: list[str] = []
+        for key in ("image_url", "main_image_url"):
+            value = str(raw.get(key) or "").strip()
+            if value and self._is_safe_reference_value(value):
+                values.append(value)
+        for value in raw.get("source_image_urls") or []:
+            value = str(value or "").strip()
+            if value and self._is_safe_reference_value(value) and value not in values:
+                values.append(value)
+        return values[:2]
+
+    def generate_marketing_image_api(
+        self,
+        draft_id: int,
+        template: str,
+        *,
+        workspace_id: str = "local",
+    ) -> dict[str, Any]:
+        """精选处理独立入口：为一个草稿生成一张营销图（照片层 + 本地排版合成）。"""
+        from .domain.premium_composer import compose_marketing_image  # noqa: PLC0415
+        from .domain.premium_prompts import build_photo_prompt  # noqa: PLC0415
+
+        draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        if not _ai_enabled():
+            raise ProductProcessingValidationError("图片生成服务未就绪")
+        reference_values = self._marketing_reference_values(draft, workspace_id=workspace_id)
+        if not reference_values:
+            raise ProductProcessingValidationError("该商品没有可用的参考图")
+        raw = draft.get("raw_payload") or {}
+        title = str(draft.get("title") or draft.get("product_name") or "the product")
+        category = str(raw.get("category_path") or raw.get("category") or "")
+        copy = self._marketing_copy(title, category, template)
+        processor = self._media_processor()
+        photo = processor.generate(
+            stage="marketing_photo",
+            prompt=build_photo_prompt(template, copy),
+            reference_values=reference_values,
+            image_size="1024x1024",
+        )
+        composed = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
+        path = self.assets.save_generated_image(
+            int(draft_id or 0),
+            int(draft_id or 0),
+            f"marketing_{template}",
+            composed,
+            ".jpg",
+        )
+        return {
+            "draft_id": draft_id,
+            "template": template,
+            "headline": copy.headline,
+            "subline": copy.subline,
+            "image_path": self._display_url(path),
+            "message": "营销图已生成",
+        }
+
     def generate_combo_main(
         self,
         draft_id: int,

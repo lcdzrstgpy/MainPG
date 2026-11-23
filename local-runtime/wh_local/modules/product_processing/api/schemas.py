@@ -66,6 +66,13 @@ class ComboSourceAddRequest(BaseModel):
     url: str = ""
 
 
+class MarketingGenerateRequest(BaseModel):
+    """精选处理独立生成：一个草稿、一个版式、一张营销图。"""
+
+    draft_id: int
+    template: str = Field(default="headline_hero", description="版式：headline_hero / action_proof")
+
+
 class ComboProcessRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

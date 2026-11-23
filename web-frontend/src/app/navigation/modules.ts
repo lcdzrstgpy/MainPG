@@ -5,6 +5,7 @@ export type WorkspaceModuleId =
   | "daily_selection"
   | "daily_selection_collection"
   | "product_processing"
+  | "product_processing_marketing"
   | "product_processing_history"
   | "product_processing_sourcing"
   | "product_processing_tasks"
@@ -128,6 +129,14 @@ const productProcessing: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-robot",
   description: "管理草稿池、处理设置与任务进度",
+};
+
+const productProcessingMarketing: WorkspaceModule = {
+  id: "product_processing_marketing",
+  label: "精选处理",
+  icon: "",
+  iconClass: "iconfont icon-picture",
+  description: "选商品生成电商营销图（照片层 AI + 排版层合成）",
 };
 
 const dimensionCanvas: WorkspaceModule = {
@@ -455,7 +464,7 @@ const productWorkflow: WorkspaceNavigationGroup = {
   iconClass: "iconfont icon-build",
   description: "采集、处理与尺寸图制作",
   defaultChildId: "daily_selection",
-  children: [collection, productProcessing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
+  children: [collection, productProcessing, productProcessingMarketing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
 };
 
 const comboWorkflow: WorkspaceNavigationGroup = {
@@ -560,6 +569,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   collectionPanel,
   productProcessing,
   productProcessingHistory,
+  productProcessingMarketing,
   productProcessingSourcing,
   temuPublish,
   temuDraftLibrary,

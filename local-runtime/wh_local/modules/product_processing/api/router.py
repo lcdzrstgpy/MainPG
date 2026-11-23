@@ -48,6 +48,7 @@ from .schemas import (
     BackgroundUploadRequest,
     BatchImagePromptRequest,
     ComboProcessRequest,
+    MarketingGenerateRequest,
     ComboSourceAddRequest,
     DailySelectionIntakeRequest,
     DailySelectionHandoffRequest,
@@ -358,6 +359,33 @@ def create_product_processing_router(
             run=lambda: service.generate_combo_main(
                 body.draft_id,
                 prompt=body.prompt or "",
+                workspace_id=_workspace(workspace_id),
+            ),
+        )
+
+    @router.post("/marketing/generate")
+    def generate_marketing(
+        request: Request,
+        body: MarketingGenerateRequest,
+        workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
+        actor: Actor = Depends(actor_from_authorization),
+    ) -> dict[str, Any]:
+        """精选处理独立生成：一个草稿一张营销图（照片层 + 本地排版合成）。
+
+        计费走组合直连同款「冻结 → 短期密钥 → 结算」链路，scope 复用图片子项
+        four_grid（每张营销图 = 1 次生图；专属定价项待服务端确认）。
+        """
+        return _call(
+            service.run_combo_direct,
+            _remote_token(request, customer_sessions),
+            source_ref="product_processing:marketing:generate",
+            draft_id=body.draft_id,
+            scope=["four_grid"],
+            workspace_id=_workspace(workspace_id),
+            account_id=actor.id,
+            run=lambda: service.generate_marketing_image_api(
+                body.draft_id,
+                body.template,
                 workspace_id=_workspace(workspace_id),
             ),
         )

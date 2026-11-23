@@ -65,6 +65,7 @@ test("image service nests the existing workflows one level deeper", () => {
   assert.deepEqual(productWorkflow?.children.map((child) => child.id), [
     "daily_selection",
     "product_processing",
+    "product_processing_marketing",
     "product_processing_history",
     "product_processing_sourcing",
     "dimension_canvas",
