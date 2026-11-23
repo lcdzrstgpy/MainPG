@@ -135,7 +135,7 @@ const productProcessingMarketing: WorkspaceModule = {
   id: "product_processing_marketing",
   label: "精选处理",
   icon: "",
-  iconClass: "iconfont icon-picture",
+  iconClass: "iconfont icon-star",
   description: "选商品生成电商营销图（照片层 AI + 排版层合成）",
 };
 
