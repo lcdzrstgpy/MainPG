@@ -1187,10 +1187,10 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
-              <h2>{options.marketingImages ? '精选处理设置' : '处理设置'}</h2>
+              <h2>处理设置</h2>
               <span className="verify-sub">
                 {options.marketingImages
-                  ? '4K 精品四宫格 + 精选版式营销图（选 3 个）'
+                  ? '基础参数 · 出图风格 · 精选版式（选 3 个）'
                   : '基础参数 · 出图风格 · 生图组合'}
               </span>
             </div>

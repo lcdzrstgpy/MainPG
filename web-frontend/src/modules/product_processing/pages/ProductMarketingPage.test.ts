@@ -1,6 +1,6 @@
 /**
- * 精选处理守卫：入口复用 AI 处理全流程（VerifyPage + marketing 模式），
- * 取数必须带 workspace 头（否则后端落 "local" 空间查不到草稿——2026-11-23 实际踩过）。
+ * 精选处理守卫：独立页面（不与 AI 处理共用 DOM/视觉），
+ * 取数必须带 workspace 头（否则后端落 "local" 空间查不到草稿——2026-11-23 踩过）。
  */
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -12,18 +12,20 @@ test("listProductDrafts 带 X-Workspace-ID 头", () => {
   assert.match(source, /productProcessingApiContext\(\)/);
 });
 
-test("精选处理入口复用 AI 处理页的 marketing 模式", () => {
+test("精选处理是独立界面（画廊 + 粘性面板），不复用 AI 处理页", () => {
   const shell = readFileSync(new URL("../../../app/layout/WorkspaceShell.tsx", import.meta.url), "utf8");
   assert.match(shell, /case "product_processing_marketing":/);
-  assert.match(shell, /<ProductProcessingVerifyPage[\s\S]{0,120}marketing/);
+  assert.match(shell, /<ProductMarketingPage[\s\S]{0,160}onOpenTask/);
+  const page = readFileSync(new URL("./ProductMarketingPage.tsx", import.meta.url), "utf8");
+  assert.match(page, /pm-page/);
+  assert.match(page, /商品画廊/);
+  assert.match(page, /marketing_templates/);
+  assert.match(page, /精选版式（选 3 个）/);
+});
+
+test("AI 处理页不再带精选专属分支", () => {
   const verify = readFileSync(new URL("./ProductProcessingVerifyPage.tsx", import.meta.url), "utf8");
-  assert.match(verify, /marketing\?: boolean/);
-  assert.match(verify, /marketingTemplates/);
-  // 用户要求：流程相同但 UI 不能一模一样（自有标题/按钮/金色强调）
-  assert.match(verify, /is-marketing/);
-  assert.match(verify, /开始精选处理/);
-  assert.match(verify, /4K 精品四宫格/);
-  const task = readFileSync(new URL("./ProductProcessingTaskPage.tsx", import.meta.url), "utf8");
-  assert.match(task, /marketing_templates/);
-  assert.match(task, /精选版式（选 3 个）/);
+  assert.ok(!verify.includes("is-marketing"));
+  assert.ok(!verify.includes("开始精选处理"));
+  assert.match(verify, /产品处理草稿池/);
 });
