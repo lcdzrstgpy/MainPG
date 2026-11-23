@@ -76,3 +76,18 @@ def test_photo_prompt_forbids_rendered_text() -> None:
     prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Sharp And Smooth", subline="x"))
     assert "ZERO text" in prompt
     assert "reference images are the ONLY source of truth" in prompt.lower() or "ONLY source of truth" in prompt
+
+
+def test_batch_hook_passes_real_task_id() -> None:
+    """批次里调营销图生成必须传真实 task_id（曾把 draft_id 当 task_id，
+    预览注册校验「preview image target does not belong to this task」三张全丢）。"""
+    import re
+    from pathlib import Path as _Path
+
+    import wh_local.modules.product_processing.service as service_module
+
+    source = _Path(service_module.__file__).read_text(encoding="utf-8")
+    assert re.search(
+        r"_generate_marketing_images\(\s*\n\s*task_id,\s*\n\s*draft\[\"id\"\]",
+        source,
+    ), "批次挂载处必须用 task_id 调 _generate_marketing_images"

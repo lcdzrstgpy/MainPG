@@ -11081,7 +11081,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             stage_started = time.perf_counter()
             try:
                 marketing_paths = self._generate_marketing_images(
-                    draft["id"],
+                    task_id,
                     draft["id"],
                     title=title,
                     category=category,
