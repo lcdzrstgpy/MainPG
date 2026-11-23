@@ -20,9 +20,14 @@ PHOTO_CONTRACT = """This is a professional studio product photograph of the exac
 
 1. Copy the product faithfully from the reference: same silhouette, proportions, colours, materials, structure, markings and part count. Every jaw, blade, tooth, serration, hinge, rivet, screw, spring and joint must be reproduced with identical geometry — nothing merged, melted, smoothed away or invented.
 1b. COUNT PARTS BEFORE FINISHING: count the product's handles/arms, jaws and buttons in the reference, then count them again in your render. The numbers must match EXACTLY — a tool with two handles must show exactly two handles; an extra arm, a third handle or a duplicated jaw is a failed image.
+1c. CAMERA ANGLE MUST BE EVIDENCED: use only a viewing angle that the reference images actually show (front, side or three-quarter exactly as photographed). Do NOT rotate the product to an angle the reference does not show.
+1d. NEVER INVENT UNSEEN PARTS: if a surface, back side or mechanism is not visible in the reference, keep it hidden or dark — do not guess, redraw or add parts to fill the view. Keep the tool in the same open/closed state as the reference; when unsure, closed.
+1e. FRAME COMPLETENESS: the whole product must fit inside the frame with visible margin on every side — never cropped, never touching the frame edge.
 2. The product is the only object in frame. The surface it stands on is the only other element: no wires, tools, packaging, loose parts, hands or people.
 3. Zero text of any kind: no letters, numbers, labels, logos, watermarks. Typography is added later.
 4. Look like a real studio photograph: soft key light with shaped highlights, natural contact shadow, true-to-life materials, slight depth falloff, photographic grain. No illustration, no 3D render look.
+
+FINAL CHECK — reject and redo if any of these is true: extra or missing handle/arm/jaw; a part duplicated or fused; geometry smoother or rounder than the reference; product cropped by the frame; any letter, number, logo or watermark; any object other than the product and the surface.
 """
 
 # 各版式的照片层构图要求（文案区预留）。
@@ -30,12 +35,12 @@ PHOTO_LAYOUTS: dict[str, str] = {
     "headline_hero": (
         "COMPOSITION: dramatic square product shot on a dark charcoal studio background. "
         "Keep the upper 35% of the frame clean and uncluttered (plain dark backdrop) as copy space; "
-        "the product fills the lower 60% at a dynamic three-quarter angle, standing or resting naturally on the surface. "
+        "the product fills the lower 60% at the reference-evidenced angle, standing or resting naturally on the surface. "
         "No action props beyond what the scene plan allows."
     ),
     "action_proof": (
         "COMPOSITION: square macro close-up of the product's working end (the head / tip / key detail), "
-        "product closed and at rest, placed lower-right, sharp focus on the mechanism, "
+        "viewed from the same side as the reference, product closed and at rest, placed lower-right, sharp focus on the mechanism, "
         "no action, no loose objects, ONLY the product. "
         "Keep the upper-left 45% of the frame darker and uncluttered as copy space."
     ),
@@ -45,7 +50,7 @@ PHOTO_LAYOUTS: dict[str, str] = {
         "overlaid there later. No props near the bottom area."
     ),
     "material_strip": (
-        "COMPOSITION: square product shot at a three-quarter angle on a dark workbench, product fills the upper two thirds "
+        "COMPOSITION: square product shot at the reference-evidenced angle on a dark workbench, product fills the upper two thirds "
         "with sharp focus on the product's key surface detail. Keep the upper-left 35% uncluttered for a headline and the bottom "
         "15% a plain dark surface for material pills. No extra props in the bottom band (names are rendered later as text pills)."
     ),
@@ -193,7 +198,8 @@ def parse_scene_plan(text: str) -> dict[str, Any] | None:
 def build_photo_prompt(template: str, copy: MarketingCopy, scene: dict[str, Any] | None = None) -> str:
     """照片层提示词：合同 + 版式构图（含文案区预留）。不含任何要渲染的文字。"""
     layout = PHOTO_LAYOUTS.get(template, PHOTO_LAYOUTS["headline_hero"])
-    semantic = f"Overall tone the scene should convey: {copy.headline.replace(chr(10), ' ')[:120]}."
+    tone = copy.headline.replace(chr(10), " ")[:120].rstrip(" .;:")
+    semantic = f"Overall tone the scene should convey: {tone}."
     scene = scene or {}
     surface = str(scene.get("surface") or "a clean matte dark surface").strip()
     # 动作/道具永久禁用：2026-11-23 两轮实测，模型画动作必然穿模/画坏产品。
