@@ -40,7 +40,14 @@ export type ProductDraft = {
 
 export async function listProductDrafts(sourceType?: DraftSourceType): Promise<ProductDraft[]> {
   const query = sourceType ? `?source_type=${encodeURIComponent(sourceType)}` : "";
-  return (await apiRequest<{ drafts: ProductDraft[] }>(`/product-processing/drafts${query}`)).drafts;
+  // 必须带 workspace 头：不带时后端落到 "local" 空间，永远查不到本工作区的草稿
+  // （2026-11-23 精选处理页空白的根因）。
+  const ctx = productProcessingApiContext();
+  return (
+    await apiRequest<{ drafts: ProductDraft[] }>(`/product-processing/drafts${query}`, {
+      headers: { "X-Workspace-ID": ctx.workspaceId },
+    })
+  ).drafts;
 }
 
 export type DraftCollectionBatch = {
