@@ -109,7 +109,7 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
         body,
         headers: { 'Idempotency-Key': globalThis.crypto?.randomUUID?.() || `pm-${Date.now()}` },
       });
-      setNotice(`已提交：${selected.size} 个商品，每个 4 张轮播 + ${templates.length} 张营销图`);
+      setNotice(`已提交：${selected.size} 个商品，每个 7 张图片`);
       setSelected(new Set());
       void load();
       if (data?.task_id) onOpenTask?.(data.task_id);
@@ -127,14 +127,14 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
           <p className="pm-eyebrow">PREMIUM LISTING</p>
           <h1>精选处理</h1>
           <p className="pm-hero-sub">
-            选商品、挑版式，一次产出可直接上架的一整套图：<b>4 张轮播</b> + <b>3 张营销图</b>。
+            选商品、挑版式，一次产出可直接上架的 <b>7 张图片</b>。
             文案由排版层确定性渲染，产品由 AI 照片层保真还原。
           </p>
         </div>
         <dl className="pm-hero-stats">
           <div><dt>待精选</dt><dd>{drafts.length}</dd></div>
           <div><dt>已选</dt><dd>{selected.size}</dd></div>
-          <div><dt>预计产出</dt><dd>{selected.size * (4 + templates.length)} 张</dd></div>
+          <div><dt>预计产出</dt><dd>{selected.size * 7} 张</dd></div>
         </dl>
       </section>
 
@@ -174,7 +174,7 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
                       <img src={draft.image_url || ''} alt="" loading="lazy" />
                       <span className="pm-card-check">{picked ? '✓' : ''}</span>
                       <span className="pm-card-title" title={draft.title}>{draft.title || `商品 #${draft.id}`}</span>
-                      <span className="pm-card-meta">SKC {draft.source_ref || draft.id}</span>
+                      <span className="pm-card-meta">#{draft.id}{draft.source_type === 'onebound_api' ? ' · 1688' : ''}</span>
                     </button>
                   </li>
                 );
@@ -233,7 +233,7 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
 
           <div className="pm-output">
             <span>每个商品产出</span>
-            <strong>4 张轮播 + {templates.length} 张营销图 = {4 + templates.length} 张</strong>
+            <strong>7 张图片</strong>
             <em>营销图文字由本地排版渲染，绝不错拼；失败可单独重跑</em>
           </div>
 
