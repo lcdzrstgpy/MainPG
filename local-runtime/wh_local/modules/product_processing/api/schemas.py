@@ -13,6 +13,7 @@ PROCESSING_SCOPE_OPTIONS = {
     "product_dimensions": "产品尺寸",
     "four_grid": "智能生图",
     "detail_images": "详情图",
+    "marketing_images": "精选处理",
     "sku_images": "SKU 图",
     "qualification": "资质",
 }
@@ -136,6 +137,9 @@ class DraftProcessRequest(BaseModel):
     size: bool = True
     grid_image: bool = True
     detail_image: bool = True
+    # 精选处理：AI 出照片层 + 本地排版合成营销图（大字卖点/场景动作两版式），
+    # 产出追加进轮播图。默认关。
+    marketing_images: bool = False
     product_video_template: bool = False
     cos_upload: bool = True
     strict_external: bool = False
@@ -223,6 +227,7 @@ class DraftProcessRequest(BaseModel):
             "product_dimensions": self.size,
             "four_grid": self.grid_image,
             "detail_images": self.detail_image,
+            "marketing_images": self.marketing_images,
             "sku_images": self.image_rewrite,
             "qualification": bool(self.qualification_mode) if isinstance(self.qualification_mode, bool) else True,
         }
@@ -237,6 +242,7 @@ class DraftProcessRequest(BaseModel):
             self.size = "product_dimensions" in scope
             self.grid_image = "four_grid" in scope
             self.detail_image = "detail_images" in scope
+            self.marketing_images = "marketing_images" in scope
             self.image_rewrite = "sku_images" in scope
             if isinstance(self.qualification_mode, bool):
                 self.qualification_mode = "strict" if (self.qualification_mode and "qualification" in scope) else "standard"

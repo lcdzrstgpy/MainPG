@@ -245,6 +245,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       targetLanguage: 'en',
       maxProducts: 0,
       processingScope: ['title', 'details', 'product_dimensions', 'four_grid', 'detail_images', 'qualification'],
+      marketingImages: false,
       qualificationMode: 'standard',
       includeProductVideo: false,
       skipDuplicates: false,
@@ -915,7 +916,9 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         async_mode: true,
         target_site: options.targetSite,
         target_language: options.targetLanguage,
-        processing_scope: options.processingScope,
+        processing_scope: options.marketingImages
+          ? [...options.processingScope, 'marketing_images']
+          : options.processingScope,
         qualification_mode: options.qualificationMode,
         include_product_video: options.includeProductVideo,
         skip_duplicates: options.skipDuplicates,
@@ -1186,6 +1189,14 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               <span className="verify-sub">基础参数 · 出图风格 · 生图组合</span>
             </div>
             <div className="verify-form-row">
+              <label title="精选处理：AI 出照片层、本地排版合成营销图（大字卖点 / 场景动作两版式），产出自动进轮播图。默认关闭">
+                精选处理
+                <input
+                  type="checkbox"
+                  checked={!!options.marketingImages}
+                  onChange={(e) => setOptions((p) => ({ ...p, marketingImages: e.target.checked }))}
+                />
+              </label>
               <label>站点
                 <select value={options.targetSite} onChange={(e) => {
                   const site = e.target.value as ProductProcessingOptions['targetSite'];

@@ -165,6 +165,8 @@ export interface ProductProcessingOptions {
   targetLanguage: 'en' | 'es';
   maxProducts: number;
   processingScope: string[];
+  /** 精选处理：AI 照片层 + 本地排版合成营销图（默认关） */
+  marketingImages?: boolean;
   qualificationMode: 'standard' | 'strict';
   includeProductVideo: boolean;
   skipDuplicates: boolean;

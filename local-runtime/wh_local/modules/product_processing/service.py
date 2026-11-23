@@ -3051,6 +3051,81 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except (DoubaoTextError, ValueError):
             return {"optimized_title": "", "description": ""}
 
+    def _marketing_copy(self, title: str, category: str, template: str) -> Any:
+        """精选处理的英文文案（豆包生成；失败走保底标题，不编造卖点）。"""
+        from .domain.premium_prompts import (  # noqa: PLC0415
+            build_copy_messages,
+            fallback_copy,
+            parse_copy_response,
+        )
+
+        try:
+            text = DoubaoArkClient().complete(build_copy_messages(title, category, template))
+            copy = parse_copy_response(text)
+            if copy is not None:
+                return copy
+        except Exception:  # noqa: BLE001
+            pass
+        return fallback_copy(title)
+
+    def _generate_marketing_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        title: str,
+        category: str,
+        reference_urls: list[str],
+        workspace_id: str,
+        ai_notes: list[str] | None = None,
+    ) -> list[str]:
+        """精选处理（一期）：两版式各出 1 张营销图，返回预览 URL 列表。
+
+        双层合成：豆包出文案 → Seedream 出照片层（禁文字）→ 本地排版合成。
+        文案失败不影响出图（保底标题）；单版式失败只记 ai_notes 不拖垮整条。
+        """
+        from .domain.premium_composer import compose_marketing_image  # noqa: PLC0415
+        from .domain.premium_prompts import build_photo_prompt  # noqa: PLC0415
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+        processor = self._media_processor()
+        refs = [value for value in reference_urls if str(value or "").strip()][:2]
+        if not refs:
+            if ai_notes is not None:
+                ai_notes.append("marketing:skipped:no_reference")
+            return []
+        values: list[str] = []
+        for template in ("headline_hero", "action_proof"):
+            self._raise_if_task_stopped(task_id, workspace_id)
+            try:
+                copy = self._marketing_copy(title, category, template)
+                photo = processor.generate(
+                    stage="marketing_photo",
+                    prompt=build_photo_prompt(template, copy),
+                    reference_values=refs,
+                    image_size="1024x1024",
+                )
+                composed = compose_marketing_image(bytes(getattr(photo, "content", b"")), template, copy)
+                part = GeneratedMedia(
+                    stage=f"marketing_{template}",
+                    content=composed,
+                    content_type="image/jpeg",
+                    suffix=".jpg",
+                    provider="local-synthesis",
+                    model=f"{getattr(photo, 'model', '')}+premium_composer",
+                    reference_count=getattr(photo, "reference_count", len(refs)),
+                    attempt_count=getattr(photo, "attempt_count", 1),
+                )
+                urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
+                if urls:
+                    values.append(urls[0])
+                    if ai_notes is not None:
+                        ai_notes.append(f"marketing:{template}:ok")
+            except Exception as exc:  # noqa: BLE001
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:{template}:failed:{exc}")
+        return values
+
     def _translate_combo_prompt(self, text: str) -> str:
         """组合图用户提示词中译英：仅当含中文时调用豆包翻译。
 
@@ -10928,6 +11003,27 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 },
                 workspace_id=workspace_id,
             )
+
+        # 精选处理（一期）：营销图追加进轮播（carousel.extra 槽位），失败不拖垮主流程。
+        if bool(settings.get("marketing_images")) and grid_image_paths and not grid_source_fallback:
+            self._raise_if_task_stopped(task_id, workspace_id)
+            stage_started = time.perf_counter()
+            try:
+                marketing_paths = self._generate_marketing_images(
+                    draft["id"],
+                    draft["id"],
+                    title=title,
+                    category=category,
+                    reference_urls=source_reference_values,
+                    workspace_id=workspace_id,
+                    ai_notes=ai_notes,
+                )
+            except Exception as exc:  # noqa: BLE001
+                ai_notes.append(f"marketing:failed:{exc}")
+                marketing_paths = []
+            record_stage("marketing_images", stage_started)
+            if marketing_paths:
+                grid_image_paths = list(grid_image_paths) + list(marketing_paths)
 
         image_manifest: list[dict[str, str]] = []
         image_roles = (
