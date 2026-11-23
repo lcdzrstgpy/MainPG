@@ -3068,6 +3068,77 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             pass
         return fallback_copy(title)
 
+    def _marketing_reference_data_url(self, url: str) -> str:
+        """参考图 → data URL（缓存），供视觉质检使用；失败返回空串。"""
+        import base64  # noqa: PLC0415
+
+        cache = getattr(self, "_marketing_ref_data_cache", None)
+        if cache is None:
+            cache = self._marketing_ref_data_cache = {}
+        if url in cache:
+            return cache[url]
+        value = ""
+        try:
+            fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+            image = fetcher(str(url), max_bytes=8 * 1024 * 1024, timeout_seconds=10)
+            content = bytes(getattr(image, "content", b"") or b"")
+            if content:
+                value = "data:image/jpeg;base64," + base64.b64encode(content).decode()
+        except Exception:  # noqa: BLE001
+            value = ""
+        if len(cache) >= 32:
+            cache.pop(next(iter(cache)))
+        cache[url] = value
+        return value
+
+    def _marketing_quality_check(
+        self, reference_urls: list[str], generated: bytes
+    ) -> dict[str, Any] | None:
+        """豆包 2.1 视觉验货：产品是否同款/有没有变形/多余物件/渲染文字。
+
+        返回 None = 判不了（不阻断，按通过处理，避免白烧重渲）。
+        """
+        import base64  # noqa: PLC0415
+
+        from .domain.premium_prompts import build_qa_messages, parse_qa_response  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        reference = ""
+        for url in reference_urls:
+            reference = self._marketing_reference_data_url(url)
+            if reference:
+                break
+        if not reference or not generated:
+            return None
+        generated_url = "data:image/jpeg;base64," + base64.b64encode(generated).decode()
+        try:
+            text = DoubaoArkClient(usage_kind="vision").complete(
+                build_qa_messages(reference, generated_url),
+                timeout=VISION_TIMEOUT_SECONDS,
+            )
+            return parse_qa_response(text)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _marketing_pick_references(self, urls: list[str]) -> list[str]:
+        """参考图按干净程度排序（白底/单主体/少文字），失败退回原顺序前两张。"""
+        from .domain.marketing_refs import pick_clean_references  # noqa: PLC0415
+
+        candidates = [str(url) for url in urls if str(url or "").strip()]
+        if len(candidates) <= 2:
+            return candidates[:2]
+
+        def _fetch(url: str) -> bytes:
+            fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+            image = fetcher(url, max_bytes=8 * 1024 * 1024, timeout_seconds=8)
+            return bytes(getattr(image, "content", b"") or b"")
+
+        try:
+            return pick_clean_references(candidates, _fetch, limit=2)
+        except Exception:  # noqa: BLE001
+            return candidates[:2]
+
     def _marketing_scene_plan(
         self, title: str, category: str, subject: str = ""
     ) -> dict[str, Any] | None:
@@ -3117,7 +3188,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
         processor = self._media_processor()
-        refs = [value for value in reference_urls if str(value or "").strip()][:2]
+        refs = self._marketing_pick_references(reference_urls)
         if not refs:
             if ai_notes is not None:
                 ai_notes.append("marketing:skipped:no_reference")
@@ -3131,28 +3202,54 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
                 copy = self._marketing_copy(title, category, template)
-                photo = processor.generate(
-                    stage="marketing_photo",
-                    prompt=build_photo_prompt(template, copy, scene),
-                    reference_values=refs,
-                    image_size="2048x2048",
-                )
-                composed = compose_marketing_image(bytes(getattr(photo, "content", b"")), template, copy)
+                base_prompt = build_photo_prompt(template, copy, scene)
+                composed: bytes | None = None
+                for attempt in (1, 2):
+                    photo = processor.generate(
+                        stage="marketing_photo",
+                        prompt=base_prompt
+                        if attempt == 1
+                        else base_prompt
+                        + "\nREPAIR: the previous attempt deformed the product or added unwanted objects. "
+                        "Reproduce the reference product exactly; keep the frame clean.",
+                        reference_values=refs,
+                        image_size="2048x2048",
+                    )
+                    candidate = compose_marketing_image(
+                        bytes(getattr(photo, "content", b"")), template, copy
+                    )
+                    qa = self._marketing_quality_check(refs, candidate)
+                    if qa is None:
+                        composed = candidate
+                        if ai_notes is not None:
+                            ai_notes.append(f"marketing:{template}:qa-unavailable")
+                        break
+                    if qa.get("ok"):
+                        composed = candidate
+                        if ai_notes is not None:
+                            ai_notes.append(f"marketing:{template}:qa-ok" + (f":attempt{attempt}" if attempt > 1 else ""))
+                        break
+                    if ai_notes is not None:
+                        ai_notes.append(
+                            f"marketing:{template}:qa-bad:attempt{attempt}:{qa.get('issues') or 'unspecified'}"
+                        )
+                    if attempt == 2:
+                        composed = candidate  # 两次都不合格时保留第二张，别让用户空手
+                if composed is None:
+                    continue
                 part = GeneratedMedia(
                     stage=f"marketing_{template}",
                     content=composed,
                     content_type="image/jpeg",
                     suffix=".jpg",
                     provider="local-synthesis",
-                    model=f"{getattr(photo, 'model', '')}+premium_composer",
-                    reference_count=getattr(photo, "reference_count", len(refs)),
-                    attempt_count=getattr(photo, "attempt_count", 1),
+                    model="premium_composer",
+                    reference_count=len(refs),
+                    attempt_count=1,
                 )
                 urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
                 if urls:
                     values.append(urls[0])
-                    if ai_notes is not None:
-                        ai_notes.append(f"marketing:{template}:ok")
             except Exception as exc:  # noqa: BLE001
                 if ai_notes is not None:
                     ai_notes.append(f"marketing:{template}:failed:{exc}")
@@ -3428,13 +3525,25 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         copy = self._marketing_copy(title, category, template)
         scene = self._marketing_scene_plan(title, category)
         processor = self._media_processor()
-        photo = processor.generate(
-            stage="marketing_photo",
-            prompt=build_photo_prompt(template, copy, scene),
-            reference_values=reference_values,
-            image_size="2048x2048",
-        )
-        composed = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
+        refs = self._marketing_pick_references(reference_values)
+        composed: bytes | None = None
+        base_prompt = build_photo_prompt(template, copy, scene)
+        for attempt in (1, 2):
+            photo = processor.generate(
+                stage="marketing_photo",
+                prompt=base_prompt
+                if attempt == 1
+                else base_prompt + "\nREPAIR: reproduce the reference product exactly; keep the frame clean.",
+                reference_values=refs,
+                image_size="2048x2048",
+            )
+            candidate = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
+            qa = self._marketing_quality_check(refs, candidate)
+            if qa is None or qa.get("ok") or attempt == 2:
+                composed = candidate
+                break
+        if composed is None:
+            raise ProductProcessingValidationError("营销图生成失败")
         path = self.assets.save_generated_image(
             int(draft_id or 0),
             int(draft_id or 0),
@@ -11246,10 +11355,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             # 2026-11-23 实测：4K 请求触发驱动层 400，却被判成「上游识别不到」，
             # 用户看到的是「请更换链接」。凡 grid_source_fallback 一律按可重试话术。
             if grid_source_fallback:
-                media_operator_hint = (
-                    "AI 生图未成功（上游返回错误或超时），链接本身没有问题；"
-                    "直接点「重新处理」即可，失败链接不参与计费"
-                )
+                if _is_provider_side_image_failure(image_failure_detail):
+                    media_operator_hint = (
+                        "AI 生图服务当前不可用（上游维护或限流），链接本身没有问题；"
+                        "稍后点「重新处理」即可，失败链接不参与计费"
+                    )
+                else:
+                    media_operator_hint = (
+                        "AI 生图未成功（生成结果被上游拒绝或未通过校验），链接本身没有问题；"
+                        "直接点「重新处理」即可，失败链接不参与计费"
+                    )
             else:
                 media_operator_hint = FAILED_LINK_OPERATOR_HINT
             media_debug_hint = "；".join(media_blockers)

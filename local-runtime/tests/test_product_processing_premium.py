@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from wh_local.modules.product_processing.domain.premium_composer import (
     MarketingCopy,
     compose_marketing_image,
     filter_copy,
 )
+from wh_local.modules.product_processing.domain.marketing_refs import pick_clean_references
 from wh_local.modules.product_processing.domain.premium_prompts import (
     build_photo_prompt,
+    build_qa_messages,
     build_scene_messages,
     fallback_copy,
     parse_copy_response,
+    parse_qa_response,
     parse_scene_plan,
 )
 
@@ -76,8 +79,8 @@ def test_compose_rejects_unknown_template() -> None:
 
 def test_photo_prompt_forbids_rendered_text() -> None:
     prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Sharp And Smooth", subline="x"))
-    assert "ZERO text" in prompt
-    assert "reference images are the ONLY source of truth" in prompt.lower() or "ONLY source of truth" in prompt
+    assert "Zero text" in prompt
+    assert "the only object in frame" in prompt
 
 
 def test_batch_hook_passes_real_task_id() -> None:
@@ -122,3 +125,54 @@ def test_scene_messages_include_product_context() -> None:
     messages = build_scene_messages("Wire Stripper", "tools", "a 5-in-1 electrical stripping tool")
     text = " ".join(str(item.get("content")) for item in messages)
     assert "Wire Stripper" in text and "tools" in text and "5-in-1" in text
+
+
+def _png(color, side=200, noise: bool = False) -> bytes:
+    from io import BytesIO as _B
+    import random
+
+    image = Image.new("RGB", (side, side), color)
+    if noise:
+        draw = ImageDraw.Draw(image)
+        rng = random.Random(7)
+        for _ in range(400):
+            x = rng.randint(0, side - 20)
+            y = rng.randint(0, side - 20)
+            draw.rectangle([x, y, x + rng.randint(6, 26), y + rng.randint(6, 26)], fill=tuple(rng.randint(0, 255) for _ in range(3)))
+    buffer = _B()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_pick_clean_references_prefers_white_background() -> None:
+    """白底干净图应排在嘈杂拼贴图前面。"""
+    urls = ["busy", "clean"]
+    payloads = {"busy": _png((240, 40, 40), noise=True), "clean": _png((252, 252, 252))}
+
+    picked = pick_clean_references(urls, lambda url: payloads[url], limit=1)
+    assert picked == ["clean"]
+
+
+def test_pick_clean_references_falls_back_on_fetch_error() -> None:
+    def _boom(_: str) -> bytes:
+        raise RuntimeError("net down")
+
+    assert pick_clean_references(["a", "b", "c"], _boom) == ["a", "b"]
+
+
+def test_qa_parse_ok_and_bad() -> None:
+    good = parse_qa_response(
+        '{"same_product": true, "fidelity_ok": true, "extra_objects": false, "has_text": false, "issues": ""}'
+    )
+    assert good is not None and good["ok"] is True
+    bad = parse_qa_response(
+        '{"same_product": true, "fidelity_ok": false, "extra_objects": true, "has_text": false, "issues": "melted jaw"}'
+    )
+    assert bad is not None and bad["ok"] is False and bad["issues"] == "melted jaw"
+    assert parse_qa_response("not json") is None
+
+
+def test_qa_messages_contain_two_images() -> None:
+    messages = build_qa_messages("data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB")
+    content = messages[-1]["content"]
+    assert sum(1 for part in content if part.get("type") == "image_url") == 2

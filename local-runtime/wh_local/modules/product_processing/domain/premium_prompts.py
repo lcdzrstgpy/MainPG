@@ -16,13 +16,12 @@ from .premium_composer import MarketingCopy
 
 
 # 生图照片层的公共合同：产品保真 + 禁文字 + 真实摄影质感。
-PHOTO_CONTRACT = """HARD RULES:
-- The reference images are the ONLY source of truth for the product. Keep silhouette, proportions, colours, materials, structure, printed markings and every physical detail IDENTICAL. Only scene, background, camera angle and lighting may change.
-- MECHANICAL FIDELITY (red line): reproduce every jaw, blade, tooth, serration, bevel, hinge, rivet, screw, spring, coil, pivot and joint with the same count, same position and same geometry as the reference. Serrations must keep their exact number and spacing. NEVER melt, blur, merge, simplify, smooth away or invent any part; a deformed, blobby or fused jaw is a failed image and must be re-rendered. Keep the tool in the same open/closed state as the reference.
-- PRODUCT ALONE (red line): the product is the ONLY object in the frame. Do NOT add wires, cables, nails, screws, tools, packaging or any loose items — not even as decoration. The surface underneath is the only other element.
-- PHYSICAL PLAUSIBILITY (red line): nothing may pass through, pierce, float around or intersect the product. No floating fragments, no impossible angles.
-- Render ZERO text of any kind: no letters, words, numbers, labels, logos, watermarks or UI elements. Text will be added later by a layout engine.
-- Realistic commercial product photography, physically plausible light and shadows, sharp focus, no illustration or 3D-render look, no hands or people.
+PHOTO_CONTRACT = """This is a professional studio product photograph of the exact product in the reference images.
+
+1. Copy the product faithfully from the reference: same silhouette, proportions, colours, materials, structure, markings and part count. Every jaw, blade, tooth, serration, hinge, rivet, screw, spring and joint must be reproduced with identical geometry — nothing merged, melted, smoothed away or invented.
+2. The product is the only object in frame. The surface it stands on is the only other element: no wires, tools, packaging, loose parts, hands or people.
+3. Zero text of any kind: no letters, numbers, labels, logos, watermarks. Typography is added later.
+4. Look like a real studio photograph: soft key light with shaped highlights, natural contact shadow, true-to-life materials, slight depth falloff, photographic grain. No illustration, no 3D render look.
 """
 
 # 各版式的照片层构图要求（文案区预留）。
@@ -208,3 +207,60 @@ def build_photo_prompt(template: str, copy: MarketingCopy, scene: dict[str, Any]
     else:
         scene_lines.append("PROPS: none.")
     return f"{PHOTO_CONTRACT}\n{layout}\n" + "\n".join(scene_lines) + f"\n{semantic}"
+
+
+# ── 出图质检（豆包 2.1 视觉）：比对参考图与生成图，决定是否重渲 ─────────────
+_QA_SYSTEM = (
+    "You are a strict e-commerce image QA inspector. You compare a reference product photo "
+    "with an AI-generated listing image and judge whether the product is faithfully reproduced."
+)
+
+_QA_USER = """Image 1 is the REFERENCE product photo. Image 2 is the GENERATED listing image.
+
+Judge the generated image on:
+1. same_product: is the object in image 2 unmistakably the same product model as image 1?
+2. fidelity: are shape, proportions, part count and mechanism preserved? Any deformed, fused, melted or missing parts?
+3. extra_objects: any wires, tools, hands, packaging or loose objects that should not be there?
+4. text: any visible letters, numbers, logos or watermarks rendered in the image?
+
+Return ONLY JSON: {{"same_product": true|false, "fidelity_ok": true|false, "extra_objects": true|false, "has_text": true|false, "issues": "<short English description of the main defect, or empty>"}}"""
+
+
+def build_qa_messages(reference_data_url: str, generated_data_url: str) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": _QA_SYSTEM},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": reference_data_url}},
+                {"type": "image_url", "image_url": {"url": generated_data_url}},
+                {"type": "text", "text": _QA_USER},
+            ],
+        },
+    ]
+
+
+def parse_qa_response(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if "same_product" not in data:
+        return None
+    ok = bool(data.get("same_product")) and bool(data.get("fidelity_ok", True)) and not bool(
+        data.get("extra_objects")
+    ) and not bool(data.get("has_text"))
+    return {
+        "ok": ok,
+        "same_product": bool(data.get("same_product")),
+        "fidelity_ok": bool(data.get("fidelity_ok", True)),
+        "extra_objects": bool(data.get("extra_objects")),
+        "has_text": bool(data.get("has_text")),
+        "issues": str(data.get("issues") or "").strip()[:300],
+    }
