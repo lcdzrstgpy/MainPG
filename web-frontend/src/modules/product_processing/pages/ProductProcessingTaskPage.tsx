@@ -1214,6 +1214,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     ['icon_grid', '功能图标网格'],
                     ['material_strip', '材质适用条'],
                     ['use_cases', '场景应用'],
+                    ['feature_cards', '功能细节卡'],
                   ].map(([key, label]) => {
                     const picked = (options.marketingTemplates || []).includes(key);
                     return (

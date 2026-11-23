@@ -491,3 +491,18 @@ def build_background_prompt(copy: MarketingCopy, scene: dict[str, Any] | None = 
     tone = (copy.headline or "premium and clean").replace("\n", " ")[:80].strip(" .;:")
     copy_top = "35" if template in {"headline_hero", "icon_grid", "material_strip"} else "45"
     return _BACKGROUND_PROMPT.format(surface=surface, copy_top=copy_top, tone=tone)
+
+
+def build_card_prompt(label: str, scene: dict[str, Any] | None = None) -> str:
+    """细节卡小图：产品的功能微距（允许一件简单材料在钳口内，其余照旧禁物）。"""
+    surface = str((scene or {}).get("surface") or "a dark studio surface").strip()
+    return (
+        "FUSION MODE — THE CUTOUT IS PHOTOGRAPHIC TRUTH (same rules as the main shot: "
+        "relight only, never repaint).\n"
+        f"MACRO COMPOSITION: extreme close-up of this product's working end demonstrating — {label}. "
+        "Square 1:1, shallow depth of field, dramatic studio light on a "
+        f"{surface}. The product may hold ONE simple matching material in its jaws to illustrate the "
+        "function (e.g. a straight copper wire for stripping/cutting): the material must be physically "
+        "correct, clamped or resting, never floating or passing through the product. "
+        "No hands, no tools besides the product, no text, no logos, no watermarks."
+    )

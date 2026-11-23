@@ -439,3 +439,79 @@ def compose_marketing_image(
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=90)
     return buffer.getvalue()
+
+
+def compose_feature_cards(
+    hero_bytes: bytes,
+    cards: list[tuple[bytes, str]],
+    copy: MarketingCopy,
+    *,
+    canvas_size: int = CANVAS_SIZE,
+) -> bytes:
+    """「功能细节卡」版式：顶部 hero 大图 + 标题，底部 2×2 功能细节小卡。"""
+    canvas = canvas_size
+    image = Image.new("RGB", (canvas, canvas), (16, 18, 22))
+    band_h = int(canvas * 0.46)
+
+    # hero 覆盖顶部带
+    hero = Image.open(BytesIO(hero_bytes)).convert("RGB")
+    scale = max(canvas / hero.width, band_h / hero.height)
+    hero = hero.resize((max(1, int(hero.width * scale)), max(1, int(hero.height * scale))), Image.LANCZOS)
+    left = (hero.width - canvas) // 2
+    image.paste(hero.crop((left, 0, left + canvas, band_h)), (0, 0))
+    image = _scrim(image, top_ratio=0.34)
+
+    # 标题（左上）
+    draw = ImageDraw.Draw(image)
+    headline_lines, headline_font = _fit_lines(
+        draw, copy.headline, base_size=int(canvas * 0.052), bold=True,
+        max_width=int(canvas * 0.62), max_lines=2,
+    )
+    y = int(canvas * 0.045)
+    for line in headline_lines:
+        draw.text((int(canvas * 0.05) + 3, y + 3), line, font=headline_font, fill=(24, 26, 30))
+        draw.text((int(canvas * 0.05), y), line, font=headline_font, fill=(255, 255, 255))
+        y += int(canvas * 0.062)
+    draw.rectangle(
+        [(int(canvas * 0.05), y + 4), (int(canvas * 0.05) + int(canvas * 0.10), y + int(canvas * 0.012))],
+        fill=(255, 122, 47),
+    )
+
+    # 2×2 卡片
+    margin = int(canvas * 0.035)
+    gap = int(canvas * 0.022)
+    card_w = (canvas - margin * 2 - gap) // 2
+    card_h = (canvas - band_h - margin * 2 - gap) // 2
+    label_font = _font(int(canvas * 0.026), bold=True)
+
+    def draw_card(card_bytes: bytes, label: str, x0: int, y0: int) -> None:
+        tile = Image.new("RGB", (card_w, card_h), (30, 32, 38))
+        photo = Image.open(BytesIO(card_bytes)).convert("RGB")
+        photo_h = int(card_h * 0.72)
+        scale = max(card_w / photo.width, photo_h / photo.height)
+        photo = photo.resize((max(1, int(photo.width * scale)), max(1, int(photo.height * scale))), Image.LANCZOS)
+        left_p = (photo.width - card_w) // 2
+        top_p = (photo.height - photo_h) // 2
+        tile.paste(photo.crop((left_p, top_p, left_p + card_w, top_p + photo_h)), (0, 0))
+        tdraw = ImageDraw.Draw(tile)
+        tdraw.rectangle([0, photo_h, card_w, card_h], fill=(22, 24, 30))
+        icon_size = int(card_h * 0.13)
+        _icon(tdraw, int(card_w * 0.05), photo_h + (card_h - photo_h - icon_size) // 2, icon_size, hash(label) % 6)
+        tdraw.text(
+            (int(card_w * 0.05) * 2 + icon_size + 6, photo_h + (card_h - photo_h) // 2),
+            label[:22], font=label_font, fill=(240, 242, 245, 255), anchor="lm",
+        )
+        # 圆角蒙版贴回
+        mask = Image.new("L", (card_w, card_h), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, card_w, card_h], radius=int(card_h * 0.09), fill=255)
+        image.paste(tile, (x0, y0), mask)
+
+    for index, (card_bytes, label) in enumerate(list(cards)[:4]):
+        col, row = index % 2, index // 2
+        x0 = margin + col * (card_w + gap)
+        y0 = band_h + margin + row * (card_h + gap)
+        draw_card(card_bytes, label, x0, y0)
+
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()

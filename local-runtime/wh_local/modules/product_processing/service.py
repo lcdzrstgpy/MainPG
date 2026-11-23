@@ -3135,6 +3135,71 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         cache[url] = value
         return value
 
+    def _marketing_feature_cards(
+        self,
+        processor: Any,
+        *,
+        copy: Any,
+        scene: dict[str, Any] | None,
+        vision_subject: str,
+        brief: str,
+        parts_hint: str,
+        product_bytes: bytes,
+        anchor_url: str,
+        render_refs: list[str],
+        refs: list[str],
+        ai_notes: list[str] | None = None,
+    ) -> bytes | None:
+        """「功能细节卡」：hero 大图（融合三级链路）+ 4 张功能微距小卡。"""
+        from .domain.premium_composer import compose_feature_cards  # noqa: PLC0415
+        from .domain.premium_prompts import build_card_prompt  # noqa: PLC0415
+
+        labels = [str(item) for item in (getattr(copy, "bullets", []) or []) if str(item or "").strip()][:4]
+        if len(labels) < 2:
+            return None
+        while len(labels) < 4:
+            labels.append(labels[-1])
+
+        # hero：融合（锚点）→ QA → 不合格退空景合成
+        hero_bytes: bytes | None = None
+        base_prompt = build_photo_prompt(
+            "headline_hero", copy, scene, vision_subject, brief, anchor=bool(anchor_url)
+        )
+        try:
+            photo = self._marketing_render(processor, base_prompt, render_refs, ai_notes)
+            candidate = bytes(getattr(photo, "content", b"") or b"")
+            qa = self._marketing_quality_check(refs, candidate, parts_hint)
+            if qa is not None and not qa.get("ok") and candidate:
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:feature_cards:hero-fusion-bad:{qa.get('issues') or ''}")
+            hero_bytes = candidate or None
+        except Exception as exc:  # noqa: BLE001
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:feature_cards:hero-failed:{str(exc)[:120]}")
+        if hero_bytes is None and product_bytes:
+            from .domain.premium_anchor import composite_on  # noqa: PLC0415
+
+            hero_bytes = composite_on(product_bytes, None, workdir=Path(self.assets.root))
+        if hero_bytes is None:
+            return None
+
+        # 4 张微距卡
+        cards: list[tuple[bytes, str]] = []
+        for label in labels:
+            try:
+                card_photo = self._marketing_render(
+                    processor, build_card_prompt(label, scene), render_refs, ai_notes
+                )
+                content = bytes(getattr(card_photo, "content", b"") or b"")
+                if content:
+                    cards.append((content, label))
+            except Exception as exc:  # noqa: BLE001
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:feature_cards:card-failed:{str(exc)[:80]}")
+        if len(cards) < 2:
+            return None
+        return compose_feature_cards(hero_bytes, cards, copy)
+
     def _marketing_render(
         self,
         processor: Any,
@@ -3303,7 +3368,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             return []
         from .domain.premium_composer import TEMPLATES  # noqa: PLC0415
 
-        selected = [item for item in (templates or []) if item in TEMPLATES] or list(TEMPLATES[:3])
+        selected = [
+            item for item in (templates or []) if item in TEMPLATES or item == "feature_cards"
+        ] or list(TEMPLATES[:3])
         scene = self._marketing_scene_plan(title, category, vision_subject)
         parts_hint = str((scene or {}).get("parts") or "")
         brief = self._marketing_image_brief(
@@ -3330,6 +3397,38 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
                 copy = self._marketing_copy(title, category, template)
+                if template == "feature_cards":
+                    composed_cards = self._marketing_feature_cards(
+                        processor,
+                        copy=copy,
+                        scene=scene,
+                        vision_subject=vision_subject,
+                        brief=brief,
+                        parts_hint=parts_hint,
+                        product_bytes=product_bytes,
+                        anchor_url=anchor_url,
+                        render_refs=render_refs,
+                        refs=refs,
+                        ai_notes=ai_notes,
+                    )
+                    if composed_cards is None:
+                        if ai_notes is not None:
+                            ai_notes.append("marketing:feature_cards:skipped")
+                        continue
+                    part = GeneratedMedia(
+                        stage="marketing_feature_cards",
+                        content=composed_cards,
+                        content_type="image/jpeg",
+                        suffix=".jpg",
+                        provider="local-synthesis",
+                        model="premium_composer",
+                        reference_count=1,
+                        attempt_count=1,
+                    )
+                    urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
+                    if urls:
+                        values.append(urls[0])
+                    continue
                 base_prompt = build_photo_prompt(
                     template, copy, scene, vision_subject, brief, anchor=bool(anchor_url)
                 )

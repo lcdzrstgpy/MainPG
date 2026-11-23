@@ -278,3 +278,24 @@ def test_cutout_rejects_non_light_background() -> None:
     buffer = BytesIO()
     dark.save(buffer, format="JPEG")
     assert cutout_rgba(buffer.getvalue()) is None
+
+
+def test_compose_feature_cards_layout() -> None:
+    """功能细节卡：hero + 2×2 微距卡合成。"""
+    from wh_local.modules.product_processing.domain.premium_composer import compose_feature_cards
+
+    hero = _white_bg_product()
+    card = _white_bg_product()
+    out = compose_feature_cards(hero, [(card, "Wire Stripping"), (card, "Crimping"), (card, "Cutting"), (card, "Twisting")], MarketingCopy(headline="Precision Working Head", subline="Designed for control"))
+    image = Image.open(BytesIO(out))
+    assert image.size == (1600, 1600)
+    assert out[:2] == b"\xff\xd8"
+
+
+def test_card_prompt_is_macro_fusion() -> None:
+    from wh_local.modules.product_processing.domain.premium_prompts import build_card_prompt
+
+    prompt = build_card_prompt("Wire Stripping", {"surface": "dark walnut"})
+    assert "MACRO COMPOSITION" in prompt
+    assert "Wire Stripping" in prompt
+    assert "FUSION MODE" in prompt
