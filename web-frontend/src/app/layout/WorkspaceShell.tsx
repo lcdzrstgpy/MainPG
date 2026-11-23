@@ -44,7 +44,6 @@ const OrderProfitBindingPage = lazy(() => import("../../modules/order_profit/pag
 const OrderProfitCostPage = lazy(() => import("../../modules/order_profit/pages/OrderProfitCostPage").then((m) => ({ default: m.OrderProfitCostPage })));
 const ProductProcessingVerifyPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingVerifyPage").then((m) => ({ default: m.ProductProcessingVerifyPage })));
 const ProductProcessingTaskPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingTaskPage").then((m) => ({ default: m.ProductProcessingTaskPage })));
-const ProductMarketingPage = lazy(() => import("../../modules/product_processing/pages/ProductMarketingPage").then((m) => ({ default: m.ProductMarketingPage })));
 const ProductProcessingHistoryPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingHistoryPage").then((m) => ({ default: m.ProductProcessingHistoryPage })));
 const ProductSourcingCostPage = lazy(() => import("../../modules/product_processing/pages/ProductSourcingCostPage").then((m) => ({ default: m.ProductSourcingCostPage })));
 const ProductProcessingPrecheckPage = lazy(() => import("../../modules/product_processing/pages/ProductProcessingPrecheckPage").then((m) => ({ default: m.ProductProcessingPrecheckPage })));
@@ -1139,7 +1138,14 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
         break;
       case "product_processing_marketing":
-        content = <ProductMarketingPage />;
+        content = (
+          <ProductProcessingVerifyPage
+            marketing
+            onStartProcessing={openProcessingTask}
+            onOpenCollection={() => openModule("daily_selection")}
+            isActive={isActive}
+          />
+        );
         break;
       case "product_processing_history":
         content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;

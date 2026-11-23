@@ -246,6 +246,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       maxProducts: 0,
       processingScope: ['title', 'details', 'product_dimensions', 'four_grid', 'detail_images', 'qualification'],
       marketingImages: false,
+      marketingTemplates: ['headline_hero', 'action_proof', 'icon_grid'],
       qualificationMode: 'standard',
       includeProductVideo: false,
       skipDuplicates: false,
@@ -919,6 +920,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
         processing_scope: options.marketingImages
           ? [...options.processingScope, 'marketing_images']
           : options.processingScope,
+        marketing_templates: options.marketingImages ? (options.marketingTemplates || []) : [],
         qualification_mode: options.qualificationMode,
         include_product_video: options.includeProductVideo,
         skip_duplicates: options.skipDuplicates,
@@ -1189,7 +1191,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
               <span className="verify-sub">基础参数 · 出图风格 · 生图组合</span>
             </div>
             <div className="verify-form-row">
-              <label title="精选处理：AI 出照片层、本地排版合成营销图（大字卖点 / 场景动作两版式），产出自动进轮播图。默认关闭">
+              <label title="精选处理：AI 出照片层、本地排版合成营销图，产出自动进轮播图。默认关闭">
                 精选处理
                 <input
                   type="checkbox"
@@ -1197,6 +1199,43 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   onChange={(e) => setOptions((p) => ({ ...p, marketingImages: e.target.checked }))}
                 />
               </label>
+              {options.marketingImages ? (
+                <div className="verify-form-row" style={{ flexBasis: '100%' }}>
+                  <span className="verify-form-label" style={{ minWidth: 72 }}>
+                    精选版式（选 3 个）
+                  </span>
+                  {[
+                    ['headline_hero', '大字卖点'],
+                    ['action_proof', '场景动作'],
+                    ['icon_grid', '功能图标网格'],
+                    ['material_strip', '材质适用条'],
+                    ['use_cases', '场景应用'],
+                  ].map(([key, label]) => {
+                    const picked = (options.marketingTemplates || []).includes(key);
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`verify-chip${picked ? ' is-active' : ''}`}
+                        aria-pressed={picked}
+                        onClick={() =>
+                          setOptions((p) => {
+                            const current = p.marketingTemplates || [];
+                            const next = current.includes(key)
+                              ? current.filter((item) => item !== key)
+                              : current.length >= 3
+                                ? current
+                                : [...current, key];
+                            return { ...p, marketingTemplates: next };
+                          })
+                        }
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
               <label>站点
                 <select value={options.targetSite} onChange={(e) => {
                   const site = e.target.value as ProductProcessingOptions['targetSite'];

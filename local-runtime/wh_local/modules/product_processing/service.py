@@ -3077,6 +3077,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         category: str,
         reference_urls: list[str],
         workspace_id: str,
+        templates: list[str] | None = None,
         ai_notes: list[str] | None = None,
     ) -> list[str]:
         """精选处理（一期）：两版式各出 1 张营销图，返回预览 URL 列表。
@@ -3094,8 +3095,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             if ai_notes is not None:
                 ai_notes.append("marketing:skipped:no_reference")
             return []
+        from .domain.premium_composer import TEMPLATES  # noqa: PLC0415
+
+        selected = [item for item in (templates or []) if item in TEMPLATES] or list(TEMPLATES[:3])
         values: list[str] = []
-        for template in ("headline_hero", "action_proof"):
+        for template in selected:
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
                 copy = self._marketing_copy(title, category, template)
@@ -3103,7 +3107,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     stage="marketing_photo",
                     prompt=build_photo_prompt(template, copy),
                     reference_values=refs,
-                    image_size="1024x1024",
+                    image_size="2048x2048",
                 )
                 composed = compose_marketing_image(bytes(getattr(photo, "content", b"")), template, copy)
                 part = GeneratedMedia(
@@ -3399,7 +3403,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             stage="marketing_photo",
             prompt=build_photo_prompt(template, copy),
             reference_values=reference_values,
-            image_size="1024x1024",
+            image_size="2048x2048",
         )
         composed = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
         path = self.assets.save_generated_image(
@@ -11083,6 +11087,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     category=category,
                     reference_urls=source_reference_values,
                     workspace_id=workspace_id,
+                    templates=[
+                        str(item)
+                        for item in (settings.get("marketing_templates") or [])
+                        if str(item or "").strip()
+                    ],
                     ai_notes=ai_notes,
                 )
             except Exception as exc:  # noqa: BLE001

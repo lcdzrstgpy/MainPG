@@ -7,18 +7,18 @@
 - ``headline_hero``（大字卖点）：顶部居中大标题 + 橙色强调条 + 副文案。
 - ``action_proof``（场景动作）：左上标题块 + 渐变遮罩 + 副文案，照片是使用动作。
 
-画布 1200×1200（1:1）。上传链路会再压到 800×800，排版在 1200 上做留足精度。
+画布 1600×1600（1:1，精品档）。上传链路会再压到 800×800，排版放大做留足精度。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
-CANVAS_SIZE = 1200
+CANVAS_SIZE = 1600
 
 # 文案禁止的绝对化用语（营销合规：广告法/平台规则）。命中即删词，不拦整条。
 BANNED_WORDS = (
@@ -54,10 +54,14 @@ _FONT_CANDIDATES_REGULAR = (
 
 @dataclass
 class MarketingCopy:
-    """排版层的文案。headline 允许用换行控制断行（1~2 行最佳）。"""
+    """排版层的文案。headline 允许用换行控制断行（1~2 行最佳）。
+
+    bullets 用于图标网格/材质条/场景应用：各 1~3 个短词（英文）。
+    """
 
     headline: str
     subline: str = ""
+    bullets: list[str] = field(default_factory=list)
 
 
 def filter_copy(text: str) -> str:
@@ -229,9 +233,182 @@ def _draw_action_proof(image: Image.Image, copy: MarketingCopy) -> Image.Image:
     return image
 
 
+
+# ── 通用绘制件：半透明圆角底 + 简单矢量图标（不依赖外部图标库） ──────────────
+
+_CHIP_FILL = (16, 18, 22, 205)
+_CHIP_EDGE = (255, 255, 255, 40)
+_ACCENT = (255, 122, 47, 255)
+
+
+def _with_overlay(image: Image.Image, painter) -> Image.Image:
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    painter(ImageDraw.Draw(overlay))
+    return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+
+
+def _icon(draw: ImageDraw.ImageDraw, x: float, y: float, size: float, index: int) -> None:
+    """在 (x,y) 画 size 见方的圆底图标；index 决定图形（check/shield/sparkle/droplet/gear/ruler）。"""
+    draw.ellipse([x, y, x + size, y + size], fill=_ACCENT)
+    color = (255, 255, 255, 255)
+    cx, cy = x + size / 2, y + size / 2
+    lw = max(2, int(size // 12))
+    kind = index % 6
+    if kind == 0:  # 对勾
+        draw.line([(x + size * 0.28, cy), (cx - size * 0.02, y + size * 0.68)], fill=color, width=lw)
+        draw.line([(cx - size * 0.02, y + size * 0.68), (x + size * 0.74, y + size * 0.34)], fill=color, width=lw)
+    elif kind == 1:  # 盾形
+        draw.polygon(
+            [(cx, y + size * 0.24), (x + size * 0.74, y + size * 0.38), (x + size * 0.66, y + size * 0.7),
+             (cx, y + size * 0.8), (x + size * 0.34, y + size * 0.7), (x + size * 0.26, y + size * 0.38)],
+            outline=color, width=lw,
+        )
+    elif kind == 2:  # 星光
+        draw.polygon(
+            [(cx, y + size * 0.24), (cx + size * 0.08, cy - size * 0.06), (x + size * 0.74, cy),
+             (cx + size * 0.08, cy + size * 0.06), (cx, y + size * 0.76), (cx - size * 0.08, cy + size * 0.06),
+             (x + size * 0.26, cy), (cx - size * 0.08, cy - size * 0.06)],
+            fill=color,
+        )
+    elif kind == 3:  # 水滴
+        draw.ellipse([cx - size * 0.16, cy - size * 0.04, cx + size * 0.16, cy + size * 0.24], fill=color)
+        draw.polygon([(cx, y + size * 0.28), (cx - size * 0.15, cy + size * 0.1), (cx + size * 0.15, cy + size * 0.1)], fill=color)
+    elif kind == 4:  # 齿轮
+        draw.ellipse([cx - size * 0.2, cy - size * 0.2, cx + size * 0.2, cy + size * 0.2], outline=color, width=lw)
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            draw.line([(cx + dx * size * 0.24, cy + dy * size * 0.24), (cx + dx * size * 0.36, cy + dy * size * 0.36)], fill=color, width=lw)
+    else:  # 尺
+        draw.rectangle([x + size * 0.26, cy - size * 0.1, x + size * 0.74, cy + size * 0.1], outline=color, width=lw)
+        for step in range(1, 4):
+            px = x + size * 0.26 + size * 0.48 * step / 4
+            draw.line([(px, cy - size * 0.1), (px, cy - size * 0.01)], fill=color, width=lw)
+
+
+def _bullets(copy: MarketingCopy, count: int) -> list[str]:
+    """短词列表：不足用 subline 切分兜底；都为空则返回空表（版式退化为 3 个 chip）。"""
+    items = [filter_copy(item).strip() for item in (copy.bullets or []) if str(item or "").strip()]
+    items = [item for item in items if item][:count]
+    if not items and copy.subline:
+        words = filter_copy(copy.subline)
+        items = [" ".join(words.split()[:2])][:count]
+    return items
+
+
+def _draw_icon_grid(image: Image.Image, copy: MarketingCopy) -> Image.Image:
+    """功能图标网格：顶部标题 + 左下 2×3 图标短词卡片。"""
+    width, height = image.size
+    draw = ImageDraw.Draw(image)
+    headline_lines, headline_font = _fit_lines(
+        draw, copy.headline, base_size=int(width * 0.060), bold=True,
+        max_width=int(width * 0.88), max_lines=2,
+    )
+    y = int(height * 0.06)
+    for line in headline_lines:
+        line_width = draw.textlength(line, font=headline_font)
+        x = (width - line_width) // 2
+        draw.text((x + 3, y + 3), line, font=headline_font, fill=(24, 26, 30))
+        draw.text((x, y), line, font=headline_font, fill=(255, 255, 255))
+        y += int(height * 0.072)
+
+    labels = _bullets(copy, 6)
+    if not labels:
+        labels = ["Durable", "Precise", "Comfort Grip"]
+    label_font = _font(int(width * 0.026), bold=True)
+    chip_w = int(width * 0.40)
+    chip_h = int(height * 0.100)
+    gap = int(height * 0.018)
+    left = int(width * 0.055)
+    top = int(height * 0.60)
+    rows = (len(labels) + 1) // 2
+
+    def paint(painter: ImageDraw.ImageDraw) -> None:
+        for index, label in enumerate(labels[:6]):
+            col = index % 2
+            row = index // 2
+            cx0 = left + col * (chip_w + gap)
+            cy0 = top + row * (chip_h + gap)
+            painter.rounded_rectangle(
+                [cx0, cy0, cx0 + chip_w, cy0 + chip_h],
+                radius=int(chip_h * 0.32), fill=_CHIP_FILL, outline=_CHIP_EDGE, width=1,
+            )
+            icon_size = int(chip_h * 0.62)
+            _icon(painter, cx0 + int(chip_h * 0.19), cy0 + (chip_h - icon_size) // 2, icon_size, index)
+            text = label[:26]
+            painter.text(
+                (cx0 + int(chip_h * 0.19) * 2 + icon_size + 6, cy0 + chip_h / 2),
+                text, font=label_font, fill=(240, 242, 245, 255), anchor="lm",
+            )
+
+    return _with_overlay(image, paint)
+
+
+def _draw_material_strip(image: Image.Image, copy: MarketingCopy) -> Image.Image:
+    """材质/适用条：顶部标题 + 底部一排材质短词药丸。"""
+    width, height = image.size
+    base = _draw_action_proof(image, copy)
+    draw = ImageDraw.Draw(base)
+    labels = _bullets(copy, 4)
+    if not labels:
+        return base
+    chip_font = _font(int(width * 0.028), bold=True)
+    chip_h = int(height * 0.072)
+    gaps = int(width * 0.014)
+    total_w = width - int(width * 0.14)
+    chip_w = int((total_w - gaps * (len(labels) - 1)) / len(labels))
+    left = int(width * 0.07)
+    top = int(height * 0.82)
+
+    def paint(painter: ImageDraw.ImageDraw) -> None:
+        for index, label in enumerate(labels):
+            x0 = left + index * (chip_w + gaps)
+            painter.rounded_rectangle(
+                [x0, top, x0 + chip_w, top + chip_h],
+                radius=chip_h // 2, fill=_CHIP_FILL, outline=_CHIP_EDGE, width=1,
+            )
+            painter.text(
+                (x0 + chip_w / 2, top + chip_h / 2),
+                label[:18], font=chip_font, fill=(240, 242, 245, 255), anchor="mm",
+            )
+
+    return _with_overlay(base, paint)
+
+
+def _draw_use_cases(image: Image.Image, copy: MarketingCopy) -> Image.Image:
+    """场景应用：顶部标题 + 产品四周四个应用短词圆环。"""
+    width, height = image.size
+    base = _draw_headline_hero(image, copy)
+    labels = _bullets(copy, 4)
+    if not labels:
+        return base
+    card_font = _font(int(width * 0.024), bold=True)
+    card_w = int(width * 0.30)
+    card_h = int(height * 0.092)
+    positions = [(0.05, 0.55), (0.65, 0.55), (0.05, 0.72), (0.65, 0.72)]
+
+    def paint(painter: ImageDraw.ImageDraw) -> None:
+        for index, label in enumerate(labels):
+            rx, ry = positions[index]
+            x0, y0 = int(width * rx), int(height * ry)
+            painter.rounded_rectangle(
+                [x0, y0, x0 + card_w, y0 + card_h],
+                radius=int(card_h * 0.3), fill=_CHIP_FILL, outline=_CHIP_EDGE, width=1,
+            )
+            icon_size = int(card_h * 0.58)
+            _icon(painter, x0 + int(card_h * 0.2), y0 + (card_h - icon_size) // 2, icon_size, index + 2)
+            painter.text(
+                (x0 + int(card_h * 0.2) * 2 + icon_size + 6, y0 + card_h / 2),
+                label[:16], font=card_font, fill=(240, 242, 245, 255), anchor="lm",
+            )
+
+    return _with_overlay(base, paint)
+
+
 _TEMPLATES = {
     "headline_hero": _draw_headline_hero,
     "action_proof": _draw_action_proof,
+    "icon_grid": _draw_icon_grid,
+    "material_strip": _draw_material_strip,
+    "use_cases": _draw_use_cases,
 }
 
 TEMPLATES = tuple(_TEMPLATES)
@@ -250,7 +427,11 @@ def compose_marketing_image(
         raise ValueError(f"未知版式：{template}（可选：{'、'.join(TEMPLATES)}）")
     image = _square_photo(photo, canvas_size)
     image = _scrim(image)
-    copy = MarketingCopy(headline=filter_copy(copy.headline), subline=filter_copy(copy.subline))
+    copy = MarketingCopy(
+        headline=filter_copy(copy.headline),
+        subline=filter_copy(copy.subline),
+        bullets=[filter_copy(item) for item in (copy.bullets or [])],
+    )
     if not copy.headline:
         raise ValueError("文案标题为空")
     image = drawer(image, copy)

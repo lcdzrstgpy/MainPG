@@ -76,13 +76,21 @@ function draftDirty(draft: DraftSummary, edits: Record<number, DraftEdit>): bool
   );
 }
 
-export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollection, isActive = true }: Props) {
+export function ProductProcessingVerifyPage({
+  onStartProcessing,
+  onOpenCollection,
+  isActive = true,
+  marketing = false,
+}: Props & { marketing?: boolean }) {
   const ctx = api();
   const [options, setOptions] = useState<ProductProcessingOptions>({
     targetSite: 'US',
     targetLanguage: 'en',
     maxProducts: 0,
     processingScope: ['title', 'details', 'product_dimensions', 'four_grid', 'detail_images', 'qualification'],
+    // 精选处理：与 AI 处理同一套流程，额外多出 3 张精品营销图（默认前三版式）。
+    marketingImages: marketing,
+    marketingTemplates: marketing ? ['headline_hero', 'action_proof', 'icon_grid'] : [],
     qualificationMode: 'standard',
     includeProductVideo: false,
     skipDuplicates: false,
@@ -599,8 +607,10 @@ export function ProductProcessingVerifyPage({ onStartProcessing, onOpenCollectio
       });
       return sum + Math.max(1, remaining.length);
     }, 0);
-    // 精品标记已从草稿池移除，不再向后端提交 premium_draft_ids。
-    const opened = onStartProcessing?.(ids, processOptions, [], skuCount);
+    // 精品标记已从草稿池移除，不再向后端提交 premium_draft_ids；
+    // 但「精选处理」要更好的画质：本批所选草稿走 4K 精品四宫格（premium）。
+    const premiumIds = marketing ? ids : [];
+    const opened = onStartProcessing?.(ids, processOptions, premiumIds, skuCount);
     if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
     // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
     // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。

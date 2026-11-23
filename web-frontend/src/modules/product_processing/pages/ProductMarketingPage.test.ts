@@ -1,6 +1,6 @@
 /**
- * 精选处理页守卫：取数必须带 workspace 头（否则后端落 "local" 空间查不到草稿，
- * 页面永远空白——2026-11-23 实际踩过的坑）。
+ * 精选处理守卫：入口复用 AI 处理全流程（VerifyPage + marketing 模式），
+ * 取数必须带 workspace 头（否则后端落 "local" 空间查不到草稿——2026-11-23 实际踩过）。
  */
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -12,9 +12,14 @@ test("listProductDrafts 带 X-Workspace-ID 头", () => {
   assert.match(source, /productProcessingApiContext\(\)/);
 });
 
-test("精选处理页走 listProductDrafts 并有空态提示", () => {
-  const page = readFileSync(new URL("./ProductMarketingPage.tsx", import.meta.url), "utf8");
-  assert.match(page, /listProductDrafts/);
-  assert.match(page, /暂无草稿/);
-  assert.match(page, /generateMarketingImage/);
+test("精选处理入口复用 AI 处理页的 marketing 模式", () => {
+  const shell = readFileSync(new URL("../../../app/layout/WorkspaceShell.tsx", import.meta.url), "utf8");
+  assert.match(shell, /case "product_processing_marketing":/);
+  assert.match(shell, /<ProductProcessingVerifyPage[\s\S]{0,120}marketing/);
+  const verify = readFileSync(new URL("./ProductProcessingVerifyPage.tsx", import.meta.url), "utf8");
+  assert.match(verify, /marketing\?: boolean/);
+  assert.match(verify, /marketingTemplates/);
+  const task = readFileSync(new URL("./ProductProcessingTaskPage.tsx", import.meta.url), "utf8");
+  assert.match(task, /marketing_templates/);
+  assert.match(task, /精选版式（选 3 个）/);
 });

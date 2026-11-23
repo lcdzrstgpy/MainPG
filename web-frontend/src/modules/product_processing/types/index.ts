@@ -167,6 +167,8 @@ export interface ProductProcessingOptions {
   processingScope: string[];
   /** 精选处理：AI 照片层 + 本地排版合成营销图（默认关） */
   marketingImages?: boolean;
+  /** 精选版式（选 3 个左右）：headline_hero/action_proof/icon_grid/material_strip/use_cases */
+  marketingTemplates?: string[];
   qualificationMode: 'standard' | 'strict';
   includeProductVideo: boolean;
   skipDuplicates: boolean;

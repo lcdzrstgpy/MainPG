@@ -18,6 +18,7 @@ from .premium_composer import MarketingCopy
 # 生图照片层的公共合同：产品保真 + 禁文字 + 真实摄影质感。
 PHOTO_CONTRACT = """HARD RULES:
 - The reference images are the ONLY source of truth for the product. Keep silhouette, proportions, colours, materials, structure, printed markings and every physical detail IDENTICAL. Only scene, background, camera angle and lighting may change.
+- MECHANICAL FIDELITY (red line): reproduce every jaw, blade, tooth, serration, bevel, hinge, rivet, screw, spring, coil, pivot and joint with the same count, same position and same geometry as the reference. Serrations must keep their exact number and spacing. NEVER melt, blur, merge, simplify, smooth away or invent any part; a deformed, blobby or fused jaw is a failed image and must be re-rendered. Keep the tool in the same open/closed state as the reference.
 - Render ZERO text of any kind: no letters, words, numbers, labels, logos, watermarks or UI elements. Text will be added later by a layout engine.
 - Realistic commercial product photography, physically plausible light and shadows, sharp focus, no illustration or 3D-render look, no hands or people.
 """
@@ -33,6 +34,21 @@ PHOTO_LAYOUTS: dict[str, str] = {
         "COMPOSITION: square action close-up — the product actively performing its strongest use case "
         "(e.g. cutting a steel wire / rope / cable) with crisp detail on the working edge. "
         "Keep the upper-left 45% of the frame darker and uncluttered as copy space; action happens centre-right and lower."
+    ),
+    "icon_grid": (
+        "COMPOSITION: clean square product hero on a dark background, product centred and fully visible in the middle band "
+        "(35%-60% of frame height). Keep the top 15% and the bottom 38% uncluttered (plain dark surface) — feature chips will be "
+        "overlaid there later. No props near the bottom area."
+    ),
+    "material_strip": (
+        "COMPOSITION: square product shot at a three-quarter angle on a dark workbench, product fills the upper two thirds "
+        "with sharp focus on the working edge. Keep the upper-left 35% uncluttered for a headline and the bottom 15% a plain "
+        "dark surface for material pills. Optionally show one piece of the material it cuts near the blade."
+    ),
+    "use_cases": (
+        "COMPOSITION: square product hero in the centre of a dark studio frame, product fully visible and centred. "
+        "Keep all four corners darker and empty (plain background) — use-case labels will be overlaid in the corners later. "
+        "Keep the top 15% uncluttered for a headline."
     ),
 }
 
@@ -52,9 +68,10 @@ Image layout: {layout_hint}
 Requirements:
 - headline: ONE punchy English phrase of 4 to 8 words. It may use a line break to split into two balanced lines. No period at the end.
 - subline: ONE supporting sentence of 8 to 16 words that states a concrete benefit or material fact. No period at the end.
-- Both must be plain ASCII English. No emojis, no quotes, no hashtags.
+- bullets: 6 SHORT feature labels, each 1 to 3 words, Title Case, factual, no punctuation (e.g. "Hardened Steel", "Comfort Grip", "Safety Lock", "Rust Proof"). Used on feature-chip layouts.
+- All must be plain ASCII English. No emojis, no quotes, no hashtags.
 
-Output ONLY a JSON object: {{"headline": "...", "subline": "..."}}"""
+Output ONLY a JSON object: {{"headline": "...", "subline": "...", "bullets": ["...", "..."]}}"""
 
 _LAYOUT_HINTS = {
     "headline_hero": "big centered headline poster; subline sits under the headline",
@@ -92,13 +109,17 @@ def parse_copy_response(text: str) -> MarketingCopy | None:
     if not isinstance(data, dict):
         return None
     headline = str(data.get("headline") or "").strip()
+    bullets_raw = data.get("bullets")
+    bullets = []
+    if isinstance(bullets_raw, list):
+        bullets = [str(item or "").strip() for item in bullets_raw if str(item or "").strip()][:6]
     subline = str(data.get("subline") or "").strip()
     if not headline:
         return None
     # JSON 里允许用 \n 控制断行；清洗掉引号残留
     headline = headline.replace("\\n", "\n").strip('" ')
     subline = subline.replace("\\n", "\n").strip('" ')
-    return MarketingCopy(headline=headline, subline=subline)
+    return MarketingCopy(headline=headline, subline=subline, bullets=bullets)
 
 
 def fallback_copy(title: str) -> MarketingCopy:

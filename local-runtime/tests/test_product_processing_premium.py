@@ -52,14 +52,14 @@ def test_fallback_copy_uses_title_without_inventing() -> None:
 
 
 def test_compose_marketing_image_outputs_square_jpeg() -> None:
-    for template in ("headline_hero", "action_proof"):
+    for template in ("headline_hero", "action_proof", "icon_grid", "material_strip", "use_cases"):
         data = compose_marketing_image(
             _photo_bytes(),
             template,
             MarketingCopy(headline="Sharp And Smooth\nStrong Shearing", subline="Cuts steel wire with ease"),
         )
         image = Image.open(BytesIO(data))
-        assert image.size == (1200, 1200)
+        assert image.size == (1600, 1600)
         assert data[:2] == b"\xff\xd8"  # JPEG magic
 
 

@@ -144,9 +144,11 @@ class DraftProcessRequest(BaseModel):
     size: bool = True
     grid_image: bool = True
     detail_image: bool = True
-    # 精选处理：AI 出照片层 + 本地排版合成营销图（大字卖点/场景动作两版式），
-    # 产出追加进轮播图。默认关。
+    # 精选处理：AI 出照片层 + 本地排版合成营销图，产出追加进轮播图。默认关。
     marketing_images: bool = False
+    # 精选版式（marketing_images=True 时生效）：从版式库选 3 个左右；
+    # 可选 headline_hero / action_proof / icon_grid / material_strip / use_cases。
+    marketing_templates: list[str] = Field(default_factory=list)
     product_video_template: bool = False
     cos_upload: bool = True
     strict_external: bool = False
