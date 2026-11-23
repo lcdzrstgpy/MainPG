@@ -3068,6 +3068,50 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             pass
         return fallback_copy(title)
 
+    def _marketing_reference_bytes(self, url: str) -> bytes:
+        cache = getattr(self, "_marketing_ref_bytes_cache", None)
+        if cache is None:
+            cache = self._marketing_ref_bytes_cache = {}
+        if url in cache:
+            return cache[url]
+        content = b""
+        try:
+            fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
+            image = fetcher(str(url), max_bytes=8 * 1024 * 1024, timeout_seconds=10)
+            content = bytes(getattr(image, "content", b"") or b"")
+        except Exception:  # noqa: BLE001
+            content = b""
+        if len(cache) >= 32:
+            cache.pop(next(iter(cache)))
+        cache[url] = content
+        return content
+
+    def _marketing_anchor_data_url(self, product_bytes: bytes) -> str:
+        """产品抠图锚点（data URL）；rembg 失败返回空串（调用方退回普通参考图）。"""
+        import base64  # noqa: PLC0415
+
+        if not product_bytes:
+            return ""
+        cache = getattr(self, "_marketing_anchor_cache", None)
+        if cache is None:
+            cache = self._marketing_anchor_cache = {}
+        key = hash(product_bytes)
+        if key in cache:
+            return cache[key]
+        value = ""
+        try:
+            from .domain.premium_anchor import anchor_image  # noqa: PLC0415
+
+            png = anchor_image(product_bytes)
+            if png:
+                value = "data:image/png;base64," + base64.b64encode(png).decode()
+        except Exception:  # noqa: BLE001
+            value = ""
+        if len(cache) >= 8:
+            cache.pop(next(iter(cache)))
+        cache[key] = value
+        return value
+
     def _marketing_reference_data_url(self, url: str) -> str:
         """参考图 → data URL（缓存），供视觉质检使用；失败返回空串。"""
         import base64  # noqa: PLC0415
@@ -3274,12 +3318,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             ai_notes.append(f"marketing:parts:{len([p for p in parts_hint.split(',') if p.strip()])}")
             ai_notes.append(f"marketing:brief:{'ok' if brief else 'empty'}")
         values: list[str] = []
+        product_bytes = self._marketing_reference_bytes(refs[0]) if refs else b""
+        anchor_url = self._marketing_anchor_data_url(product_bytes)
+        render_refs = [anchor_url] if anchor_url else refs
+        if ai_notes is not None:
+            ai_notes.append(f"marketing:anchor:{'yes' if anchor_url else 'no'}")
         for template in selected:
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
                 copy = self._marketing_copy(title, category, template)
-                base_prompt = build_photo_prompt(template, copy, scene, vision_subject, brief)
+                base_prompt = build_photo_prompt(
+                    template, copy, scene, vision_subject, brief, anchor=bool(anchor_url)
+                )
                 composed: bytes | None = None
+                qa_ok = False
                 for attempt in (1, 2):
                     prompt = base_prompt
                     if attempt == 2:
@@ -3287,7 +3339,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                             "\nREPAIR: the previous attempt deformed the product or added unwanted objects. "
                             "Reproduce the reference product exactly; keep the frame clean."
                         )
-                    photo = self._marketing_render(processor, prompt, refs, ai_notes)
+                    photo = self._marketing_render(processor, prompt, render_refs, ai_notes)
                     candidate = compose_marketing_image(
                         bytes(getattr(photo, "content", b"")), template, copy
                     )
@@ -3299,6 +3351,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         break
                     if qa.get("ok"):
                         composed = candidate
+                        qa_ok = True
                         if ai_notes is not None:
                             ai_notes.append(f"marketing:{template}:qa-ok" + (f":attempt{attempt}" if attempt > 1 else ""))
                         break
@@ -3308,6 +3361,16 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         )
                     if attempt == 2:
                         composed = candidate  # 两次都不合格时保留第二张，别让用户空手
+                if composed is None or (not qa_ok and product_bytes):
+                    # AI 两轮都不合格（或压根没出）：纯合成兜底——产品像素真，保底可用
+                    from .domain.premium_anchor import fallback_composite  # noqa: PLC0415
+
+                    fallback_photo = fallback_composite(product_bytes, workdir=Path(self.assets.root))
+                    if fallback_photo:
+                        composed = compose_marketing_image(fallback_photo, template, copy)
+                        qa_ok = True
+                        if ai_notes is not None:
+                            ai_notes.append(f"marketing:{template}:fallback-composite")
                 if composed is None:
                     continue
                 part = GeneratedMedia(
@@ -3604,17 +3667,28 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         processor = self._media_processor()
         refs = self._marketing_pick_references(reference_values)
         composed: bytes | None = None
-        base_prompt = build_photo_prompt(template, copy, scene, "", brief)
+        qa_ok = False
+        product_bytes = self._marketing_reference_bytes(refs[0]) if refs else b""
+        anchor_url = self._marketing_anchor_data_url(product_bytes)
+        render_refs = [anchor_url] if anchor_url else refs
+        base_prompt = build_photo_prompt(template, copy, scene, "", brief, anchor=bool(anchor_url))
         for attempt in (1, 2):
             prompt = base_prompt
             if attempt == 2:
                 prompt += "\nREPAIR: reproduce the reference product exactly; keep the frame clean."
-            photo = self._marketing_render(processor, prompt, refs)
+            photo = self._marketing_render(processor, prompt, render_refs)
             candidate = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
             qa = self._marketing_quality_check(refs, candidate, parts_hint)
             if qa is None or qa.get("ok") or attempt == 2:
                 composed = candidate
+                qa_ok = bool(qa is None or qa.get("ok"))
                 break
+        if composed is None or (not qa_ok and product_bytes):
+            from .domain.premium_anchor import fallback_composite  # noqa: PLC0415
+
+            fallback_photo = fallback_composite(product_bytes, workdir=Path(self.assets.root))
+            if fallback_photo:
+                composed = compose_marketing_image(fallback_photo, template, copy)
         if composed is None:
             raise ProductProcessingValidationError("营销图生成失败")
         path = self.assets.save_generated_image(

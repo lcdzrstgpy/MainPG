@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 
 from PIL import Image, ImageDraw
 
@@ -239,3 +240,41 @@ def test_photo_prompt_embeds_brief() -> None:
     )
     assert "PRODUCT-SPECIFIC BRIEF" in prompt
     assert "exactly 2 handles" in prompt
+
+
+def _white_bg_product() -> bytes:
+    image = Image.new("RGB", (600, 600), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle([180, 180, 420, 480], radius=30, fill=(200, 40, 40))
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def test_cutout_and_anchor_work_without_rembg() -> None:
+    """白底产品走泛洪抠图兜底：cutout / anchor 都应产出。"""
+    from wh_local.modules.product_processing.domain.premium_anchor import anchor_image, cutout_rgba
+
+    product = _white_bg_product()
+    png = cutout_rgba(product)
+    assert png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
+    anchor = anchor_image(product)
+    assert anchor is not None
+
+
+def test_fallback_composite_is_guaranteed() -> None:
+    """纯合成兜底必须能出图（产品像素真，AI 失败时保底）。"""
+    from wh_local.modules.product_processing.domain.premium_anchor import fallback_composite
+
+    photo = fallback_composite(_white_bg_product(), side=600, workdir=Path(__file__).parent)
+    assert photo is not None and photo[:2] == b"\xff\xd8"
+
+
+def test_cutout_rejects_non_light_background() -> None:
+    """背景不浅时简易抠图不可靠，应返回 None 而不是硬抠。"""
+    from wh_local.modules.product_processing.domain.premium_anchor import cutout_rgba
+
+    dark = Image.new("RGB", (400, 400), (20, 20, 20))
+    buffer = BytesIO()
+    dark.save(buffer, format="JPEG")
+    assert cutout_rgba(buffer.getvalue()) is None

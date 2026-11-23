@@ -264,6 +264,7 @@ def build_photo_prompt(
     scene: dict[str, Any] | None = None,
     subject: str = "",
     brief: str = "",
+    anchor: bool = False,
 ) -> str:
     """照片层提示词：合同 + 版式构图（含文案区预留）。不含任何要渲染的文字。"""
     layout = PHOTO_LAYOUTS.get(template, PHOTO_LAYOUTS["headline_hero"])
@@ -300,8 +301,19 @@ def build_photo_prompt(
         f"\nMATERIAL RULES FOR THIS PRODUCT: {materials}." if materials else ""
     )
     brief_block = f"\nPRODUCT-SPECIFIC BRIEF (follow it exactly):\n{brief.strip()}\n" if str(brief or "").strip() else ""
+    anchor_block = (
+        "EDIT MODE — THE PRODUCT IS FINAL.\n"
+        "The reference image is a clean cutout of the product on a neutral grey backdrop. "
+        "That product is the finished, approved artwork: show it EXACTLY as in the reference — "
+        "same viewing angle, proportions, part count, colours, surface finish and markings. "
+        "Do not redraw, rotate, restyle, smooth, simplify, rescale or resharpen its geometry; "
+        "ANY change to the product is a failed image. Your job is ONLY the environment around it://n"
+        if anchor
+        else ""
+    )
     return (
-        header
+        anchor_block
+        + header
         + "\n"
         + PHOTO_CONTRACT
         + type_rules
