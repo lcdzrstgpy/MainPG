@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
-import { listProductDrafts, type ProductDraft } from '../api/productProcessingApi';
 
 /**
  * 精选处理（独立板块 · 独立界面）。
@@ -33,11 +32,30 @@ type Props = {
   isActive?: boolean;
 };
 
+type PoolDraft = {
+  id: number;
+  title: string;
+  image_url: string;
+  status?: string;
+  source_type?: string;
+};
+
 type SubmitResponse = { task_id: number; message?: string };
+
+/** 与 AI 处理草稿池完全同口径：待处理池（排除 已处理/处理中/已删除）。 */
+async function fetchDraftPool(ctx: ApiContext): Promise<PoolDraft[]> {
+  const data = await ppRequest<{ drafts: PoolDraft[] }>(
+    ctx,
+    `${API_BASE}/drafts?view=summary&limit=500`,
+  );
+  return (data.drafts || []).filter(
+    (draft) => draft.status !== 'deleted' && draft.status !== 'processed' && draft.status !== 'processing',
+  );
+}
 
 export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
   const ctx: ApiContext = productProcessingApiContext();
-  const [drafts, setDrafts] = useState<ProductDraft[]>([]);
+  const [drafts, setDrafts] = useState<PoolDraft[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [query, setQuery] = useState('');
   const [site, setSite] = useState<'US' | 'MX'>('US');
@@ -49,7 +67,7 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
 
   const load = async () => {
     try {
-      setDrafts(await listProductDrafts());
+      setDrafts(await fetchDraftPool(ctx));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '商品加载失败');
     }

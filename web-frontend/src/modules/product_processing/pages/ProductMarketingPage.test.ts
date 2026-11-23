@@ -21,6 +21,9 @@ test("精选处理是独立界面（画廊 + 粘性面板），不复用 AI 处�
   assert.match(page, /商品画廊/);
   assert.match(page, /marketing_templates/);
   assert.match(page, /精选版式（选 3 个）/);
+  // 草稿池口径必须与 AI 处理一致：待处理池（view=summary + 排除 processed/processing/deleted）
+  assert.match(page, /view=summary&limit=500/);
+  assert.match(page, /draft.status !== 'processed'/);
 });
 
 test("AI 处理页不再带精选专属分支", () => {
