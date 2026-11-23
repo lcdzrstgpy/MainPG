@@ -108,12 +108,14 @@ def test_photo_prompt_without_scene_is_conservative() -> None:
     assert "PROPS: none" in prompt
 
 
-def test_photo_prompt_with_scene_uses_plan() -> None:
-    plan = {"surface": "brushed steel table", "action": "a ceramic mug resting under the spout", "props": ["tea tin"]}
+def test_photo_prompt_with_scene_uses_surface_and_forces_no_action() -> None:
+    """台面来自方案；动作/道具永久禁用（2026-11-23 两轮实测：画动作必穿模）。"""
+    plan = {"surface": "brushed steel table", "action": "wire clamped in jaws", "props": ["coil"]}
     prompt = build_photo_prompt("action_proof", MarketingCopy(headline="Pour Over"), plan)
     assert "brushed steel table" in prompt
-    assert "ceramic mug" in prompt
-    assert "tea tin" in prompt
+    assert "ACTION: none" in prompt
+    assert "PROPS: none" in prompt
+    assert "coil" not in prompt.split("SCENE PLAN")[-1].split("Overall tone")[0]
 
 
 def test_scene_messages_include_product_context() -> None:

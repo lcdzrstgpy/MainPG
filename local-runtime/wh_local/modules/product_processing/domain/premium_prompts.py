@@ -19,7 +19,8 @@ from .premium_composer import MarketingCopy
 PHOTO_CONTRACT = """HARD RULES:
 - The reference images are the ONLY source of truth for the product. Keep silhouette, proportions, colours, materials, structure, printed markings and every physical detail IDENTICAL. Only scene, background, camera angle and lighting may change.
 - MECHANICAL FIDELITY (red line): reproduce every jaw, blade, tooth, serration, bevel, hinge, rivet, screw, spring, coil, pivot and joint with the same count, same position and same geometry as the reference. Serrations must keep their exact number and spacing. NEVER melt, blur, merge, simplify, smooth away or invent any part; a deformed, blobby or fused jaw is a failed image and must be re-rendered. Keep the tool in the same open/closed state as the reference.
-- PHYSICAL PLAUSIBILITY (red line): no object may pass through, pierce, float around or intersect the product; every prop either rests on the surface or is genuinely gripped between the jaws. No floating fragments, no impossible angles, no extra loose parts. When in doubt, render FEWER props.
+- PRODUCT ALONE (red line): the product is the ONLY object in the frame. Do NOT add wires, cables, nails, screws, tools, packaging or any loose items — not even as decoration. The surface underneath is the only other element.
+- PHYSICAL PLAUSIBILITY (red line): nothing may pass through, pierce, float around or intersect the product. No floating fragments, no impossible angles.
 - Render ZERO text of any kind: no letters, words, numbers, labels, logos, watermarks or UI elements. Text will be added later by a layout engine.
 - Realistic commercial product photography, physically plausible light and shadows, sharp focus, no illustration or 3D-render look, no hands or people.
 """
@@ -33,11 +34,9 @@ PHOTO_LAYOUTS: dict[str, str] = {
         "No action props beyond what the scene plan allows."
     ),
     "action_proof": (
-        "COMPOSITION: square close-up on a dark workbench, product in the lower-right two thirds, "
-        "performing the SINGLE action described in the scene plan (if the scene plan allows none, show the product "
-        "at rest with one small related prop beside it). "
-        "The action must be physically correct end-to-end: every prop is either resting on the surface or genuinely "
-        "held/clamped by the product — never passing through it, never disconnected, never floating. "
+        "COMPOSITION: square macro close-up of the product's working end (the head / tip / key detail), "
+        "product closed and at rest, placed lower-right, sharp focus on the mechanism, "
+        "no action, no loose objects, ONLY the product. "
         "Keep the upper-left 45% of the frame darker and uncluttered as copy space."
     ),
     "icon_grid": (
@@ -140,7 +139,7 @@ _SCENE_SYSTEM = (
     "for a single e-commerce listing photo of a real product."
 )
 
-_SCENE_USER = """Design the photo scene plan for this product.
+_SCENE_USER = """Design the photo scene plan for this product (surface only, no action, no props).
 
 Product title: {title}
 Category: {category}
@@ -148,11 +147,11 @@ Product understanding: {subject}
 
 Return a JSON object:
 - "surface": one short phrase for the surface it stands on (e.g. "dark walnut workbench", "brushed steel table", "matte stone slab").
-- "action": either "" (no action; product shown at rest) or ONE simple, physically obvious action that this exact product performs BY ITSELF, described in one sentence with the prop it uses (e.g. "a straight steel wire clamped inside the jaws, both cut ends falling below"). Only include an action if it is trivially correct to render; when unsure return "". Never invent accessories the product does not have.
-- "props": 0 to 2 small related props that rest on the surface and do not touch the product (e.g. "coil of copper wire", "wood shavings"). No props that could be confused for product parts.
+- "action": always "" (the product is shown alone at rest — action shots break product fidelity).
+- "props": always [] (the product is the only object in frame).
 
-Rules: no text, no hands, no people, no packaging, nothing floating. Prefer FEWER props.
-Output ONLY the JSON object: {{"surface": "...", "action": "...", "props": ["..."]}}"""
+Rules: no text, no hands, no people, no props, nothing floating.
+Output ONLY the JSON object: {{"surface": "...", "action": "", "props": []}}"""
 
 
 def build_scene_messages(title: str, category: str, subject: str = "") -> list[dict[str, Any]]:
@@ -197,8 +196,9 @@ def build_photo_prompt(template: str, copy: MarketingCopy, scene: dict[str, Any]
     semantic = f"Overall tone the scene should convey: {copy.headline.replace(chr(10), ' ')[:120]}."
     scene = scene or {}
     surface = str(scene.get("surface") or "a clean matte dark surface").strip()
-    action = str(scene.get("action") or "").strip()
-    props = [str(item) for item in (scene.get("props") or []) if str(item or "").strip()][:2]
+    # 动作/道具永久禁用：2026-11-23 两轮实测，模型画动作必然穿模/画坏产品。
+    action = ""
+    props: list[str] = []
     scene_lines = [f"SCENE PLAN: product stands on {surface}."]
     scene_lines.append(
         f"ACTION: {action}" if action else "ACTION: none — the product is shown at rest, no action, no extra objects touching it."

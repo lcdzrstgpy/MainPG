@@ -1210,7 +1210,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                   </span>
                   {[
                     ['headline_hero', '大字卖点'],
-                    ['action_proof', '场景动作'],
+                    ['action_proof', '细节特写'],
                     ['icon_grid', '功能图标网格'],
                     ['material_strip', '材质适用条'],
                     ['use_cases', '场景应用'],

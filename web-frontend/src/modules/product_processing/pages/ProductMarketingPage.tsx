@@ -21,7 +21,7 @@ type TemplateKey = 'headline_hero' | 'action_proof' | 'icon_grid' | 'material_st
 
 const TEMPLATES: Array<{ key: TemplateKey; label: string; hint: string }> = [
   { key: 'headline_hero', label: '大字卖点', hint: '顶部大标题 + 产品主视觉' },
-  { key: 'action_proof', label: '场景动作', hint: '使用动作 + 左上卖点' },
+  { key: 'action_proof', label: '细节特写', hint: '工作端微距 + 左上卖点' },
   { key: 'icon_grid', label: '功能图标网格', hint: '2×3 卖点短词卡' },
   { key: 'material_strip', label: '材质适用条', hint: '底部材质药丸条' },
   { key: 'use_cases', label: '场景应用', hint: '四角用途标注' },
