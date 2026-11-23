@@ -11211,18 +11211,17 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 if (grid_incomplete or grid_source_fallback)
                 else "detail_images_incomplete"
             )
-            # 链接级失败统一话术：运营只需要换链接/剔除，具体技术原因留在 debug_hint。
-            # 但上游生图服务维护/限流时换链接毫无意义，必须明确提示「稍后重试」。
-            provider_side_outage = bool(
-                grid_source_fallback
-                and _is_provider_side_image_failure(image_failure_detail)
-            )
-            media_operator_hint = (
-                "AI 生图服务当前不可用（上游维护或限流），链接本身没有问题；"
-                "稍后点「重新处理」即可，失败链接不参与计费"
-                if provider_side_outage
-                else FAILED_LINK_OPERATOR_HINT
-            )
+            # 四格回退来源图 = **我们自己的生图没成功**（含上游 400/5xx/超时）：
+            # 让运营「换链接」纯属误导——换多少条都还是我们失败（policy.py 同款结论）。
+            # 2026-11-23 实测：4K 请求触发驱动层 400，却被判成「上游识别不到」，
+            # 用户看到的是「请更换链接」。凡 grid_source_fallback 一律按可重试话术。
+            if grid_source_fallback:
+                media_operator_hint = (
+                    "AI 生图未成功（上游返回错误或超时），链接本身没有问题；"
+                    "直接点「重新处理」即可，失败链接不参与计费"
+                )
+            else:
+                media_operator_hint = FAILED_LINK_OPERATOR_HINT
             media_debug_hint = "；".join(media_blockers)
             if image_failure_detail:
                 media_debug_hint += f"；上游原因：{image_failure_detail}"

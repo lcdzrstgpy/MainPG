@@ -607,10 +607,11 @@ export function ProductProcessingVerifyPage({
       });
       return sum + Math.max(1, remaining.length);
     }, 0);
-    // 精品标记已从草稿池移除，不再向后端提交 premium_draft_ids；
-    // 但「精选处理」要更好的画质：本批所选草稿走 4K 精品四宫格（premium）。
-    const premiumIds = marketing ? ids : [];
-    const opened = onStartProcessing?.(ids, processOptions, premiumIds, skuCount);
+    // 精品标记已从草稿池移除，不再向后端提交 premium_draft_ids。
+    // ⚠️ 「精选处理」也不要走 4K 精品：2026-11-23 实测 doubao-seedream-5-0-flash
+    // 对 4K 尺寸直接回 HTTP 400，整批会退化成源图兜底（预检不过）。画质提升
+    // 走营销图 2K + 1600 画布，四宫格用标准 2K。
+    const opened = onStartProcessing?.(ids, processOptions, [], skuCount);
     if (opened === false) return; // 任务面板未打开（如已达上限），草稿保持原样
     // 提交处理即让勾选草稿从池中消失：本地同步置 processing（后端同样置位），
     // 处理完成置 processed 保持隐藏，失败回退 draft 后会自动重新出现。
