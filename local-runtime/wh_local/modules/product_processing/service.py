@@ -3091,6 +3091,34 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         cache[url] = value
         return value
 
+    def _marketing_render(
+        self,
+        processor: Any,
+        prompt: str,
+        refs: list[str],
+        ai_notes: list[str] | None = None,
+    ) -> Any:
+        """营销图照片层：优先 Pro 档；上游拒绝（无权限/不可用）落回默认档。"""
+        from .provider_config import MARKETING_IMAGE_MODEL_PRO  # noqa: PLC0415
+
+        try:
+            return processor.generate(
+                stage="marketing_photo",
+                prompt=prompt,
+                reference_values=refs,
+                image_size="2048x2048",
+                model_override=MARKETING_IMAGE_MODEL_PRO,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:pro-unavailable:{str(exc)[:160]}")
+            return processor.generate(
+                stage="marketing_photo",
+                prompt=prompt,
+                reference_values=refs,
+                image_size="2048x2048",
+            )
+
     def _marketing_quality_check(
         self, reference_urls: list[str], generated: bytes
     ) -> dict[str, Any] | None:
@@ -3188,6 +3216,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
         processor = self._media_processor()
+        from .provider_config import MARKETING_IMAGE_MODEL_PRO  # noqa: PLC0415
         refs = self._marketing_pick_references(reference_urls)
         if not refs:
             if ai_notes is not None:
@@ -3205,16 +3234,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 base_prompt = build_photo_prompt(template, copy, scene)
                 composed: bytes | None = None
                 for attempt in (1, 2):
-                    photo = processor.generate(
-                        stage="marketing_photo",
-                        prompt=base_prompt
-                        if attempt == 1
-                        else base_prompt
-                        + "\nREPAIR: the previous attempt deformed the product or added unwanted objects. "
-                        "Reproduce the reference product exactly; keep the frame clean.",
-                        reference_values=refs,
-                        image_size="2048x2048",
-                    )
+                    prompt = base_prompt
+                    if attempt == 2:
+                        prompt += (
+                            "\nREPAIR: the previous attempt deformed the product or added unwanted objects. "
+                            "Reproduce the reference product exactly; keep the frame clean."
+                        )
+                    photo = self._marketing_render(processor, prompt, refs, ai_notes)
                     candidate = compose_marketing_image(
                         bytes(getattr(photo, "content", b"")), template, copy
                     )
@@ -3529,14 +3555,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         composed: bytes | None = None
         base_prompt = build_photo_prompt(template, copy, scene)
         for attempt in (1, 2):
-            photo = processor.generate(
-                stage="marketing_photo",
-                prompt=base_prompt
-                if attempt == 1
-                else base_prompt + "\nREPAIR: reproduce the reference product exactly; keep the frame clean.",
-                reference_values=refs,
-                image_size="2048x2048",
-            )
+            prompt = base_prompt
+            if attempt == 2:
+                prompt += "\nREPAIR: reproduce the reference product exactly; keep the frame clean."
+            photo = self._marketing_render(processor, prompt, refs)
             candidate = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
             qa = self._marketing_quality_check(refs, candidate)
             if qa is None or qa.get("ok") or attempt == 2:

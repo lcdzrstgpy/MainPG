@@ -57,6 +57,9 @@ _IMAGE_MODEL_ALIASES = {
 IMAGE_SIZE = "2048x2048"
 REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
+# 营销图优先用 Pro 档（与 POD 自由创意同一模型 id：保真与排版明显强于 flash）。
+# 上游拒绝（无权限/模型不可用）时由调用方自动落回默认 flash。
+MARKETING_IMAGE_MODEL_PRO = "doubao-seedream-5-0-pro-260628"
 # 精品模式固定一次 4K 四宫格，再在本地无降采样拆为四张约 2048×2048 轮播图。
 # 精品档同样只走豆包：``gpt-image-2-4k`` 是无印的历史值，已停用。
 PREMIUM_IMAGE_MODEL = DEFAULT_IMAGE_MODEL
