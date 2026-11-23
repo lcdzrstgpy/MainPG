@@ -205,9 +205,12 @@ Return a JSON object:
 - "surface": one short phrase for the surface it stands on (e.g. "dark walnut workbench", "brushed steel table", "matte stone slab").
 - "action": always "" (the product is shown alone at rest — action shots break product fidelity).
 - "props": always [] (the product is the only object in frame).
+- "type_label": a 2-4 word English label of what this product is (e.g. "diagonal cutting pliers", "leather tote bag", "insulated water bottle").
+- "parts": the distinct physical parts a photographer must count to prove this exact product was reproduced — comma separated, 6 to 14 items, naming what actually exists on THIS product (for pliers: handles, jaws, teeth, hinge, rivet, spring; for a bag: body panels, straps, buckles, zipper, stitching, hardware; for a bottle: body, lid, rim, seal, cap threads). Only parts you are confident exist.
+- "materials": one sentence of material/physics rules for THIS product (leather grain, brushed steel, matte plastic, glass refraction — whatever actually applies).
 
 Rules: no text, no hands, no people, no props, nothing floating.
-Output ONLY the JSON object: {{"surface": "...", "action": "", "props": []}}"""
+Output ONLY the JSON object: {{"surface": "...", "action": "", "props": [], "type_label": "...", "parts": "...", "materials": "..."}}"""
 
 
 def build_scene_messages(title: str, category: str, subject: str = "") -> list[dict[str, Any]]:
@@ -243,7 +246,14 @@ def parse_scene_plan(text: str) -> dict[str, Any] | None:
         props = [str(item or "").strip() for item in props_raw if str(item or "").strip()][:2]
     if not surface:
         return None
-    return {"surface": surface, "action": action, "props": props}
+    return {
+        "surface": surface,
+        "action": action,
+        "props": props,
+        "type_label": str(data.get("type_label") or "").strip()[:80],
+        "parts": str(data.get("parts") or "").strip()[:400],
+        "materials": str(data.get("materials") or "").strip()[:400],
+    }
 
 
 def build_photo_prompt(
@@ -273,7 +283,30 @@ def build_photo_prompt(
         scene_lines.append("PROPS (resting on the surface, not touching the product): " + "; ".join(props) + ".")
     else:
         scene_lines.append("PROPS: none.")
-    return f"{PHOTO_CONTRACT}\n{layout}\n" + "\n".join(scene_lines) + f"\n{semantic}"
+    type_label = str(scene.get("type_label") or "").strip()
+    parts = str(scene.get("parts") or "").strip()
+    materials = str(scene.get("materials") or "").strip()
+    header = (
+        f"PRODUCT TYPE: {type_label}.\n" if type_label else ""
+    ) + (
+        f"COUNT THESE PARTS WHEN YOU CHECK: {parts}.\n"
+        if parts
+        else "COUNT THESE PARTS WHEN YOU CHECK: every distinct visible part of the product.\n"
+    )
+    type_rules = (
+        f"\nMATERIAL RULES FOR THIS PRODUCT: {materials}." if materials else ""
+    )
+    return (
+        header
+        + "\n"
+        + PHOTO_CONTRACT
+        + type_rules
+        + "\n"
+        + layout
+        + "\n"
+        + "\n".join(scene_lines)
+        + f"\n{semantic}"
+    )
 
 
 # ── 出图质检（豆包 2.1 视觉）：比对参考图与生成图，决定是否重渲 ─────────────
@@ -301,7 +334,11 @@ Judge the generated image on:
 Return ONLY JSON: {{"same_product": true|false, "fidelity_ok": true|false, "extra_objects": true|false, "has_text": true|false, "handles_match": true|false, "issues": "<short English description of the main defect, or empty>"}}"""
 
 
-def build_qa_messages(reference_data_url: str, generated_data_url: str) -> list[dict[str, Any]]:
+def build_qa_messages(
+    reference_data_url: str,
+    generated_data_url: str,
+    parts_hint: str = "",
+) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": _QA_SYSTEM},
         {
@@ -309,7 +346,16 @@ def build_qa_messages(reference_data_url: str, generated_data_url: str) -> list[
             "content": [
                 {"type": "image_url", "image_url": {"url": reference_data_url}},
                 {"type": "image_url", "image_url": {"url": generated_data_url}},
-                {"type": "text", "text": _QA_USER},
+                {
+                    "type": "text",
+                    "text": _QA_USER
+                    + (
+                        f"\n\nThe expected part inventory for this product is: {parts_hint}. "
+                        "Count THESE items, and report any that appear twice, are fused together, or are missing."
+                        if parts_hint
+                        else ""
+                    ),
+                },
             ],
         },
     ]

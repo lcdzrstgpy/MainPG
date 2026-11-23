@@ -101,7 +101,10 @@ def test_batch_hook_passes_real_task_id() -> None:
 
 def test_scene_plan_parse_and_reject() -> None:
     plan = parse_scene_plan('{"surface": "dark walnut workbench", "action": "wire clamped in jaws", "props": ["coil"]}')
-    assert plan == {"surface": "dark walnut workbench", "action": "wire clamped in jaws", "props": ["coil"]}
+    assert plan is not None
+    assert plan["surface"] == "dark walnut workbench"
+    assert plan["action"] == "wire clamped in jaws"
+    assert plan["props"] == ["coil"]
     assert parse_scene_plan("no json") is None
     assert parse_scene_plan('{"action": "x"}') is None  # 缺 surface 不可用
 
@@ -177,3 +180,33 @@ def test_qa_messages_contain_two_images() -> None:
     messages = build_qa_messages("data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB")
     content = messages[-1]["content"]
     assert sum(1 for part in content if part.get("type") == "image_url") == 2
+
+
+def test_scene_plan_carries_parts_and_materials() -> None:
+    """部件清单由场景方案现场产出（不做品类穷举）。"""
+    plan = parse_scene_plan(
+        '{"surface": "dark walnut workbench", "action": "", "props": [],'
+        ' "type_label": "leather tote bag", "parts": "body panels, straps, zipper", "materials": "pebbled leather"}'
+    )
+    assert plan is not None
+    assert plan["type_label"] == "leather tote bag"
+    assert "zipper" in plan["parts"]
+    assert plan["materials"] == "pebbled leather"
+
+
+def test_photo_prompt_uses_dynamic_parts() -> None:
+    scene = {"surface": "dark walnut workbench", "parts": "body panels, straps, zipper", "type_label": "leather tote bag"}
+    prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Everyday Tote"), scene)
+    assert "leather tote bag" in prompt
+    assert "COUNT THESE PARTS WHEN YOU CHECK: body panels, straps, zipper" in prompt
+
+
+def test_photo_prompt_falls_back_to_generic_counting() -> None:
+    prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Any Product"), {"surface": "matte stone"})
+    assert "every distinct visible part" in prompt
+
+
+def test_qa_includes_parts_hint() -> None:
+    messages = build_qa_messages("data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB", "straps, zipper, buckles")
+    text = " ".join(str(part.get("text") or "") for part in messages[-1]["content"])
+    assert "straps, zipper, buckles" in text

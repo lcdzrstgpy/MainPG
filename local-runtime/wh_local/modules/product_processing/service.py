@@ -3120,7 +3120,10 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             )
 
     def _marketing_quality_check(
-        self, reference_urls: list[str], generated: bytes
+        self,
+        reference_urls: list[str],
+        generated: bytes,
+        parts_hint: str = "",
     ) -> dict[str, Any] | None:
         """豆包 2.1 视觉验货：产品是否同款/有没有变形/多余物件/渲染文字。
 
@@ -3142,7 +3145,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         generated_url = "data:image/jpeg;base64," + base64.b64encode(generated).decode()
         try:
             text = DoubaoArkClient(usage_kind="vision").complete(
-                build_qa_messages(reference, generated_url),
+                build_qa_messages(reference, generated_url, parts_hint),
                 timeout=VISION_TIMEOUT_SECONDS,
             )
             return parse_qa_response(text)
@@ -3226,6 +3229,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
 
         selected = [item for item in (templates or []) if item in TEMPLATES] or list(TEMPLATES[:3])
         scene = self._marketing_scene_plan(title, category, vision_subject)
+        parts_hint = str((scene or {}).get("parts") or "")
+        if ai_notes is not None:
+            ai_notes.append(f"marketing:parts:{len([p for p in parts_hint.split(',') if p.strip()])}")
         values: list[str] = []
         for template in selected:
             self._raise_if_task_stopped(task_id, workspace_id)
@@ -3244,7 +3250,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     candidate = compose_marketing_image(
                         bytes(getattr(photo, "content", b"")), template, copy
                     )
-                    qa = self._marketing_quality_check(refs, candidate)
+                    qa = self._marketing_quality_check(refs, candidate, parts_hint)
                     if qa is None:
                         composed = candidate
                         if ai_notes is not None:
@@ -3550,6 +3556,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         category = str(raw.get("category_path") or raw.get("category") or "")
         copy = self._marketing_copy(title, category, template)
         scene = self._marketing_scene_plan(title, category)
+        parts_hint = str((scene or {}).get("parts") or "")
         processor = self._media_processor()
         refs = self._marketing_pick_references(reference_values)
         composed: bytes | None = None
@@ -3560,7 +3567,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 prompt += "\nREPAIR: reproduce the reference product exactly; keep the frame clean."
             photo = self._marketing_render(processor, prompt, refs)
             candidate = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
-            qa = self._marketing_quality_check(refs, candidate)
+            qa = self._marketing_quality_check(refs, candidate, parts_hint)
             if qa is None or qa.get("ok") or attempt == 2:
                 composed = candidate
                 break
