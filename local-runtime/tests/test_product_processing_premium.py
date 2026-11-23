@@ -13,9 +13,11 @@ from wh_local.modules.product_processing.domain.premium_composer import (
 )
 from wh_local.modules.product_processing.domain.marketing_refs import pick_clean_references
 from wh_local.modules.product_processing.domain.premium_prompts import (
+    build_brief_messages,
     build_photo_prompt,
     build_qa_messages,
     build_scene_messages,
+    clean_brief,
     fallback_copy,
     parse_copy_response,
     parse_qa_response,
@@ -210,3 +212,30 @@ def test_qa_includes_parts_hint() -> None:
     messages = build_qa_messages("data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB", "straps, zipper, buckles")
     text = " ".join(str(part.get("text") or "") for part in messages[-1]["content"])
     assert "straps, zipper, buckles" in text
+
+
+def test_brief_messages_include_operator_caution() -> None:
+    messages = build_brief_messages(
+        "Tin Snips", "tools", "green handle tin snips", "handles x2, jaws x1", "dark stone",
+        caution="把手必须是两只、钳头别融化",
+    )
+    text = " ".join(str(item.get("content")) for item in messages)
+    assert "Tin Snips" in text
+    assert "handles x2" in text
+    assert "把手必须是两只、钳头别融化" in text
+    assert "PRODUCT:" in text and "LOCK:" in text and "AVOID:" in text and "SHOT:" in text
+
+
+def test_clean_brief_rejects_chinese_and_fences() -> None:
+    assert clean_brief("PRODUCT: good tool") == "PRODUCT: good tool"
+    assert clean_brief("PRODUCT: 好用的工具") == ""
+    assert clean_brief("") == ""
+
+
+def test_photo_prompt_embeds_brief() -> None:
+    prompt = build_photo_prompt(
+        "headline_hero", MarketingCopy(headline="Snips"), {"surface": "stone"}, "",
+        "PRODUCT: industrial tin snips. LOCK: exactly 2 handles. AVOID: extra pivots.",
+    )
+    assert "PRODUCT-SPECIFIC BRIEF" in prompt
+    assert "exactly 2 handles" in prompt

@@ -3170,6 +3170,37 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except Exception:  # noqa: BLE001
             return candidates[:2]
 
+    def _marketing_image_brief(
+        self,
+        title: str,
+        category: str,
+        subject: str,
+        parts: str,
+        surface: str,
+        caution: str = "",
+    ) -> str:
+        """先让豆包「检查要做的东西」并写出生成 brief（含用户的注意点）；失败退回空。"""
+        from .domain.premium_prompts import build_brief_messages, clean_brief  # noqa: PLC0415
+
+        cache_key = f"{title}|{category}|{subject}|{parts}|{caution}"
+        cache = getattr(self, "_marketing_brief_cache", None)
+        if cache is None:
+            cache = self._marketing_brief_cache = {}
+        if cache_key in cache:
+            return cache[cache_key]
+        brief = ""
+        try:
+            text = DoubaoArkClient().complete(
+                build_brief_messages(title, category, subject, parts, surface, caution)
+            )
+            brief = clean_brief(text)
+        except Exception:  # noqa: BLE001
+            brief = ""
+        if len(cache) >= 32:
+            cache.pop(next(iter(cache)))
+        cache[cache_key] = brief
+        return brief
+
     def _marketing_scene_plan(
         self, title: str, category: str, subject: str = ""
     ) -> dict[str, Any] | None:
@@ -3207,6 +3238,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str,
         templates: list[str] | None = None,
         vision_subject: str = "",
+        caution: str = "",
         ai_notes: list[str] | None = None,
     ) -> list[str]:
         """精选处理（一期）：两版式各出 1 张营销图，返回预览 URL 列表。
@@ -3230,14 +3262,23 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         selected = [item for item in (templates or []) if item in TEMPLATES] or list(TEMPLATES[:3])
         scene = self._marketing_scene_plan(title, category, vision_subject)
         parts_hint = str((scene or {}).get("parts") or "")
+        brief = self._marketing_image_brief(
+            title,
+            category,
+            vision_subject,
+            parts_hint,
+            str((scene or {}).get("surface") or ""),
+            caution,
+        )
         if ai_notes is not None:
             ai_notes.append(f"marketing:parts:{len([p for p in parts_hint.split(',') if p.strip()])}")
+            ai_notes.append(f"marketing:brief:{'ok' if brief else 'empty'}")
         values: list[str] = []
         for template in selected:
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
                 copy = self._marketing_copy(title, category, template)
-                base_prompt = build_photo_prompt(template, copy, scene, vision_subject)
+                base_prompt = build_photo_prompt(template, copy, scene, vision_subject, brief)
                 composed: bytes | None = None
                 for attempt in (1, 2):
                     prompt = base_prompt
@@ -3557,10 +3598,13 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         copy = self._marketing_copy(title, category, template)
         scene = self._marketing_scene_plan(title, category)
         parts_hint = str((scene or {}).get("parts") or "")
+        brief = self._marketing_image_brief(
+            title, category, "", parts_hint, str((scene or {}).get("surface") or ""), ""
+        )
         processor = self._media_processor()
         refs = self._marketing_pick_references(reference_values)
         composed: bytes | None = None
-        base_prompt = build_photo_prompt(template, copy, scene)
+        base_prompt = build_photo_prompt(template, copy, scene, "", brief)
         for attempt in (1, 2):
             prompt = base_prompt
             if attempt == 2:
@@ -11260,6 +11304,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         if str(item or "").strip()
                     ],
                     vision_subject=str(vision_subject or ""),
+                    caution=str(batch_image_prompt or ""),
                     ai_notes=ai_notes,
                 )
             except Exception as exc:  # noqa: BLE001

@@ -61,6 +61,7 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
   const [site, setSite] = useState<'US' | 'MX'>('US');
   const [style, setStyle] = useState<'ornate' | 'lifestyle' | 'minimal' | 'smart'>('ornate');
   const [templates, setTemplates] = useState<TemplateKey[]>(['headline_hero', 'action_proof', 'icon_grid']);
+  const [caution, setCaution] = useState('');
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -122,6 +123,8 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
         image_generation_count: 4,
         scene_style: style,
         max_parallel_drafts: 8,
+        // 操作者的注意点：随批次下发，营销图的生成 brief 会把它们写进 AVOID 清单
+        batch_image_prompt: caution.trim(),
       };
       const data = await ppRequest<SubmitResponse>(ctx, `${API_BASE}/drafts/process`, {
         body,
@@ -248,6 +251,18 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
               })}
             </div>
           </div>
+
+          <label className="pm-field">
+            <span>注意点（可选）</span>
+            <textarea
+              className="pm-caution"
+              rows={3}
+              placeholder="例如：把手必须是两只、钳头别融化、商标不要动"
+              value={caution}
+              onChange={(event) => setCaution(event.target.value)}
+            />
+            <em>AI 会先检查商品、把这些写进生成提示词的避雷清单</em>
+          </label>
 
           <div className="pm-output">
             <span>每个商品产出</span>

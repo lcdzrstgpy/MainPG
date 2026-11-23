@@ -294,3 +294,6 @@
 .pm-output em { font-style: normal; font-size: 11px; color: var(--theme-text-muted, #6f849a); }
 .pm-start { padding: 12px 16px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #c9a227, #9a7a12); color: #fff; font-weight: 800; letter-spacing: .5px; cursor: pointer; }
 .pm-start:disabled { opacity: .45; cursor: not-allowed; }
+
+.pm-caution { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--theme-card-border, #e5edf4); background: var(--theme-card-bg, #fff); resize: vertical; font-size: 12px; }
+.pm-field em { font-style: normal; font-size: 11px; color: var(--theme-text-muted, #6f849a); }
