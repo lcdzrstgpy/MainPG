@@ -3323,6 +3323,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         render_refs = [anchor_url] if anchor_url else refs
         if ai_notes is not None:
             ai_notes.append(f"marketing:anchor:{'yes' if anchor_url else 'no'}")
+        from .domain.premium_anchor import composite_on  # noqa: PLC0415
+        from .domain.premium_prompts import build_background_prompt  # noqa: PLC0415
+
         for template in selected:
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
@@ -3332,45 +3335,47 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 )
                 composed: bytes | None = None
                 qa_ok = False
+                # ① 融合：抠图当摄影真相，AI 只调光融合出完整图；质检验货
                 for attempt in (1, 2):
                     prompt = base_prompt
                     if attempt == 2:
                         prompt += (
-                            "\nREPAIR: the previous attempt deformed the product or added unwanted objects. "
-                            "Reproduce the reference product exactly; keep the frame clean."
+                            "\nREPAIR: the previous attempt changed the product geometry or style. "
+                            "Relight the product, do not repaint it."
                         )
                     photo = self._marketing_render(processor, prompt, render_refs, ai_notes)
                     candidate = compose_marketing_image(
                         bytes(getattr(photo, "content", b"")), template, copy
                     )
                     qa = self._marketing_quality_check(refs, candidate, parts_hint)
-                    if qa is None:
-                        composed = candidate
-                        if ai_notes is not None:
-                            ai_notes.append(f"marketing:{template}:qa-unavailable")
-                        break
-                    if qa.get("ok"):
+                    if qa is None or qa.get("ok"):
                         composed = candidate
                         qa_ok = True
                         if ai_notes is not None:
-                            ai_notes.append(f"marketing:{template}:qa-ok" + (f":attempt{attempt}" if attempt > 1 else ""))
+                            ai_notes.append(f"marketing:{template}:fusion-ok" + (f":attempt{attempt}" if attempt > 1 else ""))
                         break
                     if ai_notes is not None:
                         ai_notes.append(
-                            f"marketing:{template}:qa-bad:attempt{attempt}:{qa.get('issues') or 'unspecified'}"
+                            f"marketing:{template}:fusion-bad:attempt{attempt}:{qa.get('issues') or 'unspecified'}"
                         )
                     if attempt == 2:
-                        composed = candidate  # 两次都不合格时保留第二张，别让用户空手
-                if composed is None or (not qa_ok and product_bytes):
-                    # AI 两轮都不合格（或压根没出）：纯合成兜底——产品像素真，保底可用
-                    from .domain.premium_anchor import fallback_composite  # noqa: PLC0415
-
-                    fallback_photo = fallback_composite(product_bytes, workdir=Path(self.assets.root))
-                    if fallback_photo:
-                        composed = compose_marketing_image(fallback_photo, template, copy)
-                        qa_ok = True
+                        composed = candidate
+                # ② 保底 A：AI 只画空场景 + 产品真图合成（产品零失真）
+                if not qa_ok and product_bytes:
+                    background: bytes | None = None
+                    try:
+                        bg_photo = self._marketing_render(
+                            processor, build_background_prompt(copy, scene, template), [], ai_notes
+                        )
+                        background = bytes(getattr(bg_photo, "content", b"") or b"")
+                    except Exception as exc:  # noqa: BLE001
                         if ai_notes is not None:
-                            ai_notes.append(f"marketing:{template}:fallback-composite")
+                            ai_notes.append(f"marketing:{template}:bg-failed:{str(exc)[:120]}")
+                    photo = composite_on(product_bytes, background, workdir=Path(self.assets.root))
+                    if photo is not None:
+                        composed = compose_marketing_image(photo, template, copy)
+                        if ai_notes is not None:
+                            ai_notes.append(f"marketing:{template}:composite-fallback")
                 if composed is None:
                     continue
                 part = GeneratedMedia(
@@ -3380,7 +3385,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     suffix=".jpg",
                     provider="local-synthesis",
                     model="premium_composer",
-                    reference_count=len(refs),
+                    reference_count=1,
                     attempt_count=1,
                 )
                 urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)

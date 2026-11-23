@@ -302,12 +302,16 @@ def build_photo_prompt(
     )
     brief_block = f"\nPRODUCT-SPECIFIC BRIEF (follow it exactly):\n{brief.strip()}\n" if str(brief or "").strip() else ""
     anchor_block = (
-        "EDIT MODE — THE PRODUCT IS FINAL.\n"
-        "The reference image is a clean cutout of the product on a neutral grey backdrop. "
-        "That product is the finished, approved artwork: show it EXACTLY as in the reference — "
-        "same viewing angle, proportions, part count, colours, surface finish and markings. "
-        "Do not redraw, rotate, restyle, smooth, simplify, rescale or resharpen its geometry; "
-        "ANY change to the product is a failed image. Your job is ONLY the environment around it://n"
+        "FUSION MODE — THE CUTOUT IS PHOTOGRAPHIC TRUTH.\n"
+        "The reference image is a clean cutout of the real product on a neutral grey backdrop. "
+        "It is a photograph, not a sketch: your job is to FUSE this exact product into a premium "
+        "studio scene and return ONE complete, coherent photo. "
+        "You may adjust ONLY the light ON the product (highlight direction, soft shadow side, "
+        "environment reflection) so it sits naturally in the scene. You may NOT change its geometry, "
+        "proportions, part count, colours, surface finish, texture, markings or viewing angle: "
+        "repainting, restyling, smoothing, simplifying, rescaling or rotating the product is a "
+        "failed image. Think of it as compositing a real photo into a new set — the product photo "
+        "stays, the light on it is relit to match the set.\n"
         if anchor
         else ""
     )
@@ -468,3 +472,22 @@ def clean_brief(text: str) -> str:
     if _CJK_RE.search(raw):
         return ""
     return raw[:1200].strip()
+
+
+# ── 空场景背景生成：AI 只画环境（画面里绝不出现产品），产品由真实像素合成 ──────
+_BACKGROUND_PROMPT = """You are a studio set designer. Photograph an EMPTY product-photography set — the product will be composited in later by a designer.
+
+SET: a single continuous surface ({surface}) fading into a soft studio gradient background. No horizon split, no furniture, no props, no objects at all — the scene is completely empty.
+LIGHTING: one large soft key light from the upper left creating a gentle bright pool in the centre-lower area where the product will sit, soft falloff to dark edges, subtle vignette. Physically realistic, like a real softbox product shoot.
+KEEP CLEAR: leave the upper {copy_top}% of the frame darker and uncluttered for headline copy.
+RULES: absolutely no product, no tools, no text, no logos, no watermarks, no hands. Square 1:1. Photographic realism, fine grain, no illustration look.
+
+Overall mood: {tone}."""
+
+
+def build_background_prompt(copy: MarketingCopy, scene: dict[str, Any] | None = None, template: str = "headline_hero") -> str:
+    scene = scene or {}
+    surface = str(scene.get("surface") or "a matte dark studio surface").strip()
+    tone = (copy.headline or "premium and clean").replace("\n", " ")[:80].strip(" .;:")
+    copy_top = "35" if template in {"headline_hero", "icon_grid", "material_strip"} else "45"
+    return _BACKGROUND_PROMPT.format(surface=surface, copy_top=copy_top, tone=tone)

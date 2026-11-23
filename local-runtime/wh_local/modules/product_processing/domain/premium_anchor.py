@@ -33,13 +33,14 @@ def _naive_white_cutout(product: Image.Image) -> Image.Image | None:
     bg = tuple(sum(channel) // len(channel) for channel in zip(*sample))
     if min(bg) < 170:  # 背景不够浅，简易方法不可靠
         return None
-    flood = rgb.copy()
-    marker = (255, 0, 255)
-    for corner in corners:
-        if rgb.getpixel(corner) != marker:
-            ImageDraw.floodfill(flood, corner, marker, thresh=48)
-    mask = Image.new("L", flood.size, 255)
-    mask.putdata([0 if pixel == marker else 255 for pixel in flood.getdata()])
+    # 色差抠图：与背景色接近的像素一律透明（含两钳之间的封闭缝隙，泛洪会漏掉）
+    mask = Image.new("L", rgb.size, 255)
+    mask.putdata(
+        [
+            0 if abs(r - bg[0]) + abs(g - bg[1]) + abs(b - bg[2]) < 70 else 255
+            for (r, g, b) in rgb.getdata()
+        ]
+    )
     # 收边 + 羽化
     mask = mask.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(1.6))
     rgba = rgb.convert("RGBA")
@@ -109,16 +110,16 @@ def _gradient_background(side: int, workdir: Path) -> Path:
     return path
 
 
-def fallback_composite(
+def composite_on(
     product_bytes: bytes,
+    background_bytes: bytes | None = None,
     *,
     side: int = 1600,
     workdir: Path | None = None,
 ) -> bytes | None:
-    """AI 出图失败的保底：产品抠图 + 程序台面 + 接触阴影（JPEG bytes）。
+    """产品真图贴到背景上（背景可为 AI 生成的空场景 bytes；None 则程序渐变台面）。
 
-    自包含实现（不依赖 rembg 的 compose_on_background）：任何情况下都尝试给出
-    一张可用图——产品像素来自原图，永不失真。
+    产品像素来自原图，永不失真——AI 只负责背景。
     """
     cutout_bytes = cutout_rgba(product_bytes)
     if cutout_bytes is None:
@@ -127,8 +128,15 @@ def fallback_composite(
     target_dir = workdir or Path.cwd() / "outputs" / "wh-local" / "product-processing-assets"
     target_dir.mkdir(parents=True, exist_ok=True)
     try:
-        background_path = _gradient_background(side, target_dir)
-        canvas = Image.open(background_path).convert("RGB")
+        if background_bytes:
+            try:
+                canvas = Image.open(io.BytesIO(background_bytes)).convert("RGB")
+                if canvas.size != (side, side):
+                    canvas = canvas.resize((side, side), Image.LANCZOS)
+            except Exception:  # noqa: BLE001
+                canvas = Image.open(_gradient_background(side, target_dir)).convert("RGB")
+        else:
+            canvas = Image.open(_gradient_background(side, target_dir)).convert("RGB")
         scale = side * 0.72 / max(cutout.size)
         target = (max(1, round(cutout.width * scale)), max(1, round(cutout.height * scale)))
         resized = cutout.resize(target, Image.LANCZOS)
@@ -152,3 +160,13 @@ def fallback_composite(
         return buffer.getvalue()
     except Exception:  # noqa: BLE001
         return None
+
+
+def fallback_composite(
+    product_bytes: bytes,
+    *,
+    side: int = 1600,
+    workdir: Path | None = None,
+) -> bytes | None:
+    """保底：产品抠图 + 程序台面（无 AI 背景时）。"""
+    return composite_on(product_bytes, None, side=side, workdir=workdir)
