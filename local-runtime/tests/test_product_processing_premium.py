@@ -79,8 +79,9 @@ def test_compose_rejects_unknown_template() -> None:
 
 def test_photo_prompt_forbids_rendered_text() -> None:
     prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Sharp And Smooth", subline="x"))
-    assert "Zero text" in prompt
-    assert "the only object in frame" in prompt
+    assert "Any text" in prompt
+    assert "FORBIDDEN" in prompt
+    assert "FINAL SELF-CHECK" in prompt
 
 
 def test_batch_hook_passes_real_task_id() -> None:

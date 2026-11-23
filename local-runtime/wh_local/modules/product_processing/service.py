@@ -3231,7 +3231,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             self._raise_if_task_stopped(task_id, workspace_id)
             try:
                 copy = self._marketing_copy(title, category, template)
-                base_prompt = build_photo_prompt(template, copy, scene)
+                base_prompt = build_photo_prompt(template, copy, scene, vision_subject)
                 composed: bytes | None = None
                 for attempt in (1, 2):
                     prompt = base_prompt

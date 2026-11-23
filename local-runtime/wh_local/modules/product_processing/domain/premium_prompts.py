@@ -16,18 +16,69 @@ from .premium_composer import MarketingCopy
 
 
 # 生图照片层的公共合同：产品保真 + 禁文字 + 真实摄影质感。
-PHOTO_CONTRACT = """This is a professional studio product photograph of the exact product in the reference images.
+PHOTO_CONTRACT = """ROLE
+You are a senior product photographer shooting a marketplace listing image for this exact product.
+The reference images are the product. Your job is to re-light and re-stage the SAME physical object,
+never to redesign it.
 
-1. Copy the product faithfully from the reference: same silhouette, proportions, colours, materials, structure, markings and part count. Every jaw, blade, tooth, serration, hinge, rivet, screw, spring and joint must be reproduced with identical geometry — nothing merged, melted, smoothed away or invented.
-1b. COUNT PARTS BEFORE FINISHING: count the product's handles/arms, jaws and buttons in the reference, then count them again in your render. The numbers must match EXACTLY — a tool with two handles must show exactly two handles; an extra arm, a third handle or a duplicated jaw is a failed image.
-1c. CAMERA ANGLE MUST BE EVIDENCED: use only a viewing angle that the reference images actually show (front, side or three-quarter exactly as photographed). Do NOT rotate the product to an angle the reference does not show.
-1d. NEVER INVENT UNSEEN PARTS: if a surface, back side or mechanism is not visible in the reference, keep it hidden or dark — do not guess, redraw or add parts to fill the view. Keep the tool in the same open/closed state as the reference; when unsure, closed.
-1e. FRAME COMPLETENESS: the whole product must fit inside the frame with visible margin on every side — never cropped, never touching the frame edge.
-2. The product is the only object in frame. The surface it stands on is the only other element: no wires, tools, packaging, loose parts, hands or people.
-3. Zero text of any kind: no letters, numbers, labels, logos, watermarks. Typography is added later.
-4. Look like a real studio photograph: soft key light with shaped highlights, natural contact shadow, true-to-life materials, slight depth falloff, photographic grain. No illustration, no 3D render look.
+P0 · PRODUCT IDENTITY LOCK (outranks everything below)
+- Silhouette, proportions, length-to-width ratio, part count, part placement and part geometry are copied
+  from the reference exactly. Nothing merged, melted, smoothed, rounded, straightened, shortened or invented.
+- Count before finishing: handles/arms, jaws, blades, teeth and serrations, hinges, pivots, rivets, screws,
+  springs, coils, buttons, slots, holes, markings. Count them in the reference, then count them in your render.
+  The two lists must match item by item. A tool with two handles shows exactly two handles; an extra arm,
+  a third handle or a duplicated jaw is a failed image.
+- Serrations keep their exact number, pitch and depth. A stepped stripping groove keeps every step.
+  A ratchet mechanism keeps its teeth, pawl and spring in the same positions.
+- Printed markings (part numbers, size engravings, moulded text) stay where they are, same size,
+  same orientation. Do not clean them away and do not add new ones.
+- Do not change colour, gloss level, surface finish or material. Chrome stays chrome, matte stays matte.
+- If a surface, back side, inner mechanism or fastener is NOT visible in the reference, keep it hidden,
+  occluded or in shadow. Never guess, never fill the view with invented parts.
 
-FINAL CHECK — reject and redo if any of these is true: extra or missing handle/arm/jaw; a part duplicated or fused; geometry smoother or rounder than the reference; product cropped by the frame; any letter, number, logo or watermark; any object other than the product and the surface.
+P0 · CAMERA MUST BE EVIDENCED
+- Use only a viewing angle the reference actually shows (front, side, or the same three-quarter).
+  Never rotate the product to an angle the photographs do not support.
+- Keep the same open/closed state as the reference; when the state is ambiguous, render it closed.
+- Eye height roughly level with the product's centre; no fisheye, no wide-angle stretch, no extreme
+  perspective, no dutch tilt.
+
+P1 · FRAMING
+- The whole product fits inside the frame with clear margin on all four sides. Never cropped, never
+  touching an edge, never hidden behind the copy area.
+- The product reads as the hero: large in frame, fully lit on its key surfaces, nothing important in shadow.
+
+P1 · SET & LIGHTING
+- One continuous surface and one background; the background is a soft studio gradient, not a room.
+  No horizon line splitting the frame, no furniture, no textile folds, no props, no packaging, no hands.
+- Single key light from the upper left, large soft source with a shaped specular; gentle fill from the right;
+  one thin rim light separating the product from the background.
+- Contact shadow directly under the product, matching the key direction, soft-edged and grounded.
+  The product sits on the surface — it never floats and never casts a detached shadow.
+- Photographic depth: shallow falloff toward the background, subtle grain, no HDR halo, no crushed blacks,
+  no over-sharpening.
+
+P2 · MATERIALS & PHYSICS
+- Polished metal: sharp environmental highlight, dark-to-bright gradient across the bevel, mirror-like
+  reflection of the surface below. Brushed metal: anisotropic streaks following the brush direction.
+- Rubber/plastic handles: soft sheen, visible moulding seams, matte micro-texture, no waxy plastic look.
+- Glass/transparent parts: refraction, edge highlight, caustic pool under the body.
+- Every material must read as the real material, at real thickness, with real edge breaks. No flat grey metal.
+
+FORBIDDEN
+- Extra or missing parts; duplicated or fused geometry; symmetrical inflation of an asymmetric tool.
+- Any object besides the product and the surface: wires, cables, nails, screws, tools, packaging, cloth,
+  plants, hands, people, animals.
+- Any text: letters, words, numbers, UI, labels, logos, watermarks, price tags, badges, arrows, rulers.
+- Illustration, cartoon, 3D-render or CAD look; plastic sheen; excessive bloom; AI-glossy perfection.
+
+FINAL SELF-CHECK (redo the image if any answer is no)
+1. Is every part present exactly once?
+2. Do the handle count and jaw count match the reference?
+3. Is the camera angle one the reference actually shows?
+4. Is the whole product inside the frame with margin?
+5. Is the frame free of text and of objects other than the product and the surface?
+6. Does the light behave like a real softbox on real materials?
 """
 
 # 各版式的照片层构图要求（文案区预留）。
@@ -195,7 +246,12 @@ def parse_scene_plan(text: str) -> dict[str, Any] | None:
     return {"surface": surface, "action": action, "props": props}
 
 
-def build_photo_prompt(template: str, copy: MarketingCopy, scene: dict[str, Any] | None = None) -> str:
+def build_photo_prompt(
+    template: str,
+    copy: MarketingCopy,
+    scene: dict[str, Any] | None = None,
+    subject: str = "",
+) -> str:
     """照片层提示词：合同 + 版式构图（含文案区预留）。不含任何要渲染的文字。"""
     layout = PHOTO_LAYOUTS.get(template, PHOTO_LAYOUTS["headline_hero"])
     tone = copy.headline.replace(chr(10), " ")[:120].rstrip(" .;:")
@@ -205,7 +261,11 @@ def build_photo_prompt(template: str, copy: MarketingCopy, scene: dict[str, Any]
     # 动作/道具永久禁用：2026-11-23 两轮实测，模型画动作必然穿模/画坏产品。
     action = ""
     props: list[str] = []
-    scene_lines = [f"SCENE PLAN: product stands on {surface}."]
+    scene_lines = []
+    subject_text = str(subject or "").strip()[:600]
+    if subject_text:
+        scene_lines.append(f"PRODUCT UNDERSTANDING (from vision analysis, supporting evidence only): {subject_text}")
+    scene_lines.append(f"SCENE PLAN: product stands on {surface}.")
     scene_lines.append(
         f"ACTION: {action}" if action else "ACTION: none — the product is shown at rest, no action, no extra objects touching it."
     )
@@ -224,12 +284,19 @@ _QA_SYSTEM = (
 
 _QA_USER = """Image 1 is the REFERENCE product photo. Image 2 is the GENERATED listing image.
 
+Method: look at image 1 first and build an inventory of the product's parts (handles, jaws, blades, teeth,
+hinges, screws, springs, buttons). Then look at image 2 and try to match that inventory one-to-one.
+Count deliberately, do not eyeball.
+
 Judge the generated image on:
 1. same_product: is the object in image 2 unmistakably the same product model as image 1?
-2. fidelity: are shape, proportions, part count and mechanism preserved? Any deformed, fused, melted or missing parts?
+2. fidelity: are shape, proportions, part count and mechanism preserved? Any deformed, fused, melted,
+   duplicated or missing parts? Is any part smoother/rounder than the reference?
 3. extra_objects: any wires, tools, hands, packaging or loose objects that should not be there?
-4. text: any visible letters, numbers, logos or watermarks rendered in the image?
-5. part_count: count the product's main grip handles/arms in image 1 and in image 2. Do they match? (A two-handle tool rendered with three handles is a hard fail.)
+4. text: any visible letters, numbers, logos or watermarks rendered in the image (including on the product
+   itself if the reference does not contain them)?
+5. part_count: count the main grip handles/arms in image 1 and in image 2. Do they match?
+   (A two-handle tool rendered with three handles is a hard fail.)
 
 Return ONLY JSON: {{"same_product": true|false, "fidelity_ok": true|false, "extra_objects": true|false, "has_text": true|false, "handles_match": true|false, "issues": "<short English description of the main defect, or empty>"}}"""
 
