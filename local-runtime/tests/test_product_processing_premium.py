@@ -13,8 +13,10 @@ from wh_local.modules.product_processing.domain.premium_composer import (
 )
 from wh_local.modules.product_processing.domain.premium_prompts import (
     build_photo_prompt,
+    build_scene_messages,
     fallback_copy,
     parse_copy_response,
+    parse_scene_plan,
 )
 
 
@@ -91,3 +93,30 @@ def test_batch_hook_passes_real_task_id() -> None:
         r"_generate_marketing_images\(\s*\n\s*task_id,\s*\n\s*draft\[\"id\"\]",
         source,
     ), "批次挂载处必须用 task_id 调 _generate_marketing_images"
+
+
+def test_scene_plan_parse_and_reject() -> None:
+    plan = parse_scene_plan('{"surface": "dark walnut workbench", "action": "wire clamped in jaws", "props": ["coil"]}')
+    assert plan == {"surface": "dark walnut workbench", "action": "wire clamped in jaws", "props": ["coil"]}
+    assert parse_scene_plan("no json") is None
+    assert parse_scene_plan('{"action": "x"}') is None  # 缺 surface 不可用
+
+
+def test_photo_prompt_without_scene_is_conservative() -> None:
+    prompt = build_photo_prompt("action_proof", MarketingCopy(headline="Cup Holder"))
+    assert "ACTION: none" in prompt
+    assert "PROPS: none" in prompt
+
+
+def test_photo_prompt_with_scene_uses_plan() -> None:
+    plan = {"surface": "brushed steel table", "action": "a ceramic mug resting under the spout", "props": ["tea tin"]}
+    prompt = build_photo_prompt("action_proof", MarketingCopy(headline="Pour Over"), plan)
+    assert "brushed steel table" in prompt
+    assert "ceramic mug" in prompt
+    assert "tea tin" in prompt
+
+
+def test_scene_messages_include_product_context() -> None:
+    messages = build_scene_messages("Wire Stripper", "tools", "a 5-in-1 electrical stripping tool")
+    text = " ".join(str(item.get("content")) for item in messages)
+    assert "Wire Stripper" in text and "tools" in text and "5-in-1" in text

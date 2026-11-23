@@ -3068,6 +3068,32 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             pass
         return fallback_copy(title)
 
+    def _marketing_scene_plan(
+        self, title: str, category: str, subject: str = ""
+    ) -> dict[str, Any] | None:
+        """每个商品的照片场景方案（台面/动作/道具），豆包生成；失败返回 None 走保守默认。
+
+        提示词不写死“剪线工具”这类语义——不同产品由方案决定动作，拿不准就不给动作。
+        """
+        from .domain.premium_prompts import build_scene_messages, parse_scene_plan  # noqa: PLC0415
+
+        cache_key = f"{title}|{category}|{subject}"
+        cache = getattr(self, "_marketing_scene_cache", None)
+        if cache is None:
+            cache = self._marketing_scene_cache = {}
+        if cache_key in cache:
+            return cache[cache_key]
+        plan: dict[str, Any] | None = None
+        try:
+            text = DoubaoArkClient().complete(build_scene_messages(title, category, subject))
+            plan = parse_scene_plan(text)
+        except Exception:  # noqa: BLE001
+            plan = None
+        if len(cache) >= 64:
+            cache.pop(next(iter(cache)))
+        cache[cache_key] = plan
+        return plan
+
     def _generate_marketing_images(
         self,
         task_id: int,
@@ -3078,6 +3104,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         reference_urls: list[str],
         workspace_id: str,
         templates: list[str] | None = None,
+        vision_subject: str = "",
         ai_notes: list[str] | None = None,
     ) -> list[str]:
         """精选处理（一期）：两版式各出 1 张营销图，返回预览 URL 列表。
@@ -3098,6 +3125,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         from .domain.premium_composer import TEMPLATES  # noqa: PLC0415
 
         selected = [item for item in (templates or []) if item in TEMPLATES] or list(TEMPLATES[:3])
+        scene = self._marketing_scene_plan(title, category, vision_subject)
         values: list[str] = []
         for template in selected:
             self._raise_if_task_stopped(task_id, workspace_id)
@@ -3105,7 +3133,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 copy = self._marketing_copy(title, category, template)
                 photo = processor.generate(
                     stage="marketing_photo",
-                    prompt=build_photo_prompt(template, copy),
+                    prompt=build_photo_prompt(template, copy, scene),
                     reference_values=refs,
                     image_size="2048x2048",
                 )
@@ -3398,10 +3426,11 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         title = str(draft.get("title") or draft.get("product_name") or "the product")
         category = str(raw.get("category_path") or raw.get("category") or "")
         copy = self._marketing_copy(title, category, template)
+        scene = self._marketing_scene_plan(title, category)
         processor = self._media_processor()
         photo = processor.generate(
             stage="marketing_photo",
-            prompt=build_photo_prompt(template, copy),
+            prompt=build_photo_prompt(template, copy, scene),
             reference_values=reference_values,
             image_size="2048x2048",
         )
@@ -11092,6 +11121,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         for item in (settings.get("marketing_templates") or [])
                         if str(item or "").strip()
                     ],
+                    vision_subject=str(vision_subject or ""),
                     ai_notes=ai_notes,
                 )
             except Exception as exc:  # noqa: BLE001
