@@ -11,6 +11,8 @@ test("workspace opens AI history and restores a processing task by its own tab f
   assert.match(source, /const openProcessingTaskDetail = \(taskId: number\)/);
   assert.match(source, /taskRunId: taskId/);
   assert.match(source, /case "product_processing_history":/);
+  // 精选处理的路由 case 曾因脚本半途失败静默丢失（2026-11-23）——钉死
+  assert.match(source, /case "product_processing_marketing":/);
   assert.match(taskPageSource, /initialTaskId\?: number/);
   assert.match(taskPageSource, /if \(initialTaskId != null\) void loadTask\(initialTaskId\)/);
   assert.match(taskPageSource, /继续处理中的历史任务/);

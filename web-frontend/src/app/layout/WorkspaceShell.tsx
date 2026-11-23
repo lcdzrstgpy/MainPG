@@ -1138,6 +1138,9 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
       case "product_processing":
         content = <ProductProcessingVerifyPage onStartProcessing={openProcessingTask} onOpenCollection={() => openModule("daily_selection")} isActive={isActive} />;
         break;
+      case "product_processing_marketing":
+        content = <ProductMarketingPage />;
+        break;
       case "product_processing_history":
         content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
         break;
