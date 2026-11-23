@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { pluginOneboundCaptureApi } from "../api/pluginOneboundCaptureApi";
@@ -61,7 +61,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
   const [skuFilterMax, setSkuFilterMax] = useState("");
   const [appliedSkuFilter, setAppliedSkuFilter] = useState<{ min: number | null; max: number | null }>({ min: null, max: null });
   const [loading, setLoading] = useState(true);
-  const [starting, setStarting] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [skuRepullBusy, setSkuRepullBusy] = useState(false);
@@ -197,6 +196,30 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
     return () => window.clearInterval(timer);
   }, [isActive, refreshCandidates, selectedBatchId, skuRepull?.status]);
 
+  // 插件点「整页采集」后批次已登记为 prepared，这里自动接手启动，用户不必再回工作台点一次。
+  // 失败（如万邦凭据申请失败）时批次会留在 prepared，清掉标记让下一轮轮询再试。
+  const autoStartedRef = useRef<Set<string>>(new Set());
+  const preparedBatchIds = useMemo(
+    () => batches.filter((batch) => batch.status === "prepared").map((batch) => batch.batch_id).join(","),
+    [batches],
+  );
+  useEffect(() => {
+    if (!isActive || !preparedBatchIds) return;
+    for (const batchId of preparedBatchIds.split(",")) {
+      if (autoStartedRef.current.has(batchId)) continue;
+      autoStartedRef.current.add(batchId);
+      void (async () => {
+        try {
+          await pluginOneboundCaptureApi.startBatch(batchId);
+        } catch (requestError) {
+          autoStartedRef.current.delete(batchId);
+          setError(formatShopCollectionError(requestError));
+        }
+        await Promise.all([refreshBatches(), refreshSelected(batchId)]);
+      })();
+    }
+  }, [isActive, preparedBatchIds, refreshBatches, refreshSelected]);
+
   const filteredCandidates = useMemo(() => {
     return candidates.filter((candidate) => {
       if (appliedSkuFilter.min !== null && candidate.sku_count < appliedSkuFilter.min) return false;
@@ -236,22 +259,6 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
       setError(formatShopCollectionError(requestError));
     } finally {
       setRetrying(false);
-    }
-  }
-
-  async function startBatch() {
-    if (!selectedBatch || selectedBatch.status !== "prepared") return;
-    setStarting(true);
-    setError("");
-    setNotice("");
-    try {
-      await pluginOneboundCaptureApi.startBatch(selectedBatch.batch_id);
-      await Promise.all([refreshBatches(), refreshSelected(selectedBatch.batch_id)]);
-    } catch (requestError) {
-      setError(formatShopCollectionError(requestError));
-      await refreshSelected(selectedBatch.batch_id);
-    } finally {
-      setStarting(false);
     }
   }
 
@@ -403,16 +410,9 @@ export const PluginOneboundCapturePanel = forwardRef<PluginOneboundCapturePanelH
                   </div>
                   <div className="shop-progress"><span><i style={{ width: `${progress.percent}%` }} /></span><b>{progress.percent}%</b></div>
                 </div>
-                {(selectedBatch.status === "prepared" || canRetryPluginCaptureFailures(selectedBatch)) && (
+                {canRetryPluginCaptureFailures(selectedBatch) && (
                   <div className="shop-batch-actions">
-                    {selectedBatch.status === "prepared" && (
-                      <button type="button" disabled={starting} onClick={() => void startBatch()}>
-                        {starting ? "正在启动采集…" : "启动采集"}
-                      </button>
-                    )}
-                    {canRetryPluginCaptureFailures(selectedBatch) && (
-                      <button type="button" disabled={retrying} onClick={() => void retryFailed()}>{retrying ? "正在重试…" : "重试失败项"}</button>
-                    )}
+                    <button type="button" disabled={retrying} onClick={() => void retryFailed()}>{retrying ? "正在重试…" : "重试失败项"}</button>
                   </div>
                 )}
               </div>
