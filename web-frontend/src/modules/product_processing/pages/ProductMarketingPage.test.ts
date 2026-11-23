@@ -19,6 +19,10 @@ test("精选处理入口复用 AI 处理页的 marketing 模式", () => {
   const verify = readFileSync(new URL("./ProductProcessingVerifyPage.tsx", import.meta.url), "utf8");
   assert.match(verify, /marketing\?: boolean/);
   assert.match(verify, /marketingTemplates/);
+  // 用户要求：流程相同但 UI 不能一模一样（自有标题/按钮/金色强调）
+  assert.match(verify, /is-marketing/);
+  assert.match(verify, /开始精选处理/);
+  assert.match(verify, /4K 精品四宫格/);
   const task = readFileSync(new URL("./ProductProcessingTaskPage.tsx", import.meta.url), "utf8");
   assert.match(task, /marketing_templates/);
   assert.match(task, /精选版式（选 3 个）/);

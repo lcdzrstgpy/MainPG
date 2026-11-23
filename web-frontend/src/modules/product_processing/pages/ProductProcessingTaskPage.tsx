@@ -1187,8 +1187,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
 
           {initialTaskId == null && <section className="verify-section verify-settings-section">
             <div className="verify-section-head">
-              <h2>处理设置</h2>
-              <span className="verify-sub">基础参数 · 出图风格 · 生图组合</span>
+              <h2>{options.marketingImages ? '精选处理设置' : '处理设置'}</h2>
+              <span className="verify-sub">
+                {options.marketingImages
+                  ? '4K 精品四宫格 + 精选版式营销图（选 3 个）'
+                  : '基础参数 · 出图风格 · 生图组合'}
+              </span>
             </div>
             <div className="verify-form-row">
               <label title="精选处理：AI 出照片层、本地排版合成营销图，产出自动进轮播图。默认关闭">

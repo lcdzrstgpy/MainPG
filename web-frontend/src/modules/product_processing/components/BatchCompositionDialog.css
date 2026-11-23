@@ -218,3 +218,25 @@
   color: var(--theme-primary, #0a497f);
   font-weight: 700;
 }
+
+
+/* 精选处理：同流程、不同观感（金色强调 + 标题徽标） */
+.verify-page.is-marketing .verify-commandbar {
+  border-top: 3px solid #c9a227;
+}
+.verify-page.is-marketing .verify-command-title h1::before {
+  content: "PREMIUM";
+  display: inline-block;
+  margin-right: 10px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #c9a227;
+  color: #241d05;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  vertical-align: middle;
+}
+.verify-page.is-marketing .verify-actions .primary {
+  background: #9a7a12;
+  border-color: #9a7a12;
+}

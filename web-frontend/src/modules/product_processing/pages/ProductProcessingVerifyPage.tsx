@@ -623,11 +623,18 @@ export function ProductProcessingVerifyPage({
   const isPoolEmpty = totalDrafts === 0;
 
   return (
-    <div className={`verify-page verify-pool-page${isPoolEmpty ? ' is-pool-empty' : ''}`}>
+    <div className={`verify-page verify-pool-page${isPoolEmpty ? ' is-pool-empty' : ''}${marketing ? ' is-marketing' : ''}`}>
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <h1>产品处理草稿池</h1>
-          <p>采集先入池，默认只处理勾选草稿；暂停、确认与继续均以本地持久状态为准。</p>
+          <h1>{marketing ? '精选处理' : '产品处理草稿池'}</h1>
+          {marketing ? (
+            <p>
+              更高规格的一批：所选商品走 <b>4K 精品四宫格</b>，并额外产出{' '}
+              <b>3 张精品营销图</b>（文案由排版层渲染，绝不错拼）。勾选后开始挑选版式。
+            </p>
+          ) : (
+            <p>采集先入池，默认只处理勾选草稿；暂停、确认与继续均以本地持久状态为准。</p>
+          )}
         </div>
         <div className="verify-command-stats">
           <span><i className="iconfont icon-appstore" aria-hidden="true" /><strong>{selectableDrafts.length}</strong><em>待处理</em></span>
@@ -643,12 +650,12 @@ export function ProductProcessingVerifyPage({
       <section className={`verify-section${isPoolEmpty ? ' is-empty' : ''}`} ref={draftListRef}>
         <div className="verify-sticky-toolbar">
         <div className="verify-section-head">
-          <h2><i className="iconfont icon-database" aria-hidden="true" />草稿池</h2>
+          <h2><i className="iconfont icon-database" aria-hidden="true" />{marketing ? '精选商品' : '草稿池'}</h2>
           <div className="verify-actions">
             <button className={batchesOpen ? 'is-active' : ''} onClick={() => { setBatchesOpen((value) => !value); if (!batchesOpen) refreshBatches(); }} disabled={batchBusy}><i className="iconfont icon-appstore" aria-hidden="true" />采集批次{draftBatches.length ? `（${draftBatches.length}）` : ''}</button>
             <button onClick={toggleSelectAllPage} disabled={!pageDrafts.length}><i className={`iconfont ${allPageSelected ? 'icon-close-circle' : 'icon-select'}`} aria-hidden="true" />{allPageSelected ? '取消全选' : '全选本页'}</button>
             <button onClick={openSkuBatch} disabled={!selectedIds.size}><i className="iconfont icon-barcode" aria-hidden="true" />批量管理 SKU</button>
-            <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中…</> : <><i className="iconfont icon-rocket" aria-hidden="true" />开始处理</>}</button>
+            <button className="primary" onClick={() => handleProcess(false)} disabled={loading || !selectedIds.size}>{loading ? <><i className="app-spinner is-sm" aria-hidden="true" />处理中…</> : <><i className="iconfont icon-rocket" aria-hidden="true" />{marketing ? '开始精选处理' : '开始处理'}</>}</button>
             <button className={canUndoDelete ? 'undo-delete' : ''} onClick={handleDeleteOrUndo} disabled={loading || (!selectedIds.size && !deletedBatch)} title={canUndoDelete ? `恢复最近删除的 ${deletedBatch?.ids.length || 0} 条草稿` : '删除已勾选草稿'}>{loading ? <i className="app-spinner is-sm" aria-hidden="true" /> : canUndoDelete ? <span aria-hidden="true">↶</span> : <i className="iconfont icon-delete" aria-hidden="true" />}{canUndoDelete ? `撤回删除（${deletedBatch?.ids.length || 0}）` : '删除选择'}</button>
             <button onClick={() => refresh().catch(fail)} disabled={loading}>{loading ? <i className="app-spinner is-sm" aria-hidden="true" /> : <i className="iconfont icon-sync" aria-hidden="true" />}刷新</button>
           </div>
