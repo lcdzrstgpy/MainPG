@@ -19,6 +19,7 @@ from .premium_composer import MarketingCopy
 PHOTO_CONTRACT = """This is a professional studio product photograph of the exact product in the reference images.
 
 1. Copy the product faithfully from the reference: same silhouette, proportions, colours, materials, structure, markings and part count. Every jaw, blade, tooth, serration, hinge, rivet, screw, spring and joint must be reproduced with identical geometry — nothing merged, melted, smoothed away or invented.
+1b. COUNT PARTS BEFORE FINISHING: count the product's handles/arms, jaws and buttons in the reference, then count them again in your render. The numbers must match EXACTLY — a tool with two handles must show exactly two handles; an extra arm, a third handle or a duplicated jaw is a failed image.
 2. The product is the only object in frame. The surface it stands on is the only other element: no wires, tools, packaging, loose parts, hands or people.
 3. Zero text of any kind: no letters, numbers, labels, logos, watermarks. Typography is added later.
 4. Look like a real studio photograph: soft key light with shaped highlights, natural contact shadow, true-to-life materials, slight depth falloff, photographic grain. No illustration, no 3D render look.
@@ -222,8 +223,9 @@ Judge the generated image on:
 2. fidelity: are shape, proportions, part count and mechanism preserved? Any deformed, fused, melted or missing parts?
 3. extra_objects: any wires, tools, hands, packaging or loose objects that should not be there?
 4. text: any visible letters, numbers, logos or watermarks rendered in the image?
+5. part_count: count the product's main grip handles/arms in image 1 and in image 2. Do they match? (A two-handle tool rendered with three handles is a hard fail.)
 
-Return ONLY JSON: {{"same_product": true|false, "fidelity_ok": true|false, "extra_objects": true|false, "has_text": true|false, "issues": "<short English description of the main defect, or empty>"}}"""
+Return ONLY JSON: {{"same_product": true|false, "fidelity_ok": true|false, "extra_objects": true|false, "has_text": true|false, "handles_match": true|false, "issues": "<short English description of the main defect, or empty>"}}"""
 
 
 def build_qa_messages(reference_data_url: str, generated_data_url: str) -> list[dict[str, Any]]:
@@ -253,9 +255,13 @@ def parse_qa_response(text: str) -> dict[str, Any] | None:
         return None
     if "same_product" not in data:
         return None
-    ok = bool(data.get("same_product")) and bool(data.get("fidelity_ok", True)) and not bool(
-        data.get("extra_objects")
-    ) and not bool(data.get("has_text"))
+    ok = (
+        bool(data.get("same_product"))
+        and bool(data.get("fidelity_ok", True))
+        and not bool(data.get("extra_objects"))
+        and not bool(data.get("has_text"))
+        and bool(data.get("handles_match", True))
+    )
     return {
         "ok": ok,
         "same_product": bool(data.get("same_product")),
