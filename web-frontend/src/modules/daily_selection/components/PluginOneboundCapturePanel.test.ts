@@ -5,13 +5,15 @@ import test from "node:test";
 const panel = readFileSync(new URL("./PluginOneboundCapturePanel.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles/shop-collection.css", import.meta.url), "utf8");
 
-test("plugin capture panel starts prepared OneBound batches and retries terminal failures", () => {
+test("plugin capture panel auto-starts prepared OneBound batches and retries terminal failures", () => {
   assert.match(panel, /请前往 1688 或淘宝页面使用浏览器插件发起整页采集/);
   assert.match(panel, /canRetryPluginCaptureFailures/);
   assert.match(panel, /重试失败项/);
-  assert.match(panel, /selectedBatch\.status === "prepared"/);
+  // 2026-11-23 起由面板自动接手 prepared 批次（插件点了「整页采集」就不必再回工作台点一次），
+  // 所以「启动采集」按钮连同 selectedBatch.status === "prepared" 的守卫一起删掉了。
+  assert.match(panel, /batch\.status === "prepared"/);
   assert.match(panel, /pluginOneboundCaptureApi\.startBatch/);
-  assert.match(panel, /启动采集/);
+  assert.doesNotMatch(panel, /启动采集/);
   assert.doesNotMatch(panel, /shopCollectionApi/);
   assert.doesNotMatch(panel, /pluginOneboundCaptureApi\.(createBatch|pause|resume|cancel)\b/);
   assert.doesNotMatch(panel, />\s*(创建批次|暂停|取消)\s*</);
