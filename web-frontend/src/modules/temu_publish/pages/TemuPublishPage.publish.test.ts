@@ -715,6 +715,48 @@ test("发布超时后反查店铺：确认建成了就显示「已在店铺里�
   assert.match(page, /publishResult\.matched_goods\?\.product_id/);
 });
 
+test("成功回执是干净的成功卡，原始 JSON 折叠进「排障用」", () => {
+  // 以前一坨响应 JSON 顶在脸上（用户原话「很丑」）：id/货号/规格摆明面，JSON 要展开才见
+  assert.match(page, /temu-publish-done-card/);
+  assert.match(page, /<em>商品 id<\/em>/);
+  assert.match(page, /<em>货号<\/em>/);
+  assert.match(page, /<em>规格<\/em>/);
+  assert.match(page, /<summary>原始回执 JSON（排障用）<\/summary>/);
+  assert.match(page, /复制回执 JSON/);
+  assert.doesNotMatch(
+    page,
+    /<\/div>\s*\n\s*<pre className="temu-json">\s*\n\s*\{JSON\.stringify\(\s*\n\s*publishResult\.confirmed_by_lookup/,
+    "回执 JSON 不许再裸露在成功卡外面",
+  );
+  const styles = readFileSync(new URL("../styles/temuPublish.css", import.meta.url), "utf8");
+  assert.match(styles, /\.temu-publish-done-card \{/);
+});
+
+test("别处机器审出的 5 条问题：修复要被守住，不许回退", () => {
+  const library = readFileSync(new URL("./TemuDraftLibraryPage.tsx", import.meta.url), "utf8");
+  const batch = readFileSync(new URL("../data/batchPublish.ts", import.meta.url), "utf8");
+  const precheck = readFileSync(new URL("../data/batchPrecheck.ts", import.meta.url), "utf8");
+  const batchEdit = readFileSync(new URL("../components/TemuBatchEditPage.tsx", import.meta.url), "utf8");
+
+  // 1. 批量编辑未保存内容不丢：sessionStorage 暂存，保存才清
+  assert.match(batchEdit, /const PENDING_KEY = "temu_batch_edit_pending_v1";/);
+  assert.match(batchEdit, /sessionStorage\.setItem\(PENDING_KEY/);
+  assert.match(batchEdit, /sessionStorage\.removeItem\(PENDING_KEY\)/);
+  assert.match(batchEdit, /已恢复上次未保存的改动/);
+
+  // 2. 图片/变种覆盖保存后预检要重算：依赖数组不能漏
+  assert.match(library, /imageEdits,\s*\n\s*skuFields,/);
+
+  // 3+4. 预检按变种解析校验（和组装同口径），不再只看整条值
+  assert.match(precheck, /const skuRows = hasOverrides/);
+  assert.match(precheck, /resolveSkuField\(overrides, "declared_price", basePrice\)/);
+  assert.match(precheck, /resolveSkuField\(overrides, "weight_g", baseWeightG\)/);
+
+  // 5. 建议售价要进批量发布，不能写死 null
+  assert.doesNotMatch(batch, /suggested_price: null/, "组装不许再把建议售价吞掉");
+  assert.match(batch, /suggested_price: prefill\.suggestedPrice\s*\n\s*\? yuanToCents/);
+});
+
 test("发布后核对：按 SKC 货号查店铺里的商品", () => {
   assert.match(api, /searchGoods: \(params: \{ extCode\?: string; title\?: string; page\?: number; pageSize\?: number \}\) =>/);
   assert.match(api, /\$\{BASE\}\/goods\$\{query\(\{/);

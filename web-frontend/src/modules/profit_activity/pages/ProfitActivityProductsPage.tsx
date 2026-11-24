@@ -5,12 +5,12 @@ import { createPortal } from "react-dom";
 import {
   deleteProfitActivityProducts,
   listProfitActivitySites,
-  listProfitActivityProducts,
+  listProfitActivityProductsPage,
   loadProductImage,
   updateProfitActivityProduct,
   saveProfitActivityProductEdit,
 } from "../api/profitActivityApi";
-import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite } from "../types/products";
+import type { ProfitActivityProduct, ProfitActivityScope, ProfitActivitySite, ProfitProductsSort, ProfitProductsSortDir, ProfitProductsSortKey } from "../types/products";
 import { ProductSourceDrawer } from "../components/ProductSourceDrawer";
 import { ImagePreviewModal } from "../components/ImagePreviewModal";
 import type { PreviewImage } from "../components/ImagePreviewModal";
@@ -33,7 +33,7 @@ type ProductTableColumnKey =
   | "select" | "site" | "storeName" | "productId" | "createdAt" | "productImage"
   | "sellingPrice" | "costPrice" | "weightKg" | "netProfit" | "profitRate"
   | "note" | "source";
-type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number };
+type ProductTableColumn = { key: ProductTableColumnKey; label: string; width: number; minWidth: number; sortable?: ProfitProductsSortKey };
 type InlineEditField = "site" | "store_name" | "product_id" | "selling_price" | "cost_price" | "weight_kg" | "note" | "product_image" | "attachment_image";
 type InlineEditState =
   | { key: string; field: "site"; value: ProfitActivitySite }
@@ -44,13 +44,13 @@ const productTableColumns: ProductTableColumn[] = [
   { key: "site", label: "站点", width: 128, minWidth: 96 },
   { key: "storeName", label: "店铺", width: 160, minWidth: 110 },
   { key: "productId", label: "商品ID", width: 220, minWidth: 150 },
-  { key: "createdAt", label: "入库日期", width: 128, minWidth: 108 },
+  { key: "createdAt", label: "入库日期", width: 128, minWidth: 108, sortable: "library_created_at" },
   { key: "productImage", label: "商品图", width: 100, minWidth: 82 },
   { key: "sellingPrice", label: "售价", width: 120, minWidth: 96 },
   { key: "costPrice", label: "成本", width: 120, minWidth: 96 },
   { key: "weightKg", label: "重量", width: 112, minWidth: 90 },
-  { key: "netProfit", label: "利润", width: 120, minWidth: 96 },
-  { key: "profitRate", label: "利润率", width: 126, minWidth: 102 },
+  { key: "netProfit", label: "利润", width: 120, minWidth: 96, sortable: "net_profit" },
+  { key: "profitRate", label: "利润率", width: 126, minWidth: 102, sortable: "profit_rate" },
   { key: "source", label: "货源", width: 130, minWidth: 104 },
   { key: "note", label: "备注", width: 260, minWidth: 150 },
 ];
@@ -59,6 +59,16 @@ const defaultColumnWidths = productTableColumns.reduce<Record<ProductTableColumn
   return acc;
 }, {} as Record<ProductTableColumnKey, number>);
 const productColumnWidthsStorageKey = "profitActivityProducts.columnWidths.v1";
+
+/** 三态排序循环：无排序 → 倒序 → 正序 → 无排序；切到别的列时从倒序开始。 */
+function nextSort(current: ProfitProductsSort, key: ProfitProductsSortKey): ProfitProductsSort {
+  if (!current || current.key !== key) return { key, dir: "desc" };
+  return current.dir === "desc" ? { key, dir: "asc" } : null;
+}
+
+function sortDirLabel(dir: ProfitProductsSortDir) {
+  return dir === "asc" ? "正序" : "倒序";
+}
 
 function storedProductColumnWidths(): Record<ProductTableColumnKey, number> | null {
   try {
@@ -120,8 +130,10 @@ const productLibraryCache: {
   storeFilter?: string;
   shopOptions?: string[];
   products?: ProfitActivityProduct[];
+  total?: number;
   page?: number;
   pageSize?: LibraryPageSize;
+  sort?: ProfitProductsSort;
 } = {};
 
 export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boolean }) {
@@ -133,11 +145,15 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const [storeFilter, setStoreFilter] = useState(productLibraryCache.storeFilter ?? "");
   const [shopOptions, setShopOptions] = useState<string[]>(productLibraryCache.shopOptions ?? []);
   const [products, setProducts] = useState<ProfitActivityProduct[]>(productLibraryCache.products ?? []);
+  // 服务端分页后的总条数：列表只保存当前页，翻页/统计都用它。
+  const [total, setTotal] = useState(productLibraryCache.total ?? productLibraryCache.products?.length ?? 0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchStoreOpen, setBatchStoreOpen] = useState(false);
   const [batchStoreName, setBatchStoreName] = useState("");
   const [page, setPage] = useState(productLibraryCache.page ?? 1);
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(productLibraryCache.pageSize ?? 10);
+  // 表头三态排序：null=默认（入库倒序）；排序在后端做，翻页不会打乱顺序。
+  const [sort, setSort] = useState<ProfitProductsSort>(productLibraryCache.sort ?? null);
   // 页码输入框的草稿值：允许用户自由填写，回车/失焦/点“跳转”才生效
   const [pageInput, setPageInput] = useState("1");
   const [busy, setBusy] = useState("");
@@ -201,12 +217,10 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
   const availableSites = siteOptions.map((item) => item.site_code);
   const siteLabel = (value: ProfitActivitySite) => siteOptions.find((item) => item.site_code === value)?.display_name || siteLabels[value] || value;
 
-  const totalPages = Math.max(1, Math.ceil(products.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const safePage = Math.min(page, totalPages);
-  const pageProducts = useMemo(
-    () => products.slice((safePage - 1) * pageSize, safePage * pageSize),
-    [products, safePage, pageSize],
-  );
+  // 服务端已按 offset/limit 返回当前页，这里不再切片。
+  const pageProducts = products;
   const adaptiveColumnWidths = useMemo(
     () => buildAdaptiveColumnWidths(pageProducts, siteLabel),
     [pageProducts, siteOptions],
@@ -230,8 +244,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
 
   const goToPageInput = () => {
     const target = Math.max(1, Math.min(totalPages, Math.floor(Number(pageInput) || 1)));
-    setPage(target);
-    setPageInput(String(target));
+    void goToPage(target);
   };
 
   const withBusy = async (label: string, action: () => Promise<void>) => {
@@ -246,35 +259,47 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     }
   };
 
-  const fetchProducts = async () => {
+  const fetchProducts = async (targetPage = page, size = pageSize, order = sort) => {
     if (!sites.size) return [];
-    // 单个站点查询失败不应导致整个产品库显示为空：失败站点提示，其余站点正常展示
-    const settled = await Promise.allSettled(
-      [...sites].map((site) => listProfitActivityProducts({ site, scope, skcs: querySkcs })),
-    );
-    const results: ProfitActivityProduct[] = [];
-    const failures: string[] = [];
-    settled.forEach((item, index) => {
-      if (item.status === "fulfilled") results.push(...item.value);
-      else {
-        const site = [...sites][index];
-        failures.push(`${siteLabel(site)}: ${item.reason instanceof Error ? item.reason.message : String(item.reason)}`);
-      }
+    const byId = querySkcs.trim().length > 0;
+    const offset = byId ? 0 : Math.max(0, (targetPage - 1) * size);
+    const result = await listProfitActivityProductsPage({
+      sites: [...sites],
+      scope,
+      productIds: querySkcs,
+      sourceType: sourceFilter,
+      store: storeFilter,
+      sortBy: order?.key ?? "",
+      sortDir: order?.dir ?? "",
+      offset,
+      // 按 ID 查询时后端忽略分页、返回全部匹配项。
+      limit: byId ? 0 : size,
     });
-    if (failures.length) setMessage(`部分站点查询失败：${failures.join("；")}`);
-    const sourceFiltered = sourceFilter === "all"
-      ? results
-      : results.filter((item) => sourceFilter === "price_verification"
-        ? item.source_type === "price_verification"
-        : item.source_type !== "price_verification");
-    setShopOptions([...new Set(sourceFiltered.map((item) => (item.store_name || "").trim()).filter(Boolean))]
-      .sort((left, right) => left.localeCompare(right, "zh-CN")));
-    const filtered = storeFilter === "__empty__"
-      ? sourceFiltered.filter((item) => !(item.store_name || "").trim())
-      : storeFilter
-      ? sourceFiltered.filter((item) => (item.store_name || "").trim() === storeFilter)
-      : sourceFiltered;
-    return sortProductsByCreatedDesc(filtered);
+    setTotal(result.total);
+    setShopOptions(result.storeOptions);
+    if (result.paged || byId) return result.products;
+    // 兼容旧后端（尚未支持服务端分页）：拿到的仍是全量，这里按 offset/limit 切片。
+    return result.products.slice(offset, offset + size);
+  };
+
+  const goToPage = async (target: number, size = pageSize, order = sort) => {
+    const next = Math.max(1, Math.min(totalPages, target));
+    setPage(next);
+    setPageInput(String(next));
+    try {
+      const nextProducts = await fetchProducts(next, size, order);
+      setProducts(nextProducts);
+      setSelected(new Set());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // 点表头：三态循环后回到第一页重新拉取（排序变了，页码要归位）。
+  const toggleSort = (key: ProfitProductsSortKey) => {
+    const next = nextSort(sort, key);
+    setSort(next);
+    void goToPage(1, pageSize, next);
   };
 
   const queryProducts = () => withBusy("查询产品", async () => {
@@ -285,11 +310,11 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       setMessage("请至少勾选一个站点。");
       return;
     }
-    const nextProducts = await fetchProducts();
+    const nextProducts = await fetchProducts(1);
     setProducts(nextProducts);
     setSelected(new Set());
     setPage(1);
-    setMessage(`查询数据库产品 完成。\n已查询到 ${nextProducts.length} 个产品。`);
+    setMessage(`查询数据库产品 完成。\n本页 ${nextProducts.length} 个产品。`);
   });
 
   const refreshDatabaseProducts = () => withBusy("刷新产品", async () => {
@@ -301,11 +326,9 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
       return;
     }
     const nextProducts = await fetchProducts();
-    const nextKeys = new Set(nextProducts.map(productKey));
     setProducts(nextProducts);
-    setSelected((current) => new Set([...current].filter((key) => nextKeys.has(key))));
-    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
-    setMessage(`已刷新数据库产品，共 ${nextProducts.length} 个产品。`);
+    setSelected(new Set());
+    setMessage(`已刷新数据库产品，本页 ${nextProducts.length} 个产品。`);
   });
 
   useEffect(() => {
@@ -316,7 +339,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
         try {
           const next = await fetchProducts();
           setProducts(next);
-          setMessage(`已刷新为最新产品数据，共 ${next.length} 个产品。`);
+          setMessage(`已刷新为最新产品数据，本页 ${next.length} 个产品。`);
         } catch {
           setMessage("后台刷新失败，当前展示上次缓存数据；可点击“查询产品”重试。");
         }
@@ -335,9 +358,11 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     productLibraryCache.storeFilter = storeFilter;
     productLibraryCache.shopOptions = shopOptions;
     productLibraryCache.products = products;
+    productLibraryCache.total = total;
     productLibraryCache.page = page;
     productLibraryCache.pageSize = pageSize;
-  }, [sites, scope, querySkcs, storeFilter, shopOptions, products, page, pageSize]);
+    productLibraryCache.sort = sort;
+  }, [sites, scope, querySkcs, storeFilter, shopOptions, products, total, page, pageSize, sort]);
 
   // 刷新产品列表但保留页码/选择/未保存修改：用于图片上传等局部更新，避免把用户“弹回”首页。
   const refreshProducts = async () => {
@@ -540,7 +565,10 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     const nextProducts = await fetchProducts();
     setProducts(nextProducts);
     setSelected(new Set());
-    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
+    // 删到当前页空了就回退一页，避免停在空白页。
+    if (!nextProducts.length && page > 1) {
+      await goToPage(page - 1);
+    }
     setMessage(`删除完成，后端确认删除 ${deleted} 个产品。`);
   });
 
@@ -592,7 +620,9 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
     setSelected(new Set());
     setBatchStoreOpen(false);
     setBatchStoreName("");
-    setPage((current) => Math.min(current, Math.max(1, Math.ceil(nextProducts.length / pageSize))));
+    if (!nextProducts.length && page > 1) {
+      await goToPage(page - 1);
+    }
     setMessage(failed
       ? `已修改 ${success} 个产品的店铺名称，${failed} 个产品修改失败。`
       : `已修改 ${success} 个产品的店铺名称。`);
@@ -766,7 +796,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
               <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
                 <ProductTableColumns widths={columnWidths} />
                 <thead>
-                  <ProductTableHeader />
+                  <ProductTableHeader sort={sort} />
                 </thead>
               </table>
             </div>
@@ -785,7 +815,7 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
           <table className="profit-table" style={{ minWidth: tableMinWidth, width: tableMinWidth }}>
             <ProductTableColumns widths={columnWidths} />
             <thead ref={theadRef}>
-              <ProductTableHeader onResizeStart={startColumnResize} />
+              <ProductTableHeader onResizeStart={startColumnResize} sort={sort} onSort={toggleSort} />
             </thead>
             <tbody>
               {pageProducts.length ? pageProducts.map((item) => {
@@ -812,7 +842,9 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
                     </EditableCell></td>
                     <td><EditableCell field="selling_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.selling_price)}</EditableCell></td>
                     <td><EditableCell field="cost_price" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.cost_price)}</EditableCell></td>
-                    <td><EditableCell field="weight_kg" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.weight_kg)}</EditableCell></td>
+                    <td><EditableCell field="weight_kg" item={item} inlineEdit={inlineEdit} onEdit={beginInlineEdit} onSave={saveInlineEdit} onCancel={() => setInlineEdit(null)} onValueChange={setInlineValue} disabled={item.can_edit === false}>{money(item.weight_kg)}</EditableCell>{item.weight_estimated ? (
+                      <em className="profit-weight-estimate" title="采集没读到重量，按默认 0.5kg 估算；修改重量后标记会自动消失">估算</em>
+                    ) : null}</td>
                     <td className={profitTone(item.net_profit)}>{money(item.net_profit)}</td>
                     <td>{percent(item.profit_rate)}</td>
                     <td className="profit-source-cell"><button className="profit-source-open" onClick={() => setActiveProduct(item)} title="查看/编辑该 SKC 的货源链接">打开（{(item.source_groups ?? []).filter((group) => group?.source_url).length}）</button></td>
@@ -828,20 +860,20 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
 
         <div className="profit-products-pagination">
           <div className="profit-products-pagination-summary">
-            <span>共 {products.length} 条 · 第 {safePage} / {totalPages} 页</span>
+            <span>共 {total} 条 · 第 {safePage} / {totalPages} 页</span>
             <button onClick={togglePageSelected} disabled={!pageProducts.length}>{pageSelected ? "取消本页" : "全选本页"}</button>
             <button onClick={copySelectedProductIds} disabled={!selectedCount || !!busy}>复制已选商品ID</button>
             <button onClick={openBatchStoreDialog} disabled={!selectedCount || !!busy}>批量修改店铺</button>
             <button className="danger-button" onClick={deleteSelected} disabled={!selectedCount || !!busy}>删除已选 {selectedCount}</button>
             <label className="profit-products-page-size">每页
-              <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value) as typeof pageSize); setPage(1); }}>
+              <select value={pageSize} onChange={(event) => { const size = Number(event.target.value) as typeof pageSize; setPageSize(size); void goToPage(1, size); }}>
                 {pageSizeOptions.map((value) => <option key={value} value={value}>{value} 条</option>)}
               </select>
             </label>
           </div>
           <div className="profit-products-page-controls">
-            <button onClick={() => setPage(1)} disabled={safePage <= 1}>首页</button>
-            <button onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={safePage <= 1}>上一页</button>
+            <button onClick={() => void goToPage(1)} disabled={safePage <= 1}>首页</button>
+            <button onClick={() => void goToPage(safePage - 1)} disabled={safePage <= 1}>上一页</button>
             <label className="profit-page-jump">第
               <input
                 value={pageInput}
@@ -855,8 +887,8 @@ export function ProfitActivityProductsPage({ isActive = true }: { isActive?: boo
               />
               页</label>
             <button onClick={goToPageInput}>跳转</button>
-            <button onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={safePage >= totalPages}>下一页</button>
-            <button onClick={() => setPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
+            <button onClick={() => void goToPage(safePage + 1)} disabled={safePage >= totalPages}>下一页</button>
+            <button onClick={() => void goToPage(totalPages)} disabled={safePage >= totalPages}>末页</button>
           </div>
         </div>
         </section>
@@ -907,12 +939,12 @@ function ProductTableColumns({ widths }: { widths: Record<ProductTableColumnKey,
   );
 }
 
-function ProductTableHeader({ onResizeStart }: { onResizeStart?: (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => void }) {
+function ProductTableHeader({ onResizeStart, sort, onSort }: { onResizeStart?: (column: ProductTableColumn, event: ReactMouseEvent<HTMLButtonElement>) => void; sort?: ProfitProductsSort; onSort?: (key: ProfitProductsSortKey) => void }) {
   return (
     <tr>
       {productTableColumns.map((column) => (
-        <th key={column.key} title={column.label}>
-          <span className="profit-table-th-label">{column.label}</span>
+        <th key={column.key}>
+          <ProductTableHeadLabel column={column} sort={sort} onSort={onSort} />
           {onResizeStart ? (
             <button
               type="button"
@@ -924,6 +956,42 @@ function ProductTableHeader({ onResizeStart }: { onResizeStart?: (column: Produc
         </th>
       ))}
     </tr>
+  );
+}
+
+/** 表头文字；可排序列额外带一个上下箭头，三态循环（无 → 倒序 → 正序）。 */
+function ProductTableHeadLabel({ column, sort, onSort }: { column: ProductTableColumn; sort?: ProfitProductsSort; onSort?: (key: ProfitProductsSortKey) => void }) {
+  const key = column.sortable;
+  const activeDir = key && sort?.key === key ? sort.dir : null;
+  if (!key) {
+    return <span className="profit-table-th-label" title={column.label}>{column.label}</span>;
+  }
+  const label = (
+    <>
+      <span className="profit-table-th-text">{column.label}</span>
+      <span className="profit-table-sort-arrows" aria-hidden="true">
+        <i className="profit-table-sort-up" />
+        <i className="profit-table-sort-down" />
+      </span>
+    </>
+  );
+  if (!onSort) {
+    return (
+      <span className={`profit-table-th-label is-sortable ${activeDir ? `is-sorted is-${activeDir}` : ""}`} title={column.label}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={`profit-table-th-label is-sortable ${activeDir ? `is-sorted is-${activeDir}` : ""}`}
+      title={`${column.label}：${activeDir ? `当前${sortDirLabel(activeDir)}，点击切换` : "点击排序"}`}
+      aria-label={`${column.label}排序：${activeDir ? `当前${sortDirLabel(activeDir)}` : "未排序"}`}
+      onClick={() => onSort(key)}
+    >
+      {label}
+    </button>
   );
 }
 

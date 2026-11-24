@@ -71,6 +71,7 @@ from .doubao_text import (
 from .domain.category_classifier import classify_titles
 from .domain.category_image_presets import CATEGORY_IMAGE_PROMPTS
 from .domain.background_presets import detect_category_id, select_backdrop_fragment
+from .domain.scene_prop_presets import append_scene_props
 from .domain.custom_backgrounds import CustomBackgroundStore, user_background_id
 from .domain.usage_rooms import resolve_usage_place
 from .domain.scene_props import (
@@ -958,6 +959,8 @@ def _apply_background_rules(
     main_background: str = "scene",
     usage_place: str = "",
     scene_style: str = "",
+    category_text: str = "",
+    title: str = "",
 ) -> str:
     """主图背景 / 真实场景 / 道具件数的统一改写入口（所有档位都走这里）。
 
@@ -973,6 +976,13 @@ def _apply_background_rules(
     result = _apply_prop_count_rules(result)
     if str(scene_style or "").strip().lower() == "ornate":
         result = _apply_ornate_rules(result)
+    if str(main_background or "scene").strip().lower() != "white" and str(category_text or title or "").strip():
+        result = append_scene_props(
+            result,
+            detect_category_id(category_text, title),
+            title=title,
+            style=scene_style,
+        )
     return result
 
 
@@ -3766,7 +3776,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
     def list_draft_batches(
         self, *, limit: int, offset: int, workspace_id: str = "local"
     ) -> dict[str, Any]:
-        """草稿池批次列表（最新在前）。查询前先惰性清理过期批次（24h 自动删除）。"""
+        """草稿池批次列表（最新在前）。查询前先惰性清理过期批次（72h / 3 天自动删除）。"""
         self.purge_expired_draft_batches(workspace_id=workspace_id)
         batches, has_more = self.repository.list_draft_batches(
             limit, offset, workspace_id=workspace_id
@@ -3787,9 +3797,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         return {"deleted_count": count, "batch_id": batch_id, "status": "deleted"}
 
     def purge_expired_draft_batches(
-        self, *, retention_hours: int = 24, workspace_id: str = "local"
+        self, *, retention_hours: int = 72, workspace_id: str = "local"
     ) -> int:
-        """软删超过保留时长（默认 24h）的采集批次草稿。"""
+        """软删超过保留时长（默认 72h / 3 天）的采集批次草稿。"""
         return self.repository.purge_expired_draft_batches(
             retention_hours=retention_hours, workspace_id=workspace_id
         )
@@ -4890,6 +4900,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             limit, workspace_id, offset=offset, date_from=date_from, date_to=date_to
         )
         history = []
+        # 历史标题统一是「产品处理任务」，用采集批次名（选品·1688·狗衣服·11-12 14:08）
+        # 代替，命名规则与采集批次下拉一致，一眼能对上批次。
+        batch_names = self.repository.task_batch_names(task["id"] for task in tasks)
         for task in tasks:
             downloadable = {
                 "dxm": bool(task["output_file"]),
@@ -4897,10 +4910,21 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 "video_manifest": bool(task["video_manifest_file"]),
             }
             settings = task["settings"]
+            # 附带前几个商品的标题，前端悬停时列出「货号 + 标题」。
+            sample_items = [
+                {
+                    "skc": str(item.get("skc") or ""),
+                    "title": str(item.get("title") or "").strip(),
+                }
+                for item in (task.get("items") or [])
+                if str(item.get("title") or "").strip()
+            ][:3]
             history.append(
                 {
                     "task_id": task["id"],
                     "title": task["title"],
+                    "batch_names": batch_names.get(task["id"], []),
+                    "sample_items": sample_items,
                     "status": task["status"],
                     "created_at": task["created_at"],
                     "updated_at": task["updated_at"],
@@ -11683,6 +11707,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 main_background=main_background,
                 usage_place=usage_place,
                 scene_style=resolved_scene_style,
+                category_text=category, title=optimized_title,
             )
 
             panel_roles = (
@@ -11694,6 +11719,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         main_background=main_background,
                         usage_place=usage_place,
                         scene_style=resolved_scene_style,
+                        category_text=category, title=optimized_title,
                     )
                     for role in _grid_panel_roles(image_preset)
                 )
@@ -11737,6 +11763,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     main_background=main_background,
                     usage_place=usage_place,
                     scene_style=resolved_scene_style,
+                    category_text=category, title=optimized_title,
                 )
 
             def single_prompt(role: str) -> str:
@@ -11859,6 +11886,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                         main_background=main_background,
                         usage_place=usage_place,
                         scene_style=resolved_scene_style,
+                        category_text=category, title=optimized_title,
                     )
                     if scene_main:
                         # 场景背景的贴纸感/比例失真：放在整段最后，压过前面的构图比例描述。
@@ -12746,6 +12774,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             main_background=main_background,
             usage_place=usage_place,
             scene_style=resolved_scene_style,
+            category_text=category, title=optimized_title,
         )
         if scene_main:
             base_prompt = f"{base_prompt.rstrip()}\n\n{SCENE_REALISM_RULE}"

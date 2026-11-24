@@ -171,7 +171,11 @@ export interface ProductProcessingOptions {
   ipCheck: boolean;
   maxParallelDrafts: number;
   /** 生图提示词模板：A=影棚无缝主图，B=人景叙事（防比价），C=静物平铺俯拍，D=环境远景 */
-  imageTemplate?: 'A' | 'B' | 'C' | 'D';
+  imageTemplate?: 'A' | 'B' | 'C' | 'D' | 'E';
+  /** 场景主图：第 1 格用真实场景（E 默认开启）。 */
+  mainImageScene?: boolean;
+  /** 小件/需要尺寸对比时，第 2 格放比例参照。 */
+  scaleAnchor?: boolean;
   /** 批次级品类组合：auto=每个链接按标题自动分类；指定品类=整批统一用该品类组合。 */
   imageCategoryOverride?: ImageCategoryId;
   /** 生图组合面板模式：小白模式只选最终效果；导演模式逐层调参。 */
@@ -721,6 +725,10 @@ export interface TaskOutputsResponse {
 export type TaskHistoryItem = {
   task_id: number;
   title: string;
+  /** 这批处理来自哪些采集批次（与「采集批次」下拉同一套命名），商品数多的排前面。 */
+  batch_names?: string[];
+  /** 批次里前几个商品的标题（后端最多给 3 个），用来在悬停时认出处理的是什么。 */
+  sample_items?: Array<{ skc: string; title: string }>;
   status: TaskStatus;
   created_at: string;
   updated_at: string;

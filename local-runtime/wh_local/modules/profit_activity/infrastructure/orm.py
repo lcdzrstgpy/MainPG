@@ -88,6 +88,8 @@ class ProfitRecordRow(Base):
     selling_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     cost_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     weight_kg: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    # 重量是估算值（采集没读到重量时按默认 0.5kg 兜底），提醒用户核对，不影响计算口径。
+    weight_estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     domestic_fee: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     shipping_subsidy: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     refund_rate: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))

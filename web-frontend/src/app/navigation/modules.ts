@@ -207,14 +207,6 @@ const temuPublish: WorkspaceModule = {
   description: "选择类目与属性，组装 Temu 商品发布请求体",
 };
 
-const temuPublishHistory: WorkspaceModule = {
-  id: "temu_publish_history",
-  label: "发布历史",
-  icon: "",
-  iconClass: "iconfont icon-reloadtime",
-  description: "成功与失败的发布记录分开看",
-};
-
 const temuDraftLibrary: WorkspaceModule = {
   id: "temu_draft_library",
   label: "成品库",
@@ -223,6 +215,14 @@ const temuDraftLibrary: WorkspaceModule = {
   // 里面放的是 AI 处理完 / POD 定制完的东西 —— 已经做完了，只差没上架；
   // 叫「草稿」会让人以为还没做完，也和 Temu 后台的草稿箱撞名。
   description: "AI 处理与 POD 定制成品，一键带入发布商品",
+};
+
+const temuPublishHistory: WorkspaceModule = {
+  id: "temu_publish_history",
+  label: "发布历史",
+  icon: "",
+  iconClass: "iconfont icon-reloadtime",
+  description: "成功与失败的发布记录分开看",
 };
 
 const productProcessingSourcing: WorkspaceModule = {

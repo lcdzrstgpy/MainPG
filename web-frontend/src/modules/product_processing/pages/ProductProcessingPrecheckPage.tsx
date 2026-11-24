@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ppDownload, ppRequest, type ApiContext } from '../api/client';
 import { productProcessingApiContext } from '../api/context';
@@ -130,6 +130,9 @@ type ItemEdits = {
   variantImageOverrides?: Record<string, string>;
 };
 
+/** 没编辑过的商品共用这一个空对象，保证引用稳定（脏标记缓存靠它命中）。 */
+const EMPTY_ITEM_EDITS: ItemEdits = {};
+
 /** 侧栏里可用于替换 SKU 规格图的图片来源及分组标题。 */
 const VARIANT_IMAGE_ORIGIN_GROUPS: Array<{ origin: PreviewImageAsset['origin']; label: string }> = [
   { origin: 'generated', label: 'AI 处理图' },
@@ -255,6 +258,53 @@ function mergePreviewItems(base: PreviewItem[], extra: PreviewItem[]): PreviewIt
   return [...base, ...extra.filter((item) => !seen.has(item.item_id))];
 }
 
+/**
+ * 预检页的标题/描述是长文本，之前每敲一个字都会写回页面级 edits，
+ * 触发整页（一页 30 张卡片）一起重渲染，输入明显卡顿。
+ *
+ * 这里让输入框自己维护即时值（打字立刻可见），写回父级放进 transition：
+ * 输入是紧急更新，其余卡片的重渲染可以被中断/延后，打字不再掉帧。
+ * 失焦时补一次同步写回，保证点「保存/导出」前父级一定拿到最新文本。
+ */
+function TransitionTextarea({
+  value,
+  onCommit,
+  rows,
+  disabled,
+  placeholder,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  rows?: number;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    // 外部值变化（重新加载/还原/切换商品）时同步；输入过程中不打断用户。
+    if (!focusedRef.current) setDraft(value);
+  }, [value]);
+  return (
+    <textarea
+      rows={rows}
+      disabled={disabled}
+      placeholder={placeholder}
+      value={draft}
+      onFocus={() => { focusedRef.current = true; }}
+      onBlur={() => {
+        focusedRef.current = false;
+        if (draft !== value) onCommit(draft);
+      }}
+      onChange={(event) => {
+        const next = event.target.value;
+        setDraft(next);
+        startTransition(() => onCommit(next));
+      }}
+    />
+  );
+}
+
 export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOpenDimensionItem, isActive = true }: Props) {
   const ctx = useMemo(() => api(), []);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
@@ -307,6 +357,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   const [reburningDraftId, setReburningDraftId] = useState<number | null>(null);
   // 尺寸卡在处理中按条并发烧制：预检页短暂轮询，异步结果回来后自动补徽标。
   const dimensionPollRef = useRef(0);
+  // 脏标记要拼出完整保存载荷再 stringify 两遍，30 张卡片每帧都算很贵。
+  // 按 (item, edit) 引用缓存：没改过的卡片直接命中，只有正在编辑的那张会重算。
+  // 注意：必须和其它 hook 一起放在所有提前 return 之前。
+  const dirtyCacheRef = useRef(new WeakMap<PreviewItem, { edit: ItemEdits; dirty: boolean }>());
   const [confirmingDimensions, setConfirmingDimensions] = useState(false);
   const [excludingDraftIds, setExcludingDraftIds] = useState<Set<number>>(new Set());
   const [selectedDraftIds, setSelectedDraftIds] = useState<Set<number>>(new Set());
@@ -818,7 +872,10 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
 
   // 分页 + 序列号搜索（仅影响展示；保存/导出/计数仍作用于全部商品）。
   // 必须放在 `if (!preview)` 提前返回之前，保证各渲染轮次 Hook 数量一致。
-  const allItems = (preview?.items ?? []).filter((item) => !item.excluded);
+  const allItems = useMemo(
+    () => (preview?.items ?? []).filter((item) => !item.excluded),
+    [preview],
+  );
   const dimensionSummary = useMemo(() => {
     let estimated = 0;
     let reused = 0;
@@ -984,7 +1041,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     );
   }
 
-  const editFor = (item: PreviewItem): ItemEdits => edits[item.product_draft_id ?? item.item_id] ?? {};
+  const editFor = (item: PreviewItem): ItemEdits => edits[item.product_draft_id ?? item.item_id] ?? EMPTY_ITEM_EDITS;
 
   const effectiveManifest = (item: PreviewItem): PreviewImageManifest => {
     const edit = editFor(item);
@@ -1135,9 +1192,15 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
   };
 
   const itemIsDirty = (item: PreviewItem): boolean => {
+    const edit = editFor(item);
+    const cached = dirtyCacheRef.current.get(item);
+    if (cached && cached.edit === edit) return cached.dirty;
     const initial = initialDesiredState(item);
-    if (!initial) return false;
-    return stableStringify(collectDesiredState(item).overrides) !== stableStringify(initial.overrides);
+    const dirty = initial
+      ? stableStringify(collectDesiredState(item).overrides) !== stableStringify(initial.overrides)
+      : false;
+    dirtyCacheRef.current.set(item, { edit, dirty });
+    return dirty;
   };
 
   const setEdit = (draftId: number, patch: Partial<ItemEdits>) => {
@@ -2348,11 +2411,13 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
       {pagedItems.map((item) => {
         const draftId = item.product_draft_id ?? item.item_id;
         const edit = editFor(item);
-        const coreFields = effectiveCoreFields(item);
-        const manifest = effectiveManifest(item);
-        const assets = effectiveAssets(item);
         const hasOverrides = itemIsDirty(item);
         const isExpanded = expandedDraftIds.has(draftId);
+        // 折叠的卡片不渲染详情，也不该为它深拷贝图片清单：
+        // 30 张卡片每帧各克隆一次 manifest，是「不敲字也卡」的主要来源。
+        const coreFields = effectiveCoreFields(item);
+        const manifest = isExpanded ? effectiveManifest(item) : edit.imageManifest ?? item.image_manifest;
+        const assets = isExpanded ? effectiveAssets(item) : item.assets;
         const sourceUrl = String(item.source_url ?? '').trim();
         const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : '';
         const listingAdvice = listingAdviceByDraftId[draftId];
@@ -2450,12 +2515,12 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
               <div className="precheck-fields">
                 <label className="precheck-label">
                   <span>标题（导出 *产品标题 / *英文标题）</span>
-                  <textarea
+                  <TransitionTextarea
                     rows={5}
                     value={edit.title ?? item.title}
                     disabled={mutationsLocked}
-                    onChange={(event) => {
-                      setEdit(draftId, { title: event.target.value });
+                    onCommit={(next) => {
+                      setEdit(draftId, { title: next });
                       clearListingAdvice(draftId);
                     }}
                     placeholder="AI 生成标题"
@@ -2477,12 +2542,12 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
                       {listingAdviceLoading ? '分析中…' : listingAdvice ? '重新建议' : '上架建议'}
                     </button>
                   </div>
-                  <textarea
+                  <TransitionTextarea
                     rows={5}
                     value={edit.description ?? item.description}
                     disabled={mutationsLocked}
-                    onChange={(event) => {
-                      setEdit(draftId, { description: event.target.value });
+                    onCommit={(next) => {
+                      setEdit(draftId, { description: next });
                       clearListingAdvice(draftId);
                     }}
                     placeholder="AI 生成五点描述"

@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -676,6 +677,53 @@ class SourcingLedgerRepository:
                 ),
             )
             return bool(cursor.rowcount)
+
+    def repair_collect_source_price(self, row: Mapping[str, Any]) -> int:
+        """给「采集自动带入」但价格为空的历史货源补价，返回修复条数。
+
+        早先采集的插件草稿可能只读到整页价、逐 SKU 价为空，货源落库时价格是空的，
+        台账就算不出利润。这里按货源自己已有的国内运费重算到手成本，**只补空价格**，
+        手工填过的价格/运费/重量/备注一概不动。
+        """
+        workspace = _text(row.get("workspace_id"))
+        product_key = _text(row.get("product_key"))
+        price = _text(row.get("price_cny"))
+        if not workspace or not product_key or not price:
+            return 0
+        try:
+            unit = Decimal(price)
+        except InvalidOperation:
+            return 0
+        now = _now()
+        note = _text(row.get("note"))
+        with self._session() as connection:
+            rows = connection.execute(
+                "SELECT id, domestic_freight_cny FROM product_sourcing_sources "
+                "WHERE workspace_id = ? AND product_key = ? AND source_kind = 'collect' "
+                "AND status = 'active' AND (price_cny = '' OR price_cny IS NULL)",
+                (workspace, product_key),
+            ).fetchall()
+            repaired = 0
+            for item in rows:
+                try:
+                    freight = Decimal(_text(item["domestic_freight_cny"]) or "0")
+                except InvalidOperation:
+                    freight = Decimal("0")
+                connection.execute(
+                    "UPDATE product_sourcing_sources SET price_cny = ?, landed_cost_cny = ?, "
+                    # 备注只在仍是系统默认值时改写，避免覆盖用户自己填的说明。
+                    "note = CASE WHEN note = '' OR note = '采集自动带入' THEN ? ELSE note END, "
+                    "updated_at = ? WHERE id = ?",
+                    (
+                        f"{unit.quantize(Decimal('0.0001'))}",
+                        f"{(unit + freight).quantize(Decimal('0.0001'))}",
+                        note or "采集自动带入",
+                        now,
+                        item["id"],
+                    ),
+                )
+                repaired += 1
+        return repaired
 
     def sources_for(self, workspace_id: str, product_key: str) -> list[dict[str, Any]]:
         with self._session() as connection:

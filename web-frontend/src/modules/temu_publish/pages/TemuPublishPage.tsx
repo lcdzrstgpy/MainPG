@@ -773,6 +773,8 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
 
   const [result, setResult] = useState<TemuBuildPayloadResult | null>(null);
   const [copied, setCopied] = useState(false);
+  /** 成功回执 JSON 的复制反馈 */
+  const [receiptCopied, setReceiptCopied] = useState(false);
   const [publishResult, setPublishResult] = useState<TemuPublishResult | null>(null);
   // 发布后在店铺里核对（按 SKC 货号查商品列表）
   const [shopCheck, setShopCheck] = useState<{ loading: boolean; error: string; items: TemuGoodsItem[] }>({
@@ -2994,6 +2996,42 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
       : goodsIdOf(publishResult.result)
     : "";
   /**
+   * 成功回执的「人看的部分」：发完最想看的是 id / 货号 / 规格，
+   * 不该让一坨原始 JSON 顶在脸上（要排障再展开）。响应结构：
+   * `{ productSkuList: [{ productSkuId, extCode, skuSpecList: [{ specName }] }] }`
+   */
+  const receiptBody = (publishResult?.confirmed_by_lookup
+    ? publishResult.matched_goods
+    : publishResult?.result) as
+    | {
+        productSkuList?: Array<{
+          extCode?: string;
+          skuSpecList?: Array<{ specName?: string; parentSpecName?: string }>;
+        }>;
+      }
+    | undefined;
+  const receiptFirstSku = receiptBody?.productSkuList?.[0];
+  const receiptExtCode = String(receiptFirstSku?.extCode ?? "");
+  const receiptSpecText = (receiptFirstSku?.skuSpecList ?? [])
+    .map((item) => item?.specName)
+    .filter(Boolean)
+    .join(" / ");
+  const receiptJson = publishResult
+    ? JSON.stringify(
+        publishResult.confirmed_by_lookup ? publishResult.matched_goods : publishResult.result,
+        null,
+        2,
+      )
+    : "";
+  const copyReceipt = async () => {
+    try {
+      await navigator.clipboard.writeText(receiptJson);
+      setReceiptCopied(true);
+    } catch {
+      setError("复制失败，请手动选中 JSON 复制");
+    }
+  };
+  /**
    * 当前选择下「适用」的属性（Temu 属性联动）。
    *
    * 子属性带 templatePropertyValueParentList，parentTemplatePid 指向父属性的 templatePid：
@@ -4431,23 +4469,41 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   <strong>
                     {publishResult.confirmed_by_lookup
                       ? "已在店铺里查到（提交时网络中断）"
-                      : "已提交到 Temu"}
+                      : "✓ 已提交到 Temu"}
                   </strong>
                   <span>
                     {publishResult.api_type} · {publishResult.summary.skc_count} 个 SKC /{" "}
                     {publishResult.summary.sku_count} 个变种
-                    {publishedGoodsId ? ` · 商品 id ${publishedGoodsId}` : ""}
                   </span>
                 </div>
-                <pre className="temu-json">
-                  {JSON.stringify(
-                    publishResult.confirmed_by_lookup
-                      ? publishResult.matched_goods
-                      : publishResult.result,
-                    null,
-                    2,
-                  )}
-                </pre>
+                {/*
+                  成功卡：发完最想看的三样（id / 货号 / 规格）摆明面上，
+                  原始回执 JSON 折叠到下面排障用 —— 以前一坨 JSON 顶在脸上，像开发者界面。
+                */}
+                <div className="temu-publish-done-card">
+                  {publishedGoodsId ? (
+                    <div>
+                      <em>商品 id</em>
+                      <b>{publishedGoodsId}</b>
+                    </div>
+                  ) : null}
+                  {receiptExtCode ? (
+                    <div>
+                      <em>货号</em>
+                      <b>{receiptExtCode}</b>
+                    </div>
+                  ) : null}
+                  {receiptSpecText ? (
+                    <div>
+                      <em>规格</em>
+                      <b>{receiptSpecText}</b>
+                    </div>
+                  ) : null}
+                </div>
+                <details className="temu-advanced">
+                  <summary>原始回执 JSON（排障用）</summary>
+                  <pre className="temu-json">{receiptJson}</pre>
+                </details>
                 <div className="temu-inline-actions">
                   <button
                     type="button"
@@ -4465,6 +4521,9 @@ export function TemuPublishPage({ onOpenDraftLibrary }: { onOpenDraftLibrary?: (
                   {/* 发完一条最常接的动作就是发下一条：同款同批，只换图/货号/变种 */}
                   <button type="button" className="temu-btn temu-btn-sm temu-btn-primary" onClick={startNextItem}>
                     发下一条
+                  </button>
+                  <button type="button" className="temu-btn temu-btn-sm" onClick={() => void copyReceipt()}>
+                    {receiptCopied ? "已复制" : "复制回执 JSON"}
                   </button>
                 </div>
                 {shopCheck.error && <p className="temu-confirm-warn">查询失败：{shopCheck.error}</p>}

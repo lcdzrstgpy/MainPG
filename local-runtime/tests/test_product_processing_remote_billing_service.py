@@ -375,6 +375,29 @@ def test_process_drafts_strips_remote_token_before_database_and_response(
     assert secret.encode() not in (tmp_path / "workbench.sqlite3").read_bytes()
 
 
+def test_task_history_names_batch_with_sample_products(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """历史批次要能看出处理了什么：带上批次内前几个商品的标题。"""
+    service = _service(tmp_path, file_database=True)
+    draft, _created = service.create_draft(
+        {"source_type": "manual", "title": "宠物雨衣", "image_url": "https://example.test/a.jpg"}
+    )
+    monkeypatch.setattr(service, "_launch_background_execute", lambda *_args: True)
+    response = service.process_drafts(
+        {"draft_ids": [draft["id"]], "async_mode": True, "processing_scope": ["title"]}
+    )
+
+    task = next(
+        item
+        for item in service.task_history(10)["tasks"]
+        if item["task_id"] == int(response["task_id"])
+    )
+    assert [sample["title"] for sample in task["sample_items"]] == ["宠物雨衣"]
+    # 手动录入的草稿没有采集批次，batch_names 为空，前端回落显示「手动导入」。
+    assert task["batch_names"] == []
+
+
 @pytest.mark.parametrize(
     ("first_account", "replay_account"),
     [
