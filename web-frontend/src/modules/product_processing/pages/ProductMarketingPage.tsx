@@ -195,7 +195,13 @@ export function ProductMarketingPage({ onOpenTask, onOpenCollection }: Props) {
                       aria-pressed={picked}
                       onClick={() => toggle(draft.id)}
                     >
-                      <img src={draft.image_url || ''} alt="" loading="lazy" />
+                      {/* alicdn 防盗链：带 Referer 直接 403，必须 no-referrer */}
+                      <img
+                        src={draft.image_url || ''}
+                        alt=""
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                      />
                       <span className="pm-card-check">{picked ? '✓' : ''}</span>
                       <span className="pm-card-title" title={draft.title}>{draft.title || `商品 #${draft.id}`}</span>
                       <span className="pm-card-meta">#{draft.id}{draft.source_type === 'onebound_api' ? ' · 1688' : ''}</span>
