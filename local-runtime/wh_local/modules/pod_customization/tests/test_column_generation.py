@@ -17,6 +17,7 @@ from wh_local.modules.pod_customization.column_generation import (
     group_count_for,
     group_roles_to_freeze,
     group_roles_to_generate,
+    group_roles_to_retry,
     group_style_indices,
     plan_style_groups,
     style_group_index,
@@ -94,3 +95,19 @@ def test_roles_to_freeze_include_derived_when_primary_is_pending() -> None:
         == ("detail_b", "hero")
     )
     assert group_roles_to_freeze({role: SHEET_STATUS_FAILED for role in COLUMN_ROLES}) == ()
+
+
+def test_roles_to_retry_reuse_completed_rounds_and_rerun_failed_ones() -> None:
+    assert group_roles_to_retry({role: SHEET_STATUS_FAILED for role in COLUMN_ROLES}) == COLUMN_ROLES
+    assert (
+        group_roles_to_retry(
+            {
+                PRIMARY_ROLE: SHEET_STATUS_COMPLETED,
+                "detail_a": SHEET_STATUS_COMPLETED,
+                "detail_b": SHEET_STATUS_FAILED,
+                "hero": SHEET_STATUS_FAILED,
+            }
+        )
+        == ("detail_b", "hero")
+    )
+    assert group_roles_to_retry({role: SHEET_STATUS_COMPLETED for role in COLUMN_ROLES}) == ()

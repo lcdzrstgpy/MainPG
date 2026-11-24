@@ -215,6 +215,25 @@ def group_roles_to_freeze(
     return COLUMN_ROLES
 
 
+def group_roles_to_retry(
+    sheet_statuses: dict[str, str],
+) -> tuple[str, ...]:
+    """失败重试需要重跑的轮次（保留已完成轮次，仅重跑失败/未完成轮次）。
+
+    - 主图未完成（含失败/排队/中断）：整组 4 轮都必须重跑（派生轮依赖主图锚点）；
+    - 主图已完成：仅重跑尚未完成的派生轮（保留已完成的主图与派生轮）；
+    - 4 轮全部完成：返回空元组。
+    """
+    primary_status = sheet_statuses.get(PRIMARY_ROLE, SHEET_STATUS_QUEUED)
+    if primary_status != SHEET_STATUS_COMPLETED:
+        return COLUMN_ROLES
+    return tuple(
+        role
+        for role in DERIVED_ROLES
+        if sheet_statuses.get(role, SHEET_STATUS_QUEUED) != SHEET_STATUS_COMPLETED
+    )
+
+
 def completed_roles(sheet_statuses: dict[str, str]) -> tuple[str, ...]:
     return tuple(role for role in COLUMN_ROLES if sheet_statuses.get(role) == SHEET_STATUS_COMPLETED)
 

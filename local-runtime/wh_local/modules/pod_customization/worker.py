@@ -1213,9 +1213,14 @@ class PodBatchWorker:
         if run is None:
             raise RuntimeError("POD batch retry requires a fresh short-lived billing grant")
         try:
+            column_layout = False
+            epoch = run.execution_epoch or None
             if image_style_indices:
                 batch = self.repository.get_batch_internal(batch_id)
                 self._require_supported_replica_plan(batch)
+                column_layout = (
+                    str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN
+                )
                 if batch.get("mode") in {"semi", "replica", "fission"}:
                     # 半定制零参考图；复刻按款解析目标白底图，都不用批次级锚点模板。
                     template_content, template_content_type = b"", ""
@@ -1225,14 +1230,54 @@ class PodBatchWorker:
                     )
                     template_content = self.assets.read(template_asset["relative_path"])
                     template_content_type = template_asset["content_type"]
-                self._process_style_grids_streaming(
-                    batch,
-                    template_content,
-                    template_content_type,
-                    run,
-                    style_indices=list(image_style_indices),
-                    policy=REGENERATE_STYLE_POLICY,
-                )
+                if column_layout:
+                    try:
+                        self._process_style_column_streaming(
+                            batch,
+                            template_content,
+                            template_content_type,
+                            run,
+                            skip_title_styles=frozenset(title_style_indices),
+                        )
+                    except PodBatchPaused:
+                        self.repository.set_batch_status(
+                            batch_id, "paused", execution_epoch=epoch
+                        )
+                        return
+                    except PodBatchCancelled:
+                        self.repository.finalize_column_groups(
+                            batch_id, "POD 批次已取消", execution_epoch=epoch
+                        )
+                        self.repository.fail_remaining_items(
+                            batch_id, "POD 批次已取消", execution_epoch=epoch
+                        )
+                        self.repository.fail_unready_titles(
+                            batch_id, "POD 批次已取消", execution_epoch=epoch
+                        )
+                        self.repository.set_batch_status(
+                            batch_id, "cancelled", execution_epoch=epoch
+                        )
+                        return
+                    self.repository.finalize_column_groups(
+                        batch_id, "本款图片生成未返回完整结果", execution_epoch=epoch
+                    )
+                    self.repository.fail_remaining_items(
+                        batch_id, "本款图片生成未返回完整结果", execution_epoch=epoch
+                    )
+                    self.repository.fail_unready_titles(
+                        batch_id,
+                        "本款四张公开图片未完整生成，暂不能生成标题",
+                        execution_epoch=epoch,
+                    )
+                else:
+                    self._process_style_grids_streaming(
+                        batch,
+                        template_content,
+                        template_content_type,
+                        run,
+                        style_indices=list(image_style_indices),
+                        policy=REGENERATE_STYLE_POLICY,
+                    )
             if title_style_indices:
                 if self.title_runtime is None:
                     raise RuntimeError("POD title runtime is disabled")
@@ -1246,7 +1291,24 @@ class PodBatchWorker:
                 ]
                 for future in as_completed(title_futures):
                     future.result()
-            self.repository.settle_batch_by_listing_readiness(batch_id)
+            if column_layout and self.title_runtime is None:
+                settled = self.repository.get_batch_internal(batch_id)
+                status = (
+                    "completed"
+                    if settled["failed_count"] == 0
+                    else ("partial_failure" if settled["completed_count"] else "failed")
+                )
+                self.repository.set_batch_status(
+                    batch_id, status, execution_epoch=epoch
+                )
+            else:
+                if column_layout:
+                    self.repository.fail_orphaned_complete_titles(
+                        batch_id,
+                        "本款标题任务未执行（标题生成调用缺失），请重试补齐标题",
+                        execution_epoch=epoch,
+                    )
+                self.repository.settle_batch_by_listing_readiness(batch_id)
         finally:
             try:
                 run.settle()
@@ -2328,6 +2390,7 @@ class PodBatchWorker:
         billing_run: PodBillingRun,
         *,
         execution: BatchExecutionContext | None = None,
+        skip_title_styles: frozenset[int] = frozenset(),
     ) -> None:
         """按「组 × 角色」调度列式生成。
 
@@ -2661,6 +2724,7 @@ class PodBatchWorker:
                     epoch,
                     title_futures,
                     task_id=sheet_ids.get(group_id, {}).get(PRIMARY_ROLE, group_id),
+                    skip_title_styles=skip_title_styles,
                 )
 
         while True:
@@ -3101,6 +3165,7 @@ class PodBatchWorker:
         futures: list[Future[Any]],
         *,
         task_id: str,
+        skip_title_styles: frozenset[int] = frozenset(),
     ) -> None:
         """主图发布后按款提交标题；已有标题或没有计划调用时跳过。"""
         if self.title_runtime is None:
@@ -3108,6 +3173,8 @@ class PodBatchWorker:
         batch_id = batch["batch_id"]
         for style_index in group["style_indices"]:
             style = int(style_index)
+            if style in skip_title_styles:
+                continue
             if title_status.get(style) == "completed":
                 continue
             # 已失败的标题不自动重跑（v1 不做用户重跑）。

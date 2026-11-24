@@ -69,7 +69,13 @@ from .contracts import (
 from .ai_runtime import resolve_pod_image_model
 from .image_providers.catalog import normalize_free_model
 from .brief_runtime import PodBriefRequest
-from .column_generation import group_roles_to_freeze
+from .column_generation import (
+    PRIMARY_ROLE,
+    group_roles_to_freeze,
+    group_roles_to_retry,
+    group_style_indices,
+    style_group_index,
+)
 from .composition_runtime import (
     REPLICA_MAIN_PANEL_PLACEHOLDER_EN,
     REPLICA_MAIN_PANEL_PLACEHOLDER_ZH,
@@ -2766,7 +2772,9 @@ class PodCustomizationService:
         title_indices = tuple(sorted(request.title_style_indices))
         if title_indices:
             self._require_title_runtime_configured(require_present=True)
-        self._preflight_batch_retry(actor, batch_id, image_indices, title_indices)
+        image_indices = self._preflight_batch_retry(
+            actor, batch_id, image_indices, title_indices
+        )
         try:
             business_logger("pod_processing").info(
                 "POD 失败重试 | batch_id=%s | workspace=%s | 图片款式=%s | 标题款式=%s",
@@ -2892,20 +2900,34 @@ class PodCustomizationService:
         batch_id: str,
         image_style_indices: tuple[int, ...],
         title_style_indices: tuple[int, ...],
-    ) -> None:
+    ) -> tuple[int, ...]:
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
-        # 列式批次只允许标题重试；图片重试仍拒绝（会重置 4 行、冲掉已完成图）。
-        if image_style_indices:
-            self._reject_column_rerun(batch)
         self._require_replica_retry_supported(batch)
         if batch["status"] not in {"completed", "partial_failure", "failed", "cancelled", "settlement_pending"}:
             raise PodRepositoryError("POD batch must settle before retrying failed styles", 409)
         if any(index > int(batch["requested_count"]) for index in (*image_style_indices, *title_style_indices)):
             raise PodRepositoryError("POD style index is outside the batch range", 422)
-        for style_index in image_style_indices:
-            results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
-            if len(results) != 4 or all(item.get("status") == "completed" for item in results):
+        column_layout = str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN
+        effective_image_indices = image_style_indices
+        if column_layout and image_style_indices:
+            retry_groups = sorted({style_group_index(index) for index in image_style_indices})
+            effective_image_indices = tuple(
+                style
+                for group_index in retry_groups
+                for style in group_style_indices(group_index)
+            )
+            if set(effective_image_indices).intersection(title_style_indices):
+                raise PodRepositoryError(
+                    "a POD style cannot be retried as both image and title", 422
+                )
+            group_roles = self._column_retry_group_roles(batch, retry_groups)
+            if len(group_roles) != len(retry_groups):
                 raise PodRepositoryError("only styles with unfinished images can be retried", 409)
+        else:
+            for style_index in image_style_indices:
+                results = [item for item in batch["items"] if int(item.get("style_index") or 0) == style_index]
+                if len(results) != 4 or all(item.get("status") == "completed" for item in results):
+                    raise PodRepositoryError("only styles with unfinished images can be retried", 409)
         for style_index in title_style_indices:
             title = next(
                 (row for row in batch["style_titles"] if int(row["style_index"]) == style_index),
@@ -2922,6 +2944,30 @@ class PodCustomizationService:
                 raise PodRepositoryError(
                     "only a failed POD title with four public images can be retried", 409
                 )
+        return effective_image_indices
+
+    @staticmethod
+    def _column_retry_group_roles(
+        batch: dict[str, Any], group_indices: Sequence[int]
+    ) -> dict[int, tuple[str, ...]]:
+        sheets_by_group: dict[str, dict[str, str]] = {}
+        for sheet in batch.get("group_sheets") or []:
+            sheets_by_group.setdefault(str(sheet["group_id"]), {})[
+                str(sheet["role"])
+            ] = str(sheet["status"])
+        group_id_by_index = {
+            int(group["group_index"]): str(group["group_id"])
+            for group in batch.get("style_groups") or []
+        }
+        group_roles: dict[int, tuple[str, ...]] = {}
+        for group_index in sorted(set(int(index) for index in group_indices)):
+            group_id = group_id_by_index.get(group_index)
+            if not group_id:
+                continue
+            roles = group_roles_to_retry(sheets_by_group.get(group_id, {}))
+            if roles:
+                group_roles[group_index] = roles
+        return group_roles
 
     @staticmethod
     def _settle_unclaimed_retry(billing_run: PodBillingRun) -> None:
@@ -4101,8 +4147,42 @@ class PodCustomizationService:
             raise RuntimeError("POD billing coordinator is not configured")
         batch = self.repository.get_batch(batch_id, actor.workspace_id, actor.id)
         mode = str(batch.get("mode") or "")
+        column_layout = str(batch.get("generation_layout") or "") == GENERATION_LAYOUT_COLUMN
         panel_strategy = self._batch_panel_generation_strategy(batch_id) == "independent_panels"
-        if mode == "fission":
+        action_payload: dict[str, Any] = {
+            "retry_mode": "batch",
+            "image_style_indices": list(image_style_indices),
+            "title_style_indices": list(title_style_indices),
+        }
+        if column_layout and image_style_indices:
+            retry_groups = sorted({style_group_index(index) for index in image_style_indices})
+            group_roles = self._column_retry_group_roles(batch, retry_groups)
+            if not group_roles:
+                raise PodRepositoryError("only styles with unfinished images can be retried", 409)
+            title_status = {
+                int(title["style_index"]): str(title.get("status") or "")
+                for title in batch.get("style_titles") or []
+            }
+            planned_titles: set[int] = set(title_style_indices)
+            if self.title_runtime is not None and mode != "semi":
+                for group_index, roles in group_roles.items():
+                    styles = group_style_indices(group_index)
+                    if PRIMARY_ROLE in roles:
+                        planned_titles.update(styles)
+                    else:
+                        planned_titles.update(
+                            style for style in styles if title_status.get(style) != "completed"
+                        )
+            plan = PodCallPlan.for_column_batch_resume(
+                batch_id,
+                action_id,
+                group_roles=group_roles,
+                title_style_indices=sorted(planned_titles),
+            )
+            action_payload["column_group_roles"] = {
+                str(group): list(roles) for group, roles in group_roles.items()
+            }
+        elif mode == "fission":
             if not panel_strategy:
                 raise PodRepositoryError("历史裂变批次只读：不支持重试", 409)
             plan = PodCallPlan.for_fission_batch_retry(
@@ -4134,11 +4214,7 @@ class PodCustomizationService:
             action_type="style_retry",
             target_id="batch_retry",
             batch_id=batch_id,
-            action_payload={
-                "retry_mode": "batch",
-                "image_style_indices": list(image_style_indices),
-                "title_style_indices": list(title_style_indices),
-            },
+            action_payload=action_payload,
         )
 
     def _freeze_retry(

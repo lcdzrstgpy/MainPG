@@ -180,12 +180,16 @@ test("result header exposes a batch failed-retry entry beside the export action"
   assert.match(gallerySource, /disabled=\{!canRetryBatch \|\| Boolean\(busyAction\)\}/);
 });
 
-test("column batches surface a top retry entry for failed titles only", () => {
+test("column batches surface a top retry entry for failed image groups and failed titles", () => {
   assert.match(gallerySource, /const retryCandidates = batchRetryCandidates\(styles\);/);
-  assert.match(gallerySource, /const showFailedRetry = columnBatch \? retryCandidates\.title\.length > 0 : true;/);
-  assert.match(gallerySource, /const retryLabel = columnBatch \? `重试失败标题（\$\{retryCandidates\.title\.length\} 款）` : "批量重试失败项";/);
+  assert.match(gallerySource, /const hasColumnRetryTargets = retryCandidates\.image\.length > 0 \|\| retryCandidates\.title\.length > 0;/);
+  assert.match(gallerySource, /const showFailedRetry = columnBatch \? hasColumnRetryTargets : true;/);
+  assert.match(gallerySource, /批量重试失败项（\$\{retryCandidates\.image\.length \+ retryCandidates\.title\.length\} 款）/);
+  assert.match(gallerySource, /重试失败标题（\$\{retryCandidates\.title\.length\} 款）/);
   assert.match(gallerySource, /\{showFailedRetry && <button type="button" className="pod-open-failed-retry"/);
-  assert.match(source, /imageCandidates=\{activeBatchColumn \? \[\] : failedRetryCandidates\.image\}/);
+  assert.match(source, /imageCandidates=\{failedRetryCandidates\.image\}/);
+  assert.match(source, /columnBatch=\{activeBatchColumn\}/);
+  assert.match(source, /columnImageGroups=\{columnRetryGroups\}/);
   assert.match(source, /const activeBatchColumn = activeBatch \? isPodColumnBatch\(activeBatch\) : false;/);
 });
 

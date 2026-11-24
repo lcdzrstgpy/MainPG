@@ -96,10 +96,14 @@ export function PodBatchGallery({ batch, busyAction, emptyTitle = "从一个模�
     .join(" · ");
   const styles = groupPodStyleRows(batch);
   const retryCandidates = batchRetryCandidates(styles);
-  // 列式批次只允许标题重试：仅有失败标题时才在顶部显示重试入口，
-  // 避免用户为了点一次「只重生标题」滚到列表最下面。
-  const showFailedRetry = columnBatch ? retryCandidates.title.length > 0 : true;
-  const retryLabel = columnBatch ? `重试失败标题（${retryCandidates.title.length} 款）` : "批量重试失败项";
+  // 列式批次支持按组重跑失败图片（复用已完成轮次）与重试失败标题；仅存在失败项时在顶部显示入口。
+  const hasColumnRetryTargets = retryCandidates.image.length > 0 || retryCandidates.title.length > 0;
+  const showFailedRetry = columnBatch ? hasColumnRetryTargets : true;
+  const retryLabel = columnBatch
+    ? retryCandidates.image.length > 0
+      ? `批量重试失败项（${retryCandidates.image.length + retryCandidates.title.length} 款）`
+      : `重试失败标题（${retryCandidates.title.length} 款）`
+    : "批量重试失败项";
   // 可勾选导出的款式（已就绪）；一键反选只作用于它们。
   const exportableStyles = styles.filter((style) => style.status === "completed" && Boolean(style.listing_ready));
   const allExportableSelected = exportableStyles.length > 0 && exportableStyles.every((style) => style.export_selected);
