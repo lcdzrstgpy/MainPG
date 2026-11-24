@@ -23,9 +23,11 @@ from .column_generation import (
     COLUMN_ROLES,
     GROUP_STATUS_FAILED,
     GROUP_STATUS_QUEUED,
+    PRIMARY_ROLE,
     SHEET_STATUS_FAILED,
     SHEET_STATUS_GENERATING,
     SHEET_STATUS_QUEUED,
+    group_roles_to_retry,
     group_style_indices,
     plan_style_groups,
     style_group_index,
@@ -6003,7 +6005,7 @@ class PodCustomizationRepository:
             if not self._is_style_grid_batch(connection, batch_id):
                 raise PodRepositoryError("batch retry is only available for new POD batches", 409)
             batch = connection.execute(
-                """SELECT status, requested_count FROM pod_customization_batches
+                """SELECT status, requested_count, generation_layout FROM pod_customization_batches
                    WHERE batch_id = ? AND workspace_id = ? AND owner_user_id = ?""",
                 (batch_id, workspace_id, owner_user_id),
             ).fetchone()
@@ -6015,14 +6017,47 @@ class PodCustomizationRepository:
             if any(not 1 <= index <= requested_count for index in (*image_style_indices, *title_style_indices)):
                 raise PodRepositoryError("POD style index is outside the batch range", 422)
 
-            for style_index in image_style_indices:
-                rows = connection.execute(
-                    """SELECT status FROM pod_customization_style_grid_results
-                       WHERE batch_id = ? AND style_index = ? ORDER BY variant_index""",
-                    (batch_id, style_index),
-                ).fetchall()
-                if len(rows) != 4 or all(row["status"] == "completed" for row in rows):
-                    raise PodRepositoryError("only styles with unfinished images can be retried", 409)
+            column_layout = str(batch["generation_layout"] or "") == GENERATION_LAYOUT_COLUMN
+            column_retry_plan: list[tuple[str, int, tuple[int, ...], tuple[str, ...]]] = []
+            if column_layout and image_style_indices:
+                retry_group_indices = sorted({style_group_index(index) for index in image_style_indices})
+                expanded_styles = {
+                    style for group_index in retry_group_indices for style in group_style_indices(group_index)
+                }
+                if expanded_styles.intersection(title_style_indices):
+                    raise PodRepositoryError("a POD style cannot be retried as both image and title", 422)
+                for group_index in retry_group_indices:
+                    group_row = connection.execute(
+                        """SELECT group_id FROM pod_customization_style_groups
+                           WHERE batch_id = ? AND group_index = ?""",
+                        (batch_id, group_index),
+                    ).fetchone()
+                    if group_row is None:
+                        raise PodRepositoryError("POD column group not found", 404)
+                    group_id = str(group_row["group_id"])
+                    sheet_rows = connection.execute(
+                        """SELECT role, status FROM pod_customization_group_sheets
+                           WHERE group_id = ?""",
+                        (group_id,),
+                    ).fetchall()
+                    sheet_statuses = {
+                        str(row["role"]): str(row["status"]) for row in sheet_rows
+                    }
+                    roles = group_roles_to_retry(sheet_statuses)
+                    if not roles:
+                        raise PodRepositoryError("only styles with unfinished images can be retried", 409)
+                    column_retry_plan.append(
+                        (group_id, group_index, group_style_indices(group_index), roles)
+                    )
+            else:
+                for style_index in image_style_indices:
+                    rows = connection.execute(
+                        """SELECT status FROM pod_customization_style_grid_results
+                           WHERE batch_id = ? AND style_index = ? ORDER BY variant_index""",
+                        (batch_id, style_index),
+                    ).fetchall()
+                    if len(rows) != 4 or all(row["status"] == "completed" for row in rows):
+                        raise PodRepositoryError("only styles with unfinished images can be retried", 409)
 
             for style_index in title_style_indices:
                 title = connection.execute(
@@ -6063,35 +6098,108 @@ class PodCustomizationRepository:
                 connection, batch_id, "batch_retry", status=next_status
             )
 
-            for style_index in image_style_indices:
-                # 一款的四张图来自同一次 2×2 生图调用，重试即整款重生成，
-                # 因此这里连同已完成的槽位一起重置（部分完成的款式也能重试）。
-                updated = connection.execute(
-                    """UPDATE pod_customization_style_grid_results
-                       SET status = 'generating_pattern', error_message = '', updated_at = ?
-                       WHERE batch_id = ? AND style_index = ?""",
-                    (now, batch_id, style_index),
-                )
-                if updated.rowcount != 4:
-                    raise PodRepositoryError("POD style must keep its four image slots", 409)
-                self._try_record_style_event(
-                    connection, batch_id, "style_grid_status",
-                    style_index=style_index, status="generating_pattern",
-                )
-                title_reset = connection.execute(
-                    """UPDATE pod_customization_style_titles
-                       SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
-                           visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
-                           error_message = '', started_at = '', finished_at = '', updated_at = ?
-                       WHERE batch_id = ? AND style_index = ?""",
-                    (now, batch_id, style_index),
-                )
-                if title_reset.rowcount != 1:
-                    raise PodRepositoryError("POD style title reset failed", 409)
-                connection.execute(
-                    "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
-                    (batch_id, style_index),
-                )
+            if column_retry_plan:
+                for group_id, _group_index, group_styles, roles in column_retry_plan:
+                    connection.execute(
+                        """UPDATE pod_customization_style_groups
+                           SET status = ?, current_round = '', updated_at = ?
+                           WHERE group_id = ?""",
+                        (GROUP_STATUS_QUEUED, now, group_id),
+                    )
+                    placeholders = ", ".join("?" for _ in group_styles)
+                    for role in roles:
+                        connection.execute(
+                            """UPDATE pod_customization_group_sheets
+                               SET status = ?, attempt = 0, error_message = '',
+                                   grid_asset_id = '', updated_at = ?
+                               WHERE group_id = ? AND role = ?""",
+                            (SHEET_STATUS_QUEUED, now, group_id, role),
+                        )
+                        variant_index = COLUMN_ROLES.index(role) + 1
+                        result_rows = connection.execute(
+                            f"""SELECT result_id FROM pod_customization_style_grid_results
+                                WHERE batch_id = ? AND variant_index = ?
+                                  AND style_index IN ({placeholders})""",
+                            (batch_id, variant_index, *group_styles),
+                        ).fetchall()
+                        if len(result_rows) != len(group_styles):
+                            raise PodRepositoryError("POD style must keep its four image slots", 409)
+                        for result_row in result_rows:
+                            connection.execute(
+                                """UPDATE pod_customization_style_grid_results
+                                   SET status = 'queued', pattern_asset_id = '', composite_asset_id = '',
+                                       pattern_fingerprint = '', scene_optimized = 0, error_message = '',
+                                       updated_at = ?
+                                   WHERE result_id = ?""",
+                                (now, result_row["result_id"]),
+                            )
+                            connection.execute(
+                                "DELETE FROM pod_customization_style_grid_publications WHERE result_id = ?",
+                                (result_row["result_id"],),
+                            )
+                    primary_retrying = PRIMARY_ROLE in roles
+                    for style_index in group_styles:
+                        self._try_record_style_event(
+                            connection, batch_id, "style_grid_status",
+                            style_index=style_index, status="queued",
+                        )
+                        if primary_retrying:
+                            connection.execute(
+                                """UPDATE pod_customization_style_titles
+                                   SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
+                                       visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                                       error_message = '', started_at = '', finished_at = '', updated_at = ?
+                                   WHERE batch_id = ? AND style_index = ?""",
+                                (now, batch_id, style_index),
+                            )
+                            connection.execute(
+                                "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                                (batch_id, style_index),
+                            )
+                        else:
+                            reset = connection.execute(
+                                """UPDATE pod_customization_style_titles
+                                   SET status = 'queued', title = '', normalized_title = NULL,
+                                       visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                                       error_message = '', started_at = '', finished_at = '', updated_at = ?
+                                   WHERE batch_id = ? AND style_index = ? AND status <> 'completed'""",
+                                (now, batch_id, style_index),
+                            )
+                            if reset.rowcount:
+                                connection.execute(
+                                    "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                                    (batch_id, style_index),
+                                )
+            else:
+                for style_index in image_style_indices:
+                    # 一款的四张图来自同一次 2×2 生图调用，重试即整款重生成，
+                    # 因此这里连同已完成的槽位一起重置（部分完成的款式也能重试）。
+                    updated = connection.execute(
+                        """UPDATE pod_customization_style_grid_results
+                           SET status = 'generating_pattern', error_message = '', updated_at = ?
+                           WHERE batch_id = ? AND style_index = ?""",
+                        (now, batch_id, style_index),
+                    )
+                    if updated.rowcount != 4:
+                        raise PodRepositoryError("POD style must keep its four image slots", 409)
+                    self._try_record_style_event(
+                        connection, batch_id, "style_grid_status",
+                        style_index=style_index, status="generating_pattern",
+                    )
+                    title_reset = connection.execute(
+                        """UPDATE pod_customization_style_titles
+                           SET style_task_id = '', status = 'queued', title = '', normalized_title = NULL,
+                               visual_tags_json = '{}', model = '', prompt_version = '', attempt_count = 0,
+                               error_message = '', started_at = '', finished_at = '', updated_at = ?
+                           WHERE batch_id = ? AND style_index = ?""",
+                        (now, batch_id, style_index),
+                    )
+                    if title_reset.rowcount != 1:
+                        raise PodRepositoryError("POD style title reset failed", 409)
+                    connection.execute(
+                        "DELETE FROM pod_customization_style_copy WHERE batch_id = ? AND style_index = ?",
+                        (batch_id, style_index),
+                    )
 
             for style_index in title_style_indices:
                 updated = connection.execute(

@@ -176,8 +176,21 @@ test("POD page opens a batch failed-retry dialog and refreshes the batch after s
 
 test("result header exposes a batch failed-retry entry beside the export action", () => {
   assert.match(gallerySource, /onOpenFailedRetry: \(\) => void;/);
-  assert.match(gallerySource, /onClick=\{onOpenFailedRetry\}>批量重试失败项<\/button>/);
-  assert.match(gallerySource, /disabled=\{Boolean\(busyAction\)\}/);
+  assert.match(gallerySource, /onClick=\{onOpenFailedRetry\}>\{retryLabel\}<\/button>/);
+  assert.match(gallerySource, /disabled=\{!canRetryBatch \|\| Boolean\(busyAction\)\}/);
+});
+
+test("column batches surface a top retry entry for failed image groups and failed titles", () => {
+  assert.match(gallerySource, /const retryCandidates = batchRetryCandidates\(styles\);/);
+  assert.match(gallerySource, /const hasColumnRetryTargets = retryCandidates\.image\.length > 0 \|\| retryCandidates\.title\.length > 0;/);
+  assert.match(gallerySource, /const showFailedRetry = columnBatch \? hasColumnRetryTargets : true;/);
+  assert.match(gallerySource, /批量重试失败项（\$\{retryCandidates\.image\.length \+ retryCandidates\.title\.length\} 款）/);
+  assert.match(gallerySource, /重试失败标题（\$\{retryCandidates\.title\.length\} 款）/);
+  assert.match(gallerySource, /\{showFailedRetry && <button type="button" className="pod-open-failed-retry"/);
+  assert.match(source, /imageCandidates=\{failedRetryCandidates\.image\}/);
+  assert.match(source, /columnBatch=\{activeBatchColumn\}/);
+  assert.match(source, /columnImageGroups=\{columnRetryGroups\}/);
+  assert.match(source, /const activeBatchColumn = activeBatch \? isPodColumnBatch\(activeBatch\) : false;/);
 });
 
 test("result header offers a one-click invert selection beside the retry entry", () => {

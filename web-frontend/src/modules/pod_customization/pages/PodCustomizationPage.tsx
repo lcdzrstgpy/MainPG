@@ -27,6 +27,7 @@ import {
   businessFieldsForApi,
   canDeletePodBatch,
   isPristineCreativeEdit,
+  isPodColumnBatch,
   isPodColumnBatchCount,
   isActiveBatchStatus,
   isActivePodItemStatus,
@@ -40,7 +41,7 @@ import {
   splitBusinessField,
   specCardSummaryText,
 } from "../data/podCustomizationModel";
-import { batchRetryCandidates, type PodBatchRetryRequest } from "../data/podBatchRetry";
+import { batchRetryCandidates, columnRetryGroupCandidates, type PodBatchRetryRequest } from "../data/podBatchRetry";
 import { createBriefHistoryItem, mergeBusinessFields, recordBriefHistory } from "../data/podBrief";
 import {
   createPodSystemTemplate,
@@ -303,7 +304,10 @@ export function PodCustomizationPage({ isActive = true }: Props) {
   }, [selectedTemplate]);
   const summaryFields = businessFieldsForApi(businessFields);
   const selectedItem = activeBatch?.items.find((item) => item.id === selectedItemId);
-  const failedRetryCandidates = activeBatch ? batchRetryCandidates(groupPodStyleRows(activeBatch)) : { image: [], title: [] };
+  const activeBatchStyleRows = activeBatch ? groupPodStyleRows(activeBatch) : [];
+  const failedRetryCandidates = batchRetryCandidates(activeBatchStyleRows);
+  const activeBatchColumn = activeBatch ? isPodColumnBatch(activeBatch) : false;
+  const columnRetryGroups = activeBatchColumn ? columnRetryGroupCandidates(activeBatchStyleRows) : [];
   const resolvedPrompt = resolveCreativePrompt(currentBatchEdit ?? "");
   const activeItemStatuses = activeBatch?.items.map((item) => item.status).join("|") ?? "";
   const activeTitleStatuses = activeBatch?.style_titles?.map((title) => title.status).join("|") ?? "";
@@ -1290,6 +1294,8 @@ export function PodCustomizationPage({ isActive = true }: Props) {
         open={failedRetryOpen}
         imageCandidates={failedRetryCandidates.image}
         titleCandidates={failedRetryCandidates.title}
+        columnBatch={activeBatchColumn}
+        columnImageGroups={columnRetryGroups}
         busy={busyAction === "retry-failed"}
         onClose={() => setFailedRetryOpen(false)}
         onSubmit={(request) => void retryFailed(request)}

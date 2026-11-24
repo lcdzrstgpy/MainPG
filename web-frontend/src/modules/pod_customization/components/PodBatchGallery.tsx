@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { batchProgress, canCancelPodBatch, canPausePodBatch, canRegeneratePodStyle, canRegeneratePodStyleTitle, canResumePodBatch, canRetryPodBatchFailed, formatPodBatchWaitingTime, groupPodStyleRows, isActiveBatchStatus, isPodColumnBatch, podBatchProgressCounts, podBatchRoundProgress, podBatchStatusDetail, podItemStatusLabel, podStyleTitleStatusLabel } from "../data/podCustomizationModel";
 import { dianxiaomiExportBlockMessage, isDianxiaomiExportEnabled } from "../data/dianxiaomiExport";
+import { batchRetryCandidates } from "../data/podBatchRetry";
 import { podImageSource } from "../data/podImageSource";
 import { PodAssetImage } from "../data/usePodAssetUrl";
 import type { PodBatch, PodBatchItem, PodMiaoshouTemplateKind } from "../types";
@@ -94,6 +95,15 @@ export function PodBatchGallery({ batch, busyAction, emptyTitle = "从一个模�
     .map((round) => `${round.label} ${round.done}/${round.total}`)
     .join(" · ");
   const styles = groupPodStyleRows(batch);
+  const retryCandidates = batchRetryCandidates(styles);
+  // 列式批次支持按组重跑失败图片（复用已完成轮次）与重试失败标题；仅存在失败项时在顶部显示入口。
+  const hasColumnRetryTargets = retryCandidates.image.length > 0 || retryCandidates.title.length > 0;
+  const showFailedRetry = columnBatch ? hasColumnRetryTargets : true;
+  const retryLabel = columnBatch
+    ? retryCandidates.image.length > 0
+      ? `批量重试失败项（${retryCandidates.image.length + retryCandidates.title.length} 款）`
+      : `重试失败标题（${retryCandidates.title.length} 款）`
+    : "批量重试失败项";
   // 可勾选导出的款式（已就绪）；一键反选只作用于它们。
   const exportableStyles = styles.filter((style) => style.status === "completed" && Boolean(style.listing_ready));
   const allExportableSelected = exportableStyles.length > 0 && exportableStyles.every((style) => style.export_selected);
@@ -117,7 +127,7 @@ export function PodBatchGallery({ batch, busyAction, emptyTitle = "从一个模�
   const exportButtonTitle = canExport
     ? `可导出 ${exportStatus.selected_exportable_style_count ?? exportStatus.exportable_style_count} 款`
     : exportBlockReason;
-  const canRetryBatch = !columnBatch && canRetryPodBatchFailed(batch.status);
+  const canRetryBatch = canRetryPodBatchFailed(batch.status);
   const retryBlockReason = "";
   const selectedStyle = styles.find((style) => style.index === selectedStyleIndex);
   const canPause = canPausePodBatch(batch.status);
@@ -142,7 +152,7 @@ export function PodBatchGallery({ batch, busyAction, emptyTitle = "从一个模�
         <div className="pod-dianxiaomi-export">
           <div className="pod-export-buttons">
             <button type="button" className="pod-export-invert" disabled={!exportableStyles.length || Boolean(busyAction)} title={allExportableSelected ? "取消选中全部可导出款式" : "选中全部可导出款式"} onClick={() => onSetAllExportSelection(!allExportableSelected)}>一键反选</button>
-            {!columnBatch && <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || "批量重试失败款式"} onClick={onOpenFailedRetry}>批量重试失败项</button>}
+            {showFailedRetry && <button type="button" className="pod-open-failed-retry" disabled={!canRetryBatch || Boolean(busyAction)} title={retryBlockReason || retryLabel} onClick={onOpenFailedRetry}>{retryLabel}</button>}
             <div className="pod-export-menu" ref={exportMenuRef}>
               <button type="button" className="pod-export-menu-trigger" disabled={!canExport} title={exportButtonTitle} aria-haspopup="menu" aria-expanded={exportMenuOpen} onClick={() => setExportMenuOpen((open) => !open)}>
                 <span>{exporting ? "正在导出店小秘表格" : exportingMiaoshou ? "正在导出妙手表格" : "导出表格"}</span><i className="iconfont icon-down" aria-hidden="true" />

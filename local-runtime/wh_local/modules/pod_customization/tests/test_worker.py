@@ -2647,13 +2647,22 @@ def test_column_resume_freezes_only_missing_roles(tmp_path: Path) -> None:
     runtime.close()
 
 
-def test_column_batch_rejects_user_side_rerun(tmp_path: Path) -> None:
-    """列式批次 v1 不做用户重跑：两个旧入口都返回 409，避免冲掉已完成图。"""
+def test_column_batch_rejects_single_style_and_completed_group_rerun(tmp_path: Path) -> None:
+    """列式批次仍禁用单款重生成，且已完成组不允许批量重试。"""
     runtime = ListingOnlyRuntime([])
     service = _service(tmp_path, runtime)
     actor = _actor()
     template = _ready_template(service, actor)
     batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+    with service.repository._connect() as connection:
+        connection.execute(
+            "UPDATE pod_customization_group_sheets SET status = 'completed' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+        connection.execute(
+            "UPDATE pod_customization_style_groups SET status = 'completed' WHERE batch_id = ?",
+            (batch["id"],),
+        )
     service.repository.set_batch_status(batch["id"], "completed")
 
     with pytest.raises(PodRepositoryError) as single:
@@ -2669,6 +2678,220 @@ def test_column_batch_rejects_user_side_rerun(tmp_path: Path) -> None:
             enqueue=False,
         )
     assert batch_retry.value.status_code == 409
+    service.close()
+    runtime.close()
+
+
+def test_column_batch_retries_failed_primary_group_end_to_end(tmp_path: Path) -> None:
+    """主图轮失败的列式组支持按组重试：自动扩成整组 4 款、重跑 4 轮并正常结算计费。"""
+    round_grids = [
+        _grid([_pattern(index + round_index * 10) for index in range(4)])
+        for round_index in range(4)
+    ]
+    runtime = ListingOnlyRuntime(
+        [RuntimeError("primary attempt 1"), RuntimeError("primary attempt 2"), *round_grids]
+    )
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+    failed = service.get_batch(actor, batch["id"])
+    assert failed["status"] == "failed"
+    assert len(runtime.requests) == 2
+
+    claimed = service.retry_failed(
+        actor,
+        batch["id"],
+        image_style_indices=[1],
+        title_style_indices=[],
+        enqueue=False,
+    )
+    assert claimed["image_style_indices"] == [1, 2, 3, 4]
+    assert claimed["submitted_image_style_count"] == 4
+    assert len(billing.freezes) == 2
+    retry_plan = billing.freezes[1]
+    assert retry_plan.column_style_count == 4
+    retry_call_ids = {call.call_id for call in retry_plan.calls}
+    for role in ("lifestyle", "detail_a", "detail_b", "hero"):
+        assert f"{batch['id']}:group:1:role:{role}:image:1" in retry_call_ids
+
+    service.worker.process_batch_retry(batch["id"], (1, 2, 3, 4), ())
+    recovered = service.get_batch(actor, batch["id"])
+    assert recovered["status"] == "completed"
+    assert recovered["groups"][0]["status"] == "completed"
+    assert all(item["status"] == "completed" for item in recovered["items"])
+    # 初次 2 次失败尝试 + 重试 4 轮成功。
+    assert len(runtime.requests) == 6
+    # 初次结算退款（no_return），重试主图成功后计费（success）。
+    first_plan, first_outcomes = billing.settlements[0]
+    retry_settled_plan, retry_outcomes = billing.settlements[1]
+    first_subitems = {
+        item["feature"]: item["status"]
+        for item in first_plan.product_batch_settlement_payload(first_outcomes)["items"][0]["subitems"]
+    }
+    retry_subitems = {
+        item["feature"]: item["status"]
+        for item in retry_settled_plan.product_batch_settlement_payload(retry_outcomes)["items"][0]["subitems"]
+    }
+    assert first_subitems["four_grid"] == "no_return"
+    assert retry_subitems["four_grid"] == "success"
+    service.close()
+    runtime.close()
+
+
+def test_column_batch_retries_only_failed_derived_rounds_without_double_charging(tmp_path: Path) -> None:
+    """主图与部分派生轮已完成时，列式重试保留已完成轮次、仅补失败派生轮，且不重复扣费。"""
+    initial_grids = [
+        _grid([_pattern(index + round_index * 10) for index in range(4)])
+        for round_index in range(2)
+    ]
+    retry_grids = [
+        _grid([_pattern(index + (round_index + 2) * 10) for index in range(4)])
+        for round_index in range(2)
+    ]
+    # 第 1 轮主图成功、第 2 轮 detail_a 成功；detail_b 与 hero 各失败 2 次；重试时补齐两轮。
+    runtime = ListingOnlyRuntime(
+        [
+            initial_grids[0],
+            initial_grids[1],
+            RuntimeError("detail_b attempt 1"),
+            RuntimeError("detail_b attempt 2"),
+            RuntimeError("hero attempt 1"),
+            RuntimeError("hero attempt 2"),
+            *retry_grids,
+        ]
+    )
+    billing = BillingCoordinator()
+    service = _service(tmp_path, runtime, billing)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    service.worker.process_batch(batch["id"])
+    partial = service.get_batch(actor, batch["id"])
+    assert partial["status"] == "failed"
+    assert partial["groups"][0]["status"] == "partial_failure"
+    assert partial["groups"][0]["sheets"] == {
+        "lifestyle": "completed",
+        "detail_a": "completed",
+        "detail_b": "failed",
+        "hero": "failed",
+    }
+    primary_urls_before = {
+        item["style_index"]: item["public_url"]
+        for item in partial["items"]
+        if item["variant_index"] == 1
+    }
+    detail_a_urls_before = {
+        item["style_index"]: item["public_url"]
+        for item in partial["items"]
+        if item["variant_index"] == 2
+    }
+
+    claimed = service.retry_failed(
+        actor,
+        batch["id"],
+        image_style_indices=[1, 2, 3, 4],
+        title_style_indices=[],
+        enqueue=False,
+    )
+    assert claimed["image_style_indices"] == [1, 2, 3, 4]
+    retry_plan = billing.freezes[1]
+    retry_call_ids = {call.call_id for call in retry_plan.calls}
+    assert f"{batch['id']}:group:1:role:detail_b:image:1" in retry_call_ids
+    assert f"{batch['id']}:group:1:role:hero:image:1" in retry_call_ids
+    assert f"{batch['id']}:group:1:role:lifestyle:image:1" not in retry_call_ids
+    assert f"{batch['id']}:group:1:role:detail_a:image:1" not in retry_call_ids
+
+    service.worker.process_batch_retry(batch["id"], (1, 2, 3, 4), ())
+    recovered = service.get_batch(actor, batch["id"])
+    assert recovered["status"] == "completed"
+    assert recovered["groups"][0]["status"] == "completed"
+    assert all(item["status"] == "completed" for item in recovered["items"])
+    # 已完成的主图与细节 A 必须原样保留（URL 不变），仅发起 2 次补画请求。
+    assert len(runtime.requests) == 8
+    assert {
+        item["style_index"]: item["public_url"]
+        for item in recovered["items"]
+        if item["variant_index"] == 1
+    } == primary_urls_before
+    assert {
+        item["style_index"]: item["public_url"]
+        for item in recovered["items"]
+        if item["variant_index"] == 2
+    } == detail_a_urls_before
+    # 初次主图已扣费（success）；仅补派生轮的重试结算必须报 no_return，避免重复扣费。
+    first_plan, first_outcomes = billing.settlements[0]
+    retry_settled_plan, retry_outcomes = billing.settlements[1]
+    first_subitems = {
+        item["feature"]: item["status"]
+        for item in first_plan.product_batch_settlement_payload(first_outcomes)["items"][0]["subitems"]
+    }
+    retry_subitems = {
+        item["feature"]: item["status"]
+        for item in retry_settled_plan.product_batch_settlement_payload(retry_outcomes)["items"][0]["subitems"]
+    }
+    assert first_subitems["four_grid"] == "success"
+    assert retry_subitems["four_grid"] == "no_return"
+    service.close()
+    runtime.close()
+
+
+def test_column_batch_allows_title_only_retry(tmp_path: Path) -> None:
+    """列式批次的标题重试必须放行：只重置标题行，已完成的四张图不受影响。"""
+    runtime = ListingOnlyRuntime([])
+    titles = _RecordingTitleRuntime()
+    service = _service(tmp_path, runtime, title_runtime=titles)
+    actor = _actor()
+    template = _ready_template(service, actor)
+    batch = service.create_batch(actor, _column_batch_request(template["id"]), enqueue=False)
+
+    with service.repository._connect() as connection:
+        rows = connection.execute(
+            "SELECT result_id, variant_index FROM pod_customization_style_grid_results "
+            "WHERE batch_id = ? AND style_index = 1 ORDER BY variant_index",
+            (batch["id"],),
+        ).fetchall()
+        for (result_id, _variant) in rows:
+            connection.execute(
+                "UPDATE pod_customization_style_grid_results SET status = 'completed' WHERE result_id = ?",
+                (result_id,),
+            )
+            connection.execute(
+                "INSERT INTO pod_customization_style_grid_publications "
+                "(result_id, role, public_url, updated_at) VALUES (?, 'hero', ?, 'now')",
+                (result_id, f"https://images.example.com/{result_id}.png"),
+            )
+        connection.execute(
+            "UPDATE pod_customization_style_titles "
+            "SET status = 'failed', style_task_id = 'style-task-1', error_message = 'bad title' "
+            "WHERE batch_id = ? AND style_index = 1",
+            (batch["id"],),
+        )
+        connection.execute(
+            "UPDATE pod_customization_batches SET status = 'completed' WHERE batch_id = ?",
+            (batch["id"],),
+        )
+
+    claimed = service.retry_failed(
+        actor,
+        batch["id"],
+        image_style_indices=[],
+        title_style_indices=[1],
+        enqueue=False,
+    )
+    stored = service.get_batch(actor, batch["id"])
+
+    assert claimed["title_style_indices"] == [1]
+    assert stored["style_titles"][0]["status"] == "generating"
+    assert stored["status"] == "generating_titles"
+    # 图片已全部完成并发布，标题重试不应把它们重新排队。
+    style_one = [item for item in stored["items"] if item["style_index"] == 1]
+    assert len(style_one) == 4
+    assert all(item["status"] == "completed" for item in style_one)
     service.close()
     runtime.close()
 
