@@ -515,3 +515,133 @@ def compose_feature_cards(
     buffer = BytesIO()
     image.save(buffer, format="JPEG", quality=90)
     return buffer.getvalue()
+
+
+def compose_callout_ring(
+    hero_bytes: bytes,
+    parts: list[dict],
+    copy: MarketingCopy,
+    *,
+    canvas_size: int = CANVAS_SIZE,
+) -> bytes:
+    """圆环标注版式：hero 大图 + 编号点/引线 + 左上标题 + 四角圆形细节裁切。
+
+    ``parts`` = [{"label": str, "x": 0-1000, "y": 0-1000}]，坐标由视觉模型给出；
+    坐标缺失时退化为「只画编号列表，不画点和引线」。
+    """
+    canvas = canvas_size
+    hero = Image.open(BytesIO(hero_bytes)).convert("RGB")
+    scale = max(canvas / hero.width, canvas / hero.height)
+    hero = hero.resize((max(1, int(hero.width * scale)), max(1, int(hero.height * scale))), Image.LANCZOS)
+    left = (hero.width - canvas) // 2
+    top = (hero.height - canvas) // 2
+    image = hero.crop((left, top, left + canvas, top + canvas))
+    image = _scrim(image, top_ratio=0.22)
+
+    draw = ImageDraw.Draw(image)
+    headline_lines, headline_font = _fit_lines(
+        draw, copy.headline, base_size=int(canvas * 0.052), bold=True,
+        max_width=int(canvas * 0.58), max_lines=2,
+    )
+    y = int(canvas * 0.05)
+    for line in headline_lines:
+        draw.text((int(canvas * 0.05) + 3, y + 3), line, font=headline_font, fill=(24, 26, 30))
+        draw.text((int(canvas * 0.05), y), line, font=headline_font, fill=(255, 255, 255))
+        y += int(canvas * 0.062)
+    draw.rectangle(
+        [(int(canvas * 0.05), y + 4), (int(canvas * 0.05) + int(canvas * 0.09), y + int(canvas * 0.011))],
+        fill=(255, 122, 47),
+    )
+
+    label_font = _font(int(canvas * 0.024), bold=True)
+    num_font = _font(int(canvas * 0.026), bold=True)
+    badge_r = int(canvas * 0.021)
+    placed: list[tuple[int, int, int]] = []
+    for index, part in enumerate(parts[:5], start=1):
+        label = str(part.get("label") or "").strip()[:28] or f"Detail {index}"
+        try:
+            px = int(float(part.get("x", -1)) / 1000 * canvas)
+            py = int(float(part.get("y", -1)) / 1000 * canvas)
+        except Exception:  # noqa: BLE001
+            px = py = -1
+
+        if 0 <= px < canvas and 0 <= py < canvas:
+            # 编号点 + 引线到右侧标注列
+            anchor_x = canvas - int(canvas * 0.30)
+            anchor_y = int(canvas * 0.20) + (index - 1) * int(canvas * 0.085)
+            draw.line([(px, py), (anchor_x, anchor_y)], fill=(255, 122, 47, 255), width=3)
+            draw.ellipse([px - badge_r, py - badge_r, px + badge_r, py + badge_r], fill=(255, 122, 47))
+            draw.text((px, py), str(index), font=num_font, fill=(20, 20, 20), anchor="mm")
+            placed.append((anchor_x, anchor_y, len(placed)))
+            draw.ellipse([anchor_x - 6, anchor_y - 6, anchor_x + 6, anchor_y + 6], fill=(255, 122, 47))
+            draw.text((anchor_x + int(canvas * 0.02), anchor_y), label, font=label_font, fill=(245, 246, 250), anchor="lm")
+        else:
+            row_y = int(canvas * 0.82) + (index - 1 % 3) * int(canvas * 0.03)
+            draw.ellipse([int(canvas * 0.06), row_y - badge_r, int(canvas * 0.06) + badge_r * 2, row_y + badge_r], fill=(255, 122, 47))
+            draw.text((int(canvas * 0.06) + badge_r, row_y), str(index), font=num_font, fill=(20, 20, 20), anchor="mm")
+            draw.text((int(canvas * 0.06) + badge_r * 3, row_y), label, font=label_font, fill=(245, 246, 250), anchor="lm")
+
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()
+
+
+def compose_feature_strip(
+    hero_bytes: bytes,
+    cards: list[tuple[bytes, str]],
+    copy: MarketingCopy,
+    *,
+    canvas_size: int = CANVAS_SIZE,
+) -> bytes:
+    """横幅功能条版式：hero 占上 62%，底部一排 4 个圆形细节 + 标签。"""
+    canvas = canvas_size
+    image = Image.new("RGB", (canvas, canvas), (16, 18, 22))
+    band_h = int(canvas * 0.62)
+    hero = Image.open(BytesIO(hero_bytes)).convert("RGB")
+    scale = max(canvas / hero.width, band_h / hero.height)
+    hero = hero.resize((max(1, int(hero.width * scale)), max(1, int(hero.height * scale))), Image.LANCZOS)
+    left = (hero.width - canvas) // 2
+    image.paste(hero.crop((left, 0, left + canvas, band_h)), (0, 0))
+    image = _scrim(image, top_ratio=0.30)
+
+    draw = ImageDraw.Draw(image)
+    headline_lines, headline_font = _fit_lines(
+        draw, copy.headline, base_size=int(canvas * 0.050), bold=True,
+        max_width=int(canvas * 0.72), max_lines=2,
+    )
+    y = int(canvas * 0.045)
+    for line in headline_lines:
+        draw.text((int(canvas * 0.05) + 3, y + 3), line, font=headline_font, fill=(24, 26, 30))
+        draw.text((int(canvas * 0.05), y), line, font=headline_font, fill=(255, 255, 255))
+        y += int(canvas * 0.060)
+    draw.rectangle(
+        [(int(canvas * 0.05), y + 4), (int(canvas * 0.05) + int(canvas * 0.10), y + int(canvas * 0.011))],
+        fill=(255, 122, 47),
+    )
+
+    # 底部 4 个圆形细节
+    count = max(1, min(4, len(cards)))
+    label_font = _font(int(canvas * 0.024), bold=True)
+    cell_w = canvas // 4
+    circle_d = int(cell_w * 0.62)
+    cy = band_h + int((canvas - band_h) * 0.34)
+    for index, (card_bytes, label) in enumerate(cards[:count]):
+        card = Image.open(BytesIO(card_bytes)).convert("RGB")
+        scale_c = circle_d / min(card.size)
+        card = card.resize((max(circle_d, int(card.width * scale_c)), max(circle_d, int(card.height * scale_c))), Image.LANCZOS)
+        left_c = (card.width - circle_d) // 2
+        top_c = (card.height - circle_d) // 2
+        tile = card.crop((left_c, top_c, left_c + circle_d, top_c + circle_d))
+        mask = Image.new("L", (circle_d, circle_d), 0)
+        ImageDraw.Draw(mask).ellipse([0, 0, circle_d, circle_d], fill=255)
+        cx = index * cell_w + (cell_w - circle_d) // 2
+        image.paste(tile, (cx, cy - circle_d // 2), mask)
+        draw.ellipse(
+            [cx - 3, cy - circle_d // 2 - 3, cx + circle_d + 3, cy + circle_d // 2 + 3],
+            outline=(255, 122, 47), width=3,
+        )
+        draw.text((index * cell_w + cell_w // 2, cy + circle_d // 2 + int(canvas * 0.022)), label[:22], font=label_font, fill=(240, 242, 245), anchor="mm")
+
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return buffer.getvalue()

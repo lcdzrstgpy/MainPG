@@ -16,7 +16,7 @@ import { productProcessingApiContext } from '../api/context';
 
 const API_BASE = '/api/product-processing';
 
-type TemplateKey = 'headline_hero' | 'action_proof' | 'icon_grid' | 'material_strip' | 'use_cases' | 'feature_cards';
+type TemplateKey = 'headline_hero' | 'action_proof' | 'icon_grid' | 'material_strip' | 'use_cases' | 'feature_cards' | 'callout_ring' | 'feature_strip';
 
 const TEMPLATES: Array<{ key: TemplateKey; label: string; hint: string }> = [
   { key: 'headline_hero', label: '大字卖点', hint: '顶部大标题 + 产品主视觉' },
@@ -25,6 +25,8 @@ const TEMPLATES: Array<{ key: TemplateKey; label: string; hint: string }> = [
   { key: 'material_strip', label: '材质适用条', hint: '底部材质药丸条' },
   { key: 'use_cases', label: '场景应用', hint: '四角用途标注' },
   { key: 'feature_cards', label: '功能细节卡', hint: 'hero 大图 + 2×2 功能微距' },
+  { key: 'callout_ring', label: '编号标注', hint: '圆环细节 + 引线编号（对标样图）' },
+  { key: 'feature_strip', label: '功能横条', hint: '底部一排 4 个圆形细节' },
 ];
 
 type Props = {

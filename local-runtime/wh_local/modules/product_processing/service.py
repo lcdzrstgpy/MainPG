@@ -3068,138 +3068,6 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             pass
         return fallback_copy(title)
 
-    def _marketing_reference_bytes(self, url: str) -> bytes:
-        cache = getattr(self, "_marketing_ref_bytes_cache", None)
-        if cache is None:
-            cache = self._marketing_ref_bytes_cache = {}
-        if url in cache:
-            return cache[url]
-        content = b""
-        try:
-            fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
-            image = fetcher(str(url), max_bytes=8 * 1024 * 1024, timeout_seconds=10)
-            content = bytes(getattr(image, "content", b"") or b"")
-        except Exception:  # noqa: BLE001
-            content = b""
-        if len(cache) >= 32:
-            cache.pop(next(iter(cache)))
-        cache[url] = content
-        return content
-
-    def _marketing_anchor_data_url(self, product_bytes: bytes) -> str:
-        """产品抠图锚点（data URL）；rembg 失败返回空串（调用方退回普通参考图）。"""
-        import base64  # noqa: PLC0415
-
-        if not product_bytes:
-            return ""
-        cache = getattr(self, "_marketing_anchor_cache", None)
-        if cache is None:
-            cache = self._marketing_anchor_cache = {}
-        key = hash(product_bytes)
-        if key in cache:
-            return cache[key]
-        value = ""
-        try:
-            from .domain.premium_anchor import anchor_image  # noqa: PLC0415
-
-            png = anchor_image(product_bytes)
-            if png:
-                value = "data:image/png;base64," + base64.b64encode(png).decode()
-        except Exception:  # noqa: BLE001
-            value = ""
-        if len(cache) >= 8:
-            cache.pop(next(iter(cache)))
-        cache[key] = value
-        return value
-
-    def _marketing_reference_data_url(self, url: str) -> str:
-        """参考图 → data URL（缓存），供视觉质检使用；失败返回空串。"""
-        import base64  # noqa: PLC0415
-
-        cache = getattr(self, "_marketing_ref_data_cache", None)
-        if cache is None:
-            cache = self._marketing_ref_data_cache = {}
-        if url in cache:
-            return cache[url]
-        value = ""
-        try:
-            fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
-            image = fetcher(str(url), max_bytes=8 * 1024 * 1024, timeout_seconds=10)
-            content = bytes(getattr(image, "content", b"") or b"")
-            if content:
-                value = "data:image/jpeg;base64," + base64.b64encode(content).decode()
-        except Exception:  # noqa: BLE001
-            value = ""
-        if len(cache) >= 32:
-            cache.pop(next(iter(cache)))
-        cache[url] = value
-        return value
-
-    def _marketing_feature_cards(
-        self,
-        processor: Any,
-        *,
-        copy: Any,
-        scene: dict[str, Any] | None,
-        vision_subject: str,
-        brief: str,
-        parts_hint: str,
-        product_bytes: bytes,
-        anchor_url: str,
-        render_refs: list[str],
-        refs: list[str],
-        ai_notes: list[str] | None = None,
-    ) -> bytes | None:
-        """「功能细节卡」：hero 大图（融合三级链路）+ 4 张功能微距小卡。"""
-        from .domain.premium_composer import compose_feature_cards  # noqa: PLC0415
-        from .domain.premium_prompts import build_card_prompt  # noqa: PLC0415
-
-        labels = [str(item) for item in (getattr(copy, "bullets", []) or []) if str(item or "").strip()][:4]
-        if len(labels) < 2:
-            return None
-        while len(labels) < 4:
-            labels.append(labels[-1])
-
-        # hero：融合（锚点）→ QA → 不合格退空景合成
-        hero_bytes: bytes | None = None
-        base_prompt = build_photo_prompt(
-            "headline_hero", copy, scene, vision_subject, brief, anchor=bool(anchor_url)
-        )
-        try:
-            photo = self._marketing_render(processor, base_prompt, render_refs, ai_notes)
-            candidate = bytes(getattr(photo, "content", b"") or b"")
-            qa = self._marketing_quality_check(refs, candidate, parts_hint)
-            if qa is not None and not qa.get("ok") and candidate:
-                if ai_notes is not None:
-                    ai_notes.append(f"marketing:feature_cards:hero-fusion-bad:{qa.get('issues') or ''}")
-            hero_bytes = candidate or None
-        except Exception as exc:  # noqa: BLE001
-            if ai_notes is not None:
-                ai_notes.append(f"marketing:feature_cards:hero-failed:{str(exc)[:120]}")
-        if hero_bytes is None and product_bytes:
-            from .domain.premium_anchor import composite_on  # noqa: PLC0415
-
-            hero_bytes = composite_on(product_bytes, None, workdir=Path(self.assets.root))
-        if hero_bytes is None:
-            return None
-
-        # 4 张微距卡
-        cards: list[tuple[bytes, str]] = []
-        for label in labels:
-            try:
-                card_photo = self._marketing_render(
-                    processor, build_card_prompt(label, scene), render_refs, ai_notes
-                )
-                content = bytes(getattr(card_photo, "content", b"") or b"")
-                if content:
-                    cards.append((content, label))
-            except Exception as exc:  # noqa: BLE001
-                if ai_notes is not None:
-                    ai_notes.append(f"marketing:feature_cards:card-failed:{str(exc)[:80]}")
-        if len(cards) < 2:
-            return None
-        return compose_feature_cards(hero_bytes, cards, copy)
-
     def _marketing_render(
         self,
         processor: Any,
@@ -3227,273 +3095,6 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 reference_values=refs,
                 image_size="2048x2048",
             )
-
-    def _marketing_quality_check(
-        self,
-        reference_urls: list[str],
-        generated: bytes,
-        parts_hint: str = "",
-    ) -> dict[str, Any] | None:
-        """豆包 2.1 视觉验货：产品是否同款/有没有变形/多余物件/渲染文字。
-
-        返回 None = 判不了（不阻断，按通过处理，避免白烧重渲）。
-        """
-        import base64  # noqa: PLC0415
-
-        from .domain.premium_prompts import build_qa_messages, parse_qa_response  # noqa: PLC0415
-        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
-        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
-
-        reference = ""
-        for url in reference_urls:
-            reference = self._marketing_reference_data_url(url)
-            if reference:
-                break
-        if not reference or not generated:
-            return None
-        generated_url = "data:image/jpeg;base64," + base64.b64encode(generated).decode()
-        try:
-            text = DoubaoArkClient(usage_kind="vision").complete(
-                build_qa_messages(reference, generated_url, parts_hint),
-                timeout=VISION_TIMEOUT_SECONDS,
-            )
-            return parse_qa_response(text)
-        except Exception:  # noqa: BLE001
-            return None
-
-    def _marketing_pick_references(self, urls: list[str]) -> list[str]:
-        """参考图按干净程度排序（白底/单主体/少文字），失败退回原顺序前两张。"""
-        from .domain.marketing_refs import pick_clean_references  # noqa: PLC0415
-
-        candidates = [str(url) for url in urls if str(url or "").strip()]
-        if len(candidates) <= 2:
-            return candidates[:2]
-
-        def _fetch(url: str) -> bytes:
-            fetcher = getattr(self, "_public_image_fetcher", fetch_public_image)
-            image = fetcher(url, max_bytes=8 * 1024 * 1024, timeout_seconds=8)
-            return bytes(getattr(image, "content", b"") or b"")
-
-        try:
-            return pick_clean_references(candidates, _fetch, limit=2)
-        except Exception:  # noqa: BLE001
-            return candidates[:2]
-
-    def _marketing_image_brief(
-        self,
-        title: str,
-        category: str,
-        subject: str,
-        parts: str,
-        surface: str,
-        caution: str = "",
-    ) -> str:
-        """先让豆包「检查要做的东西」并写出生成 brief（含用户的注意点）；失败退回空。"""
-        from .domain.premium_prompts import build_brief_messages, clean_brief  # noqa: PLC0415
-
-        cache_key = f"{title}|{category}|{subject}|{parts}|{caution}"
-        cache = getattr(self, "_marketing_brief_cache", None)
-        if cache is None:
-            cache = self._marketing_brief_cache = {}
-        if cache_key in cache:
-            return cache[cache_key]
-        brief = ""
-        try:
-            text = DoubaoArkClient().complete(
-                build_brief_messages(title, category, subject, parts, surface, caution)
-            )
-            brief = clean_brief(text)
-        except Exception:  # noqa: BLE001
-            brief = ""
-        if len(cache) >= 32:
-            cache.pop(next(iter(cache)))
-        cache[cache_key] = brief
-        return brief
-
-    def _marketing_scene_plan(
-        self, title: str, category: str, subject: str = ""
-    ) -> dict[str, Any] | None:
-        """每个商品的照片场景方案（台面/动作/道具），豆包生成；失败返回 None 走保守默认。
-
-        提示词不写死“剪线工具”这类语义——不同产品由方案决定动作，拿不准就不给动作。
-        """
-        from .domain.premium_prompts import build_scene_messages, parse_scene_plan  # noqa: PLC0415
-
-        cache_key = f"{title}|{category}|{subject}"
-        cache = getattr(self, "_marketing_scene_cache", None)
-        if cache is None:
-            cache = self._marketing_scene_cache = {}
-        if cache_key in cache:
-            return cache[cache_key]
-        plan: dict[str, Any] | None = None
-        try:
-            text = DoubaoArkClient().complete(build_scene_messages(title, category, subject))
-            plan = parse_scene_plan(text)
-        except Exception:  # noqa: BLE001
-            plan = None
-        if len(cache) >= 64:
-            cache.pop(next(iter(cache)))
-        cache[cache_key] = plan
-        return plan
-
-    def _generate_marketing_images(
-        self,
-        task_id: int,
-        draft_id: int,
-        *,
-        title: str,
-        category: str,
-        reference_urls: list[str],
-        workspace_id: str,
-        templates: list[str] | None = None,
-        vision_subject: str = "",
-        caution: str = "",
-        ai_notes: list[str] | None = None,
-    ) -> list[str]:
-        """精选处理（一期）：两版式各出 1 张营销图，返回预览 URL 列表。
-
-        双层合成：豆包出文案 → Seedream 出照片层（禁文字）→ 本地排版合成。
-        文案失败不影响出图（保底标题）；单版式失败只记 ai_notes 不拖垮整条。
-        """
-        from .domain.premium_composer import compose_marketing_image  # noqa: PLC0415
-        from .domain.premium_prompts import build_photo_prompt  # noqa: PLC0415
-        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
-
-        processor = self._media_processor()
-        from .provider_config import MARKETING_IMAGE_MODEL_PRO  # noqa: PLC0415
-        refs = self._marketing_pick_references(reference_urls)
-        if not refs:
-            if ai_notes is not None:
-                ai_notes.append("marketing:skipped:no_reference")
-            return []
-        from .domain.premium_composer import TEMPLATES  # noqa: PLC0415
-
-        selected = [
-            item for item in (templates or []) if item in TEMPLATES or item == "feature_cards"
-        ] or list(TEMPLATES[:3])
-        scene = self._marketing_scene_plan(title, category, vision_subject)
-        parts_hint = str((scene or {}).get("parts") or "")
-        brief = self._marketing_image_brief(
-            title,
-            category,
-            vision_subject,
-            parts_hint,
-            str((scene or {}).get("surface") or ""),
-            caution,
-        )
-        if ai_notes is not None:
-            ai_notes.append(f"marketing:parts:{len([p for p in parts_hint.split(',') if p.strip()])}")
-            ai_notes.append(f"marketing:brief:{'ok' if brief else 'empty'}")
-        values: list[str] = []
-        product_bytes = self._marketing_reference_bytes(refs[0]) if refs else b""
-        anchor_url = self._marketing_anchor_data_url(product_bytes)
-        render_refs = [anchor_url] if anchor_url else refs
-        if ai_notes is not None:
-            ai_notes.append(f"marketing:anchor:{'yes' if anchor_url else 'no'}")
-        from .domain.premium_anchor import composite_on  # noqa: PLC0415
-        from .domain.premium_prompts import build_background_prompt  # noqa: PLC0415
-
-        for template in selected:
-            self._raise_if_task_stopped(task_id, workspace_id)
-            try:
-                copy = self._marketing_copy(title, category, template)
-                if template == "feature_cards":
-                    composed_cards = self._marketing_feature_cards(
-                        processor,
-                        copy=copy,
-                        scene=scene,
-                        vision_subject=vision_subject,
-                        brief=brief,
-                        parts_hint=parts_hint,
-                        product_bytes=product_bytes,
-                        anchor_url=anchor_url,
-                        render_refs=render_refs,
-                        refs=refs,
-                        ai_notes=ai_notes,
-                    )
-                    if composed_cards is None:
-                        if ai_notes is not None:
-                            ai_notes.append("marketing:feature_cards:skipped")
-                        continue
-                    part = GeneratedMedia(
-                        stage="marketing_feature_cards",
-                        content=composed_cards,
-                        content_type="image/jpeg",
-                        suffix=".jpg",
-                        provider="local-synthesis",
-                        model="premium_composer",
-                        reference_count=1,
-                        attempt_count=1,
-                    )
-                    urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
-                    if urls:
-                        values.append(urls[0])
-                    continue
-                base_prompt = build_photo_prompt(
-                    template, copy, scene, vision_subject, brief, anchor=bool(anchor_url)
-                )
-                composed: bytes | None = None
-                qa_ok = False
-                # ① 融合：抠图当摄影真相，AI 只调光融合出完整图；质检验货
-                for attempt in (1, 2):
-                    prompt = base_prompt
-                    if attempt == 2:
-                        prompt += (
-                            "\nREPAIR: the previous attempt changed the product geometry or style. "
-                            "Relight the product, do not repaint it."
-                        )
-                    photo = self._marketing_render(processor, prompt, render_refs, ai_notes)
-                    candidate = compose_marketing_image(
-                        bytes(getattr(photo, "content", b"")), template, copy
-                    )
-                    qa = self._marketing_quality_check(refs, candidate, parts_hint)
-                    if qa is None or qa.get("ok"):
-                        composed = candidate
-                        qa_ok = True
-                        if ai_notes is not None:
-                            ai_notes.append(f"marketing:{template}:fusion-ok" + (f":attempt{attempt}" if attempt > 1 else ""))
-                        break
-                    if ai_notes is not None:
-                        ai_notes.append(
-                            f"marketing:{template}:fusion-bad:attempt{attempt}:{qa.get('issues') or 'unspecified'}"
-                        )
-                    if attempt == 2:
-                        composed = candidate
-                # ② 保底 A：AI 只画空场景 + 产品真图合成（产品零失真）
-                if not qa_ok and product_bytes:
-                    background: bytes | None = None
-                    try:
-                        bg_photo = self._marketing_render(
-                            processor, build_background_prompt(copy, scene, template), [], ai_notes
-                        )
-                        background = bytes(getattr(bg_photo, "content", b"") or b"")
-                    except Exception as exc:  # noqa: BLE001
-                        if ai_notes is not None:
-                            ai_notes.append(f"marketing:{template}:bg-failed:{str(exc)[:120]}")
-                    photo = composite_on(product_bytes, background, workdir=Path(self.assets.root))
-                    if photo is not None:
-                        composed = compose_marketing_image(photo, template, copy)
-                        if ai_notes is not None:
-                            ai_notes.append(f"marketing:{template}:composite-fallback")
-                if composed is None:
-                    continue
-                part = GeneratedMedia(
-                    stage=f"marketing_{template}",
-                    content=composed,
-                    content_type="image/jpeg",
-                    suffix=".jpg",
-                    provider="local-synthesis",
-                    model="premium_composer",
-                    reference_count=1,
-                    attempt_count=1,
-                )
-                urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
-                if urls:
-                    values.append(urls[0])
-            except Exception as exc:  # noqa: BLE001
-                if ai_notes is not None:
-                    ai_notes.append(f"marketing:{template}:failed:{exc}")
-        return values
 
     def _translate_combo_prompt(self, text: str) -> str:
         """组合图用户提示词中译英：仅当含中文时调用豆包翻译。
@@ -3720,6 +3321,183 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             # 保留 open 记录供后续对账/服务端 TTL 兜底，避免「结算失败被静默吞掉」。
             _mark_freeze_settle_failure(freeze_id, str(exc)[:200])
 
+    def _marketing_callout_parts(self, hero_bytes: bytes) -> list[dict]:
+        """视觉模型在 hero 上标出关键部位坐标；失败返回空表（版式退化为编号列表）。"""
+        import base64  # noqa: PLC0415
+
+        from .domain.premium_prompts import build_callout_messages, parse_callout_response  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        if not hero_bytes:
+            return []
+        cache = getattr(self, "_marketing_callout_cache", None)
+        if cache is None:
+            cache = self._marketing_callout_cache = {}
+        key = hash(hero_bytes)
+        if key in cache:
+            return cache[key]
+        parts: list[dict] = []
+        try:
+            data_url = "data:image/jpeg;base64," + base64.b64encode(hero_bytes).decode()
+            text = DoubaoArkClient(usage_kind="vision").complete(
+                build_callout_messages(data_url), timeout=VISION_TIMEOUT_SECONDS
+            )
+            parts = parse_callout_response(text)
+        except Exception:  # noqa: BLE001
+            parts = []
+        if len(cache) >= 8:
+            cache.pop(next(iter(cache)))
+        cache[key] = parts
+        return parts
+
+    def _marketing_strip_cards(
+        self, processor: Any, labels: list[str], ai_notes: list[str] | None = None
+    ) -> list[tuple[bytes, str]]:
+        from .domain.premium_prompts import build_card_prompt  # noqa: PLC0415
+
+        cards: list[tuple[bytes, str]] = []
+        for label in labels:
+            try:
+                photo = self._marketing_render(processor, build_card_prompt(label), [], ai_notes)
+                content = bytes(getattr(photo, "content", b"") or b"")
+                if content:
+                    cards.append((content, label))
+            except Exception as exc:  # noqa: BLE001
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:card-failed:{str(exc)[:80]}")
+        return cards
+
+    def _marketing_feature_cards(
+        self,
+        processor: Any,
+        *,
+        copy: Any,
+        ai_notes: list[str] | None = None,
+    ) -> bytes | None:
+        """「功能细节卡」：hero 大图 + 4 张功能微距小卡（第一版直出风格）。"""
+        from .domain.premium_composer import compose_feature_cards  # noqa: PLC0415
+        from .domain.premium_prompts import build_card_prompt  # noqa: PLC0415
+
+        labels = [str(item) for item in (getattr(copy, "bullets", []) or []) if str(item or "").strip()][:4]
+        if len(labels) < 2:
+            return None
+        while len(labels) < 4:
+            labels.append(labels[-1])
+        hero = self._marketing_render(
+            processor, build_photo_prompt("headline_hero", copy), [], ai_notes
+        )
+        hero_bytes = bytes(getattr(hero, "content", b"") or b"")
+        if not hero_bytes:
+            return None
+        cards: list[tuple[bytes, str]] = []
+        for label in labels:
+            try:
+                card_photo = self._marketing_render(
+                    processor, build_card_prompt(label), [], ai_notes
+                )
+                content = bytes(getattr(card_photo, "content", b"") or b"")
+                if content:
+                    cards.append((content, label))
+            except Exception as exc:  # noqa: BLE001
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:feature_cards:card-failed:{str(exc)[:80]}")
+        if len(cards) < 2:
+            return None
+        return compose_feature_cards(hero_bytes, cards, copy)
+
+    def _generate_marketing_images(
+        self,
+        task_id: int,
+        draft_id: int,
+        *,
+        title: str,
+        category: str,
+        reference_urls: list[str],
+        workspace_id: str,
+        templates: list[str] | None = None,
+        vision_subject: str = "",
+        caution: str = "",
+        ai_notes: list[str] | None = None,
+    ) -> list[str]:
+        """精选处理营销图（第一版直出）：原图参考 → 生图 → 排版合成。"""
+        from .domain.premium_composer import TEMPLATES, compose_marketing_image  # noqa: PLC0415
+        from .domain.premium_prompts import build_photo_prompt  # noqa: PLC0415
+
+        processor = self._media_processor()
+        refs = [value for value in reference_urls if str(value or "").strip()][:2]
+        if not refs:
+            if ai_notes is not None:
+                ai_notes.append("marketing:skipped:no_reference")
+            return []
+        selected = [
+            item
+            for item in (templates or [])
+            if item in TEMPLATES or item in {"feature_cards", "callout_ring", "feature_strip"}
+        ] or list(TEMPLATES[:3])
+        values: list[str] = []
+        for template in selected:
+            self._raise_if_task_stopped(task_id, workspace_id)
+            try:
+                copy = self._marketing_copy(title, category, template)
+                if template == "callout_ring":
+                    hero = self._marketing_render(
+                        processor, build_photo_prompt("headline_hero", copy), refs, ai_notes
+                    )
+                    hero_bytes = bytes(getattr(hero, "content", b"") or b"")
+                    from .domain.premium_composer import compose_callout_ring  # noqa: PLC0415
+
+                    parts = self._marketing_callout_parts(hero_bytes)
+                    if ai_notes is not None:
+                        ai_notes.append(f"marketing:callout:parts{len(parts)}")
+                    composed = compose_callout_ring(hero_bytes, parts, copy) if hero_bytes else None
+                    stage = "marketing_callout_ring"
+                elif template == "feature_strip":
+                    hero = self._marketing_render(
+                        processor, build_photo_prompt("headline_hero", copy), refs, ai_notes
+                    )
+                    hero_bytes = bytes(getattr(hero, "content", b"") or b"")
+                    labels = [
+                        str(item) for item in (getattr(copy, "bullets", []) or []) if str(item or "").strip()
+                    ][:4] or ["Precision", "Durability", "Comfort", "Control"]
+                    from .domain.premium_composer import compose_feature_strip  # noqa: PLC0415
+
+                    cards = self._marketing_strip_cards(processor, labels, ai_notes)
+                    composed = compose_feature_strip(hero_bytes, cards, copy) if hero_bytes and cards else None
+                    stage = "marketing_feature_strip"
+                elif template == "feature_cards":
+                    composed = self._marketing_feature_cards(processor, copy=copy, ai_notes=ai_notes)
+                    stage = "marketing_feature_cards"
+                else:
+                    photo = self._marketing_render(
+                        processor, build_photo_prompt(template, copy), refs, ai_notes
+                    )
+                    composed = compose_marketing_image(
+                        bytes(getattr(photo, "content", b"")), template, copy
+                    )
+                    stage = f"marketing_{template}"
+                if not composed:
+                    if ai_notes is not None:
+                        ai_notes.append(f"marketing:{template}:empty")
+                    continue
+                part = GeneratedMedia(
+                    stage=stage,
+                    content=composed,
+                    content_type="image/jpeg",
+                    suffix=".jpg",
+                    provider="local-synthesis",
+                    model="premium_composer",
+                    reference_count=len(refs),
+                    attempt_count=1,
+                )
+                urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
+                if urls:
+                    values.append(urls[0])
+            except Exception as exc:  # noqa: BLE001
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:{template}:failed:{exc}")
+        return values
+
     def _marketing_reference_values(self, draft: dict[str, Any], *, workspace_id: str) -> list[str]:
         """精选处理的参考图：组合来源图优先，其次原图 URL（http 校验）。"""
         try:
@@ -3763,37 +3541,14 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         title = str(draft.get("title") or draft.get("product_name") or "the product")
         category = str(raw.get("category_path") or raw.get("category") or "")
         copy = self._marketing_copy(title, category, template)
-        scene = self._marketing_scene_plan(title, category)
-        parts_hint = str((scene or {}).get("parts") or "")
-        brief = self._marketing_image_brief(
-            title, category, "", parts_hint, str((scene or {}).get("surface") or ""), ""
-        )
         processor = self._media_processor()
-        refs = self._marketing_pick_references(reference_values)
-        composed: bytes | None = None
-        qa_ok = False
-        product_bytes = self._marketing_reference_bytes(refs[0]) if refs else b""
-        anchor_url = self._marketing_anchor_data_url(product_bytes)
-        render_refs = [anchor_url] if anchor_url else refs
-        base_prompt = build_photo_prompt(template, copy, scene, "", brief, anchor=bool(anchor_url))
-        for attempt in (1, 2):
-            prompt = base_prompt
-            if attempt == 2:
-                prompt += "\nREPAIR: reproduce the reference product exactly; keep the frame clean."
-            photo = self._marketing_render(processor, prompt, render_refs)
-            candidate = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
-            qa = self._marketing_quality_check(refs, candidate, parts_hint)
-            if qa is None or qa.get("ok") or attempt == 2:
-                composed = candidate
-                qa_ok = bool(qa is None or qa.get("ok"))
-                break
-        if composed is None or (not qa_ok and product_bytes):
-            from .domain.premium_anchor import fallback_composite  # noqa: PLC0415
-
-            fallback_photo = fallback_composite(product_bytes, workdir=Path(self.assets.root))
-            if fallback_photo:
-                composed = compose_marketing_image(fallback_photo, template, copy)
-        if composed is None:
+        refs = [value for value in reference_values if str(value or "").strip()][:2]
+        if template == "feature_cards":
+            composed = self._marketing_feature_cards(processor, copy=copy)
+        else:
+            photo = self._marketing_render(processor, build_photo_prompt(template, copy), refs)
+            composed = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
+        if not composed:
             raise ProductProcessingValidationError("营销图生成失败")
         path = self.assets.save_generated_image(
             int(draft_id or 0),

@@ -1,4 +1,4 @@
-"""精选处理（一期）：排版层 + 提示词层的行为测试。"""
+"""精选处理（第一版形态）：排版层 + 提示词层的行为测试。"""
 
 from __future__ import annotations
 
@@ -9,20 +9,15 @@ from PIL import Image, ImageDraw
 
 from wh_local.modules.product_processing.domain.premium_composer import (
     MarketingCopy,
+    compose_feature_cards,
     compose_marketing_image,
     filter_copy,
 )
-from wh_local.modules.product_processing.domain.marketing_refs import pick_clean_references
 from wh_local.modules.product_processing.domain.premium_prompts import (
-    build_brief_messages,
+    build_card_prompt,
     build_photo_prompt,
-    build_qa_messages,
-    build_scene_messages,
-    clean_brief,
     fallback_copy,
     parse_copy_response,
-    parse_qa_response,
-    parse_scene_plan,
 )
 
 
@@ -80,16 +75,38 @@ def test_compose_rejects_unknown_template() -> None:
         raise AssertionError("未知版式没有报错")
 
 
-def test_photo_prompt_forbids_rendered_text() -> None:
-    prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Sharp And Smooth", subline="x"))
-    assert "Any text" in prompt
-    assert "FORBIDDEN" in prompt
-    assert "FINAL SELF-CHECK" in prompt
+def test_photo_prompt_is_first_version_short_contract() -> None:
+    """第一版形态：短合同 + 版式构图（无场景方案/brief/锚点等扩展）。"""
+    prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Sharp And Smooth"))
+    assert "HARD RULES" in prompt
+    assert "ZERO text" in prompt
+    assert "COMPOSITION" in prompt
+    assert "FUSION MODE" not in prompt
+    assert "EDIT MODE" not in prompt
+    assert "FINAL SELF-CHECK" not in prompt
+
+
+def test_card_prompt_is_macro() -> None:
+    prompt = build_card_prompt("Cutting")
+    assert "extreme close-up" in prompt
+    assert "Cutting" in prompt
+
+
+def test_compose_feature_cards_layout() -> None:
+    hero = _photo_bytes()
+    card = _photo_bytes(400, (60, 60, 60))
+    out = compose_feature_cards(
+        hero,
+        [(card, "Wire Stripping"), (card, "Crimping"), (card, "Cutting"), (card, "Twisting")],
+        MarketingCopy(headline="Precision Working Head", subline="Designed for control"),
+    )
+    image = Image.open(BytesIO(out))
+    assert image.size == (1600, 1600)
+    assert out[:2] == b"\xff\xd8"
 
 
 def test_batch_hook_passes_real_task_id() -> None:
-    """批次里调营销图生成必须传真实 task_id（曾把 draft_id 当 task_id，
-    预览注册校验「preview image target does not belong to this task」三张全丢）。"""
+    """批次里调营销图生成必须传真实 task_id（曾把 draft_id 当 task_id，三张全丢）。"""
     import re
     from pathlib import Path as _Path
 
@@ -102,200 +119,44 @@ def test_batch_hook_passes_real_task_id() -> None:
     ), "批次挂载处必须用 task_id 调 _generate_marketing_images"
 
 
-def test_scene_plan_parse_and_reject() -> None:
-    plan = parse_scene_plan('{"surface": "dark walnut workbench", "action": "wire clamped in jaws", "props": ["coil"]}')
-    assert plan is not None
-    assert plan["surface"] == "dark walnut workbench"
-    assert plan["action"] == "wire clamped in jaws"
-    assert plan["props"] == ["coil"]
-    assert parse_scene_plan("no json") is None
-    assert parse_scene_plan('{"action": "x"}') is None  # 缺 surface 不可用
+def test_compose_callout_ring_with_and_without_coords() -> None:
+    from wh_local.modules.product_processing.domain.premium_composer import compose_callout_ring
 
-
-def test_photo_prompt_without_scene_is_conservative() -> None:
-    prompt = build_photo_prompt("action_proof", MarketingCopy(headline="Cup Holder"))
-    assert "ACTION: none" in prompt
-    assert "PROPS: none" in prompt
-
-
-def test_photo_prompt_with_scene_uses_surface_and_forces_no_action() -> None:
-    """台面来自方案；动作/道具永久禁用（2026-11-23 两轮实测：画动作必穿模）。"""
-    plan = {"surface": "brushed steel table", "action": "wire clamped in jaws", "props": ["coil"]}
-    prompt = build_photo_prompt("action_proof", MarketingCopy(headline="Pour Over"), plan)
-    assert "brushed steel table" in prompt
-    assert "ACTION: none" in prompt
-    assert "PROPS: none" in prompt
-    assert "coil" not in prompt.split("SCENE PLAN")[-1].split("Overall tone")[0]
-
-
-def test_scene_messages_include_product_context() -> None:
-    messages = build_scene_messages("Wire Stripper", "tools", "a 5-in-1 electrical stripping tool")
-    text = " ".join(str(item.get("content")) for item in messages)
-    assert "Wire Stripper" in text and "tools" in text and "5-in-1" in text
-
-
-def _png(color, side=200, noise: bool = False) -> bytes:
-    from io import BytesIO as _B
-    import random
-
-    image = Image.new("RGB", (side, side), color)
-    if noise:
-        draw = ImageDraw.Draw(image)
-        rng = random.Random(7)
-        for _ in range(400):
-            x = rng.randint(0, side - 20)
-            y = rng.randint(0, side - 20)
-            draw.rectangle([x, y, x + rng.randint(6, 26), y + rng.randint(6, 26)], fill=tuple(rng.randint(0, 255) for _ in range(3)))
-    buffer = _B()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def test_pick_clean_references_prefers_white_background() -> None:
-    """白底干净图应排在嘈杂拼贴图前面。"""
-    urls = ["busy", "clean"]
-    payloads = {"busy": _png((240, 40, 40), noise=True), "clean": _png((252, 252, 252))}
-
-    picked = pick_clean_references(urls, lambda url: payloads[url], limit=1)
-    assert picked == ["clean"]
-
-
-def test_pick_clean_references_falls_back_on_fetch_error() -> None:
-    def _boom(_: str) -> bytes:
-        raise RuntimeError("net down")
-
-    assert pick_clean_references(["a", "b", "c"], _boom) == ["a", "b"]
-
-
-def test_qa_parse_ok_and_bad() -> None:
-    good = parse_qa_response(
-        '{"same_product": true, "fidelity_ok": true, "extra_objects": false, "has_text": false, "issues": ""}'
+    copy = MarketingCopy(headline="RATCHET SELF-LOCKING", subline="Powerful grip")
+    hero = _photo_bytes(1200, (40, 40, 44))
+    out = compose_callout_ring(
+        hero,
+        [
+            {"label": "RATCHET LOCK", "x": 420, "y": 300},
+            {"label": "FORGED STEEL", "x": 620, "y": 260},
+            {"label": "GRIP", "x": 500, "y": 700},
+        ],
+        copy,
     )
-    assert good is not None and good["ok"] is True
-    bad = parse_qa_response(
-        '{"same_product": true, "fidelity_ok": false, "extra_objects": true, "has_text": false, "issues": "melted jaw"}'
+    assert Image.open(BytesIO(out)).size == (1600, 1600)
+    # 无坐标也不炸：退化为编号列表
+    fallback = compose_callout_ring(hero, [{"label": "No Coords", "x": -1, "y": -1}], copy)
+    assert Image.open(BytesIO(fallback)).size == (1600, 1600)
+
+
+def test_compose_feature_strip() -> None:
+    from wh_local.modules.product_processing.domain.premium_composer import compose_feature_strip
+
+    hero = _photo_bytes(1200, (30, 30, 36))
+    card = _photo_bytes(400, (90, 90, 96))
+    out = compose_feature_strip(
+        hero,
+        [(card, "Wire Stripping"), (card, "Cutting"), (card, "Crimping"), (card, "Twisting")],
+        MarketingCopy(headline="4-IN-1 MULTI-FUNCTION"),
     )
-    assert bad is not None and bad["ok"] is False and bad["issues"] == "melted jaw"
-    assert parse_qa_response("not json") is None
+    assert Image.open(BytesIO(out)).size == (1600, 1600)
 
 
-def test_qa_messages_contain_two_images() -> None:
-    messages = build_qa_messages("data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB")
-    content = messages[-1]["content"]
-    assert sum(1 for part in content if part.get("type") == "image_url") == 2
+def test_parse_callout_response() -> None:
+    from wh_local.modules.product_processing.domain.premium_prompts import parse_callout_response
 
-
-def test_scene_plan_carries_parts_and_materials() -> None:
-    """部件清单由场景方案现场产出（不做品类穷举）。"""
-    plan = parse_scene_plan(
-        '{"surface": "dark walnut workbench", "action": "", "props": [],'
-        ' "type_label": "leather tote bag", "parts": "body panels, straps, zipper", "materials": "pebbled leather"}'
+    parts = parse_callout_response(
+        '{"parts": [{"label": "Jaws", "x": 400, "y": 300}, {"label": "Pivot", "x": 1200, "y": 5}]}'
     )
-    assert plan is not None
-    assert plan["type_label"] == "leather tote bag"
-    assert "zipper" in plan["parts"]
-    assert plan["materials"] == "pebbled leather"
-
-
-def test_photo_prompt_uses_dynamic_parts() -> None:
-    scene = {"surface": "dark walnut workbench", "parts": "body panels, straps, zipper", "type_label": "leather tote bag"}
-    prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Everyday Tote"), scene)
-    assert "leather tote bag" in prompt
-    assert "COUNT THESE PARTS WHEN YOU CHECK: body panels, straps, zipper" in prompt
-
-
-def test_photo_prompt_falls_back_to_generic_counting() -> None:
-    prompt = build_photo_prompt("headline_hero", MarketingCopy(headline="Any Product"), {"surface": "matte stone"})
-    assert "every distinct visible part" in prompt
-
-
-def test_qa_includes_parts_hint() -> None:
-    messages = build_qa_messages("data:image/jpeg;base64,AAA", "data:image/jpeg;base64,BBB", "straps, zipper, buckles")
-    text = " ".join(str(part.get("text") or "") for part in messages[-1]["content"])
-    assert "straps, zipper, buckles" in text
-
-
-def test_brief_messages_include_operator_caution() -> None:
-    messages = build_brief_messages(
-        "Tin Snips", "tools", "green handle tin snips", "handles x2, jaws x1", "dark stone",
-        caution="把手必须是两只、钳头别融化",
-    )
-    text = " ".join(str(item.get("content")) for item in messages)
-    assert "Tin Snips" in text
-    assert "handles x2" in text
-    assert "把手必须是两只、钳头别融化" in text
-    assert "PRODUCT:" in text and "LOCK:" in text and "AVOID:" in text and "SHOT:" in text
-
-
-def test_clean_brief_rejects_chinese_and_fences() -> None:
-    assert clean_brief("PRODUCT: good tool") == "PRODUCT: good tool"
-    assert clean_brief("PRODUCT: 好用的工具") == ""
-    assert clean_brief("") == ""
-
-
-def test_photo_prompt_embeds_brief() -> None:
-    prompt = build_photo_prompt(
-        "headline_hero", MarketingCopy(headline="Snips"), {"surface": "stone"}, "",
-        "PRODUCT: industrial tin snips. LOCK: exactly 2 handles. AVOID: extra pivots.",
-    )
-    assert "PRODUCT-SPECIFIC BRIEF" in prompt
-    assert "exactly 2 handles" in prompt
-
-
-def _white_bg_product() -> bytes:
-    image = Image.new("RGB", (600, 600), (250, 250, 250))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle([180, 180, 420, 480], radius=30, fill=(200, 40, 40))
-    buffer = BytesIO()
-    image.save(buffer, format="JPEG")
-    return buffer.getvalue()
-
-
-def test_cutout_and_anchor_work_without_rembg() -> None:
-    """白底产品走泛洪抠图兜底：cutout / anchor 都应产出。"""
-    from wh_local.modules.product_processing.domain.premium_anchor import anchor_image, cutout_rgba
-
-    product = _white_bg_product()
-    png = cutout_rgba(product)
-    assert png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
-    anchor = anchor_image(product)
-    assert anchor is not None
-
-
-def test_fallback_composite_is_guaranteed() -> None:
-    """纯合成兜底必须能出图（产品像素真，AI 失败时保底）。"""
-    from wh_local.modules.product_processing.domain.premium_anchor import fallback_composite
-
-    photo = fallback_composite(_white_bg_product(), side=600, workdir=Path(__file__).parent)
-    assert photo is not None and photo[:2] == b"\xff\xd8"
-
-
-def test_cutout_rejects_non_light_background() -> None:
-    """背景不浅时简易抠图不可靠，应返回 None 而不是硬抠。"""
-    from wh_local.modules.product_processing.domain.premium_anchor import cutout_rgba
-
-    dark = Image.new("RGB", (400, 400), (20, 20, 20))
-    buffer = BytesIO()
-    dark.save(buffer, format="JPEG")
-    assert cutout_rgba(buffer.getvalue()) is None
-
-
-def test_compose_feature_cards_layout() -> None:
-    """功能细节卡：hero + 2×2 微距卡合成。"""
-    from wh_local.modules.product_processing.domain.premium_composer import compose_feature_cards
-
-    hero = _white_bg_product()
-    card = _white_bg_product()
-    out = compose_feature_cards(hero, [(card, "Wire Stripping"), (card, "Crimping"), (card, "Cutting"), (card, "Twisting")], MarketingCopy(headline="Precision Working Head", subline="Designed for control"))
-    image = Image.open(BytesIO(out))
-    assert image.size == (1600, 1600)
-    assert out[:2] == b"\xff\xd8"
-
-
-def test_card_prompt_is_macro_fusion() -> None:
-    from wh_local.modules.product_processing.domain.premium_prompts import build_card_prompt
-
-    prompt = build_card_prompt("Wire Stripping", {"surface": "dark walnut"})
-    assert "MACRO COMPOSITION" in prompt
-    assert "Wire Stripping" in prompt
-    assert "FUSION MODE" in prompt
+    assert len(parts) == 1 and parts[0]["label"] == "Jaws"
+    assert parse_callout_response("nope") == []
