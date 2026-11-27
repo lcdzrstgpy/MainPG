@@ -1618,9 +1618,7 @@ class DimensionCanvasRepository:
             carousel_values = semantic_values or [
                 str(value or "").strip() for value in result.get("carousel_image_paths") or []
             ]
-            summary = str(result.get("grid_image_summary_path") or "").strip()
-            if summary:
-                carousel_values.append(summary)
+            # 四宫格拼图是内部传输产物，不能作为尺寸画布的可选图片给用户。
         carousel_values = list(dict.fromkeys(value for value in carousel_values if value))
         main_value = str(overrides.get("main_image") or "").strip()
         if not main_value and carousel_values:

@@ -551,6 +551,107 @@ def test_saved_legacy_preview_asset_ids_resolve_to_current_v2_proxies(tmp_path: 
     assert manifest["detail_asset_ids"][0] == manifest["main_asset_id"]
 
 
+def test_grid_summary_is_hidden_from_preview_and_material_library(tmp_path: Path) -> None:
+    """四宫格拼图只是生成链路的内部传输产物：素材库/预览只给拆好的 4 张轮播图。"""
+    service, task_id, draft_id = _seeded_v2_product(tmp_path, materialize=False)
+    summary = service.preview_images.register_generated(
+        task_id=task_id,
+        product_draft_id=draft_id,
+        workspace_id="ws",
+        media=GeneratedMedia(
+            stage="grid_image_summary",
+            content=_jpeg("white"),
+            content_type="image/jpeg",
+            suffix=".jpg",
+            provider="local-compose",
+            model="pillow",
+            reference_count=4,
+        ),
+    )
+    task = service.repository.get_task(task_id, "ws")
+    assert task is not None
+    item = task["items"][0]
+    result = dict(item["result"] or {})
+    result["grid_image_summary_path"] = summary["preview_url"]
+    service.repository.finish_task(
+        task_id,
+        [{"item_id": item["id"], "status": "completed", "reason": "", "result": result}],
+        output_file="",
+        error_report_file="",
+        video_manifest_file="",
+        workspace_id="ws",
+    )
+
+    preview = service.task_preview(task_id, workspace_id="ws")["items"][0]
+    assert all(
+        asset["media_asset_id"] != summary["media_asset_id"]
+        for asset in preview["assets"]
+    )
+    assert all(
+        summary["preview_url"] not in str(asset.get("preview_url") or "")
+        for asset in preview["assets"]
+    )
+
+
+def test_old_task_carousel_bindings_do_not_leak_into_new_task(tmp_path: Path) -> None:
+    """旧任务的轮播绑定属于旧产物：新任务素材库里不能再出现它的图为「AI 处理图」。"""
+    service, task_id, draft_id = _seeded_v2_product(tmp_path, materialize=False)
+    draft = service.repository.get_draft(draft_id, workspace_id="ws")
+    assert draft is not None
+    previous = service.repository.create_task(
+        title="previous",
+        preflight_only=False,
+        settings={},
+        drafts=[draft],
+        idempotency_key=None,
+        workspace_id="ws",
+    )
+    generated = service.preview_images.register_generated(
+        task_id=int(previous["id"]),
+        product_draft_id=draft_id,
+        workspace_id="ws",
+        media=GeneratedMedia(
+            stage="grid_image_1",
+            content=_jpeg("blue"),
+            content_type="image/jpeg",
+            suffix=".jpg",
+            provider="test",
+            model="test",
+            reference_count=1,
+        ),
+    )
+    service.media_assets.bind_asset(
+        workspace_id="ws",
+        asset_id=generated["media_asset_id"],
+        product_draft_id=draft_id,
+        task_id=int(previous["id"]),
+        role="carousel",
+        slot_id="carousel.hero",
+        sort_order=0,
+    )
+    # 模拟旧版本已经为当前任务落下的代理行：仅靠绑定过滤不够，投影也要跳过它。
+    service.preview_images.register_media_proxy(
+        task_id=task_id,
+        product_draft_id=draft_id,
+        workspace_id="ws",
+        media_asset_id=generated["media_asset_id"],
+        origin="generated",
+    )
+
+    preview = service.task_preview(task_id, workspace_id="ws")["items"][0]
+    assert all(
+        asset["media_asset_id"] != generated["media_asset_id"]
+        for asset in preview["assets"]
+    )
+    # 旧绑定仍在，只是不会被新任务的投影读取。
+    bindings = service.media_assets.list_bindings("ws", product_draft_id=draft_id)
+    assert any(
+        binding["asset_id"] == generated["media_asset_id"]
+        and int(binding.get("task_id") or 0) == int(previous["id"])
+        for binding in bindings
+    )
+
+
 def _seeded_v1_product(tmp_path: Path) -> tuple[ProductProcessingService, int, int]:
     """手动采集类 v1 草稿：源图只存 result.source_image_urls，无 v2 远程绑定。"""
     service = ProductProcessingService(

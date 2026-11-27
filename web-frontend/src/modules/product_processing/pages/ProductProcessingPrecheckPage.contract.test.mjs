@@ -44,5 +44,6 @@ test("precheck highlights variant translations that retained their original valu
   assert.match(page, /规格翻译待确认/);
   assert.match(page, /系统已保留原值，请在导出前人工修改/);
   assert.match(styles, /\.precheck-variant-review\s*\{/);
-  assert.match(styles, /border-left:\s*4px solid #d94855/);
+  assert.match(styles, /border:\s*1px solid #f1b8bd/);
+  assert.match(styles, /background:\s*#fff5f6/);
 });

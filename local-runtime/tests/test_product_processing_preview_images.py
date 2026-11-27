@@ -226,6 +226,46 @@ def test_task_preview_exposes_each_draft_media_contract_version(tmp_path: Path) 
     assert preview["items"][0]["media_contract_version"] == 1
 
 
+def test_source_detail_library_images_are_not_projected_as_detail_images(tmp_path: Path) -> None:
+    """供应商详情图不能顶替商品详情图（任务 56 的 12 张中文广告图问题）。
+
+    来源图入库时同样绑定 ``role=detail``；当任务没有生成详情图时，预检的
+    「详情图为空时按 role 回退」会把这些原始素材顶到详情图区，导致英文 listing
+    里出现中文店铺广告图。回退必须只认 processed（生成/上传）资产。
+    """
+    service, task, draft_id = _finished_service(tmp_path)
+    media_assets = service.preview_images.media_assets
+    assert media_assets is not None
+    source = media_assets.register_remote_asset(
+        "workspace-a", "https://img.alicdn.com/detail-1.jpg"
+    )
+    media_assets.bind_asset(
+        workspace_id="workspace-a",
+        asset_id=str(source["id"]),
+        product_draft_id=draft_id,
+        role="detail",
+        sort_order=0,
+        task_id=task["id"],
+    )
+
+    projected = service.preview_images.project_item_images(
+        task_id=task["id"],
+        product_draft_id=draft_id,
+        result={
+            "optimized_title": "Title",
+            "carousel_image_paths": [],
+            "detail_image_paths": [],
+        },
+        saved={},
+        workspace_id="workspace-a",
+    )
+
+    assert projected["image_manifest"]["detail_asset_ids"] == []
+    assert projected["detail_images"] == []
+    # 来源素材本身仍保留（只是不再顶替详情图）
+    assert media_assets.get_asset(str(source["id"]), "workspace-a") is not None
+
+
 def test_finalize_publishes_only_retained_assets_and_replays_idempotently(tmp_path: Path) -> None:
     service, task, draft_id = _finished_service(tmp_path)
     retained = service.register_preview_upload(

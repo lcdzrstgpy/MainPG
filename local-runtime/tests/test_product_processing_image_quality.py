@@ -269,18 +269,22 @@ def test_ark_image_request_sends_data_uri_refs_and_disables_watermark(monkeypatc
         {
             "base_url": "https://ark.cn-beijing.volces.com/api/v3",
             "api_key": "secret",
-            "model": "doubao-seedream-5-0-pro-260628",
-            "reference_model": "doubao-seedream-5-0-pro-260628",
+            "model": "doubao-seedream-5-0-flash-260915",
+            "reference_model": "doubao-seedream-5-0-flash-260915",
             "image_size": "2048x2048",
         },
         "grid contract",
         [(b"ref-bytes", "a.png", "image/png")],
         timeout_seconds=30,
+        # 营销图会把模型覆盖成 Pro：方舟分支必须真的用这个覆盖值，
+        # 不能继续读 provider 里配置的 Flash（此前就是这个 bug）。
+        model="doubao-seedream-5-0-pro-260628",
     )
 
     assert content == b"image-bytes"
     assert content_type == "image/png"
     assert captured["url"].endswith("/images/generations")
+    assert captured["json"]["model"] == "doubao-seedream-5-0-pro-260628"
     assert captured["json"]["watermark"] is False
     assert captured["json"]["size"] == "2K"
     assert captured["json"]["output_format"] == "png"

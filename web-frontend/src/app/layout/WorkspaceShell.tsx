@@ -1148,7 +1148,10 @@ export function WorkspaceShell({ currentRole = "operator", onSignOut, playEntryA
         );
         break;
       case "product_processing_history":
-        content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} />;
+        content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} kind="processing" />;
+        break;
+      case "product_processing_marketing_history":
+        content = <ProductProcessingHistoryPage onOpenTask={openProcessingTaskDetail} onOpenPrecheck={openProcessingPrecheck} kind="marketing" />;
         break;
       case "product_processing_sourcing":
         content = <ProductSourcingCostPage isActive={isActive} onOpenProfitActivity={openProfitActivity} />;

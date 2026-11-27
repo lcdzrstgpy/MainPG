@@ -157,9 +157,10 @@ def test_processing_table_dimensions_prefill_as_estimated_and_drawable() -> None
     assert (result.length.value_cm, result.width.value_cm, result.height.value_cm) == (30, 20, 10)
     assert result.length.provenance == "estimated"
     assert result.length.evidence_ref == "product_dimensions.length_cm:ai_estimated"
-    # 预估值允许自动出图，但必须能被预检页识别出来。
+    # 预估值能被预检页识别出来，但不允许自动出尺寸卡（只印确认过的数字）。
     assert result.drawable is True
     assert result.estimated is True
+    assert result.confirmed_drawable is False
 
 
 def test_explicit_product_evidence_wins_over_processing_estimate_per_axis() -> None:
@@ -209,11 +210,25 @@ def _estimated_dimensions() -> PhysicalDimensions:
     )
 
 
+def _confirmed_dimensions() -> PhysicalDimensions:
+    return PhysicalDimensions(
+        length=DimensionValue(value_cm=20, provenance="source_confirmed"),
+        width=DimensionValue(value_cm=9.8, provenance="manual_confirmed"),
+        height=DimensionValue(value_cm=4.5, provenance="source_confirmed"),
+    )
+
+
 def test_dimension_card_cells_use_inches() -> None:
-    cells = build_card_cells(_estimated_dimensions())
+    cells = build_card_cells(_confirmed_dimensions())
 
     assert cells[0] == ("Size", "inch")
     assert cells[1:] == (("Length", "7.9"), ("Width", "3.9"), ("Height", "1.8"))
+
+
+def test_dimension_card_refuses_estimated_only_dimensions() -> None:
+    """AI 预估的尺寸不上卡：印错数字比不出图更糟。"""
+    with pytest.raises(DimensionCardError):
+        build_card_cells(_estimated_dimensions())
 
 
 def test_dimension_card_formats_one_decimal() -> None:
@@ -230,7 +245,7 @@ def test_dimension_card_renders_onto_square_base() -> None:
     buffer = BytesIO()
     Image.new("RGB", (800, 800), (255, 255, 255)).save(buffer, format="PNG")
 
-    rendered = render_dimension_card(buffer.getvalue(), _estimated_dimensions())
+    rendered = render_dimension_card(buffer.getvalue(), _confirmed_dimensions())
 
     assert rendered[:2] == b"\xff\xd8"  # JPEG
     assert Image.open(BytesIO(rendered)).size == (800, 800)

@@ -116,7 +116,8 @@ def test_card_render_mode_settings_are_validated() -> None:
         DimensionCanvasService._validate_save_patch({"canvas_settings": {"card_corner": "center"}})
 
 
-def test_card_mode_accepts_estimated_dimensions_without_annotations() -> None:
+def test_card_mode_rejects_estimated_only_dimensions() -> None:
+    """预估值不上卡：只有 AI 猜的尺寸时不允许出尺寸图。"""
     service = DimensionCanvasService.__new__(DimensionCanvasService)
     item = {
         "selected_source_asset_id": "asset-1",
@@ -126,6 +127,25 @@ def test_card_mode_accepts_estimated_dimensions_without_annotations() -> None:
             "length": {"value_cm": 20, "provenance": "estimated"},
             "width": {"value_cm": 9.8, "provenance": "estimated"},
             "height": {"value_cm": 4.5, "provenance": "estimated"},
+            "conflict": False,
+        },
+        "canvas_settings": {"render_mode": "card"},
+        "annotations": [],
+    }
+
+    with pytest.raises(ValueError, match="no confirmed product dimensions"):
+        service._validate_complete(item)
+
+
+def test_card_mode_accepts_confirmed_dimensions_without_annotations() -> None:
+    service = DimensionCanvasService.__new__(DimensionCanvasService)
+    item = {
+        "selected_source_asset_id": "asset-1",
+        "target_slot_id": "carousel.dimension_background",
+        "assets": [{"id": "asset-1"}],
+        "physical_dimensions": {
+            "length": {"value_cm": 20, "provenance": "manual_confirmed"},
+            "width": {"value_cm": 9.8, "provenance": "source_confirmed"},
             "conflict": False,
         },
         "canvas_settings": {"render_mode": "card"},
@@ -146,7 +166,7 @@ def test_card_mode_rejects_missing_dimensions() -> None:
         "annotations": [],
     }
 
-    with pytest.raises(ValueError, match="no drawable product dimensions"):
+    with pytest.raises(ValueError, match="no confirmed product dimensions"):
         service._validate_complete(item)
 
 
@@ -574,7 +594,7 @@ def test_submit_review_ignores_legacy_publisher_and_keeps_render_local(service_f
     assert asset["availability"] == "local"
 
 
-def test_v2_estimates_are_eligible_for_auto_card(tmp_path: Path) -> None:
+def test_v2_estimates_are_imported_but_not_burned_until_confirmed(tmp_path: Path) -> None:
     database = create_database(f"sqlite:///{(tmp_path / 'v2-estimated.sqlite3').as_posix()}")
     assets = ProductProcessingAssets(tmp_path / "assets")
     product_repository = ProductProcessingRepository(database)
@@ -601,7 +621,7 @@ def test_v2_estimates_are_eligible_for_auto_card(tmp_path: Path) -> None:
             status="completed",
             result_json=json.dumps(
                 {
-                    # 只有表格/AI 预估，没有 source_confirmed：仍应进入 ready，供自动出卡。
+                    # 只有表格/AI 预估：仍导入（预检页要显示“预估”徽标），但先不出卡。
                     "product_dimensions": {
                         "length_cm": 20,
                         "width_cm": 9.8,

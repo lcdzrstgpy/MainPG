@@ -6,6 +6,7 @@ export type WorkspaceModuleId =
   | "daily_selection_collection"
   | "product_processing"
   | "product_processing_marketing"
+  | "product_processing_marketing_history"
   | "product_processing_history"
   | "product_processing_sourcing"
   | "product_processing_tasks"
@@ -44,6 +45,7 @@ export type WorkspaceModuleId =
 export type WorkspaceNavigationGroupId =
   | "ai_image_service"
   | "product_workflow"
+  | "marketing_workflow"
   | "combo_workflow"
   | "pod_workflow"
   | "sourcing_workflow"
@@ -137,6 +139,20 @@ const productProcessingMarketing: WorkspaceModule = {
   icon: "",
   iconClass: "iconfont icon-star",
   description: "选商品生成电商营销图（照片层 AI + 排版层合成）",
+};
+
+/** 侧栏里的「开始精选」入口；页签仍沿用注册表里的「精选处理」标题。 */
+const marketingStart: WorkspaceModule = {
+  ...productProcessingMarketing,
+  label: "开始精选",
+};
+
+const productProcessingMarketingHistory: WorkspaceModule = {
+  id: "product_processing_marketing_history",
+  label: "历史记录",
+  icon: "",
+  iconClass: "iconfont icon-reloadtime",
+  description: "查看精选处理批次、进度与输出文件",
 };
 
 const dimensionCanvas: WorkspaceModule = {
@@ -464,7 +480,18 @@ const productWorkflow: WorkspaceNavigationGroup = {
   iconClass: "iconfont icon-build",
   description: "采集、处理与尺寸图制作",
   defaultChildId: "daily_selection",
-  children: [collection, productProcessing, productProcessingMarketing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
+  children: [collection, productProcessing, productProcessingHistory, productProcessingSourcing, dimensionCanvas],
+};
+
+/** 精选处理分组：入口 + 自己的历史记录，和普通 AI 处理历史彻底分开。 */
+const marketingWorkflow: WorkspaceNavigationGroup = {
+  id: "marketing_workflow",
+  label: "精选处理",
+  icon: "",
+  iconClass: "iconfont icon-star",
+  description: "单物/套装选品出图与精选历史",
+  defaultChildId: "product_processing_marketing",
+  children: [marketingStart, productProcessingMarketingHistory],
 };
 
 const comboWorkflow: WorkspaceNavigationGroup = {
@@ -520,9 +547,10 @@ export const workspaceModules: WorkspaceNavigationItem[] = [
     label: "图像服务",
     icon: "",
     iconClass: "iconfont icon-image",
-    description: "产品处理、POD定制、商品自定义与 AI 视频",
+    description: "产品处理、精选处理、POD定制、商品自定义与 AI 视频",
     defaultChildId: "daily_selection",
-    children: [productWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
+    // 精选处理直接挂在「图像服务」下，与产品处理/POD定制同级，不再埋在 AI 处理里。
+    children: [productWorkflow, marketingWorkflow, podWorkflow, comboWorkflow, aiVideoWorkflow],
   },
   {
     // 海外上架：成品库在前、发布页在后 —— 进来第一眼是「有哪些成品可以发」，
@@ -570,6 +598,7 @@ export const workspacePageModules: WorkspaceModule[] = [
   productProcessing,
   productProcessingHistory,
   productProcessingMarketing,
+  productProcessingMarketingHistory,
   productProcessingSourcing,
   temuPublish,
   temuDraftLibrary,

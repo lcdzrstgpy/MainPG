@@ -22,7 +22,8 @@ PRIMARY_AI_BASE_URL = "https://station-88.aicoming.top/v1"
 # 个人中心「模型选择」开放的生图模型：只保留豆包 Seedream。
 # 无印（速创）链路已停用；历史保存值通过 _normalized_image_model 自动回落默认。
 IMAGE_MODEL_CHOICES: tuple[tuple[str, str], ...] = (
-    ("doubao-seedream-5-0-flash-260915", "Seedream 5.0 Flash（豆包）"),
+    ("doubao-seedream-5-0-flash-260915", "标准"),
+    ("doubao-seedream-5-0-pro-260628", "最高"),
 )
 IMAGE_MODEL_DEFAULT = IMAGE_MODEL_CHOICES[0][0]
 

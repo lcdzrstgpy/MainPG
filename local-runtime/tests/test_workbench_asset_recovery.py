@@ -17,7 +17,7 @@ def test_frontend_bootstrap_recovers_one_time_from_missing_hashed_assets() -> No
     source = index.read_text(encoding="utf-8")
 
     assert 'const recoveryKey = "mainpg_asset_recovery_v1"' in source
-    assert 'assetPathPrefix = "/assets/"' in source
+    assert 'assetPathPrefix = new URL("assets/", document.baseURI).pathname' in source
     assert 'window.addEventListener("error"' in source
     assert 'window.location.replace(recoveryUrl.toString())' in source
     assert 'window.sessionStorage.getItem(recoveryKey) === "retrying"' in source

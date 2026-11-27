@@ -205,7 +205,8 @@ class DimensionCanvasService:
                 if media_groups.get("dimension"):
                     groups["existing_dimension"].append(eligibility_item)
                     continue
-                # 包含表格/AI 预估：预估值允许自动出卡，预检页会标“预估”。
+                # 预估值也先导入：预检页要能看到「尺寸：预估」徽标并支持一键确认；
+                # 但未确认前不会烧卡（只印确认过的数字）。
                 parsed = prefill_physical_dimensions(result)
                 groups["ready" if parsed.drawable else "needs_dimensions"].append(eligibility_item)
                 continue
@@ -411,6 +412,7 @@ class DimensionCanvasService:
                 "imported": 0,
                 "rendered": 0,
                 "failed": 0,
+                "estimated": 0,
                 "change_set_id": "",
             }
         with self._auto_lock:
@@ -419,16 +421,50 @@ class DimensionCanvasService:
             )
         rendered = 0
         failed = 0
+        estimated = 0
         pending: list[tuple[str, int]] = []
         for summary in batch.get("items") or []:
             item = self.get_item(str(summary["id"]), workspace_id=workspace_id, snapshot=False)
             if item.get("state") == "completed":
                 rendered += 1
                 continue
-            asset_id = self._reuse_source_dimension(item, workspace_id)
-            source_reuse = "applied" if asset_id else "generated"
+            try:
+                dimensions = PhysicalDimensions.model_validate(
+                    item.get("physical_dimensions") or {}
+                )
+            except Exception:
+                dimensions = PhysicalDimensions()
+            if not dimensions.confirmed_drawable:
+                # 只有 AI 预估：先把卡片设置存下来（保留批次选的单位/角位），但不出图。
+                # 预检页确认尺寸后再补烧，绝不把猜出来的长宽高印到主图上。
+                try:
+                    self.save_item(
+                        item["id"],
+                        int(item.get("item_revision") or 0),
+                        {
+                            "annotations": [],
+                            "canvas_settings": {
+                                "render_mode": "card",
+                                "display_unit": unit,
+                                "card_corner": corner,
+                                "card_style": style,
+                                "fit": "cover",
+                                "source_reuse": "generated",
+                            },
+                        },
+                        workspace_id=workspace_id,
+                    )
+                except Exception:
+                    pass
+                estimated += 1
+                continue
+            # 底图优先第 4 格（白底主图）；只有没有轮播底图时才去复用原链接尺寸图，
+            # 避免把带供应商文字/包装的 800px 原图当底图。
+            asset_id = self._pick_dimension_source_asset(item)
+            source_reuse = "generated"
             if not asset_id:
-                asset_id = self._pick_dimension_source_asset(item)
+                asset_id = self._reuse_source_dimension(item, workspace_id)
+                source_reuse = "applied" if asset_id else "generated"
             if not asset_id:
                 failed += 1
                 continue
@@ -491,6 +527,7 @@ class DimensionCanvasService:
             "imported": len(batch.get("items") or []),
             "rendered": rendered,
             "failed": failed,
+            "estimated": estimated,
             "change_set_id": change_set_id,
         }
 
@@ -557,12 +594,16 @@ class DimensionCanvasService:
             )
         except Exception:
             dimensions = PhysicalDimensions()
-        if not dimensions.drawable:
-            return {"task_item_id": task_item_id, "skipped": "no_dimensions"}
+        if not dimensions.confirmed_drawable:
+            # 只有 AI 预估尺寸：不自动出卡（印错数字比不出图更糟），等预检页人工填值。
+            return {"task_item_id": task_item_id, "skipped": "no_confirmed_dimensions"}
         item = self.get_item(item["id"], workspace_id=workspace_id, snapshot=False)
-        asset_id = ""
+        # 优先用预检里的第 4 格（白底主图）：它才是真正干净、无供应商文字/品牌包装的
+        # 底图。以前先跑「复用原链接尺寸图」，会把带中文表格、西班牙语包装的供应商图
+        # 当底图（任务 60 的 800px 垃圾尺寸图就是这么来的）。
+        asset_id = self._pick_dimension_source_asset(item)
         source_reuse = "generated"
-        if prefetched_base:
+        if not asset_id and prefetched_base:
             # 生图阶段已经抠好的原图：这里只登记素材，不再 OCR/抠图。
             try:
                 uploaded = self.upload_asset(
@@ -576,13 +617,10 @@ class DimensionCanvasService:
                 source_reuse = "applied" if asset_id else "generated"
             except Exception:
                 asset_id = ""
-        elif not prefetch_checked:
-            # 没预取或预取取图失败：退回到本地媒体再试一次。
+        elif not asset_id and not prefetch_checked:
+            # 没有轮播底图时才退回本地媒体里的尺寸图。
             asset_id = self._reuse_source_dimension(item, workspace_id)
             source_reuse = "applied" if asset_id else "generated"
-        if not asset_id:
-            asset_id = self._pick_dimension_source_asset(item)
-            source_reuse = "generated"
         if not asset_id:
             return {"task_item_id": task_item_id, "skipped": "missing_image"}
         saved = self.save_item(
@@ -633,17 +671,16 @@ class DimensionCanvasService:
         }
 
     def confirm_estimated(self, task_id: int, *, workspace_id: str) -> dict[str, Any]:
-        """把本任务所有预估尺寸批量确认为人工确认（不重烧、不改图）。"""
+        """批量确认预估尺寸；之前因“只有预估”没出图的，确认后补烧一张尺寸卡。"""
 
         batch_id = str(uuid5(NAMESPACE_URL, f"mainpg:{workspace_id}:dimension:{task_id}"))
         confirmed = 0
+        to_burn: list[str] = []
         with self._auto_lock:
             canvas_items = self.canvas_repository.list_items_light(batch_id, workspace_id)
             if not canvas_items:
-                return {"task_id": task_id, "confirmed": 0}
+                return {"task_id": task_id, "confirmed": 0, "rendered": 0}
             for item in canvas_items:
-                if str(item.get("state") or "") != "completed":
-                    continue
                 try:
                     dimensions = PhysicalDimensions.model_validate(
                         item.get("physical_dimensions") or {}
@@ -656,7 +693,52 @@ class DimensionCanvasService:
                     item["id"], workspace_id
                 ):
                     confirmed += 1
-        return {"task_id": task_id, "confirmed": confirmed}
+                    if str(item.get("state") or "") != "completed":
+                        to_burn.append(str(item["id"]))
+        rendered = 0
+        for item_id in to_burn:
+            try:
+                if self._burn_card(item_id, workspace_id):
+                    rendered += 1
+            except Exception:  # noqa: BLE001 - 单条失败不影响其余商品
+                continue
+        return {"task_id": task_id, "confirmed": confirmed, "rendered": rendered}
+
+    def _burn_card(self, item_id: str, workspace_id: str) -> bool:
+        """按已存的卡片设置补烧一张尺寸图（不重新 OCR/抠图）；成功返回 True。"""
+
+        item = self.get_item(item_id, workspace_id=workspace_id, snapshot=False)
+        if item.get("state") == "completed":
+            return True
+        settings = dict(item.get("canvas_settings") or {})
+        settings.update({"render_mode": "card", "fit": "cover"})
+        settings.setdefault("display_unit", "in")
+        settings.setdefault("card_corner", "bottom-right")
+        settings.setdefault("card_style", "light")
+        settings.setdefault("source_reuse", "generated")
+        asset_id = str(item.get("selected_source_asset_id") or "") or self._pick_dimension_source_asset(
+            item
+        )
+        if not asset_id:
+            return False
+        saved = self.save_item(
+            item["id"],
+            int(item.get("item_revision") or 0),
+            {
+                "selected_source_asset_id": asset_id,
+                "target_slot_id": "carousel.dimension_background",
+                "annotations": [],
+                "canvas_settings": settings,
+            },
+            workspace_id=workspace_id,
+        )
+        self.complete_item(
+            saved["id"],
+            int(saved.get("item_revision") or 0),
+            workspace_id=workspace_id,
+        )
+        finished = self.wait_for_test_render(saved["id"], workspace_id=workspace_id, timeout=60)
+        return finished.get("state") == "completed"
 
     def reburn_task_item(
         self,
@@ -704,8 +786,8 @@ class DimensionCanvasService:
             height=values["height"],
             conflict=False,
         )
-        if not dimensions.drawable:
-            raise ValueError("no drawable product dimensions")
+        if not dimensions.confirmed_drawable:
+            raise ValueError("no confirmed product dimensions")
         selected = str(item.get("selected_source_asset_id") or "") or (
             self._pick_dimension_source_asset(item)
         )
@@ -1524,9 +1606,9 @@ class DimensionCanvasService:
             raise ValueError("physical dimensions are conflicting")
         settings = item.get("canvas_settings") or {}
         if str(settings.get("render_mode") or "arrows") == "card":
-            # 角标卡不依赖商品轮廓，只要有可画尺寸即可出图（预估也允许，预检页会标黄）。
-            if not dimensions.drawable:
-                raise ValueError("no drawable product dimensions")
+            # 角标卡不依赖商品轮廓，但只印「已确认」的尺寸；纯预估值不出卡。
+            if not dimensions.confirmed_drawable:
+                raise ValueError("no confirmed product dimensions")
             return
         annotations = item.get("annotations") or []
         if not annotations:

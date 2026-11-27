@@ -10,6 +10,9 @@ from .physical_dimensions import PhysicalDimensions
 
 INCHES_PER_CM = 1 / 2.54
 CARD_UNITS = {"in", "cm"}
+# 只有来源证据/人工确认的尺寸才允许上卡；AI 预估值（processing table）不印，
+# 避免把猜出来的长宽高当成商品事实印到主图上。
+PRINTABLE_PROVENANCE = {"source_confirmed", "manual_confirmed"}
 
 
 class DimensionCardError(ValueError):
@@ -41,9 +44,11 @@ def build_card_cells(
     ):
         if item.value_cm is None or item.value_cm <= 0:
             continue
+        if item.provenance not in PRINTABLE_PROVENANCE:
+            continue
         rows.append((label, format_dimension(float(item.value_cm), unit)))
     if len(rows) < 2:
-        raise DimensionCardError("no drawable dimensions for the card")
+        raise DimensionCardError("no confirmed dimensions for the card")
     return tuple(rows)
 
 

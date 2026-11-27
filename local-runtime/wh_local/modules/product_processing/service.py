@@ -13,6 +13,7 @@ import sys
 import threading
 import unicodedata
 import time
+import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -116,6 +117,13 @@ from .domain.policy import (
     product_policy_issue,
     strict_external_url_issue,
 )
+from .domain.reference_layouts import (
+    LayoutBlueprint,
+    build_layout_messages,
+    image_hash_distance,
+    parse_layout_response,
+    plan_from_blueprints,
+)
 from .domain.preview_images import task_item_result_version
 from .domain import sku_availability as sku_availability_domain
 from .domain.mahjong_panel import (
@@ -215,6 +223,65 @@ _LOGGER = logging.getLogger(__name__)
 # 上游生图服务无法据此生成 2K 商品图而直接失败。入库预检低于该值的图判为不可用，
 # 避免脏图进入草稿池被当成参考图拖垮整条生图。
 _SOURCE_IMAGE_MIN_EDGE = 300
+
+# 细节卡颜色一致性阈值：候选裁切主体均色与主参考主体均色的 RGB 欧氏距离超过该值，
+# 视为同款不同色（如米色商品混入黑色变体），直接跳过；同色不同角度不受影响。
+_DETAIL_COLOR_MAX_DISTANCE = 118.0
+
+# 细节特写「AI 同风格重绘」与真实裁切的均色距离上限：超过说明模型换了色/换了件
+# （黄柄画成红柄），直接回退原图裁切；光影明暗差异（约 50-90）不受影响。
+_DETAIL_STYLE_MAX_DISTANCE = 150.0
+
+# 「底部图片卡带」型版式（hero + 2×2/1×4 图片小卡）：同批最多保留 1 个，
+# 否则 4 张轮播图全是「上图下卡」，看起来像同一张图的 4 个版本。
+_CARD_GRID_TEMPLATES = ("feature_cards", "infographic_hero")
+# 「照片 + 底部信息带」家族：上半部完全同构（照片+标题），只差带内容
+# （照片卡/短词卡/编号卡），同批最多 2 个，否则几张图看着像三胞胎。
+_BAND_FAMILY_TEMPLATES = ("feature_cards", "icon_grid", "callout_ring")
+# 冲突时的替代链：只用非家族形态（清单引线 / 大字海报），否则替代位自己又
+# 占家族名额；跳过本批已有版式。
+_CARD_GRID_FALLBACKS = ("infographic_details", "headline_hero")
+
+
+def _dedupe_card_grid_templates(templates: Sequence[str]) -> tuple[list[str], list[str]]:
+    """版式互斥：图卡型同批最多 1 个，「照片+底部带」家族同批最多 2 个。
+
+    返回 ``(最终版式列表, 变更日志)``。替代链耗尽时丢弃该位——宁可少一张，
+    也不产出同质图。
+    """
+    used = {str(item).strip() for item in (templates or []) if str(item or "").strip()}
+    result: list[str] = []
+    card_grid_count = 0
+    band_count = 0
+    notes: list[str] = []
+    for template in templates or []:
+        key = str(template or "").strip()
+        if not key:
+            continue
+        is_card_grid = key in _CARD_GRID_TEMPLATES
+        is_band = key in _BAND_FAMILY_TEMPLATES
+        if (is_card_grid and card_grid_count >= 1) or (is_band and band_count >= 2):
+            replacement = next(
+                (
+                    item
+                    for item in _CARD_GRID_FALLBACKS
+                    if item not in used and item not in result
+                ),
+                "",
+            )
+            if replacement:
+                result.append(replacement)
+                used.add(replacement)
+                notes.append(f"card-grid:{key}->{replacement}")
+            else:
+                notes.append(f"card-grid:{key}->dropped")
+            continue
+        if is_card_grid:
+            card_grid_count += 1
+        if is_band:
+            band_count += 1
+        result.append(key)
+    return result, notes
 
 # 来源尺寸/重量确定性提取（对齐原项目 five-stage 的 deterministic_fact_build，0 AI）
 _DIMENSION_TRIPLE = re.compile(
@@ -606,6 +673,74 @@ def _ai_error_reason(exc: Exception) -> str:
     if isinstance(detail, str) and detail.strip() and detail.strip() not in message:
         message = f"{message}（{detail.strip()}）"
     return message[:200]
+
+
+# Pro 档「不可用」类错误：模型未授权 / 不存在 / 不支持。命中后本商品剩余候选
+# 直接走默认档，不再逐个重试 Pro。内容审核类错误不能熔断——换一张候选往往就过了。
+_PRO_UNAVAILABLE_MARKERS = (
+    "not granted",
+    "no permission",
+    "permission denied",
+    "not available",
+    "not found",
+    "does not exist",
+    "unsupported",
+    "no access",
+)
+_PRO_CONTENT_MARKERS = ("content", "policy", "sensitive", "moderation", "risk")
+
+
+def _pro_unavailable_error(exc: Exception) -> bool:
+    """判断异常是否说明 Pro 档整体不可用（而不是这张图的提示词/内容被拒）。"""
+
+    text = str(exc).lower()
+    if not text:
+        return False
+    if any(marker in text for marker in _PRO_CONTENT_MARKERS):
+        return False
+    return any(marker in text for marker in _PRO_UNAVAILABLE_MARKERS)
+
+
+def _marketing_lift_hero(content: bytes, factor: float = 1.10) -> bytes:
+    """营销 hero 轻微提亮：深色促销背景下商品更容易看清（文字由排版层后画，不受影响）。"""
+    if not content:
+        return content
+    try:
+        from io import BytesIO  # noqa: PLC0415
+
+        from PIL import Image, ImageEnhance  # noqa: PLC0415
+
+        with Image.open(BytesIO(content)) as opened:
+            image = opened.convert("RGB")
+        image = ImageEnhance.Brightness(image).enhance(float(factor))
+        image = ImageEnhance.Contrast(image).enhance(1.03)
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=93)
+        return buffer.getvalue()
+    except Exception:  # noqa: BLE001 - 提亮失败保留原图
+        return content
+
+
+def _white_frame_ok(content: bytes) -> bool:
+    """白底主图的外框是否真的纯白（四角 >= 250）。"""
+
+    try:
+        from io import BytesIO  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+
+        with Image.open(BytesIO(content)) as opened:
+            image = opened.convert("RGB")
+            width, height = image.size
+            corners = [
+                image.getpixel((2, 2)),
+                image.getpixel((width - 3, 2)),
+                image.getpixel((2, height - 3)),
+                image.getpixel((width - 3, height - 3)),
+            ]
+        return all(min(pixel) >= 250 for pixel in corners)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _billing_call_with_retry(
@@ -1036,6 +1171,38 @@ _COMBO_ROLE_KEY_BY_STAGE: dict[str, str] = {
     "grid_image_2": "detail",
     "grid_image_3": "lifestyle",
     "grid_image_4": "dimension",
+}
+
+# 成图终检里「商品被裁」的典型措辞；命中时用 contain 重排同一结构，
+# 而不是换骨架（换骨架会占用别的版式的结构，排出重复图）。
+_QC_CROP_HINTS: tuple[str, ...] = (
+    "cropp",
+    "cut off",
+    "cut by",
+    "out of frame",
+    "off the frame",
+    "truncated",
+    "clipped",
+    "partially visible",
+    "not fully visible",
+)
+
+
+def _qc_issues_look_cropped(issues: list[str]) -> bool:
+    text = " ".join(str(item or "").lower() for item in issues)
+    return any(hint in text for hint in _QC_CROP_HINTS)
+
+
+# 信息图候选的择优判据：和 S1-S4 的留白要求不同，按信息图自己的构图打分。
+_INFOGRAPHIC_HINTS: dict[str, str] = {
+    "infographic_hero": (
+        "the product sits in the right half of the frame; the left half must stay clean empty "
+        "background for the headline, benefits and the small card grid"
+    ),
+    "infographic_details": (
+        "the whole product is centred with even empty margins on every side so numbered "
+        "callout lines can be drawn around it"
+    ),
 }
 
 
@@ -2022,6 +2189,12 @@ class ProductProcessingService:
         self._doubao_subject_cache_lock = threading.Lock()
         self._source_data_url_cache: dict[str, str] = {}
         self._source_data_url_lock = threading.Lock()
+        # 原图版式分析结果：(workspace, draft) -> (过期时刻, 原图指纹, 结果)。
+        # 前端「拆解原图」与后续生成共用同一份缓存，避免每张图重复付视觉调用费用。
+        self._reference_layout_cache: dict[
+            tuple[str, int], tuple[float, str, dict[str, Any]]
+        ] = {}
+        self._reference_layout_lock = threading.Lock()
         self.dimension_templates.configure_background_refresh(
             busy_check=self._dimension_template_refresh_busy,
             debounce_seconds=30,
@@ -3051,8 +3224,25 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         except (DoubaoTextError, ValueError):
             return {"optimized_title": "", "description": ""}
 
-    def _marketing_copy(self, title: str, category: str, template: str) -> Any:
-        """精选处理的英文文案（豆包生成；失败走保底标题，不编造卖点）。"""
+    def _marketing_copy(
+        self,
+        title: str,
+        category: str,
+        template: str,
+        *,
+        subject: str = "",
+        caution: str = "",
+        key_info: str = "",
+        bullet_count: int = 6,
+        set_count: int = 1,
+    ) -> Any:
+        """精选处理的英文文案（豆包生成；失败走保底标题，不编造卖点）。
+
+        ``subject`` / ``caution`` 是视觉确认的主体与操作者注意点，写进文案提示词，
+        避免文案与商品或注意点相互矛盾。``key_info`` 是用户填写的「重要信息」，
+        作为必须体现的事实写进文案（中文由模型翻成英文）。``bullet_count`` 是本次
+        商品实际会渲染的短词上限，按结构取 4 或 6，不生成永远用不上的标签。
+        """
         from .domain.premium_prompts import (  # noqa: PLC0415
             build_copy_messages,
             fallback_copy,
@@ -3060,7 +3250,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         )
 
         try:
-            text = DoubaoArkClient().complete(build_copy_messages(title, category, template))
+            text = DoubaoArkClient().complete(
+                build_copy_messages(
+                    title,
+                    category,
+                    template,
+                    subject=subject,
+                    caution=caution,
+                    key_info=key_info,
+                    bullet_count=bullet_count,
+                    set_count=set_count,
+                )
+            )
             copy = parse_copy_response(text)
             if copy is not None:
                 return copy
@@ -3068,25 +3269,117 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             pass
         return fallback_copy(title)
 
+    def _marketing_copy_set(
+        self,
+        title: str,
+        category: str,
+        templates: list[str],
+        *,
+        subject: str = "",
+        caution: str = "",
+        key_info: str = "",
+        bullet_count: int = 6,
+        set_count: int = 1,
+    ) -> dict[str, Any]:
+        """同一商品多张轮播图的差异化文案：一次调用出多份，标题/卖点互不复读。
+
+        返回 ``{版式key: MarketingCopy}``；模型漏出或解析失败的版式用
+        :func:`fallback_copy` 保底（宁可保底，不错配文案与版式）。
+        """
+        from .domain.premium_prompts import (  # noqa: PLC0415
+            build_copy_set_messages,
+            fallback_copy,
+            parse_copy_set_response,
+        )
+
+        keys = [str(item).strip() for item in (templates or []) if str(item or "").strip()]
+        if not keys:
+            return {}
+        result: dict[str, Any] = {}
+        try:
+            text = DoubaoArkClient().complete(
+                build_copy_set_messages(
+                    title,
+                    category,
+                    keys,
+                    subject=subject,
+                    caution=caution,
+                    key_info=key_info,
+                    bullet_count=bullet_count,
+                    set_count=set_count,
+                )
+            )
+            result.update(parse_copy_set_response(text, keys))
+        except Exception:  # noqa: BLE001
+            pass
+        for index, key in enumerate(keys):
+            # 兜底按版式取不同词窗：同一商品多版式同时走兜底时标题不复读。
+            result.setdefault(key, fallback_copy(title, variant=index))
+        return result
+
     def _marketing_render(
         self,
         processor: Any,
         prompt: str,
         refs: list[str],
         ai_notes: list[str] | None = None,
+        pro_state: dict[str, Any] | None = None,
+        tier: str = "highest",
     ) -> Any:
-        """营销图照片层：优先 Pro 档；上游拒绝（无权限/不可用）落回默认档。"""
-        from .provider_config import MARKETING_IMAGE_MODEL_PRO  # noqa: PLC0415
+        """营销图照片层：按画质档位选模型。
 
-        try:
+        ``tier="highest"``（默认）优先 Pro 档；上游拒绝（无权限/不可用）落回 Flash。
+        ``tier="standard"`` 直接走 Flash，不尝试 Pro（更快、更便宜）。
+        ``pro_state`` 是商品维度的熔断状态（``{"enabled": bool}``）。Pro 不可用时
+        第一次失败就把本商品剩余候选全部切到默认档，避免 13 次任务里重复 13 次
+        失败尝试；内容审核类错误不熔断（换一张候选通常就好了）。
+        """
+        from .provider_config import (  # noqa: PLC0415
+            MARKETING_IMAGE_MODEL_FALLBACK,
+            MARKETING_IMAGE_MODEL_PRO,
+        )
+
+        mode = str(tier or "highest").strip().lower()
+        if mode == "standard":
+            result = processor.generate(
+                stage="marketing_photo",
+                prompt=prompt,
+                reference_values=refs,
+                image_size="2048x2048",
+                model_override=MARKETING_IMAGE_MODEL_FALLBACK,
+            )
+            if ai_notes is not None:
+                used_model = str(getattr(result, "model", "") or "").strip()
+                ai_notes.append(
+                    f"marketing:model:{used_model or MARKETING_IMAGE_MODEL_FALLBACK}"
+                )
+            return result
+
+        if pro_state is not None and not pro_state.get("enabled", True):
             return processor.generate(
+                stage="marketing_photo",
+                prompt=prompt,
+                reference_values=refs,
+                image_size="2048x2048",
+                model_override=MARKETING_IMAGE_MODEL_FALLBACK,
+            )
+        try:
+            result = processor.generate(
                 stage="marketing_photo",
                 prompt=prompt,
                 reference_values=refs,
                 image_size="2048x2048",
                 model_override=MARKETING_IMAGE_MODEL_PRO,
             )
+            if ai_notes is not None:
+                used_model = str(getattr(result, "model", "") or "").strip()
+                ai_notes.append(f"marketing:model:{used_model or MARKETING_IMAGE_MODEL_PRO}")
+            return result
         except Exception as exc:  # noqa: BLE001
+            if pro_state is not None and _pro_unavailable_error(exc):
+                pro_state["enabled"] = False
+                if ai_notes is not None:
+                    ai_notes.append("marketing:pro-circuit-open")
             if ai_notes is not None:
                 ai_notes.append(f"marketing:pro-unavailable:{str(exc)[:160]}")
             return processor.generate(
@@ -3094,6 +3387,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 prompt=prompt,
                 reference_values=refs,
                 image_size="2048x2048",
+                model_override=MARKETING_IMAGE_MODEL_FALLBACK,
             )
 
     def _translate_combo_prompt(self, text: str) -> str:
@@ -3321,90 +3615,573 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             # 保留 open 记录供后续对账/服务端 TTL 兜底，避免「结算失败被静默吞掉」。
             _mark_freeze_settle_failure(freeze_id, str(exc)[:200])
 
-    def _marketing_callout_parts(self, hero_bytes: bytes) -> list[dict]:
-        """视觉模型在 hero 上标出关键部位坐标；失败返回空表（版式退化为编号列表）。"""
-        import base64  # noqa: PLC0415
+    def _marketing_callout_parts(
+        self, hero_bytes: bytes, ai_notes: list[str] | None = None
+    ) -> list[dict]:
+        """视觉模型在 hero 上标出关键部位坐标；失败返回空表（版式退化为编号列表）。
 
-        from .domain.premium_prompts import build_callout_messages, parse_callout_response  # noqa: PLC0415
-        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        两段式定位：
+        1. 整图只允许落在 3×3 网格锚点（粗定位稳定，不要求模型给连续坐标）；
+        2. 把每个锚点附近的区域裁出来放大，让模型在局部图里给精确坐标
+           （``_marketing_refine_callout_parts``）。局部失败保留第一段坐标。
+
+        与主体识别使用同一套护栏：先把长边压到 ``VISION_IMAGE_MAX_EDGE`` 再编码
+        （2048 原图 base64 后容易触发上游 413/超时），transient 错误重试一次；
+        失败原因写进 ``ai_notes``，不再静默吞掉——任务 56 只留下 ``callout:parts0``，
+        完全查不出是超时、413 还是模型没按 JSON 返回。
+        """
+        from .domain.marketing_gen import build_callout_messages, parse_callout_response  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient, DoubaoArkError  # noqa: PLC0415
         from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
 
         if not hero_bytes:
             return []
-        cache = getattr(self, "_marketing_callout_cache", None)
-        if cache is None:
-            cache = self._marketing_callout_cache = {}
-        key = hash(hero_bytes)
-        if key in cache:
-            return cache[key]
+        # 这里不再做 hero 字节缓存：hero 每个模板都是新生成的，同一次任务内
+        # 也只调用一次，hash 永远不会命中（旧缓存是死代码）。
         parts: list[dict] = []
         try:
-            data_url = "data:image/jpeg;base64," + base64.b64encode(hero_bytes).decode()
-            text = DoubaoArkClient(usage_kind="vision").complete(
-                build_callout_messages(data_url), timeout=VISION_TIMEOUT_SECONDS
-            )
-            parts = parse_callout_response(text)
-        except Exception:  # noqa: BLE001
+            messages = build_callout_messages(self._marketing_vision_data_url(hero_bytes))
+            last_error: Exception | None = None
+            for attempt in range(1, 3):
+                try:
+                    text = DoubaoArkClient(usage_kind="vision").complete(
+                        messages, timeout=VISION_TIMEOUT_SECONDS
+                    )
+                    last_error = None
+                    parts = parse_callout_response(text)
+                    if parts:
+                        break
+                    # 空结果也再试一次：模型偶尔返回空数组/无法定位，
+                    # 直接放弃会让信息图的细节卡与编号引线全部退化。
+                    if attempt >= 2:
+                        break
+                except DoubaoArkError as exc:
+                    last_error = exc
+                    if not exc.retryable or attempt >= 2:
+                        break
+            if last_error is not None and ai_notes is not None:
+                error_kind = str(getattr(last_error, "error_kind", "") or "unknown")
+                ai_notes.append(f"marketing:callout:error:{error_kind}:{str(last_error)[:140]}")
+            elif not parts and ai_notes is not None:
+                ai_notes.append("marketing:callout:no-parts-in-response")
+        except Exception as exc:  # noqa: BLE001
             parts = []
-        if len(cache) >= 8:
-            cache.pop(next(iter(cache)))
-        cache[key] = parts
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:callout:error:{str(exc)[:140]}")
+        if parts:
+            parts = self._marketing_refine_callout_parts(
+                hero_bytes, parts, ai_notes=ai_notes
+            )
         return parts
 
-    def _marketing_strip_cards(
-        self, processor: Any, labels: list[str], ai_notes: list[str] | None = None
-    ) -> list[tuple[bytes, str]]:
-        from .domain.premium_prompts import build_card_prompt  # noqa: PLC0415
-
-        cards: list[tuple[bytes, str]] = []
-        for label in labels:
-            try:
-                photo = self._marketing_render(processor, build_card_prompt(label), [], ai_notes)
-                content = bytes(getattr(photo, "content", b"") or b"")
-                if content:
-                    cards.append((content, label))
-            except Exception as exc:  # noqa: BLE001
-                if ai_notes is not None:
-                    ai_notes.append(f"marketing:card-failed:{str(exc)[:80]}")
-        return cards
-
-    def _marketing_feature_cards(
+    def _marketing_refine_callout_parts(
         self,
-        processor: Any,
+        hero_bytes: bytes,
+        parts: list[dict],
         *,
-        copy: Any,
         ai_notes: list[str] | None = None,
-    ) -> bytes | None:
-        """「功能细节卡」：hero 大图 + 4 张功能微距小卡（第一版直出风格）。"""
-        from .domain.premium_composer import compose_feature_cards  # noqa: PLC0415
-        from .domain.premium_prompts import build_card_prompt  # noqa: PLC0415
+        limit: int = 4,
+        side: float = 0.34,
+    ) -> list[dict]:
+        """第二段定位：裁出锚点附近区域放大，让视觉模型在局部返回精确坐标。
 
-        labels = [str(item) for item in (getattr(copy, "bullets", []) or []) if str(item or "").strip()][:4]
-        if len(labels) < 2:
-            return None
-        while len(labels) < 4:
-            labels.append(labels[-1])
-        hero = self._marketing_render(
-            processor, build_photo_prompt("headline_hero", copy), [], ai_notes
+        并发 4 路，单点失败/模型说看不见时保留第一段坐标；任何异常都不影响
+        已拿到的部件列表。
+        """
+        if not hero_bytes or not parts:
+            return parts
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+        from .domain.detail_specs import crop_reference_bytes  # noqa: PLC0415
+        from .domain.marketing_gen import (  # noqa: PLC0415
+            build_callout_refine_messages,
+            parse_callout_refine_response,
         )
-        hero_bytes = bytes(getattr(hero, "content", b"") or b"")
-        if not hero_bytes:
-            return None
-        cards: list[tuple[bytes, str]] = []
-        for label in labels:
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        targets = list(parts)[: max(1, int(limit))]
+        side = max(0.2, min(0.5, float(side)))
+
+        def _refine(item: dict) -> dict:
             try:
-                card_photo = self._marketing_render(
-                    processor, build_card_prompt(label), [], ai_notes
+                x = float(item.get("x"))
+                y = float(item.get("y"))
+            except (TypeError, ValueError):
+                return item
+            cx = max(0.0, min(1.0, x / 1000.0))
+            cy = max(0.0, min(1.0, y / 1000.0))
+            x0 = max(0.0, min(1.0 - side, cx - side / 2))
+            y0 = max(0.0, min(1.0 - side, cy - side / 2))
+            crop = crop_reference_bytes(
+                hero_bytes, (x0, y0, x0 + side, y0 + side), pad_ratio=0.0
+            )
+            if not crop:
+                return item
+            label = str(item.get("label") or "").strip() or "the part"
+            try:
+                text = DoubaoArkClient(usage_kind="vision").complete(
+                    build_callout_refine_messages(
+                        self._marketing_vision_data_url(crop), label
+                    ),
+                    timeout=VISION_TIMEOUT_SECONDS,
                 )
-                content = bytes(getattr(card_photo, "content", b"") or b"")
-                if content:
-                    cards.append((content, label))
-            except Exception as exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - 精修失败保留粗定位
+                return item
+            refined = parse_callout_refine_response(text)
+            if refined is None:
+                return item
+            rx, ry = refined
+            return {
+                **item,
+                "x": round((x0 + (rx / 1000.0) * side) * 1000, 1),
+                "y": round((y0 + (ry / 1000.0) * side) * 1000, 1),
+            }
+
+        with ThreadPoolExecutor(max_workers=min(4, len(targets))) as pool:
+            refined = list(pool.map(_refine, targets))
+        output = refined + list(parts[len(targets):])
+        changed = sum(
+            1
+            for before, after in zip(targets, refined)
+            if abs(float(after.get("x", 0)) - float(before.get("x", 0))) > 0.1
+            or abs(float(after.get("y", 0)) - float(before.get("y", 0))) > 0.1
+        )
+        if ai_notes is not None:
+            ai_notes.append(f"marketing:callout:refined:{changed}/{len(targets)}")
+        return output
+
+    def _marketing_reference_bytes(self, value: str) -> bytes:
+        """读取源图字节：本地受管文件优先，远程 URL 走既有 SSRF 安全抓取。"""
+
+        text = str(value or "").strip()
+        if not text:
+            return b""
+        try:
+            path = self.assets.require_managed_file(text)
+            return path.read_bytes()
+        except Exception:  # noqa: BLE001 - 不是受管文件就走远程
+            pass
+        if not text.lower().startswith(("http://", "https://")):
+            return b""
+        try:
+            fetched = self._public_image_fetcher(text)
+            return bytes(getattr(fetched, "content", b"") or b"")
+        except Exception:  # noqa: BLE001 - 单张失败不影响其它候选
+            return b""
+
+    @staticmethod
+    def _marketing_image_background_is_white(content: bytes) -> bool:
+        """判断源图是不是白/浅色底；深色、彩色底的尺寸图不能直接进第 4 格。"""
+
+        from io import BytesIO  # noqa: PLC0415
+
+        from PIL import Image, ImageStat  # noqa: PLC0415
+
+        try:
+            with Image.open(BytesIO(bytes(content or b""))) as opened:
+                image = opened.convert("RGB")
+        except Exception:  # noqa: BLE001
+            return False
+        width, height = image.size
+        if width < 2 or height < 2:
+            return False
+        band = max(1, int(min(width, height) * 0.06))
+        strips = [
+            image.crop((0, 0, width, band)),
+            image.crop((0, height - band, width, height)),
+            image.crop((0, 0, band, height)),
+            image.crop((width - band, 0, width, height)),
+        ]
+        border_means = sorted(
+            sum(ImageStat.Stat(strip).mean) / 3.0 for strip in strips
+        )
+        border_mean = border_means[len(border_means) // 2]
+        histogram = image.convert("L").histogram()
+        total = max(1, width * height)
+        bright_ratio = sum(histogram[210:]) / total
+        return border_mean >= 205 and bright_ratio >= 0.45
+
+    @staticmethod
+    def _marketing_fit_dimension_image(content: bytes, side: int = 1600) -> bytes:
+        """把原图尺寸图完整放进 1:1 白底画布：只缩放/居中，不裁掉任何标注。"""
+
+        from io import BytesIO  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+
+        try:
+            with Image.open(BytesIO(bytes(content or b""))) as opened:
+                image = opened.convert("RGB")
+        except Exception:  # noqa: BLE001
+            return b""
+        limit = max(1, int(side * 0.94))
+        if max(image.size) > limit:
+            image.thumbnail((limit, limit), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (int(side), int(side)), (255, 255, 255))
+        canvas.paste(image, ((int(side) - image.width) // 2, (int(side) - image.height) // 2))
+        buffer = BytesIO()
+        canvas.save(buffer, format="JPEG", quality=93, subsampling=0)
+        return buffer.getvalue()
+
+    def _marketing_source_dimension_slot(
+        self,
+        task_id: int,
+        draft_id: int,
+        reference_urls: list[str],
+        workspace_id: str,
+        ai_notes: list[str] | None = None,
+    ) -> str:
+        """源图里已有尺寸图时，直接复制原图作为第 4 格（尺寸图）。
+
+        供应商的尺寸图通常已经画好箭头和数值，重新生成只会更差（用户反馈
+        「像这种的直接抄」）。这里只做 OCR 识别 + 白底归一化，保留全部标注；
+        找不到时才回退到白底主图。
+        """
+
+        from .domain.dimension_source_reuse import (  # noqa: PLC0415
+            is_dimension_image,
+        )
+        from .infrastructure.ocr_gate import recognize_text  # noqa: PLC0415
+
+        matches: list[tuple[bytes, int, int]] = []
+        try:
+            for value in list(reference_urls or [])[:8]:
+                content = self._marketing_reference_bytes(value)
+                if not content:
+                    continue
+                try:
+                    lines = recognize_text(content)
+                except Exception:  # noqa: BLE001 - OCR 引擎异常按未命中处理
+                    continue
+                if not is_dimension_image(lines):
+                    continue
+                try:
+                    from io import BytesIO  # noqa: PLC0415
+
+                    from PIL import Image  # noqa: PLC0415
+
+                    with Image.open(BytesIO(content)) as opened:
+                        width, height = opened.size
+                except Exception:  # noqa: BLE001
+                    continue
+                if max(width, height) < 500:
+                    continue
+                matches.append((content, int(width), int(height)))
+        except Exception as exc:  # noqa: BLE001
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:dimension:scan-failed:{str(exc)[:120]}")
+            return ""
+        if not matches:
+            if ai_notes is not None:
+                ai_notes.append("marketing:dimension:no-source")
+            return ""
+        # 按源图顺序取第一张合格的尺寸图，而不是按 OCR 词数打分：供应商常把
+        # 不同规格的尺寸图混在同一组图里，按词数会选中别的型号（如 9 寸 225mm）。
+        best = matches[0][0]
+        for content, width, height in matches:
+            if min(width, height) >= 700 and min(width, height) / max(width, height) >= 0.85:
+                best = content
+                break
+        if not self._marketing_image_background_is_white(best):
+            # 深色/彩色底的供应商尺寸图不能直接当第 4 格：用户要的是白底。
+            if ai_notes is not None:
+                ai_notes.append("marketing:dimension:source-not-white")
+            return ""
+        processed = self._marketing_fit_dimension_image(best)
+        if not processed:
+            return ""
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
+
+        part = GeneratedMedia(
+            stage="marketing_dimension_source",
+            content=processed,
+            content_type="image/jpeg",
+            suffix=".jpg",
+            provider="source-reuse",
+            model="source-dimension-image",
+            reference_count=1,
+            attempt_count=1,
+        )
+        urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
+        if not urls:
+            return ""
+        if ai_notes is not None:
+            ai_notes.append("marketing:dimension:source-copy")
+        return urls[0]
+
+    @staticmethod
+    def _marketing_vision_data_url(content: bytes) -> str:
+        """营销标注用的图片编码：长边压到视觉识别上限并转 JPEG，避免请求体过大。"""
+        import base64  # noqa: PLC0415
+        from io import BytesIO  # noqa: PLC0415
+
+        from .doubao_vision import (  # noqa: PLC0415
+            VISION_IMAGE_JPEG_QUALITY,
+            VISION_IMAGE_MAX_EDGE,
+        )
+
+        payload = bytes(content or b"")
+        try:
+            from PIL import Image  # noqa: PLC0415
+
+            with Image.open(BytesIO(payload)) as opened:
+                frame = opened.convert("RGB")
+                longest_edge = max(frame.size)
+                if longest_edge > VISION_IMAGE_MAX_EDGE:
+                    scale = VISION_IMAGE_MAX_EDGE / float(longest_edge)
+                    frame = frame.resize(
+                        (
+                            max(1, int(frame.width * scale)),
+                            max(1, int(frame.height * scale)),
+                        ),
+                        Image.LANCZOS,
+                    )
+                buffer = BytesIO()
+                frame.save(buffer, format="JPEG", quality=VISION_IMAGE_JPEG_QUALITY)
+                payload = buffer.getvalue()
+        except Exception:  # noqa: BLE001 - 缩放失败就发原图，别丢视觉输入
+            payload = bytes(content or b"")
+        return "data:image/jpeg;base64," + base64.b64encode(payload).decode()
+
+    def _marketing_judge_reference_urls(self, refs: list[str]) -> list[str]:
+        """给终检用的真实参考图（最多 1 张，压到视觉尺寸）。
+
+        择优和终检都必须看到真实商品，否则模型只会按「好看」打分，
+        商品变形/缺件的候选也可能被选中。
+        """
+        import base64  # noqa: PLC0415
+
+        urls: list[str] = []
+        for value in list(refs or [])[:1]:
+            try:
+                data_url = self._image_to_data_url(value)
+            except Exception:  # noqa: BLE001 - 参考图取不到就不带，不阻断出图
+                data_url = ""
+            if not data_url:
+                continue
+            try:
+                _prefix, encoded = data_url.split(",", 1)
+                urls.append(self._marketing_vision_data_url(base64.b64decode(encoded)))
+            except Exception:  # noqa: BLE001 - 解码失败就直接用原 data URL
+                urls.append(data_url)
+        return urls
+
+    def _marketing_verify_candidate(
+        self,
+        candidate: bytes,
+        reference_urls: list[str],
+        skeleton: str,
+        ai_notes: list[str] | None = None,
+    ) -> bool:
+        """候选 hero 终检：对比参考图，商品变形/缺件直接淘汰。"""
+
+        from .domain.marketing_gen import (  # noqa: PLC0415
+            parse_qc_response,
+            verify_candidate_messages,
+        )
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        if not candidate or not reference_urls:
+            return True
+        try:
+            text = DoubaoArkClient(usage_kind="vision").complete(
+                verify_candidate_messages(
+                    reference_urls,
+                    self._marketing_vision_data_url(candidate),
+                    skeleton,
+                ),
+                timeout=VISION_TIMEOUT_SECONDS,
+            )
+            passed, issues = parse_qc_response(text)
+        except Exception as exc:  # noqa: BLE001 - 质检故障不阻断出图
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:qc:hero-error:{str(exc)[:120]}")
+            return True
+        if not passed and ai_notes is not None:
+            ai_notes.append(f"marketing:qc:hero-failed:{'|'.join(issues)[:180]}")
+        return passed
+
+    @staticmethod
+    def _marketing_has_chinese(content: bytes) -> bool:
+        """本地 OCR：营销图里是否还有中文（不受全局 OCR 质检开关影响）。"""
+        if not content:
+            return False
+        try:
+            from .infrastructure.ocr_gate import detect_chinese_boxes  # noqa: PLC0415
+
+            return bool(detect_chinese_boxes(content))
+        except Exception:  # noqa: BLE001 - OCR 故障不能阻断出图
+            return False
+
+    @staticmethod
+    def _marketing_erase_chinese(content: bytes) -> tuple[bytes, int]:
+        """本地擦除中文文字：返回 (处理后图片, 擦除块数)，失败原样返回。"""
+        try:
+            from .infrastructure.ocr_gate import erase_chinese_text  # noqa: PLC0415
+
+            return erase_chinese_text(content)
+        except Exception:  # noqa: BLE001 - 擦字失败按未擦除处理
+            return content, 0
+
+    def _marketing_candidate_is_clean(
+        self,
+        candidate: bytes,
+        reference_urls: list[str],
+        skeleton: str,
+        ai_notes: list[str] | None = None,
+    ) -> bool:
+        """hero 候选硬门：先过本地中文 OCR，再过视觉保真终检。
+
+        营销图里不允许出现中文（很多 1688 原图带中文标签，模型会把它们画回来）。
+        OCR 在 512px 上跑，成本远低于一次生图；检出中文直接淘汰该候选。
+        """
+        if not candidate:
+            return False
+        if self._marketing_has_chinese(candidate):
+            if ai_notes is not None:
+                ai_notes.append("marketing:qc:chinese-text")
+            return False
+        return self._marketing_verify_candidate(
+            candidate, reference_urls, skeleton, ai_notes
+        )
+
+    def _marketing_qc_composed(
+        self,
+        composed: bytes,
+        reference_urls: list[str],
+        template: str,
+        skeleton: str,
+        ai_notes: list[str] | None = None,
+    ) -> tuple[bool, list[str]]:
+        """成图终检：商品保真 + 文字不压商品 + 可读性。
+
+        返回 ``(是否通过, 问题列表)``；问题列表用于决定「换结构」还是
+        「同结构 contain 重排」。质检故障按通过处理（不因质检丢图）。
+        """
+
+        from .domain.marketing_gen import (  # noqa: PLC0415
+            parse_qc_response,
+            verify_composed_messages,
+        )
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        if not composed:
+            return False, []
+        try:
+            text = DoubaoArkClient(usage_kind="vision").complete(
+                verify_composed_messages(
+                    reference_urls,
+                    self._marketing_vision_data_url(composed),
+                    skeleton,
+                ),
+                timeout=VISION_TIMEOUT_SECONDS,
+            )
+            passed, issues = parse_qc_response(text)
+        except Exception as exc:  # noqa: BLE001
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:qc:composed-error:{str(exc)[:120]}")
+            return True, []
+        if not passed and ai_notes is not None:
+            ai_notes.append(
+                f"marketing:{template}:qc-failed:{'|'.join(issues)[:180]}"
+            )
+        return passed, issues
+
+    def _marketing_category_id(
+        self,
+        *,
+        title: str,
+        category: str,
+        reference_urls: list[str],
+        ai_notes: list[str] | None = None,
+    ) -> str:
+        """精选处理用的商品大类：规则优先 + 高置信短路 + 同批缓存。
+
+        规则分类零成本但中文标题/错类目时容易落 general；这里再发一次视觉判断
+        （每商品一次，不是每张图一次）。视觉只接受 high/medium；low 或失败时回退
+        规则结果，规则也没命中就用 general（不拼任何品类片段）。
+
+        两级优化：
+        - 规则置信度 >= 0.9 时直接采用，不再花视觉调用（"钳子""收纳盒"这类强名词
+          视觉复核很少会改判）；
+        - 以规范化类目路径为 key 缓存结果，同批同类目的后续商品直接命中缓存。
+        """
+        from .domain.category_classifier import classify_title, normalize_title  # noqa: PLC0415
+        from .domain.premium_prompts import CATEGORY_FRAGMENTS  # noqa: PLC0415
+
+        category_text = str(category or "").strip()
+        cache = getattr(self, "_marketing_category_cache", None)
+        if cache is None:
+            cache = self._marketing_category_cache = {}
+        cache_key = normalize_title(category_text) if category_text else ""
+
+        def remember(value: str) -> None:
+            if not cache_key or not value:
+                return
+            cache[cache_key] = value
+            if len(cache) > 256:
+                cache.pop(next(iter(cache)))
+
+        if cache_key:
+            cached = cache.get(cache_key)
+            if cached:
                 if ai_notes is not None:
-                    ai_notes.append(f"marketing:feature_cards:card-failed:{str(exc)[:80]}")
-        if len(cards) < 2:
-            return None
-        return compose_feature_cards(hero_bytes, cards, copy)
+                    ai_notes.append(f"marketing:category:{cached}:cache")
+                return cached
+
+        decision = classify_title(f"{category_text} {str(title or '').strip()}".strip())
+        rule_id = decision.category_id if decision.category_id in CATEGORY_FRAGMENTS else "general"
+        if rule_id != "general" and decision.confidence >= 0.9:
+            remember(rule_id)
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:category:{rule_id}:rule-high")
+            return rule_id
+
+        vision_id = ""
+        vision_confidence = ""
+        try:
+            vision_id, vision_confidence = self._marketing_vision_category(
+                title=title, reference_urls=reference_urls
+            )
+        except Exception as exc:  # noqa: BLE001 - 分类失败不能阻断出图
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:category-vision-failed:{str(exc)[:120]}")
+        if vision_id and vision_confidence in {"high", "medium"}:
+            chosen, source = vision_id, "vision"
+            remember(vision_id)
+        elif vision_id and rule_id == "general":
+            chosen, source = vision_id, "vision-low"
+        else:
+            chosen, source = rule_id, "rule"
+        if ai_notes is not None:
+            ai_notes.append(f"marketing:category:{chosen}:{source}")
+        return chosen
+
+    def _marketing_vision_category(
+        self, *, title: str, reference_urls: list[str]
+    ) -> tuple[str, str]:
+        """一次视觉品类判断（复用主体识别的压图与超时预算）。"""
+        from .domain.premium_prompts import (  # noqa: PLC0415
+            build_category_messages,
+            parse_category_response,
+        )
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        data_urls = [
+            data_url
+            for value in list(reference_urls or [])[:2]
+            if (data_url := self._image_to_data_url(value))
+        ]
+        if not data_urls:
+            return "", ""
+        text = DoubaoArkClient(usage_kind="vision").complete(
+            build_category_messages(title, data_urls), timeout=VISION_TIMEOUT_SECONDS
+        )
+        return parse_category_response(text)
 
     def _generate_marketing_images(
         self,
@@ -3414,74 +4191,410 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         title: str,
         category: str,
         reference_urls: list[str],
+        detail_reference_urls: list[str] | None = None,
         workspace_id: str,
         templates: list[str] | None = None,
         vision_subject: str = "",
         caution: str = "",
+        image_tier: str = "highest",
+        pose_variety: bool = True,
+        style_template: str = "auto",
+        key_info: str = "",
         ai_notes: list[str] | None = None,
-    ) -> list[str]:
-        """精选处理营销图（第一版直出）：原图参考 → 生图 → 排版合成。"""
-        from .domain.premium_composer import TEMPLATES, compose_marketing_image  # noqa: PLC0415
-        from .domain.premium_prompts import build_photo_prompt  # noqa: PLC0415
+    ) -> tuple[list[str], str]:
+        """营销图生成（分块 → 拼版）：hero 与细节块各自走 Pro，再确定性拼版。
+
+        ``image_tier``：``highest`` 用 Seedream Pro，``standard`` 用 Flash。
+        返回 ``(营销图路径列表, 白底主图路径)``；模板只是「块组合 + 排版函数」，
+        任何块失败都不拖垮整张图（版式自动降级）。
+        """
+        from .domain.marketing_gen import generate_best  # noqa: PLC0415
+        from .domain.marketing_pipeline import PLANS, compose as compose_plan, plan_for, render_blocks  # noqa: PLC0415
+        from .domain.marketing_poses import pose_for  # noqa: PLC0415
+        from .domain.layout_variants import judge_hint, pick_variant, variant_order  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+        from .infrastructure.media import GeneratedMedia  # noqa: PLC0415
 
         processor = self._media_processor()
-        refs = [value for value in reference_urls if str(value or "").strip()][:2]
+        judge = DoubaoArkClient(usage_kind="vision")
+        # 原始轮播里常混着带中文大字/拼贴/参数表的营销图；直接拿前两张会把文字
+        # 和拼贴一起喂给生图模型（商品变形的主因）。先挑最干净的 1–2 张。
+        # 图库没同步到本地时 raw.source_image_urls 可能为空，这里补上库里已有的
+        # 原始图 URL，保证选择器仍能看到整套轮播。
+        candidates = [str(value or "").strip() for value in (reference_urls or [])]
+        try:
+            for image in self.repository.list_source_images(
+                product_draft_id=int(draft_id), workspace_id=workspace_id
+            ):
+                if str(image.get("kind") or "") == "source":
+                    url = str(image.get("url") or "").strip()
+                    if url:
+                        candidates.append(url)
+        except Exception:  # noqa: BLE001 - 图库读不到不影响原有参考图
+            pass
+        reference_cache: dict[str, bytes] = {}
+        refs = self._marketing_pick_references(
+            candidates, ai_notes=ai_notes, bytes_cache=reference_cache, limit=4
+        )
         if not refs:
             if ai_notes is not None:
                 ai_notes.append("marketing:skipped:no_reference")
-            return []
+            # 调用方按 (paths, white_main_path) 解包，这里必须返回同形状（曾返回 [] 导致解包异常）。
+            return [], ""
+        # 多件套（如 3 把钳子一套）：AI 生图经常只画 1–2 把或把件合并，这里先数件数；
+        # 套件直接用原始干净图合成 hero，保证每一件都在。标题没有套件线索时不做任何
+        # 额外读取/视觉调用，避免给普通单件商品增加网络与成本。
+        reference_bytes = reference_cache.get(refs[0], b"")
+        set_count = 1
+        if self._marketing_title_has_set_cue(title):
+            set_count = self._marketing_set_count(
+                reference_bytes, title=title, ai_notes=ai_notes
+            )
+        # 白底主图不占用户选的版式名额，也不在这里排：循环结束后优先从已生成的
+        # hero 本地派生（0 次生图），失败才回退专用白底生成。
         selected = [
-            item
-            for item in (templates or [])
-            if item in TEMPLATES or item in {"feature_cards", "callout_ring", "feature_strip"}
-        ] or list(TEMPLATES[:3])
-        values: list[str] = []
+            item for item in (templates or []) if item in PLANS and item != "white_main"
+        ] or [
+            # 默认 4 个互不重复的版式：大字卖点 / 细节卡 / 图标网格 / 编号标注。
+            "headline_hero", "feature_cards", "icon_grid", "callout_ring"
+        ]
+        # 版式互斥：同批最多 1 个「底部图片卡带」型，其余换形态不同的版式，
+        # 4 张轮播图才不会全是「上图下卡」的同质版。
+        selected, dedupe_notes = _dedupe_card_grid_templates(selected)
+        if ai_notes is not None and dedupe_notes:
+            ai_notes.append("marketing:layout-mix:" + "|".join(dedupe_notes))
+        # 品类只判断一次：整批版式共用同一个大类片段（每商品 +1 次视觉调用）。
+        # 先判品类再挑细节：细节特写重绘要和 hero 用同一套场景/光线。
+        category_id = self._marketing_category_id(
+            title=title, category=category, reference_urls=refs, ai_notes=ai_notes
+        )
+        # 细节卡用原始商品图的真实近景做锚（视觉挑图 + 按图给标签），再重绘成与
+        # hero 同风格的特写：主图一旦被模型改件，从主图裁的「细节」必然也是错的。
+        # 只有选中的版式真的需要细节卡时才挑图，纯 hero 版式不花这次视觉调用。
+        detail_images: list[tuple[bytes, str]] = []
+        if any(plan_for(item).details for item in selected):
+            detail_images = self._marketing_detail_images(
+                list(detail_reference_urls or []),
+                reference_bytes=reference_bytes,
+                ai_notes=ai_notes,
+                bytes_cache=reference_cache,
+                limit=3,
+                category_id=category_id,
+                style_template=style_template,
+                image_tier=image_tier,
+            )
+        # 商品维度种子：同品类不同商品轮换场景变体、强调色也跟着商品走，避免撞款。
+        category_seed = zlib.crc32(str(title or "").encode("utf-8"))
+        # 注意点先译成英文再进生图提示词：中文直接拼入英文提示词会被模型复写成
+        # 中文文字或直接忽略（与组合图同一条翻译护栏，译文有缓存）。
+        instruction_text = self._translate_combo_prompt(caution) if str(caution or "").strip() else ""
+        if str(caution or "").strip() and not instruction_text and ai_notes is not None:
+            ai_notes.append("marketing:caution:translate-failed")
+        # 白底主图不再固定追加到版式列表：循环结束后按需派生。
+        # 结构分配：优先用「原图版式分析」给出的推荐顺序（只借结构，不复刻原图），
+        # 没分析过就用打乱后的结构顺序；重跑同一商品结果稳定。
+        variant_seed = zlib.crc32(f"{draft_id}:{title}".encode("utf-8"))
+        layout_plan = self._ensure_marketing_layout_plan(
+            draft_id, workspace_id=workspace_id
+        )
+        recommended_order = [
+            str(item)
+            for item in (layout_plan.get("skeleton_order") or [])
+            if str(item or "").strip()
+        ]
+        if recommended_order:
+            skeleton_order = recommended_order
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:layout:{recommended_order[0]}:reference-plan")
+        else:
+            skeleton_order = variant_order(variant_seed)
+        layout_fragment = str(layout_plan.get("prompt_fragment") or "").strip()
+        if layout_fragment:
+            # 风格片段只描述背景氛围/卡片形状，原图文案与 logo 永远不会进入提示词。
+            instruction_text = " ".join(
+                part for part in (instruction_text, layout_fragment) if part
+            )
+        # 用户填写的「重要信息」：翻译后只取场景/氛围线索落到画面；功能卖点归文案层，
+        # 明确禁止改商品结构、也禁止把任何文字画进图里。白底主图不传 instructions，
+        # 所以不会被这段影响；纯白模板（white）也不注入场景句——「纯白背景」和
+        # 「按场景氛围画」在同一提示词里自相矛盾，会把白底带跑（文案层照常体现）。
+        key_info_text = str(key_info or "").strip()
+        if key_info_text:
+            from .domain.marketing_gen import resolve_style_template  # noqa: PLC0415
+
+            style_resolved = resolve_style_template(style_template, category_id)
+            if style_resolved == "white":
+                key_info_en = ""
+            else:
+                key_info_en = self._translate_combo_prompt(key_info_text)
+            if key_info_en:
+                instruction_text = " ".join(
+                    part
+                    for part in (
+                        instruction_text,
+                        "Operator key information: "
+                        f"{key_info_en[:300].rstrip('.')}. Use only its setting and mood "
+                        "cues for the scene; do not change the product design, materials, "
+                        "parts or proportions, and never render any text.",
+                    )
+                    if part
+                )
+            elif ai_notes is not None and style_resolved != "white":
+                ai_notes.append("marketing:key-info:translate-failed")
+        # 信息图有自己的构图，不参与 S1-S4 结构轮换（否则会白占结构名额，
+        # 让其它版式拿不到不重复的骨架）。
+        skeletons: dict[str, str] = {}
+        skeleton_index = 0
         for template in selected:
+            if template.startswith("infographic_"):
+                continue
+            skeletons[template] = pick_variant(template, skeleton_order, skeleton_index)
+            skeleton_index += 1
+        # 文案按实际渲染上限出量：只有用到 S2（竖排 6 条）时才要 6 个短词，
+        # 其余结构最多 4 个——多出的标签永远不会出现在图上。
+        bullet_count = 6 if "S2" in skeletons.values() else 4
+        # 每张轮播图一份差异化文案：一次调用出多份，标题/卖点互不复读，
+        # 轮播才像在讲不同的事（而不是同一段文案贴 4 遍）。
+        copies = self._marketing_copy_set(
+            title,
+            category,
+            selected,
+            subject=str(vision_subject or ""),
+            caution=str(caution or ""),
+            key_info=key_info_text,
+            bullet_count=bullet_count,
+            set_count=set_count,
+        )
+        # 白底主图不渲染文案，任意一份即可；不依赖循环残留变量。
+        white_copy = copies.get(selected[0]) if selected else None
+        values: list[str] = []
+        white_main_path = ""
+        derived_hero = b""
+        # 终检用的真实商品参考图（最多 1 张，压到视觉尺寸）。
+        judge_refs = self._marketing_judge_reference_urls(refs)
+        # Pro 熔断状态按商品维护：第一次「Pro 不可用」后，本商品剩余候选直接走默认档。
+        pro_state: dict[str, Any] = {"enabled": True}
+
+        def _make_render(structure_hint: str, verify=None, tier: str = "highest", gate=None):
+            """hero 候选生成 + 参考图排序 + 终检；打分时带上结构留白要求。"""
+
+            def _render(prompt: str, block_refs: list[str], count: int = 1) -> bytes:
+                def _attempt(tier_value: str, attempt_count: int) -> tuple[bytes, bool]:
+                    seen = {"count": 0}
+                    state = {"passed": False}
+
+                    def _one(text: str, refs_in: list[str]) -> bytes:
+                        seen["count"] += 1
+                        text_in = text
+                        # 多候选取景轮换：一半候选追加「缩小商品」约束，专门救那些
+                        # 无视留白、把商品画到画面外的候选（详情块 count=1，不受影响）。
+                        if attempt_count >= 2 and seen["count"] % 2 == 0:
+                            text_in = (
+                                f"{text} Zoom out: the product occupies only about 55% of the "
+                                "frame height, with wide empty margins on every side."
+                            )
+                        photo = self._marketing_render(
+                            processor,
+                            text_in,
+                            refs_in,
+                            ai_notes,
+                            pro_state,
+                            tier=tier_value,
+                        )
+                        return bytes(getattr(photo, "content", b"") or b"")
+
+                    def _verify(candidate: bytes) -> bool:
+                        ok = verify(candidate) if callable(verify) else True
+                        if ok:
+                            state["passed"] = True
+                        return ok
+
+                    content = generate_best(
+                        prompt=prompt,
+                        refs=block_refs,
+                        render=_one,
+                        complete=lambda messages: judge.complete(
+                            messages, timeout=VISION_TIMEOUT_SECONDS
+                        ),
+                        count=max(1, int(attempt_count)),
+                        structure_hint=structure_hint,
+                        reference_data_urls=judge_refs,
+                        verify=_verify if callable(verify) else None,
+                        gate=gate,
+                    )
+                    return content, state["passed"]
+
+                content, passed = _attempt(tier, count)
+                # 标准档（Flash）实测会加件/改孔/换标：整组候选都没过终检时，
+                # 用 Pro 补一张（只补 1 张，避免成本失控）。详情块 count=1，不升级。
+                if content and count >= 2 and str(tier) == "standard" and not passed:
+                    upgraded, upgraded_passed = _attempt("highest", 1)
+                    if upgraded:
+                        content = upgraded
+                        if ai_notes is not None:
+                            ai_notes.append(
+                                "marketing:pro-upgrade:"
+                                f"{'qc-pass' if upgraded_passed else 'qc-failed'}"
+                            )
+                # 硬门：终选 hero 仍有中文就先本地擦字；擦不干净才不出这张图。
+                if content and self._marketing_has_chinese(content):
+                    cleaned, removed = self._marketing_erase_chinese(content)
+                    if removed and not self._marketing_has_chinese(cleaned):
+                        content = cleaned
+                        if ai_notes is not None:
+                            ai_notes.append("marketing:chinese-erased:hero")
+                    else:
+                        if ai_notes is not None:
+                            ai_notes.append("marketing:hard-reject:chinese-hero")
+                        return b""
+                return content
+
+            return _render
+
+        for index, template in enumerate(selected):
             self._raise_if_task_stopped(task_id, workspace_id)
+            skeleton = skeletons.get(template) or "S1"
+            # 每个输出位轮换朝向：同一张竖直参考图会让模型照抄姿势，一批图全一个角度。
+            # 开启多角度时同时轮换参考图（优先不同角度的原图），并在提示词里要求重摆。
+            pose = pose_for(index, enabled=pose_variety) if pose_variety else ""
+            primary_ref = refs[index % len(refs)]
+            # 主参考仍带上（干净白底图利于保真），但每位的首图换成不同角度。
+            template_refs = (
+                ([primary_ref] if primary_ref == refs[0] else [primary_ref, refs[0]])
+                if pose_variety
+                else refs
+            )
             try:
-                copy = self._marketing_copy(title, category, template)
-                if template == "callout_ring":
-                    hero = self._marketing_render(
-                        processor, build_photo_prompt("headline_hero", copy), refs, ai_notes
-                    )
-                    hero_bytes = bytes(getattr(hero, "content", b"") or b"")
-                    from .domain.premium_composer import compose_callout_ring  # noqa: PLC0415
+                plan = plan_for(template)
+                copy = copies.get(template)
+                structure_hint = _INFOGRAPHIC_HINTS.get(template) or judge_hint(skeleton)
+                render = _make_render(
+                    structure_hint,
+                    verify=lambda candidate: self._marketing_candidate_is_clean(
+                        candidate, judge_refs, skeleton, ai_notes
+                    ),
+                    tier=image_tier,
+                    gate=lambda candidate: self._marketing_hero_margins_ok(candidate, template),
+                )
 
-                    parts = self._marketing_callout_parts(hero_bytes)
-                    if ai_notes is not None:
-                        ai_notes.append(f"marketing:callout:parts{len(parts)}")
-                    composed = compose_callout_ring(hero_bytes, parts, copy) if hero_bytes else None
-                    stage = "marketing_callout_ring"
-                elif template == "feature_strip":
-                    hero = self._marketing_render(
-                        processor, build_photo_prompt("headline_hero", copy), refs, ai_notes
+                blocks = render_blocks(
+                    plan=plan,
+                    copy=copy,
+                    refs=template_refs,
+                    render=render,
+                    category_id=category_id,
+                    category_seed=category_seed,
+                    subject=str(vision_subject or ""),
+                    instructions=instruction_text,
+                    skeleton=skeleton,
+                    set_count=set_count,
+                    pose=pose,
+                    detail_images=detail_images or None,
+                    style_template=style_template,
+                )
+                if blocks.get("hero"):
+                    blocks["hero"] = _marketing_lift_hero(blocks["hero"])
+                if not derived_hero and blocks.get("hero"):
+                    derived_hero = blocks["hero"]
+                if blocks.get("hero") and judge_refs:
+                    # 护栏：成图 hero 与原图几乎同图时留痕（相似允许，照搬不允许）。
+                    self._marketing_note_reference_distance(
+                        blocks["hero"], judge_refs[0], template, ai_notes
                     )
-                    hero_bytes = bytes(getattr(hero, "content", b"") or b"")
-                    labels = [
-                        str(item) for item in (getattr(copy, "bullets", []) or []) if str(item or "").strip()
-                    ][:4] or ["Precision", "Durability", "Comfort", "Control"]
-                    from .domain.premium_composer import compose_feature_strip  # noqa: PLC0415
-
-                    cards = self._marketing_strip_cards(processor, labels, ai_notes)
-                    composed = compose_feature_strip(hero_bytes, cards, copy) if hero_bytes and cards else None
-                    stage = "marketing_feature_strip"
-                elif template == "feature_cards":
-                    composed = self._marketing_feature_cards(processor, copy=copy, ai_notes=ai_notes)
-                    stage = "marketing_feature_cards"
-                else:
-                    photo = self._marketing_render(
-                        processor, build_photo_prompt(template, copy), refs, ai_notes
+                # 编号引线依赖视觉给的部位坐标；实测精修经常 0/4 失败，
+                # 粗坐标画出来的编号会乱指。先不画编号，细节改由真实原图局部承担。
+                callout_parts: list[dict] | None = None
+                if ai_notes is not None:
+                    detail_count = len(blocks.get("details") or [])
+                    ai_notes.append(
+                        f"marketing:{template}:blocks:hero{1 if blocks.get('hero') else 0}"
+                        f"+detail{detail_count}:{blocks.get('detail_source') or 'label'}"
                     )
-                    composed = compose_marketing_image(
-                        bytes(getattr(photo, "content", b"")), template, copy
+                compose_notes: list[str] = []
+                composed = compose_plan(
+                    plan=plan,
+                    copy=copy,
+                    blocks=blocks,
+                    callout_parts=callout_parts,
+                    engine_notes=compose_notes,
+                    skeleton=skeleton,
+                    style_template=style_template,
+                )
+                if ai_notes is not None and compose_notes:
+                    # 记录排版引擎与结构，便于在生产上确认走的是 HTML 还是 PIL 回退。
+                    ai_notes.append(
+                        f"marketing:{template}:skeleton:{skeleton}:"
+                        f"{compose_notes[-1].split(':', 1)[-1]}"
                     )
-                    stage = f"marketing_{template}"
+                if composed and judge_refs:
+                    qc_ok, qc_issues = self._marketing_qc_composed(
+                        composed, judge_refs, template, skeleton, ai_notes
+                    )
+                    if not qc_ok:
+                        is_infographic = template.startswith("infographic_")
+                        contained = None
+                        if _qc_issues_look_cropped(qc_issues) and not is_infographic:
+                            # 商品被裁：同一结构用 contain 重排（整图完整缩放），
+                            # 不换骨架，避免占用别的版式的结构排出重复图。
+                            contained = compose_plan(
+                                plan=plan,
+                                copy=copy,
+                                blocks=blocks,
+                                callout_parts=callout_parts,
+                                skeleton=skeleton,
+                                contain=True,
+                                style_template=style_template,
+                            )
+                        if contained:
+                            composed = contained
+                            if ai_notes is not None:
+                                ai_notes.append(
+                                    f"marketing:{template}:qc-fallback:contain:{skeleton}"
+                                )
+                        elif is_infographic:
+                            # 信息图不用 S1-S4，换骨架是空操作，还会白占别的版式的
+                            # 结构名额；保留当前成图并留痕即可。
+                            if ai_notes is not None:
+                                ai_notes.append(f"marketing:{template}:qc-keep:{skeleton}")
+                        else:
+                            # 其它问题：只换「本次没有分配给任何版式」的空闲结构
+                            # 重排（纯本地，不重新生图）。没有空闲结构时保留当前
+                            # 成图，交给浏览器端人工判断。
+                            planned = set(skeletons.values())
+                            spare = [
+                                item
+                                for item in dict.fromkeys(
+                                    [*skeleton_order, "S1", "S3", "S2", "S4"]
+                                )
+                                if item in {"S1", "S2", "S3", "S4"}
+                                and item not in planned
+                                and item != skeleton
+                            ]
+                            for alternative in spare[:2]:
+                                fallback = compose_plan(
+                                    plan=plan,
+                                    copy=copy,
+                                    blocks=blocks,
+                                    callout_parts=callout_parts,
+                                    skeleton=alternative,
+                                    style_template=style_template,
+                                )
+                                if not fallback:
+                                    continue
+                                composed = fallback
+                                skeleton = alternative
+                                if ai_notes is not None:
+                                    ai_notes.append(
+                                        f"marketing:{template}:qc-fallback:{alternative}"
+                                    )
+                                break
                 if not composed:
                     if ai_notes is not None:
                         ai_notes.append(f"marketing:{template}:empty")
                     continue
                 part = GeneratedMedia(
-                    stage=stage,
+                    stage=f"marketing_{template}",
                     content=composed,
                     content_type="image/jpeg",
                     suffix=".jpg",
@@ -3496,7 +4609,142 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             except Exception as exc:  # noqa: BLE001
                 if ai_notes is not None:
                     ai_notes.append(f"marketing:{template}:failed:{exc}")
-        return values
+
+        # ── 白底主图（第 4 格 / 尺寸画布底图）────────────────────────────
+        # 优先用「最干净的原始商品图」直接抠白底：AI 重绘的 hero 一旦变形，
+        # 白底主图会跟着变形；原始图抠图是像素级保真，且 0 次生图。
+        from .domain.premium_composer import CANVAS_SIZE  # noqa: PLC0415
+
+        if not white_main_path:
+            # 优先用参考图选择时已经读到的干净原图字节（本地/远程都覆盖），
+            # 直接抠白底；不再依赖「本地路径」导致远程参考只能退回 AI hero。
+            if reference_bytes:
+                white_bytes = self._marketing_white_main_from_bytes(reference_bytes)
+            elif refs:
+                white_bytes = self._marketing_white_main_from_reference(refs[0])
+            else:
+                white_bytes = b""
+            if white_bytes:
+                part = GeneratedMedia(
+                    stage="marketing_white_main",
+                    content=white_bytes,
+                    content_type="image/jpeg",
+                    suffix=".jpg",
+                    provider="local-synthesis",
+                    model="premium_composer",
+                    reference_count=1,
+                    attempt_count=1,
+                )
+                urls = self._persist_media_for_preview(
+                    [part], task_id, draft_id, workspace_id
+                )
+                if urls:
+                    white_main_path = urls[0]
+                    if ai_notes is not None:
+                        ai_notes.append(
+                            "marketing:white-main:source-cutout:set"
+                            if set_count > 1
+                            else "marketing:white-main:source-cutout"
+                        )
+
+        # 原始图不可用时，再从已生成的 hero 本地派生。
+        if derived_hero and not white_main_path:
+            white_bytes = b""
+            white_source = ""
+            try:
+                from .domain.dimension_source_reuse import clean_product_canvas  # noqa: PLC0415
+
+                white_bytes = clean_product_canvas(
+                    derived_hero, side=CANVAS_SIZE, model_name="u2netp"
+                ) or b""
+                white_source = "local-cutout" if white_bytes else ""
+            except Exception as exc:  # noqa: BLE001 - 本地抠图失败不能阻断出图
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:white-main:cutout-failed:{str(exc)[:120]}")
+            if white_bytes and not _white_frame_ok(white_bytes):
+                if ai_notes is not None:
+                    ai_notes.append("marketing:white-main:not-pure-white")
+                white_bytes = b""
+                white_source = ""
+            if not white_bytes:
+                try:
+                    from .domain.white_main import white_background_main  # noqa: PLC0415
+
+                    white_bytes = white_background_main(
+                        derived_hero, side=CANVAS_SIZE
+                    ) or b""
+                    white_source = "local-normalized" if white_bytes else ""
+                except Exception as exc:  # noqa: BLE001
+                    if ai_notes is not None:
+                        ai_notes.append(
+                            f"marketing:white-main:normalize-failed:{str(exc)[:120]}"
+                        )
+            if white_bytes and not _white_frame_ok(white_bytes):
+                if ai_notes is not None:
+                    ai_notes.append("marketing:white-main:normalize-not-white")
+                white_bytes = b""
+                white_source = ""
+            if white_bytes:
+                part = GeneratedMedia(
+                    stage="marketing_white_main",
+                    content=white_bytes,
+                    content_type="image/jpeg",
+                    suffix=".jpg",
+                    provider="local-synthesis",
+                    model="premium_composer",
+                    reference_count=len(refs),
+                    attempt_count=1,
+                )
+                urls = self._persist_media_for_preview([part], task_id, draft_id, workspace_id)
+                if urls:
+                    white_main_path = urls[0]
+                    if ai_notes is not None:
+                        ai_notes.append(f"marketing:white-main:{white_source}")
+                elif ai_notes is not None:
+                    ai_notes.append("marketing:white-main:persist-failed")
+        if not white_main_path:
+            # 本地派生不可用（商品过小/抠图失败）才生成专用白底图。
+            try:
+                white_plan = plan_for("white_main")
+                white_blocks = render_blocks(
+                    plan=white_plan,
+                    copy=white_copy,
+                    refs=refs,
+                    render=_make_render(
+                        "",
+                        tier=image_tier,
+                        gate=lambda candidate: self._marketing_hero_margins_ok(
+                            candidate, "white_main"
+                        ),
+                    ),
+                    category_id=category_id,
+                    category_seed=category_seed,
+                )
+                composed_white = compose_plan(
+                    plan=white_plan, copy=white_copy, blocks=white_blocks
+                )
+                if composed_white:
+                    part = GeneratedMedia(
+                        stage="marketing_white_main",
+                        content=composed_white,
+                        content_type="image/jpeg",
+                        suffix=".jpg",
+                        provider="local-synthesis",
+                        model="premium_composer",
+                        reference_count=len(refs),
+                        attempt_count=1,
+                    )
+                    urls = self._persist_media_for_preview(
+                        [part], task_id, draft_id, workspace_id
+                    )
+                    if urls:
+                        white_main_path = urls[0]
+                        if ai_notes is not None:
+                            ai_notes.append("marketing:white-main:generated")
+            except Exception as exc:  # noqa: BLE001
+                if ai_notes is not None:
+                    ai_notes.append(f"marketing:white-main:failed:{exc}")
+        return values, white_main_path
 
     def _marketing_reference_values(self, draft: dict[str, Any], *, workspace_id: str) -> list[str]:
         """精选处理的参考图：组合来源图优先，其次原图 URL（http 校验）。"""
@@ -3516,7 +4764,1022 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             value = str(value or "").strip()
             if value and self._is_safe_reference_value(value) and value not in values:
                 values.append(value)
-        return values[:2]
+        return self._marketing_pick_references(values)
+
+    def _marketing_pick_references(
+        self,
+        values: list[str],
+        *,
+        ai_notes: list[str] | None = None,
+        limit: int = 2,
+        max_candidates: int = 6,
+        bytes_cache: dict[str, bytes] | None = None,
+    ) -> list[str]:
+        """从原始轮播里挑最干净的 1–2 张当生图参考。
+
+        1688 轮播大量是「中文大字 + 拼贴 + 参数表」的营销图，直接拿去当参考会让
+        Seedream 把文字/箭头/拼贴一起学进照片层，商品很容易变形。先让视觉模型
+        选「商品完整、无文字水印、无拼贴」的图；视觉不可用时用本地启发式
+        （白底、商品占比、贴边情况、分辨率）兜底。
+        """
+        unique = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in (values or [])
+                if str(value or "").strip()
+            )
+        )
+        if len(unique) <= 1:
+            return unique[:limit]
+        loaded: list[tuple[str, bytes]] = []
+        for value in unique[:max_candidates]:
+            try:
+                content = self._marketing_reference_bytes(value)
+            except Exception:  # noqa: BLE001 - 单张读不到就跳过
+                content = b""
+            if content:
+                loaded.append((value, content))
+                if bytes_cache is not None:
+                    # 白底主图/套装 hero 直接复用这里读到的干净图字节，避免二次下载。
+                    bytes_cache[value] = content
+        if len(loaded) <= 1:
+            return unique[:limit]
+
+        usable: list[tuple[str, bytes, str]] = []
+        data_urls: list[str] = []
+        for value, content in loaded:
+            try:
+                data_url = self._marketing_reference_data_url(content)
+            except Exception:  # noqa: BLE001
+                continue
+            data_urls.append(data_url)
+            usable.append((value, content, data_url))
+        if len(usable) <= 1:
+            return unique[:limit]
+
+        picked: list[int] = []
+        try:
+            from .domain.marketing_gen import (  # noqa: PLC0415
+                build_reference_select_messages,
+                parse_reference_select_response,
+            )
+            from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+            from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+            text = DoubaoArkClient(usage_kind="vision").complete(
+                build_reference_select_messages(data_urls),
+                timeout=VISION_TIMEOUT_SECONDS,
+            )
+            picked = parse_reference_select_response(text, len(usable))
+        except Exception as exc:  # noqa: BLE001 - 选择失败退回启发式
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:reference:select-error:{str(exc)[:120]}")
+        if picked:
+            selected = [usable[index][0] for index in picked][:limit]
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:reference:selected:{picked}")
+            return selected
+
+        scored = sorted(
+            (
+                (self._marketing_reference_score(content), value)
+                for value, content, _data_url in usable
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        # 第二张如果明显不如第一张（常见：白底但带中文大字/拼贴的营销图），
+        # 只喂第一张，避免模型把文字和拼贴一起学进照片层。
+        if len(scored) >= 2 and scored[0][0] - scored[1][0] > 0.05:
+            selected = [scored[0][1]]
+        else:
+            selected = [value for _score, value in scored[:limit]]
+        if ai_notes is not None:
+            ai_notes.append(f"marketing:reference:heuristic:{len(selected)}/{len(usable)}")
+        return selected
+
+    def _marketing_detail_images(
+        self,
+        values: list[str],
+        *,
+        reference_bytes: bytes | None = None,
+        ai_notes: list[str] | None = None,
+        bytes_cache: dict[str, bytes] | None = None,
+        limit: int = 4,
+        category_id: str = "",
+        style_template: str = "auto",
+        image_tier: str = "highest",
+    ) -> list[tuple[bytes, str]]:
+        """从原始商品图里挑净局部近景做细节卡：真实像素做锚 + AI 重绘同风格特写。
+
+        以前细节卡是从 AI 主图按视觉坐标裁的：主图一旦被模型改件（加件、改孔、
+        换标），裁出来的「细节」就是错的，标签也对不上。这里只让视觉回答两件
+        事——挑哪几张、这张拍的是什么部位——部位始终以供应商原图裁切为锚。
+
+        原图裁切是白底/灰底供应商棚拍，直接塞进暗色卡框很丑；裁切过检后用
+        ``_marketing_style_detail`` 重绘成与主图同场景/光线的微距特写，不合格
+        自动回退原图裁切。挑不到干净近景就返回空：宁可不放细节卡，也不放错图。
+        """
+        from .domain.detail_specs import (  # noqa: PLC0415
+            crop_reference_bytes,
+            detail_crop_usable,
+            lift_detail_exposure,
+        )
+        from .domain.marketing_gen import (  # noqa: PLC0415
+            build_detail_pick_messages,
+            parse_detail_pick_response,
+        )
+        from .domain.marketing_pipeline import _product_bbox_ratios  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        unique = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in (values or [])
+                if str(value or "").strip()
+            )
+        )
+        if not unique:
+            return []
+        loaded: list[bytes] = []
+        for value in unique[:12]:
+            content = (bytes_cache or {}).get(value, b"")
+            if not content:
+                try:
+                    content = self._marketing_reference_bytes(value)
+                except Exception:  # noqa: BLE001 - 单张读不到就跳过
+                    content = b""
+            if content:
+                loaded.append(content)
+                if bytes_cache is not None:
+                    bytes_cache[value] = content
+        if not loaded:
+            return []
+        data_urls: list[str] = []
+        for content in loaded:
+            try:
+                data_urls.append(self._marketing_reference_data_url(content))
+            except Exception:  # noqa: BLE001
+                data_urls.append("")
+        usable = [content for content, url in zip(loaded, data_urls) if url]
+        usable_urls = [url for url in data_urls if url]
+        if not usable:
+            return []
+        reference_url = ""
+        if reference_bytes:
+            try:
+                reference_url = self._marketing_reference_data_url(reference_bytes)
+            except Exception:  # noqa: BLE001 - 参考图缩略失败只是少一层颜色约束
+                reference_url = ""
+        try:
+            text = DoubaoArkClient(usage_kind="vision").complete(
+                build_detail_pick_messages(
+                    usable_urls, reference_data_url=reference_url
+                ),
+                timeout=VISION_TIMEOUT_SECONDS,
+            )
+            picked = parse_detail_pick_response(
+                text, len(usable), limit=max(1, int(limit))
+            )
+        except Exception as exc:  # noqa: BLE001 - 挑图失败只是没有细节卡
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:detail:pick-error:{str(exc)[:120]}")
+            return []
+        images: list[tuple[bytes, str]] = []
+        chinese_skipped = 0
+        chinese_erased = 0
+        color_skipped = 0
+        crop_skipped = 0
+        text_skipped = 0
+        label_skipped = 0
+        seen_labels: set[str] = set()
+
+        # 颜色一致性：供应商原图里常混入同款不同色（如米色包配一张黑包图）。
+        # 多色商品的「另一个部位」不能误杀：按主体色块覆盖率判定，只有多数色块
+        # 在主参考里找不到近色（整件换色）才拦。
+        reference_blocks = (
+            self._marketing_subject_rgb_blocks(reference_bytes)
+            if reference_bytes
+            else []
+        )
+        from .infrastructure.ocr_gate import (  # noqa: PLC0415
+            detect_chinese_boxes,
+            erase_chinese_text,
+            recognize_text,
+        )
+
+        styled_count = 0
+        style_fallback = 0
+        for index, label in picked:
+            label_text = str(label or "").strip()
+            label_key = re.sub(r"[^a-z0-9]+", "", label_text.casefold())
+            if label_key and label_key in seen_labels:
+                label_skipped += 1
+                continue
+            content = usable[index]
+            crop = None
+            bbox = _product_bbox_ratios(content)
+            if bbox:
+                x0, y0, x1, y1 = bbox
+                side = min(1.0, max(x1 - x0, y1 - y0) * 1.35)
+                cx = (x0 + x1) / 2
+                cy = (y0 + y1) / 2
+                nx = max(0.0, min(1.0 - side, cx - side / 2))
+                ny = max(0.0, min(1.0 - side, cy - side / 2))
+                crop = (nx, ny, nx + side, ny + side)
+            cropped = (
+                crop_reference_bytes(content, crop, pad_ratio=0.0) if crop else b""
+            )
+            if not cropped or not detail_crop_usable(cropped):
+                continue
+            # 产品必须真的在裁切框里：框里几乎全是背景的「空近景」直接弃，
+            # 不让小卡变成一块看不清的背景色。
+            if not self._marketing_crop_has_subject(cropped):
+                crop_skipped += 1
+                continue
+            if reference_blocks:
+                crop_blocks = self._marketing_subject_rgb_blocks(cropped)
+                if self._marketing_palette_mismatch(
+                    crop_blocks, reference_blocks, _DETAIL_COLOR_MAX_DISTANCE
+                ):
+                    color_skipped += 1
+                    continue
+            # 文字密集的规格示意图/吊牌图表不是产品特写（视觉模型常把这类图当
+            # 「清晰近景」挑进来）：本地 OCR 按文本量直接拦。
+            text_lines = recognize_text(cropped) or []
+            meaningful = [
+                str(line).strip() for line in text_lines if len(str(line).strip()) >= 2
+            ]
+            if len(meaningful) >= 3 or sum(len(line) for line in meaningful) > 36:
+                text_skipped += 1
+                continue
+            # 原图局部可能带中文标签/水印：先本地擦字保留这张好图，擦完仍有中文才丢弃。
+            if detect_chinese_boxes(cropped):
+                cleaned, removed = erase_chinese_text(cropped)
+                if removed and not detect_chinese_boxes(cleaned):
+                    cropped = cleaned
+                    chinese_erased += 1
+                else:
+                    chinese_skipped += 1
+                    continue
+            # 同风格重绘：白底/灰底供应商近景 → 主图同场景/光线的微距特写。
+            # 不合格（换色/换件/画出字/重绘失败）自动回退这张原图裁切。
+            styled = self._marketing_style_detail(
+                cropped,
+                label_text,
+                category_id=category_id,
+                style_template=style_template,
+                image_tier=image_tier,
+                reference_data_url=reference_url,
+                ai_notes=ai_notes,
+            )
+            if styled:
+                images.append((styled, label_text))
+                styled_count += 1
+            else:
+                images.append((lift_detail_exposure(cropped), label_text))
+                style_fallback += 1
+            if label_key:
+                seen_labels.add(label_key)
+            if len(images) >= max(1, int(limit)):
+                break
+        if ai_notes is not None:
+            if styled_count:
+                ai_notes.append(f"marketing:detail:styled:{styled_count}")
+            if style_fallback:
+                ai_notes.append(f"marketing:detail:style-fallback:{style_fallback}")
+            if color_skipped:
+                ai_notes.append(f"marketing:detail:color-skip:{color_skipped}")
+            if text_skipped:
+                ai_notes.append(f"marketing:detail:text-skip:{text_skipped}")
+            if crop_skipped:
+                ai_notes.append(f"marketing:detail:crop-skip:{crop_skipped}")
+            if label_skipped:
+                ai_notes.append(f"marketing:detail:label-skip:{label_skipped}")
+            if chinese_erased:
+                ai_notes.append(f"marketing:detail:chinese-erased:{chinese_erased}")
+            if chinese_skipped:
+                ai_notes.append(f"marketing:detail:chinese-skip:{chinese_skipped}")
+            ai_notes.append(
+                f"marketing:detail:source:{len(images)}/{max(1, int(limit))}"
+                if images
+                else "marketing:detail:none"
+            )
+        return images
+
+    @staticmethod
+    def _marketing_crop_has_subject(content: bytes) -> bool:
+        """细节裁切里必须真的有产品主体：抠图算产品外接框面积占比，过低即弃。
+
+        抠图不可用或识别不出主体时返回 True（跳过检查，不误杀），
+        由 ``detail_crop_usable`` 的亮度门槛兜底。
+        """
+        try:
+            from .domain.dimension_source_reuse import subject_bbox_ratios  # noqa: PLC0415
+
+            bbox = subject_bbox_ratios(content)
+        except Exception:  # noqa: BLE001 - 抠图不可用就跳过该检查
+            return True
+        if not bbox:
+            return True
+        x0, y0, x1, y1 = bbox
+        coverage = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+        return coverage >= 0.14
+
+    @staticmethod
+    def _marketing_subject_rgb_blocks(
+        content: bytes,
+    ) -> list[tuple[float, float, float]]:
+        """主体框内 3×3 网格块的均色列表；解不开/过小返回 []（不参与颜色比对）。
+
+        多色商品（红柄 + 黑刀口 + 银螺栓）不同部位颜色天然不同，单点均色比对
+        会把「同件商品的另一个部位」误判成异色款；改用块采样后按覆盖率判定。
+        """
+        try:
+            import io as _io  # noqa: PLC0415
+            from PIL import Image  # noqa: PLC0415
+
+            with Image.open(_io.BytesIO(content)) as opened:
+                image = opened.convert("RGB")
+        except Exception:  # noqa: BLE001
+            return []
+        width, height = image.size
+        if width < 8 or height < 8:
+            return []
+        x0, y0, x1, y1 = 0.0, 0.0, 1.0, 1.0
+        try:
+            from .domain.marketing_pipeline import _product_bbox_ratios  # noqa: PLC0415
+
+            box = _product_bbox_ratios(content)
+        except Exception:  # noqa: BLE001
+            box = None
+        if box:
+            x0, y0, x1, y1 = box
+        left = max(0, min(width - 1, int(x0 * width)))
+        top = max(0, min(height - 1, int(y0 * height)))
+        right = max(left + 1, min(width, int(x1 * width)))
+        bottom = max(top + 1, min(height, int(y1 * height)))
+        subject = image.crop((left, top, right, bottom))
+        blocks: list[tuple[float, float, float]] = []
+        grid = 3
+        cell_w = max(1, subject.width // grid)
+        cell_h = max(1, subject.height // grid)
+        for row in range(grid):
+            for col in range(grid):
+                cell = subject.crop(
+                    (
+                        col * cell_w,
+                        row * cell_h,
+                        min(subject.width, (col + 1) * cell_w),
+                        min(subject.height, (row + 1) * cell_h),
+                    )
+                )
+                pixels = list(cell.getdata())
+                if not pixels:
+                    continue
+                count = float(len(pixels))
+                blocks.append(
+                    (
+                        sum(p[0] for p in pixels) / count,
+                        sum(p[1] for p in pixels) / count,
+                        sum(p[2] for p in pixels) / count,
+                    )
+                )
+        return blocks
+
+    @staticmethod
+    def _marketing_palette_mismatch(
+        candidate_blocks: list[tuple[float, float, float]],
+        reference_blocks: list[tuple[float, float, float]],
+        threshold: float,
+    ) -> bool:
+        """候选主体的多数色块在参考主体里找不到近色 → 判异色款/异件。
+
+        同件商品的不同部位（红柄/黑刀口）在参考图里都存在对应色，覆盖率高；
+        整件换色（米色包混进黑包）多数色块在参考里没有近色，覆盖率低被拦。
+        信息不足（任一侧采不出色块）不误杀。
+        """
+        if not candidate_blocks or not reference_blocks:
+            return False
+        mins = [
+            min(math.dist(candidate, ref) for ref in reference_blocks)
+            for candidate in candidate_blocks
+        ]
+        matched = sum(1 for distance in mins if distance <= threshold)
+        return matched < max(1, (len(mins) + 1) // 2)
+
+    def _marketing_style_detail(
+        self,
+        crop: bytes,
+        label: str,
+        *,
+        category_id: str = "",
+        style_template: str = "auto",
+        image_tier: str = "highest",
+        reference_data_url: str = "",
+        ai_notes: list[str] | None = None,
+    ) -> bytes:
+        """把真实近景重绘成与主图同风格的微距特写；不合格返回空，调用方回退原图裁切。
+
+        第一张参考永远是真实裁切（部位照着真图画，不会乱指），只统一场景/光线。
+        结果必须过三道门——主体在框、与裁切同色系（防换色/换件）、无中文——
+        任一不过就宁可回退，绝不错图。
+        """
+        from .domain.detail_specs import (  # noqa: PLC0415
+            build_detail_styled_prompt,
+            detail_crop_usable,
+            png_data_url,
+        )
+        from .domain.marketing_gen import _promo_lighting  # noqa: PLC0415
+
+        try:
+            processor = self._media_processor()
+            prompt = build_detail_styled_prompt(
+                label, _promo_lighting(category_id, style_template)
+            )
+            refs = [png_data_url(crop)]
+            if str(reference_data_url or "").startswith("data:image/"):
+                refs.append(reference_data_url)
+            result = self._marketing_render(
+                processor, prompt, refs, ai_notes, None, tier=image_tier
+            )
+            content = bytes(getattr(result, "content", b"") or b"")
+        except Exception:  # noqa: BLE001 - 重绘失败只回退原图
+            return b""
+        if not content or not detail_crop_usable(content):
+            return b""
+        if not self._marketing_crop_has_subject(content):
+            return b""
+        # 换色/换件检查：重绘图的多数主体色块必须能在真实裁切里找到近色。
+        # 块覆盖率判定不误杀多色部位（红柄+黑刀口）的正确重绘。
+        if self._marketing_palette_mismatch(
+            self._marketing_subject_rgb_blocks(content),
+            self._marketing_subject_rgb_blocks(crop),
+            _DETAIL_STYLE_MAX_DISTANCE,
+        ):
+            return b""
+        # 中文硬门：模型可能把参考图上的字复写出来；擦不净就回退原图裁切。
+        if self._marketing_has_chinese(content):
+            cleaned, removed = self._marketing_erase_chinese(content)
+            if removed and not self._marketing_has_chinese(cleaned):
+                content = cleaned
+            else:
+                return b""
+        return content
+
+    @staticmethod
+    def _marketing_reference_data_url(content: bytes) -> str:
+        """参考图选择用的缩略图：6 张一起发，压到 512 长边控制请求体。"""
+        import base64  # noqa: PLC0415
+        from io import BytesIO  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+
+        try:
+            with Image.open(BytesIO(content)) as opened:
+                frame = opened.convert("RGB")
+                frame.thumbnail((512, 512), Image.LANCZOS)
+                buffer = BytesIO()
+                frame.save(buffer, format="JPEG", quality=82)
+                payload = buffer.getvalue()
+        except Exception:  # noqa: BLE001
+            payload = bytes(content or b"")
+        return "data:image/jpeg;base64," + base64.b64encode(payload).decode()
+
+    @staticmethod
+    def _marketing_reference_score(content: bytes) -> float:
+        """本地参考图打分：白底 + 商品居中且不贴边 + 商品占比适中 + 分辨率。"""
+        from io import BytesIO  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415
+
+        from .domain.premium_composer import content_bbox_ratios  # noqa: PLC0415
+
+        try:
+            with Image.open(BytesIO(content)) as opened:
+                image = opened.convert("RGB")
+                width, height = image.size
+                small = image.resize((64, 64), Image.LANCZOS)
+        except Exception:  # noqa: BLE001
+            return -1.0
+        pixels = list(small.getdata())
+        border: list[tuple[int, int, int]] = []
+        for index in range(64):
+            for x in (0, 1, 2, 61, 62, 63):
+                border.append(pixels[index * 64 + x])
+            for y in (0, 1, 2, 61, 62, 63):
+                border.append(pixels[y * 64 + index])
+        luminance = sum(
+            0.299 * red + 0.587 * green + 0.114 * blue for red, green, blue in border
+        ) / max(1, len(border))
+        white = 1.0 if luminance > 205 else 0.0
+
+        bbox = content_bbox_ratios(content)
+        if not bbox:
+            return white * 0.5 + min(1.0, max(width, height) / 1600.0) * 0.2
+        left, top, right, bottom = bbox
+        area = max(0.0, (right - left) * (bottom - top))
+        edge_ok = (
+            1.0
+            if left > 0.02 and top > 0.02 and right < 0.98 and bottom < 0.98
+            else 0.0
+        )
+        area_score = max(0.0, 1.0 - abs(area - 0.35) / 0.5)
+        resolution = min(1.0, max(width, height) / 1200.0)
+        return white * 0.45 + edge_ok * 0.25 + area_score * 0.2 + resolution * 0.1
+
+    def _marketing_hero_margins_ok(self, content: bytes, template: str = "") -> bool:
+        """候选 hero 的本地构图硬门槛：商品贴边/占满画面直接淘汰。
+
+        生图模型经常无视提示词里的「完整入画、留 8% 边」，把商品画到画面外；
+        这种图即使排版层完整也会看起来像被裁变形。这里用商品蒙版做一次确定性
+        检查；抠图不可用时按通过处理，绝不因为门槛故障丢图。
+        """
+        if not content:
+            return False
+        try:
+            from .domain.dimension_source_reuse import subject_bbox_ratios  # noqa: PLC0415
+
+            bbox = subject_bbox_ratios(content)
+        except Exception:  # noqa: BLE001 - 抠图不可用就不拦
+            return True
+        if bbox is None:
+            return True
+        left, top, right, bottom = bbox
+        margin = 0.03 if template == "white_main" else 0.012
+        if (
+            left < margin
+            or top < margin
+            or right > 1.0 - margin
+            or bottom > 1.0 - margin
+        ):
+            return False
+        area = max(0.0, (right - left) * (bottom - top))
+        max_area = 0.70 if template == "white_main" else 0.82
+        return 0.02 <= area <= max_area
+
+    def _marketing_white_main_from_reference(self, value: str) -> bytes:
+        """原始参考图 → 纯白底主图；图不够干净/分辨率不足时返回空，交给后续回退。
+
+        AI 重绘的 hero 变形时，白底主图会跟着变形；直接抠原始商品图是像素级保真，
+        也是卖家对白底主图的预期。只信任白底/干净商品图（打分门槛），
+        避免把中文营销大字一起抠进白底。
+        """
+        if not value:
+            return b""
+        # 只对本地受管文件做原始图抠白底：远程 URL 再抓一次既慢又可能拿到
+        # 防盗链/低清图，直接交给后面的 hero 派生链路。
+        text = str(value).strip()
+        if text.startswith(("http://", "https://", "data:")):
+            return b""
+        from pathlib import Path  # noqa: PLC0415
+
+        if not Path(text).exists():
+            return b""
+        try:
+            content = self._marketing_reference_bytes(text)
+        except Exception:  # noqa: BLE001
+            return b""
+        if not content:
+            return b""
+        return self._marketing_white_main_from_bytes(content)
+
+    def _marketing_white_main_from_bytes(self, content: bytes) -> bytes:
+        """原始商品图 → 纯白底主图（多件套也会保留全部件）。"""
+        if not content:
+            return b""
+        try:
+            from io import BytesIO  # noqa: PLC0415
+
+            from PIL import Image  # noqa: PLC0415
+
+            with Image.open(BytesIO(content)) as opened:
+                width, height = opened.size
+        except Exception:  # noqa: BLE001
+            return b""
+        if max(width, height) < 800:
+            return b""
+        if self._marketing_reference_score(content) < 0.5:
+            return b""
+        try:
+            from .domain.dimension_source_reuse import (  # noqa: PLC0415
+                clean_product_canvas,
+                subject_bbox_ratios,
+            )
+            from .domain.premium_composer import CANVAS_SIZE  # noqa: PLC0415
+
+            cleaned = (
+                clean_product_canvas(content, side=CANVAS_SIZE, model_name="u2netp")
+                or b""
+            )
+        except Exception:  # noqa: BLE001
+            return b""
+        if not cleaned or not _white_frame_ok(cleaned):
+            return b""
+        try:
+            bbox = subject_bbox_ratios(cleaned)
+        except Exception:  # noqa: BLE001
+            bbox = None
+        if bbox is not None:
+            left, top, right, bottom = bbox
+            area = max(0.0, (right - left) * (bottom - top))
+            if (
+                area < 0.03
+                or left < 0.01
+                or top < 0.01
+                or right > 0.99
+                or bottom > 0.99
+            ):
+                return b""
+        return cleaned
+
+    @staticmethod
+    def _marketing_title_has_set_cue(title: str) -> bool:
+        """标题是否像多件套（set/kit/pcs/pieces/pack/combo/套）。"""
+        import re  # noqa: PLC0415
+
+        text = str(title or "")
+        return bool(
+            re.search(r"\b(set|kit|pcs|pieces?|pack|combo|assortment)\b", text, re.I)
+            or re.search(r"(套|件套|套装|组合)", text)
+        )
+
+    def _marketing_set_count(
+        self,
+        reference_bytes: bytes,
+        *,
+        title: str = "",
+        ai_notes: list[str] | None = None,
+    ) -> int:
+        """判断是否多件套：标题有套件线索时才花一次视觉调用数件数。"""
+        if not self._marketing_title_has_set_cue(title) or not reference_bytes:
+            return 1
+        try:
+            from .domain.marketing_gen import (  # noqa: PLC0415
+                build_set_count_messages,
+                parse_set_count_response,
+            )
+            from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+            from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+            response = DoubaoArkClient(usage_kind="vision").complete(
+                build_set_count_messages(
+                    self._marketing_vision_data_url(reference_bytes)
+                ),
+                timeout=VISION_TIMEOUT_SECONDS,
+            )
+            count = parse_set_count_response(response)
+        except Exception as exc:  # noqa: BLE001 - 数件失败按单件处理
+            count = 1
+            if ai_notes is not None:
+                ai_notes.append(f"marketing:set-count:error:{str(exc)[:120]}")
+        if ai_notes is not None:
+            ai_notes.append(f"marketing:set-count:{count}")
+        return count
+
+    def _marketing_set_hero(self, reference_bytes: bytes) -> bytes:
+        """多件套 hero：原始商品图抠图 → 深色渐变画布，保留每一件，不交给 AI 重绘。
+
+        AI 生图对「3 把钳子一套」经常只画 1–2 把或把件合并；直接抠原始图再合成
+        能保证件数和颜色都对，代价是背景是本地合成的深色渐变（仍是促销风格）。
+        """
+        if not reference_bytes:
+            return b""
+        try:
+            from io import BytesIO  # noqa: PLC0415
+
+            from PIL import Image, ImageDraw, ImageFilter  # noqa: PLC0415
+
+            from .domain.dimension_source_reuse import _subject_mask  # noqa: PLC0415
+            from .domain.premium_composer import CANVAS_SIZE  # noqa: PLC0415
+
+            with Image.open(BytesIO(reference_bytes)) as opened:
+                source = opened.convert("RGB")
+            mask = _subject_mask(source, model_name="u2netp")
+            if mask is None:
+                return b""
+            cut = source.convert("RGBA")
+            cut.putalpha(mask)
+            bbox = cut.getbbox()
+            if not bbox:
+                return b""
+            cut = cut.crop(bbox)
+            side = int(CANVAS_SIZE)
+            cut.thumbnail((int(side * 0.78), int(side * 0.78)), Image.LANCZOS)
+
+            # 深色渐变底 + 一点暖光
+            column = Image.new("RGB", (1, side))
+            for y in range(side):
+                ratio = y / max(1, side - 1)
+                column.putpixel(
+                    (0, y),
+                    (
+                        int(22 - 12 * ratio),
+                        int(24 - 13 * ratio),
+                        int(30 - 16 * ratio),
+                    ),
+                )
+            canvas = column.resize((side, side))
+            glow = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+            ImageDraw.Draw(glow).ellipse(
+                (int(side * 0.45), int(side * 0.05), int(side * 1.05), int(side * 0.62)),
+                fill=(201, 162, 39, 26),
+            )
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), glow).convert("RGB")
+
+            # 柔和阴影
+            alpha = cut.getchannel("A").filter(ImageFilter.GaussianBlur(18))
+            shadow = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+            shadow.paste(
+                (0, 0, 0, 120),
+                ((side - cut.width) // 2 + 10, (side - cut.height) // 2 + 18),
+                alpha,
+            )
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), shadow).convert("RGB")
+            canvas.paste(cut, ((side - cut.width) // 2, (side - cut.height) // 2), cut)
+
+            buffer = BytesIO()
+            canvas.save(buffer, format="JPEG", quality=92)
+            return buffer.getvalue()
+        except Exception:  # noqa: BLE001 - 合成失败退回 AI hero
+            return b""
+
+    # ── 原图版式分析（轮播 + 详情，逐图蓝图 → 排版计划）───────────────────
+    _REFERENCE_LAYOUT_TTL_SECONDS = 6 * 3600
+
+    def _marketing_analysis_values(self, draft: dict[str, Any]) -> list[tuple[str, str]]:
+        """可分析的原始图列表（轮播在前、详情在后），过滤不安全 URL 并去重。"""
+
+        raw = draft.get("raw_payload") or {}
+        pairs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(value: Any, kind: str) -> None:
+            text = str(value or "").strip()
+            if not text or text in seen or not self._is_safe_reference_value(text):
+                return
+            seen.add(text)
+            pairs.append((text, kind))
+
+        for value in raw.get("source_image_urls") or []:
+            _add(value, "gallery")
+        for value in raw.get("source_detail_image_urls") or []:
+            _add(value, "detail")
+        # 主图兜底：部分草稿只有 image_url，没有 source_image_urls。
+        _add(raw.get("image_url") or raw.get("main_image_url"), "gallery")
+        return pairs
+
+    def _read_reference_layout_cache(
+        self, draft_id: int, workspace_id: str, source_hash: str = ""
+    ) -> dict[str, Any] | None:
+        key = (str(workspace_id), int(draft_id))
+        now = time.time()
+        with self._reference_layout_lock:
+            entry = self._reference_layout_cache.get(key)
+            if entry is None:
+                return None
+            expires, cached_hash, result = entry
+            if expires < now or (source_hash and cached_hash != source_hash):
+                self._reference_layout_cache.pop(key, None)
+                return None
+            return dict(result)
+
+    def _write_reference_layout_cache(
+        self, draft_id: int, workspace_id: str, source_hash: str, result: dict[str, Any]
+    ) -> None:
+        key = (str(workspace_id), int(draft_id))
+        with self._reference_layout_lock:
+            if len(self._reference_layout_cache) >= 64:
+                oldest = min(
+                    self._reference_layout_cache.items(),
+                    key=lambda item: item[1][0],
+                )[0]
+                self._reference_layout_cache.pop(oldest, None)
+            self._reference_layout_cache[key] = (
+                time.time() + self._REFERENCE_LAYOUT_TTL_SECONDS,
+                source_hash,
+                dict(result),
+            )
+
+    def _marketing_cached_layout(
+        self, draft_id: int, *, workspace_id: str = "local"
+    ) -> dict[str, Any]:
+        """生成时读取已分析好的排版计划；没分析过就返回空（走旧的随机骨架）。"""
+
+        cached = self._read_reference_layout_cache(draft_id, workspace_id)
+        if not cached:
+            return {}
+        recommendation = cached.get("recommendation")
+        return dict(recommendation) if isinstance(recommendation, dict) else {}
+
+    def _ensure_marketing_layout_plan(
+        self,
+        draft_id: int,
+        *,
+        workspace_id: str = "local",
+        max_images: int = 12,
+    ) -> dict[str, Any]:
+        """生成前确保有原图版式计划：缓存命中直接复用，否则自动分析一轮。
+
+        单张原图约 0.003 元、按商品缓存 6 小时；分析失败一律退回旧的随机骨架，
+        不允许因为「拆解原图」失败而拖垮整批出图。
+        """
+
+        cached = self._marketing_cached_layout(draft_id, workspace_id=workspace_id)
+        if cached:
+            return cached
+        try:
+            result = self.analyze_marketing_reference_layouts(
+                int(draft_id), workspace_id=workspace_id, max_images=max_images
+            )
+        except Exception:  # noqa: BLE001 - 分析是增强项，失败不影响出图
+            return {}
+        recommendation = result.get("recommendation")
+        return dict(recommendation) if isinstance(recommendation, dict) else {}
+
+    @staticmethod
+    def _layout_reuse_reason(blueprint: LayoutBlueprint | None) -> str:
+        if blueprint is None:
+            return ""
+        reasons: list[str] = []
+        if blueprint.brand_elements:
+            reasons.append("含品牌元素：" + "、".join(list(blueprint.brand_elements)[:3]))
+        if not blueprint.covers_product:
+            reasons.append("商品被裁切或不完整")
+        if not blueprint.reusable:
+            reasons.append("结构不适合借鉴")
+        if blueprint.quality_score < 6.0:
+            reasons.append("版式质量偏低")
+        return "；".join(reasons)
+
+    def analyze_marketing_reference_layouts(
+        self,
+        draft_id: int,
+        *,
+        workspace_id: str = "local",
+        max_images: int = 16,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """逐张分析原始轮播/详情图的版式，产出可复用的排版计划（内部能力）。
+
+        每张图一次轻量视觉调用（约 0.003 元），结果缓存 6 小时；生成前自动执行，
+        不在界面单独暴露。分析失败一律退回默认结构，不影响出图。
+        """
+
+        draft = self.repository.get_draft(int(draft_id), workspace_id=workspace_id)
+        if draft is None:
+            raise ProductProcessingNotFound("product draft not found")
+        if not _ai_enabled():
+            raise ProductProcessingValidationError("图片生成服务未就绪")
+        title = str(draft.get("title") or draft.get("product_name") or "the product")
+        pairs = self._marketing_analysis_values(draft)
+        cap = max(1, min(24, int(max_images or 16)))
+        pairs = pairs[:cap]
+        if not pairs:
+            raise ProductProcessingValidationError("该商品没有可分析的原图")
+        source_hash = hashlib.sha1(
+            "|".join(url for url, _kind in pairs).encode("utf-8")
+        ).hexdigest()
+        if not refresh:
+            cached = self._read_reference_layout_cache(
+                int(draft_id), workspace_id, source_hash
+            )
+            if cached:
+                cached["cached"] = True
+                return cached
+        return self._run_marketing_layout_analysis(
+            draft_id,
+            title=title,
+            pairs=pairs,
+            workspace_id=workspace_id,
+            source_hash=source_hash,
+        )
+
+    def _run_marketing_layout_analysis(
+        self,
+        draft_id: int,
+        *,
+        title: str,
+        pairs: list[tuple[str, str]],
+        workspace_id: str,
+        source_hash: str,
+    ) -> dict[str, Any]:
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+        from .domain.layout_variants import variant_order  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        try:
+            client = DoubaoArkClient(usage_kind="vision")
+        except Exception as exc:  # noqa: BLE001 - 缺密钥时给可读提示，而不是 500
+            raise ProductProcessingValidationError(
+                f"视觉服务未就绪：{str(exc)[:120]}"
+            ) from exc
+
+        def _one(item: tuple[int, tuple[str, str]]) -> dict[str, Any]:
+            index, (url, kind) = item
+            entry: dict[str, Any] = {
+                "index": index,
+                "url": url,
+                "thumbnail_url": self._display_url(url),
+                "kind": kind,
+                "blueprint": None,
+                "error": "",
+                "reuse_reason": "",
+            }
+            data_url = ""
+            try:
+                data_url = self._image_to_data_url(url)
+            except Exception:  # noqa: BLE001 - 单图下载失败只跳过这张
+                data_url = ""
+            if not data_url:
+                entry["error"] = "download-failed"
+                return entry
+            try:
+                text = client.complete(
+                    build_layout_messages(
+                        data_url, title=title, kind=kind, index=index + 1
+                    ),
+                    timeout=VISION_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 - 单图分析失败不阻断整批
+                entry["error"] = f"vision-failed:{str(exc)[:80]}"
+                return entry
+            blueprint = parse_layout_response(text)
+            if blueprint is None:
+                entry["error"] = "parse-failed"
+                return entry
+            entry["blueprint"] = blueprint.to_dict()
+            entry["reuse_reason"] = self._layout_reuse_reason(blueprint)
+            return entry
+
+        workers = max(1, min(3, len(pairs)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            images = list(pool.map(_one, enumerate(pairs)))
+
+        blueprints = [
+            LayoutBlueprint(
+                layout=str(payload.get("layout") or "other"),
+                image_type=str(payload.get("image_type") or "other"),
+                photo_zone=str(payload.get("photo_zone") or "center"),
+                text_zones=tuple(payload.get("text_zones") or ()),
+                item_count=int(payload.get("item_count") or 0),
+                card_shape=str(payload.get("card_shape") or "none"),
+                background=str(payload.get("background") or ""),
+                accent_color=str(payload.get("accent_color") or ""),
+                quality_score=float(payload.get("quality_score") or 0.0),
+                reusable=bool(payload.get("reusable")),
+                covers_product=bool(payload.get("covers_product", True)),
+                brand_elements=tuple(payload.get("brand_elements") or ()),
+                notes=str(payload.get("notes") or ""),
+            )
+            for payload in (item.get("blueprint") for item in images)
+            if isinstance(payload, dict)
+        ]
+        recommendation = plan_from_blueprints(
+            blueprints,
+            fallback_order=variant_order(
+                zlib.crc32(f"{int(draft_id)}:{title}".encode("utf-8"))
+            ),
+            template_count=4,
+        )
+        result = {
+            "draft_id": int(draft_id),
+            "title": title,
+            "images": images,
+            "analyzed": len(blueprints),
+            "failed": sum(1 for item in images if item.get("error")),
+            "recommendation": recommendation,
+            "generated_at": time.time(),
+            "cached": False,
+        }
+        if blueprints:
+            self._write_reference_layout_cache(
+                int(draft_id), workspace_id, source_hash, result
+            )
+        return result
+
+    def _marketing_note_reference_distance(
+        self,
+        hero: bytes,
+        reference_data_url: str,
+        template: str,
+        ai_notes: list[str] | None,
+    ) -> None:
+        """护栏：成图 hero 与原图几乎同图时留痕（只告警，不因哈希误判丢图）。"""
+
+        if ai_notes is None or not hero or not reference_data_url:
+            return
+        try:
+            _prefix, encoded = str(reference_data_url).split(",", 1)
+            reference = base64.b64decode(encoded)
+        except Exception:  # noqa: BLE001
+            return
+        distance = image_hash_distance(hero, reference)
+        if distance is not None and distance <= 6:
+            ai_notes.append(f"marketing:{template}:near-copy-original:{distance}")
 
     def generate_marketing_image_api(
         self,
@@ -3526,9 +5789,6 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         workspace_id: str = "local",
     ) -> dict[str, Any]:
         """精选处理独立入口：为一个草稿生成一张营销图（照片层 + 本地排版合成）。"""
-        from .domain.premium_composer import compose_marketing_image  # noqa: PLC0415
-        from .domain.premium_prompts import build_photo_prompt  # noqa: PLC0415
-
         draft = self.repository.get_draft(draft_id, workspace_id=workspace_id)
         if draft is None:
             raise ProductProcessingNotFound("product draft not found")
@@ -3542,12 +5802,122 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         category = str(raw.get("category_path") or raw.get("category") or "")
         copy = self._marketing_copy(title, category, template)
         processor = self._media_processor()
-        refs = [value for value in reference_values if str(value or "").strip()][:2]
-        if template == "feature_cards":
-            composed = self._marketing_feature_cards(processor, copy=copy)
-        else:
-            photo = self._marketing_render(processor, build_photo_prompt(template, copy), refs)
-            composed = compose_marketing_image(bytes(getattr(photo, "content", b"") or b""), template, copy)
+        refs = self._marketing_pick_references(reference_values)
+        if not refs:
+            raise ProductProcessingValidationError("该商品没有可用的参考图")
+        from .domain.marketing_gen import generate_best  # noqa: PLC0415
+        from .domain.marketing_pipeline import compose as compose_plan, plan_for, render_blocks  # noqa: PLC0415
+        from .domain.layout_variants import judge_hint, pick_variant, variant_order  # noqa: PLC0415
+        from .doubao_ark import DoubaoArkClient  # noqa: PLC0415
+        from .doubao_vision import VISION_TIMEOUT_SECONDS  # noqa: PLC0415
+
+        plan = plan_for(template)
+        layout_plan = self._ensure_marketing_layout_plan(
+            draft_id, workspace_id=workspace_id
+        )
+        layout_order = [
+            str(item)
+            for item in (layout_plan.get("skeleton_order") or [])
+            if str(item or "").strip()
+        ]
+        skeleton = pick_variant(
+            template,
+            layout_order
+            or variant_order(zlib.crc32(f"{draft_id}:{title}".encode("utf-8"))),
+            0,
+        )
+        judge = DoubaoArkClient(usage_kind="vision")
+        pro_state: dict[str, Any] = {"enabled": True}
+        judge_refs = self._marketing_judge_reference_urls(refs)
+
+        def _render(prompt: str, block_refs: list[str], count: int = 1) -> bytes:
+            def _one(text: str, refs_in: list[str]) -> bytes:
+                photo = self._marketing_render(processor, text, refs_in, None, pro_state)
+                return bytes(getattr(photo, "content", b"") or b"")
+
+            content = generate_best(
+                prompt=prompt,
+                refs=block_refs,
+                render=_one,
+                complete=lambda messages: judge.complete(messages, timeout=VISION_TIMEOUT_SECONDS),
+                count=max(1, int(count)),
+                structure_hint=judge_hint(skeleton),
+                reference_data_urls=judge_refs,
+                verify=lambda candidate: self._marketing_candidate_is_clean(
+                    candidate, judge_refs, skeleton, None
+                ),
+                gate=lambda candidate: self._marketing_hero_margins_ok(
+                    candidate, template
+                ),
+            )
+            # 硬门：仍带中文就先本地擦字，擦不干净才不出这张图。
+            if content and self._marketing_has_chinese(content):
+                cleaned, removed = self._marketing_erase_chinese(content)
+                if removed and not self._marketing_has_chinese(cleaned):
+                    content = cleaned
+                else:
+                    return b""
+            return content
+
+        category_id = self._marketing_category_id(
+            title=title, category=category, reference_urls=refs
+        )
+        detail_candidates = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in [
+                    *(raw.get("source_detail_image_urls") or []),
+                    *(raw.get("source_image_urls") or []),
+                ]
+                if str(value or "").strip()
+            )
+        )
+        detail_images = (
+            self._marketing_detail_images(
+                detail_candidates,
+                reference_bytes=self._marketing_reference_bytes(refs[0]),
+                limit=3,
+                category_id=category_id,
+            )
+            if plan.details
+            else []
+        )
+        blocks = render_blocks(
+            plan=plan, copy=copy, refs=refs, render=_render, category_id=category_id,
+            instructions=str(layout_plan.get("prompt_fragment") or ""),
+            skeleton=skeleton,
+            detail_images=detail_images or None,
+        )
+        if blocks.get("hero"):
+            blocks["hero"] = _marketing_lift_hero(blocks["hero"])
+        # 编号引线依赖不可靠的视觉坐标，先不画；细节由真实原图局部承担。
+        callout_parts = None
+        composed = compose_plan(
+            plan=plan, copy=copy, blocks=blocks, callout_parts=callout_parts, skeleton=skeleton
+        )
+        if composed and judge_refs:
+            qc_ok, qc_issues = self._marketing_qc_composed(
+                composed, judge_refs, template, skeleton, None
+            )
+            if not qc_ok:
+                contain_fallback = None
+                if _qc_issues_look_cropped(qc_issues):
+                    contain_fallback = compose_plan(
+                        plan=plan,
+                        copy=copy,
+                        blocks=blocks,
+                        callout_parts=callout_parts,
+                        skeleton=skeleton,
+                        contain=True,
+                    )
+                if contain_fallback:
+                    composed = contain_fallback
+                elif skeleton != "S1":
+                    fallback = compose_plan(
+                        plan=plan, copy=copy, blocks=blocks, callout_parts=callout_parts, skeleton="S1"
+                    )
+                    if fallback:
+                        composed = fallback
         if not composed:
             raise ProductProcessingValidationError("营销图生成失败")
         path = self.assets.save_generated_image(
@@ -5185,9 +7555,15 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         offset: int = 0,
         date_from: str | None = None,
         date_to: str | None = None,
+        marketing: bool | None = None,
     ) -> dict[str, Any]:
         tasks, total = self.repository.list_tasks(
-            limit, workspace_id, offset=offset, date_from=date_from, date_to=date_to
+            limit,
+            workspace_id,
+            offset=offset,
+            date_from=date_from,
+            date_to=date_to,
+            marketing=marketing,
         )
         history = []
         # 历史标题统一是「产品处理任务」，用采集批次名（选品·1688·狗衣服·11-12 14:08）
@@ -5213,6 +7589,7 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 {
                     "task_id": task["id"],
                     "title": task["title"],
+                    "kind": "marketing" if settings.get("marketing_images") else "processing",
                     "batch_names": batch_names.get(task["id"], []),
                     "sample_items": sample_items,
                     "status": task["status"],
@@ -6081,6 +8458,9 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
             settings = item.get("canvas_settings") or {}
             if not dimensions.drawable:
                 label = "missing"
+            elif not dimensions.confirmed_drawable:
+                # 只有 AI 预估：已导入但按策略不出卡，等预检页确认后再补烧。
+                label = "estimated"
             elif state == "completed":
                 label = "estimated" if dimensions.estimated else "confirmed"
             elif state in {"render_failed", "render_retryable", "conflict", "failed"}:
@@ -10249,14 +12629,21 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         provider_status_classes: dict[str, str] = {}
         optimized_title = title
         description = self._text(draft.get("description") or raw.get("description"))
+        # 精选处理替代普通四宫格：用户选了精选版式后，不再产出普通四宫格裁剪图。
+        # 详情图是从四宫格本地拆出来的，没有四宫格就会静默改走付费 AI 详情图——
+        # 因此一并跳过，避免"省了四宫格却多花一笔"。
+        marketing_enabled = bool(settings.get("marketing_images"))
+        marketing_replaces_grid = marketing_enabled and not preflight_only
         need_grid = (
             not preflight_only
             and "four_grid" in scope
+            and not marketing_replaces_grid
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
         need_detail = (
             not preflight_only
             and "detail_images" in scope
+            and not marketing_replaces_grid
             and _as_bool(settings.get("ai_media_opt_in"), default=True)
         )
         # 精品模式：用户从草稿池勾选的链接走一次 4K 四宫格并本地高清拆分；
@@ -11219,17 +13606,20 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 workspace_id=workspace_id,
             )
 
-        # 精选处理（一期）：营销图追加进轮播（carousel.extra 槽位），失败不拖垮主流程。
-        if bool(settings.get("marketing_images")) and grid_image_paths and not grid_source_fallback:
+        # 精选处理：默认替代普通四宫格直接作为轮播（不再产出四宫格裁剪图）；
+        # 若调用方仍要四宫格，则精选图追加在其后。失败不拖垮主流程。
+        white_main_path = ""
+        if marketing_enabled and not preflight_only and not grid_source_fallback:
             self._raise_if_task_stopped(task_id, workspace_id)
             stage_started = time.perf_counter()
             try:
-                marketing_paths = self._generate_marketing_images(
+                marketing_paths, white_main_path = self._generate_marketing_images(
                     task_id,
                     draft["id"],
                     title=title,
                     category=category,
                     reference_urls=source_reference_values,
+                    detail_reference_urls=detail_reference_values,
                     workspace_id=workspace_id,
                     templates=[
                         str(item)
@@ -11238,6 +13628,12 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                     ],
                     vision_subject=str(vision_subject or ""),
                     caution=str(batch_image_prompt or ""),
+                    image_tier=str(settings.get("marketing_image_tier") or "highest"),
+                    pose_variety=bool(settings.get("marketing_pose_variety", True)),
+                    style_template=str(
+                        settings.get("marketing_style_template") or "auto"
+                    ),
+                    key_info=str(settings.get("marketing_key_info") or ""),
                     ai_notes=ai_notes,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -11245,7 +13641,18 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
                 marketing_paths = []
             record_stage("marketing_images", stage_started)
             if marketing_paths:
-                grid_image_paths = list(grid_image_paths) + list(marketing_paths)
+                # 精选替代四宫格时，精选图本身就是轮播；否则追加在四宫格后面。
+                grid_image_paths = (
+                    list(grid_image_paths) + list(marketing_paths)
+                    if need_grid
+                    else list(marketing_paths)
+                )
+                # 第 4 格必须是白底主体图（用户明确要求，对标原始轮播里的纯白底
+                # 商品照）；不要用供应商尺寸图/深色底图替代。尺寸卡走独立尺寸画布。
+                if white_main_path and not need_grid:
+                    rest = [value for value in grid_image_paths if value != white_main_path]
+                    rest.insert(min(3, len(rest)), white_main_path)
+                    grid_image_paths = rest
 
         image_manifest: list[dict[str, str]] = []
         image_roles = (
@@ -11321,7 +13728,8 @@ BATCH-LEVEL CATEGORY EXPERT GUIDELINES (automated quality guidance only; they MU
         # 生成了轮播图但整组产物都非公开 http(s)（COS 未配 且未设 WH_MEDIA_BASE_URL）：
         # 导出会被 _http_urls 过滤后回退来源图。仅记一条诊断日志（前端不消费 ai_notes），
         # 不改导出内容、不改计费、不改 four_grid 状态，最小副作用。
-        if grid_image_paths and not any(
+        # 精选任务不生成四宫格：它的本地预览地址会在定稿发布时落公开 URL，不能误报。
+        if need_grid and grid_image_paths and not any(
             is_safe_external_url(str(value or "").strip())
             for value in list(grid_image_paths) + [grid_summary_path]
         ):

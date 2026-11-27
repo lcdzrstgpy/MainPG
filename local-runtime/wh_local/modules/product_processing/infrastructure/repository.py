@@ -1848,6 +1848,7 @@ class ProductProcessingRepository:
         offset: int = 0,
         date_from: str | None = None,
         date_to: str | None = None,
+        marketing: bool | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         with self.database.sessions() as session:
             filters = [ProcessingTaskRow.workspace_id == workspace_id]
@@ -1855,6 +1856,11 @@ class ProductProcessingRepository:
                 filters.append(ProcessingTaskRow.created_at >= f"{date_from}T00:00:00")
             if date_to:
                 filters.append(ProcessingTaskRow.created_at <= f"{date_to}T23:59:59.999999")
+            if marketing is not None:
+                # 精选处理任务在 settings_json 里带 marketing_images=true；这里用它把
+                # 普通 AI 处理历史与精选历史彻底分开，避免两边混在一起。
+                flag = ProcessingTaskRow.settings_json.like('%"marketing_images":true%')
+                filters.append(flag if marketing else ~flag)
             total = int(
                 session.scalar(select(func.count()).select_from(ProcessingTaskRow).where(*filters)) or 0
             )

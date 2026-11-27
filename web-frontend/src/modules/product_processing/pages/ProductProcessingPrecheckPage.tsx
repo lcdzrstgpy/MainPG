@@ -72,6 +72,10 @@ const LocalCompositionDrawer = lazy(
   () => import('../components/LocalCompositionDrawer'),
 );
 
+// 本地拼装/批量拼装入口暂时隐藏：拼装成品质量未达标，待重做后再放开。
+// 组件、抽屉与对话框都保留，改回 false 即可恢复入口。
+const COMPOSE_ENTRY_HIDDEN = true;
+
 const API_BASE = '/api/product-processing';
 const MAX_UPLOAD_FILES = 20;
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -1633,7 +1637,7 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
     }
   };
 
-  // 一键把本批预估尺寸标为已确认：只改来源标记，图上数字不变，不重烧。
+  // 一键确认本批预估尺寸：已出图的只改来源标记；还没出图的确认后由后端补烧一张。
   const confirmAllEstimated = async () => {
     if (dimensionSummary.estimated <= 0) return;
     setConfirmingDimensions(true);
@@ -2085,20 +2089,22 @@ export function ProductProcessingPrecheckPage({ taskId, initialChangeSetId, onOp
           )}
         </div>
         <div className="verify-command-actions">
-          <button
-            type="button"
-            className="btn-mini primary"
-            onClick={() => {
-              void (async () => {
-                const allLoadedItems = await ensureAllItemsLoaded();
-                await hydrateAllMedia(allLoadedItems.filter((item) => !item.excluded));
-                setBatchComposeOpen(true);
-              })();
-            }}
-            disabled={mutationsLocked || batchComposeItems.length === 0}
-          >
-            批量拼装
-          </button>
+          {!COMPOSE_ENTRY_HIDDEN && (
+            <button
+              type="button"
+              className="btn-mini primary"
+              onClick={() => {
+                void (async () => {
+                  const allLoadedItems = await ensureAllItemsLoaded();
+                  await hydrateAllMedia(allLoadedItems.filter((item) => !item.excluded));
+                  setBatchComposeOpen(true);
+                })();
+              }}
+              disabled={mutationsLocked || batchComposeItems.length === 0}
+            >
+              批量拼装
+            </button>
+          )}
         </div>
       </header>
 

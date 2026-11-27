@@ -167,7 +167,7 @@ export interface ProductProcessingOptions {
   processingScope: string[];
   /** 精选处理：AI 照片层 + 本地排版合成营销图（默认关） */
   marketingImages?: boolean;
-  /** 精选版式（选 3 个左右）：headline_hero/action_proof/icon_grid/material_strip/use_cases */
+  /** 精选版式：infographic_hero/infographic_details/headline_hero/feature_cards/icon_grid/callout_ring */
   marketingTemplates?: string[];
   qualificationMode: 'standard' | 'strict';
   includeProductVideo: boolean;
@@ -729,6 +729,8 @@ export interface TaskOutputsResponse {
 export type TaskHistoryItem = {
   task_id: number;
   title: string;
+  /** 任务类型：普通 AI 处理 / 精选处理。 */
+  kind?: "processing" | "marketing";
   /** 这批处理来自哪些采集批次（与「采集批次」下拉同一套命名），商品数多的排前面。 */
   batch_names?: string[];
   /** 批次里前几个商品的标题（后端最多给 3 个），用来在悬停时认出处理的是什么。 */

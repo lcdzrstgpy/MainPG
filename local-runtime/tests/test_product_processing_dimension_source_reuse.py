@@ -41,7 +41,7 @@ def _jpeg(size: tuple[int, int], color: tuple[int, int, int] = (20, 20, 20)) -> 
 def test_clean_product_canvas_outputs_white_square(monkeypatch: pytest.MonkeyPatch) -> None:
     mask = Image.new("L", (400, 300), 0)
     ImageDraw.Draw(mask).rectangle((100, 60, 300, 240), fill=255)
-    monkeypatch.setattr(reuse, "_subject_mask", lambda image: mask)
+    monkeypatch.setattr(reuse, "_subject_mask", lambda image, **_: mask)
 
     cleaned = reuse.clean_product_canvas(_jpeg((400, 300)), side=320)
 
@@ -57,13 +57,13 @@ def test_clean_product_canvas_rejects_unreliable_mask(monkeypatch: pytest.Monkey
     mask = Image.new("L", (400, 300), 0)
     # 1px 细线：前景占比远低于 2%，属于不可信分割。
     ImageDraw.Draw(mask).line((0, 0, 399, 299), fill=255, width=1)
-    monkeypatch.setattr(reuse, "_subject_mask", lambda image: mask)
+    monkeypatch.setattr(reuse, "_subject_mask", lambda image, **_: mask)
 
     assert reuse.clean_product_canvas(_jpeg((400, 300))) is None
 
 
 def test_clean_product_canvas_returns_none_without_segmentation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reuse, "_subject_mask", lambda image: None)
+    monkeypatch.setattr(reuse, "_subject_mask", lambda image, **_: None)
 
     assert reuse.clean_product_canvas(_jpeg((400, 300))) is None
 

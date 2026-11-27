@@ -158,6 +158,62 @@ def test_sku_repull_failures_are_counted(runner_factory) -> None:
     assert len(repository.updated) == 1
 
 
+def test_sku_repull_records_failure_reasons(runner_factory) -> None:
+    """失败要留下「哪个商品、什么错误码」，否则 UI 只能看到「失败 2」查不动。"""
+    provider = FakeProvider(fail_offer_ids=frozenset({"offer-1", "offer-2"}))
+    runner, _repository = runner_factory(provider)
+    actor = SimpleNamespace(workspace_id="ws-1")
+    run = SimpleNamespace(run_id="run-reasons", metadata={})
+    targets = [FakeCandidate("offer-1"), FakeCandidate("offer-2"), FakeCandidate("offer-3")]
+
+    runner.start(actor=actor, run=run, targets=targets, previous_round=0)
+    _wait_until(lambda: runner.state(actor=actor, run=run)["status"] == "completed")
+
+    final = runner.state(actor=actor, run=run)
+    assert final["failed"] == 2
+    assert len(final["errors"]) == 2
+    assert {item["offer_id"] for item in final["errors"]} == {"offer-1", "offer-2"}
+    assert all(item["code"] == "upstream_failed" for item in final["errors"])
+    assert all("boom" in item["message"] for item in final["errors"])
+    assert "首个失败" in final["message"]
+
+
+def test_sku_repull_fatal_error_never_leaves_round_running(runner_factory, monkeypatch) -> None:
+    """线程里的致命异常（这里是导入失败）必须落成 failed，不能永远停在 running。
+
+    running 会被 start() 当成「已有轮次在跑」，僵尸状态会让用户之后再也点不动补齐。
+    """
+    provider = FakeProvider()
+    runner, repository = runner_factory(provider)
+    monkeypatch.delattr(normalizer, "enrich_candidate_with_detail")
+    actor = SimpleNamespace(workspace_id="ws-1")
+    run = SimpleNamespace(run_id="run-fatal", metadata={})
+
+    runner.start(
+        actor=actor,
+        run=run,
+        targets=[FakeCandidate("offer-1")],
+        previous_round=0,
+    )
+    _wait_until(lambda: runner.state(actor=actor, run=run)["status"] == "failed")
+
+    final = runner.state(actor=actor, run=run)
+    assert final["status"] == "failed"
+    assert "失败" in final["message"]
+    assert repository.run_metadata["run-fatal"]["sku_repull"]["status"] == "failed"
+
+    # 失败后必须还能开启下一轮（不会被僵尸 running 挡住）
+    monkeypatch.setattr(normalizer, "enrich_candidate_with_detail", fake_enrich, raising=False)
+    restarted = runner.start(
+        actor=actor,
+        run=run,
+        targets=[FakeCandidate("offer-2")],
+        previous_round=final["round"],
+    )
+    assert restarted["status"] == "running"
+    _wait_until(lambda: runner.state(actor=actor, run=run)["status"] == "completed")
+
+
 def test_sku_repull_success_reconciles_partial_run_status_and_errors(runner_factory) -> None:
     provider = FakeProvider()
     runner, repository = runner_factory(provider)

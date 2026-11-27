@@ -131,6 +131,12 @@ export type DailySelectionConfirmResult = {
   pending_count: number;
 };
 
+export type SkuRepullFailure = {
+  offer_id: string;
+  code: string;
+  message: string;
+};
+
 export type SkuRepullState = {
   status: "idle" | "running" | "completed" | "cancelled" | "failed";
   round: number;
@@ -139,6 +145,8 @@ export type SkuRepullState = {
   succeeded: number;
   failed: number;
   message: string;
+  /** 最近几条失败摘要（后端只保留少量），用于回答「为什么失败」。 */
+  errors?: SkuRepullFailure[];
   updated_at: string;
 };
 

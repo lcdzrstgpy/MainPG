@@ -44,11 +44,17 @@ import type {
   DailySelectionRun,
   DailySelectionRunSummary,
   SelectionScope,
+  SkuRepullFailure,
   SkuRepullState,
   SourceVariantRecord,
   TargetSite,
 } from "../types";
 import "../styles/daily-selection.css";
+
+/** SKU 补齐失败摘要：后端只留最近几条，这里压成一行给用户和 hover 提示用。 */
+function formatRepullFailure(failure: SkuRepullFailure): string {
+  return [failure.code, failure.message].filter(Boolean).join(" ") || "未知错误";
+}
 
 type Direction = {
   id: string;
@@ -1652,9 +1658,21 @@ export function DailySelectionPage({ view = "directions", initialDirectionId, on
                         <button type="button" className="sku-repull-cancel" disabled={skuRepullBusy} onClick={() => void cancelSkuRepullNow()}>{skuRepullBusy ? <><i className="app-spinner is-sm" aria-hidden="true" />中断</> : "中断"}</button>
                       </>
                     ) : (
-                      <i>
+                      <i
+                        title={
+                          skuRepull.errors?.length
+                            ? skuRepull.errors
+                                .map((item) => `${item.offer_id}：${formatRepullFailure(item)}`)
+                                .join("\n")
+                            : undefined
+                        }
+                      >
                         {skuRepull.status === "completed"
-                          ? `第 ${skuRepull.round} 轮完成（成功 ${skuRepull.succeeded} / 失败 ${skuRepull.failed}）`
+                          ? `第 ${skuRepull.round} 轮完成（成功 ${skuRepull.succeeded} / 失败 ${skuRepull.failed}）${
+                              skuRepull.errors?.length
+                                ? ` · 首个失败：${formatRepullFailure(skuRepull.errors[0])}`
+                                : ""
+                            }`
                           : skuRepull.status === "cancelled"
                             ? `第 ${skuRepull.round} 轮已中断（完成 ${skuRepull.done}/${skuRepull.total}）`
                             : skuRepull.message}

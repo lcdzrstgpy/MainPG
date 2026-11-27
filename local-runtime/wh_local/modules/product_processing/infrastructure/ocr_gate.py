@@ -329,6 +329,117 @@ def detect_chinese_text(content: bytes) -> list[str] | None:
     return None if inspection is None else inspection["chinese"]
 
 
+def detect_chinese_boxes(content: bytes) -> list[tuple[int, int, int, int]] | None:
+    """返回中文文字的像素框 ``(x0, y0, x1, y1)``；无中文返回空列表，OCR 不可用返回 None。
+
+    与 ``inspect_visible_text`` 的区别：不受 ``ocr_gate_enabled`` 总开关影响（营销图
+    中文清理必须始终可用），并保留坐标供本地擦除使用。坐标相对传入图片的原始像素。
+    """
+    engine = _get_engine()
+    if engine is None:
+        return None
+    try:
+        import numpy as np  # type: ignore
+        from PIL import Image  # type: ignore
+
+        with _OCR_INFERENCE_SEMAPHORE:
+            opened = Image.open(io.BytesIO(content)).convert("RGB")
+            full_width, full_height = opened.size
+            scale = 1.0
+            if max(full_width, full_height) > _OCR_MAX_EDGE:
+                scale = _OCR_MAX_EDGE / float(max(full_width, full_height))
+                opened = opened.resize(
+                    (
+                        max(1, int(full_width * scale)),
+                        max(1, int(full_height * scale)),
+                    ),
+                    Image.LANCZOS,
+                )
+            result, _elapse = engine(np.array(opened))
+    except Exception:
+        return None
+    boxes: list[tuple[int, int, int, int]] = []
+    if not result:
+        return boxes
+    inverse = 1.0 / scale if scale else 1.0
+    for line in result:
+        if not isinstance(line, (list, tuple)) or len(line) < 2:
+            continue
+        text = str(line[1] or "").strip()
+        if not text or not _CJK_RE.search(text):
+            continue
+        score = float(line[2]) if len(line) > 2 and isinstance(line[2], (int, float)) else 1.0
+        if score < 0.45:
+            continue
+        points = line[0]
+        if not isinstance(points, (list, tuple)) or len(points) < 2:
+            continue
+        try:
+            xs = [float(point[0]) for point in points]
+            ys = [float(point[1]) for point in points]
+        except (TypeError, ValueError, IndexError):
+            continue
+        boxes.append(
+            (
+                max(0, int(min(xs) * inverse)),
+                max(0, int(min(ys) * inverse)),
+                max(1, int(max(xs) * inverse)),
+                max(1, int(max(ys) * inverse)),
+            )
+        )
+    return boxes
+
+
+def erase_chinese_text(
+    content: bytes, *, pad_ratio: float = 0.18
+) -> tuple[bytes, int]:
+    """用本地 inpaint 擦掉图片里的中文文字，返回 ``(处理后图片, 擦除文字块数)``。
+
+    营销图里中文是绝对禁止项，但原图局部本身可能是好图：先尝试擦字保留图片，
+    擦完仍检出中文由调用方决定是否丢弃。任何异常都原样返回（不阻断出图）。
+    """
+    boxes = detect_chinese_boxes(content)
+    if not boxes:
+        return content, 0
+    try:
+        pad = max(0.0, min(0.5, float(pad_ratio)))
+    except (TypeError, ValueError):
+        pad = 0.18
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+        from PIL import Image  # type: ignore
+
+        with Image.open(io.BytesIO(content)) as opened:
+            image = opened.convert("RGB")
+        array = np.array(image)
+        height, width = array.shape[:2]
+        mask = np.zeros((height, width), dtype=np.uint8)
+        for x0, y0, x1, y1 in boxes:
+            pad_x = max(3, int((x1 - x0) * pad))
+            pad_y = max(3, int((y1 - y0) * pad))
+            left = max(0, x0 - pad_x)
+            top = max(0, y0 - pad_y)
+            right = min(width, x1 + pad_x)
+            bottom = min(height, y1 + pad_y)
+            if right > left and bottom > top:
+                mask[top:bottom, left:right] = 255
+        if not mask.any():
+            return content, 0
+        cleaned = cv2.inpaint(
+            cv2.cvtColor(array, cv2.COLOR_RGB2BGR),
+            mask,
+            max(3, int(min(width, height) * 0.01)),
+            cv2.INPAINT_TELEA,
+        )
+        output = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB))
+        buffer = io.BytesIO()
+        output.save(buffer, format="PNG")
+        return buffer.getvalue(), len(boxes)
+    except Exception:
+        return content, 0
+
+
 def ocr_diagnostics() -> dict[str, Any]:
     """OCR 工具链就绪状态（供引擎状态接口展示）。"""
     engine = _get_engine()

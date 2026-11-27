@@ -49,12 +49,14 @@ test("image service nests the existing workflows one level deeper", () => {
   assert.equal(imageService?.label, "图像服务");
   assert.deepEqual(imageService?.children.map((child) => child.id), [
     "product_workflow",
+    "marketing_workflow",
     "pod_workflow",
     "combo_workflow",
     "ai_video",
   ]);
   assert.deepEqual(imageService?.children.map((child) => child.label), [
     "产品处理",
+    "精选处理",
     "POD定制",
     "商品自定义",
     "AI 视频（实验）",
@@ -65,11 +67,26 @@ test("image service nests the existing workflows one level deeper", () => {
   assert.deepEqual(productWorkflow?.children.map((child) => child.id), [
     "daily_selection",
     "product_processing",
-    "product_processing_marketing",
     "product_processing_history",
     "product_processing_sourcing",
     "dimension_canvas",
   ]);
+
+  // 精选处理与产品处理/POD定制同级，并带自己的历史记录入口。
+  const marketingWorkflow = findGroup("marketing_workflow");
+  assert.equal(marketingWorkflow?.label, "精选处理");
+  assert.equal(marketingWorkflow?.defaultChildId, "product_processing_marketing");
+  assert.deepEqual(marketingWorkflow?.children.map((child) => child.id), [
+    "product_processing_marketing",
+    "product_processing_marketing_history",
+  ]);
+  assert.deepEqual(marketingWorkflow?.children.map((child) => child.label), [
+    "开始精选",
+    "历史记录",
+  ]);
+  assert.ok(
+    workspacePageModules.some((module) => module.id === "product_processing_marketing_history"),
+  );
 
   // 海外上架（原「发布商品」）：草稿库在前、发布页在后；默认进来停在草稿库
   // （空发布表单没什么可填的，先让用户看到有哪些成品可发）。

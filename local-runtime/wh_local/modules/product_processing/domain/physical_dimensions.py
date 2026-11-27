@@ -72,9 +72,23 @@ class PhysicalDimensions(BaseModel):
 
     @property
     def estimated(self) -> bool:
-        """是否含预估值：允许出图，但预检页必须标黄提示人工确认。"""
+        """是否含预估值：预检页必须标黄提示人工确认。"""
 
         return any(item.estimated for item in self.values())
+
+    @property
+    def confirmed_drawable(self) -> bool:
+        """是否至少有一个「已确认」的尺寸（来源证据或人工填写）。
+
+        预估值不算：尺寸卡只印确认过的数字，避免把 AI 猜的长宽高印到主图上。
+        """
+
+        return any(
+            item.value_cm is not None
+            and item.value_cm > 0
+            and item.provenance in {"source_confirmed", "manual_confirmed"}
+            for item in self.values()
+        )
 
     @property
     def drawable_fields(self) -> tuple[DimensionAxis, ...]:

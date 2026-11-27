@@ -149,6 +149,17 @@ class DraftProcessRequest(BaseModel):
     # 精选版式（marketing_images=True 时生效）：从版式库选 3 个左右；
     # 可选 headline_hero / action_proof / icon_grid / material_strip / use_cases。
     marketing_templates: list[str] = Field(default_factory=list)
+    # 精选图生图档位：highest=Seedream Pro（默认，质量优先）；standard=Seedream Flash。
+    marketing_image_tier: str = "highest"
+    # 多角度出图：默认开。各输出位轮换朝向 + 轮换参考图，避免一批图全是同一个姿势；
+    # 关闭后所有版式统一正向，行为回到旧版。白底主图始终正向，不受此开关影响。
+    marketing_pose_variety: bool = True
+    # 共通模板：auto=按品类默认；bright=明亮影棚；dark=暗色质感；white=纯白极简；
+    # lifestyle=生活场景。选定后不再按品类写死亮暗（工具也能选亮色）。
+    marketing_style_template: str = "auto"
+    # 用户填写的「重要信息」（选填）：卖点进英文文案，场景/氛围影响生图；
+    # 原文绝不画进图片（照片层不拼这段文字）。
+    marketing_key_info: str = ""
     product_video_template: bool = False
     cos_upload: bool = True
     strict_external: bool = False

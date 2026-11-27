@@ -246,7 +246,7 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
       maxProducts: 0,
       processingScope: ['title', 'details', 'product_dimensions', 'four_grid', 'detail_images', 'qualification'],
       marketingImages: false,
-      marketingTemplates: ['headline_hero', 'action_proof', 'icon_grid'],
+      marketingTemplates: ['headline_hero', 'feature_cards', 'icon_grid'],
       qualificationMode: 'standard',
       includeProductVideo: false,
       skipDuplicates: false,
@@ -1209,14 +1209,12 @@ export function ProductProcessingTaskPage({ initialTaskId, initialDraftIds, init
                     精选版式（选 3 个）
                   </span>
                   {[
+                    ['infographic_hero', '信息图·卖点场景'],
+                    ['infographic_details', '信息图·细节标注'],
                     ['headline_hero', '大字卖点'],
-                    ['action_proof', '细节特写'],
-                    ['icon_grid', '功能图标网格'],
-                    ['material_strip', '材质适用条'],
-                    ['use_cases', '场景应用'],
                     ['feature_cards', '功能细节卡'],
+                    ['icon_grid', '功能图标网格'],
                     ['callout_ring', '编号标注'],
-                    ['feature_strip', '功能横条'],
                   ].map(([key, label]) => {
                     const picked = (options.marketingTemplates || []).includes(key);
                     return (

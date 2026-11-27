@@ -34,7 +34,9 @@ TEXT_MODEL = "gpt-5.6-terra"
 TEXT_MODEL_FALLBACK_ORDER = ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4-mini", "gemini-3.1-flash-lite-antigravity")
 
 # AI 处理默认生图模型：火山方舟 Seedream 5.0 Flash（参考图直传、无水印）。
+# 营销图会显式覆盖成 Pro；个人中心可把 AI 处理模型切到 Pro（下方白名单已放开）。
 DEFAULT_IMAGE_MODEL = "doubao-seedream-5-0-flash-260915"
+PRO_IMAGE_MODEL = "doubao-seedream-5-0-pro-260628"
 IMAGE_MODEL = DEFAULT_IMAGE_MODEL
 REFERENCE_IMAGE_MODEL = DEFAULT_IMAGE_MODEL
 REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
@@ -43,9 +45,10 @@ REFERENCE_IMAGE_MODEL_1K = "gpt-image-2-1k"
 # （两次提交都 stalled、烧满 660s 预算后回退来源图），且失败会连带拖慢整批。
 # 白名单收窄到单项后，个人中心保存过的 image_gpt / image_gpt_2.5 会被
 # ``_normalized_image_model`` 自动回落成 Seedream，不再需要单独迁移旧配置。
-IMAGE_MODEL_CHOICES = (DEFAULT_IMAGE_MODEL,)
+IMAGE_MODEL_CHOICES = (DEFAULT_IMAGE_MODEL, PRO_IMAGE_MODEL)
 _IMAGE_MODEL_ALIASES = {
     DEFAULT_IMAGE_MODEL: DEFAULT_IMAGE_MODEL,
+    PRO_IMAGE_MODEL: PRO_IMAGE_MODEL,
     # 无印链路的历史值/别名：一律收敛到豆包，避免老配置把出图拉回无印。
     "image_gpt": DEFAULT_IMAGE_MODEL,
     "image_gpt_2.5": DEFAULT_IMAGE_MODEL,
@@ -58,8 +61,9 @@ IMAGE_SIZE = "2048x2048"
 REFERENCE_IMAGE_SIZE_1K = "1024x1024"
 IMAGE_QUALITY = "medium"
 # 营销图优先用 Pro 档（与 POD 自由创意同一模型 id：保真与排版明显强于 flash）。
-# 上游拒绝（无权限/模型不可用）时由调用方自动落回默认 flash。
-MARKETING_IMAGE_MODEL_PRO = "doubao-seedream-5-0-pro-260628"
+# 上游拒绝（无权限/模型不可用）时由调用方自动落回 Flash。
+MARKETING_IMAGE_MODEL_PRO = PRO_IMAGE_MODEL
+MARKETING_IMAGE_MODEL_FALLBACK = DEFAULT_IMAGE_MODEL
 # 精品模式固定一次 4K 四宫格，再在本地无降采样拆为四张约 2048×2048 轮播图。
 # 精品档同样只走豆包：``gpt-image-2-4k`` 是无印的历史值，已停用。
 PREMIUM_IMAGE_MODEL = DEFAULT_IMAGE_MODEL

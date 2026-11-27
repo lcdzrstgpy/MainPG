@@ -1506,6 +1506,7 @@ class ProductImageProcessor:
                 references,
                 timeout_seconds=timeout_seconds,
                 image_size=image_size,
+                model=model,
             )
         files: Any
         if len(references) == 1:
@@ -1570,6 +1571,7 @@ class ProductImageProcessor:
         *,
         timeout_seconds: float,
         image_size: str | None = None,
+        model: str | None = None,
     ) -> tuple[bytes, str]:
         """火山方舟官方生图（Seedream）：同步 JSON 一步出图。
 
@@ -1577,7 +1579,11 @@ class ProductImageProcessor:
         - ``watermark`` 必须显式 False：方舟生图默认会打「豆包AI生成」水印，商品图不能带；
         - 参考图用 **Base64 data URI** 直传（``image`` 支持 URL 或 data URI），
           因此不必先把参考图传上公网，天然免疫「上游抓不到参考图」那类问题。
+
+        ``model`` 是调用方的模型覆盖（如营销图强制 Pro）；此前该分支没把覆盖传进来，
+        导致营销图的 Pro 设置被静默忽略、全部落到默认 Flash。
         """
+
         images: list[str] = []
         for reference in references:
             content, _filename, content_type = reference[:3]
@@ -1588,7 +1594,9 @@ class ProductImageProcessor:
                 + base64.b64encode(content).decode("ascii")
             )
         payload: dict[str, Any] = {
-            "model": str(provider.get("reference_model") or provider.get("model") or "").strip(),
+            "model": str(
+                model or provider.get("reference_model") or provider.get("model") or ""
+            ).strip(),
             "prompt": prompt,
             "size": _ark_image_size(image_size or provider.get("image_size")),
             "output_format": "png",

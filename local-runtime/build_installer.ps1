@@ -223,6 +223,98 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged ClipForge app verification failed" }
 Copy-Item -LiteralPath $nodeCommand.Source -Destination (Join-Path $clipforgeBundle "node.exe") -Force
 Write-Host "[build] bundled verified ClipForge app + Node runtime"
 
+# 3b. Bundle the Playwright headless browser used by the premium HTML/CSS composer.
+# Only the headless shell is bundled (~124MB zip / ~287MB on disk): the composer only
+# calls page.screenshot(), so no headed browser is needed. At runtime
+# wh_local/modules/product_processing/domain/html_composer.py reads
+# <install dir>\pw-browsers, so customer machines need no Edge/Chrome and every
+# machine renders the same pixels.
+$pwBrowsers = Join-Path $dist "pw-browsers"
+& $python -c "import playwright" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[build] installing playwright ..."
+    & $python -m pip install --disable-pip-version-check "playwright>=1.50,<2"
+    if ($LASTEXITCODE -ne 0) { throw "playwright install failed" }
+}
+
+# Reuse the shell already downloaded on this machine (local-runtime\pw-browsers is
+# gitignored) so repeat builds need no network at all.
+$pwCacheRoot = Join-Path $PSScriptRoot "pw-browsers"
+$pwCachedShell = $null
+if (Test-Path -LiteralPath $pwCacheRoot -PathType Container) {
+    $pwCachedShell = Get-ChildItem -LiteralPath $pwCacheRoot -Directory |
+        Where-Object { $_.Name -like "chromium_headless_shell-*" } |
+        Select-Object -First 1
+}
+if ($pwCachedShell) {
+    Write-Host "[build] reusing cached Playwright headless shell ($($pwCachedShell.Name))"
+    New-Item -ItemType Directory -Force -Path $pwBrowsers | Out-Null
+    Copy-Item -LiteralPath $pwCachedShell.FullName -Destination $pwBrowsers -Recurse -Force
+} else {
+    # cdn.playwright.dev is regularly unreachable from CN hosts (the download stalls at
+    # 0 bytes), so fetch the exact same Chrome for Testing build from the npmmirror
+    # binary mirror first and only fall back to the official installer if that fails.
+    $pwRevision = ""
+    $pwShellVersion = ""
+    try {
+        $pwDryRun = (& $python -m playwright install --only-shell --dry-run 2>&1 | Out-String)
+        $pwRevision = [regex]::Match($pwDryRun, "chromium-headless-shell v([0-9]+)").Groups[1].Value
+        $pwShellVersion = [regex]::Match($pwDryRun, "cft/([0-9.]+)/win64/chrome-headless-shell-win64\.zip").Groups[1].Value
+    } catch {
+        $pwRevision = ""
+        $pwShellVersion = ""
+    }
+    $pwMirrorDone = $false
+    if ($pwRevision -and $pwShellVersion) {
+        $pwZipPath = Join-Path $env:TEMP "chrome-headless-shell-win64-$pwShellVersion.zip"
+        $pwMirrorUrl = "https://cdn.npmmirror.com/binaries/chrome-for-testing/$pwShellVersion/win64/chrome-headless-shell-win64.zip"
+        Write-Host "[build] downloading headless shell $pwShellVersion from mirror ..."
+        curl.exe -s -L --max-time 900 -o $pwZipPath $pwMirrorUrl
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $pwZipPath) -and ((Get-Item -LiteralPath $pwZipPath).Length -gt 1MB)) {
+            $pwExtractDir = Join-Path $env:TEMP "pw-shell-extract-$PID"
+            if (Test-Path -LiteralPath $pwExtractDir) { Remove-Item -LiteralPath $pwExtractDir -Recurse -Force }
+            Expand-Archive -LiteralPath $pwZipPath -DestinationPath $pwExtractDir -Force
+            $pwPackage = Get-ChildItem -LiteralPath $pwExtractDir -Directory |
+                Where-Object { $_.Name -like "chrome-headless-shell-*" } |
+                Select-Object -First 1
+            if (-not $pwPackage) { throw "unexpected headless shell archive layout in $pwZipPath" }
+            # Playwright expects <browsers>\chromium_headless_shell-<revision>\<package>\...
+            $pwTarget = Join-Path $pwBrowsers "chromium_headless_shell-$pwRevision"
+            if (Test-Path -LiteralPath $pwTarget) { Remove-Item -LiteralPath $pwTarget -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path (Join-Path $pwTarget $pwPackage.Name) | Out-Null
+            Copy-Item -Path (Join-Path $pwPackage.FullName "*") -Destination (Join-Path $pwTarget $pwPackage.Name) -Recurse -Force
+            New-Item -ItemType File -Force -Path (Join-Path $pwTarget "INSTALLATION_COMPLETE") | Out-Null
+            Remove-Item -LiteralPath $pwExtractDir -Recurse -Force
+            Remove-Item -LiteralPath $pwZipPath -Force
+            $pwMirrorDone = $true
+            Write-Host "[build] installed headless shell from mirror ($pwShellVersion)"
+        }
+    }
+    if (-not $pwMirrorDone) {
+        Write-Host "[build] mirror unavailable, falling back to the Playwright CDN ..."
+        $previousPwPath = $env:PLAYWRIGHT_BROWSERS_PATH
+        try {
+            $env:PLAYWRIGHT_BROWSERS_PATH = $pwBrowsers
+            & $python -m playwright install --only-shell
+            if ($LASTEXITCODE -ne 0) { throw "playwright browser install failed" }
+        } finally {
+            $env:PLAYWRIGHT_BROWSERS_PATH = $previousPwPath
+        }
+    }
+}
+$pwShell = Get-ChildItem -LiteralPath $pwBrowsers -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like "chromium_headless_shell-*" } |
+    Select-Object -First 1
+if (-not $pwShell) {
+    throw "Playwright headless shell was not installed into $pwBrowsers"
+}
+$pwShellExe = Get-ChildItem -LiteralPath $pwShell.FullName -Recurse -File -Filter "chrome-headless-shell.exe" |
+    Select-Object -First 1
+if (-not $pwShellExe) {
+    throw "Playwright headless shell executable missing under $($pwShell.FullName)"
+}
+Write-Host "[build] bundled Playwright headless shell ($($pwShell.Name))"
+
 # 4. Copy the app icon so shortcuts can use the product logo (jieye-mark).
 # Existing installations keep their app-local credential files because the installer does not
 # delete them. Fresh installations must be configured from System Settings or environment vars.

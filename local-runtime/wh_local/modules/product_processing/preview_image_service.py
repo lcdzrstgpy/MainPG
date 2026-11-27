@@ -995,7 +995,14 @@ class PreviewImageService:
             )
         }
         preview_by_id = {asset_id: self._preview_url(asset) for asset_id, asset in owned.items()}
-        public_assets = [self.public_asset(asset) for asset in owned.values()]
+        # 四宫格拼图是生成链路的内部传输产物，不是可发布素材：用户只需要拆好的
+        # 4 张轮播图，拼图不得出现在「AI 处理图」素材库里。
+        summary_asset_id = self._preview_asset_id(summary_value) if summary_value else ""
+        public_assets = [
+            self.public_asset(asset)
+            for asset in owned.values()
+            if not (summary_asset_id and str(asset.get("id") or "") == summary_asset_id)
+        ]
         readiness = self._preview_export_readiness(result, manifest, public_assets)
         return {
             "assets": public_assets,
@@ -1165,6 +1172,15 @@ class PreviewImageService:
                 product_draft_id, workspace_id, task_id=task_id
             )
         )
+        # 四宫格拼图（grid_image_summary / premium_image_summary）只是内部传输产物：
+        # 拆好的 4 张轮播图才给用户看，拼图不能进素材库/预览清单。
+        summary_media_id = self._grid_summary_media_id(result, existing_assets)
+        if summary_media_id:
+            existing_assets = [
+                asset
+                for asset in existing_assets
+                if str(asset.get("media_asset_id") or "") != summary_media_id
+            ]
         existing_by_id = {
             str(asset.get("id") or ""): asset for asset in existing_assets
         }
@@ -1175,6 +1191,32 @@ class PreviewImageService:
                 workspace_id, product_draft_id=product_draft_id, active_only=True
             )
         )
+        # 绑定是按草稿存的：旧任务生成的轮播/详情绑定不能漏进新任务，否则精选
+        # 任务的素材库里会冒出上一次普通处理的四宫格。来源绑定 task_id=0 保留。
+        current_task_id = int(task_id)
+        bindings = [
+            binding
+            for binding in bindings
+            if int(binding.get("task_id") or 0) in {0, current_task_id}
+        ]
+        binding_media_ids = {
+            str(binding.get("asset_id") or "")
+            for binding in bindings
+            if str(binding.get("asset_id") or "")
+        }
+        # 本任务清单直接引用的统一媒体：营销图没有 binding，只能靠清单保留。
+        raw_v2 = result.get("image_manifest_v2")
+        raw_v2 = raw_v2 if isinstance(raw_v2, Mapping) else {}
+        referenced_media_ids = {
+            str(value or "").strip()
+            for value in (
+                [raw_v2.get("main_asset_id")]
+                + list(raw_v2.get("carousel_asset_ids") or [])
+                + list(raw_v2.get("detail_asset_ids") or [])
+                + list((raw_v2.get("semantic_asset_ids") or {}).values())
+            )
+            if str(value or "").strip()
+        }
         media_by_id: dict[str, Mapping[str, Any]] = (
             preloaded_media
             if isinstance(preloaded_media, dict)
@@ -1292,6 +1334,15 @@ class PreviewImageService:
                 continue
             media_asset = media_for(media_id)
             if media_asset is None or str(media_asset.get("origin") or "") == "remote_source":
+                continue
+            # 旧任务留下的代理行（本任务创建、底层媒体既不归本任务绑定、也不在
+            # 本任务清单里）是历史泄漏，不能再当成当前任务的「AI 处理图」。
+            if (
+                media_id not in binding_media_ids
+                and media_id not in referenced_media_ids
+                and not str(asset.get("managed_path") or "")
+                and not str(asset.get("source_url") or "")
+            ):
                 continue
             add_entry(media_id, "", "", 0)
 
@@ -1430,6 +1481,10 @@ class PreviewImageService:
                                 item
                                 for item in entries
                                 if str(item.get("role") or "") == "detail"
+                                # 来源图入库时也带 role=detail（供应商详情图），但它们是原始
+                                # 素材（常含中文广告/店铺招牌），不能当成商品详情图展示。
+                                # 详情图为空就让预检显示空态，由用户补图或点「更新详情图」。
+                                and str(item.get("bucket") or "") == "processed"
                             ),
                             key=lambda item: int(item.get("sort_order") or 0),
                         )
@@ -2771,6 +2826,36 @@ class PreviewImageService:
             )
         source = str(asset.get("source_url") or "").strip()
         return source if is_safe_external_url(source) else ""
+
+    def _grid_summary_media_id(
+        self,
+        result: Mapping[str, Any],
+        assets: Sequence[Mapping[str, Any]],
+    ) -> str:
+        """四宫格拼图对应的统一媒体 id；没有/认不出返回空串。
+
+        拼图只用于生成阶段的结构校验与传输，展示层只给用户 4 张拆好的轮播图。
+        兼容三种存量写法：预览资产地址、统一媒体地址、原始存储路径。
+        """
+        value = str(result.get("grid_image_summary_path") or "").strip()
+        if not value:
+            return ""
+        summary_asset_id = self._preview_asset_id(value)
+        if summary_asset_id:
+            for asset in assets:
+                if str(asset.get("id") or "") == summary_asset_id:
+                    return str(asset.get("media_asset_id") or "")
+        marker = "/media-assets/"
+        if marker in value:
+            media_id = value.split(marker, 1)[1].split("/", 1)[0].split("?", 1)[0]
+            return media_id if media_id else ""
+        for asset in assets:
+            if value in {
+                str(asset.get("managed_path") or "").strip(),
+                str(asset.get("source_url") or "").strip(),
+            }:
+                return str(asset.get("media_asset_id") or "")
+        return ""
 
     @staticmethod
     def _preview_asset_id(value: str) -> str:

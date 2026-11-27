@@ -126,7 +126,7 @@ def create_dimension_canvas_router(service: DimensionCanvasService) -> APIRouter
         task_id: int,
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
-        """批量确认预估尺寸：只改来源标记，图上数字不变，不重烧。"""
+        """批量确认预估尺寸：已出图的只改来源标记；没出图的确认后补烧一张。"""
 
         return _call(
             service.confirm_estimated,

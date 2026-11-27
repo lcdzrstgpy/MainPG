@@ -29,6 +29,16 @@ def _repull_worker_count() -> int:
         return 4
 
 
+# 单轮只保留最近几条失败摘要：够定位「为什么失败」，又不让 run metadata 膨胀。
+_MAX_RECORDED_ERRORS = 3
+
+
+def _error_summary(error: Mapping[str, str]) -> str:
+    code = str(error.get("code") or "").strip()
+    message = str(error.get("message") or "").strip()
+    return f"{code} {message}".strip() or "未知错误"
+
+
 def candidate_sku_incomplete(candidate: Any) -> bool:
     """A candidate needs re-pull when no SKU record was captured."""
     return not tuple(getattr(candidate, "source_variant_records", ()))
@@ -56,6 +66,7 @@ def empty_repull_state() -> dict[str, Any]:
         "succeeded": 0,
         "failed": 0,
         "message": "尚未补齐 SKU",
+        "errors": [],
         "updated_at": "",
     }
 
@@ -107,21 +118,26 @@ class SkuRepullJob:
     failed: int = 0
     status: str = "running"  # running / completed / cancelled / failed
     message: str = ""
+    # 最近几条失败摘要（offer_id + 上游错误码/消息），用于「为什么失败」的诊断；
+    # 只保留少量，避免 run metadata 无限膨胀。
+    errors: list[dict[str, str]] = field(default_factory=list)
     cancel_event: threading.Event = field(default_factory=threading.Event)
     progress_lock: threading.Lock = field(default_factory=threading.Lock)
     updated_at: str = ""
 
     def to_state(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "round": self.round,
-            "total": self.total,
-            "done": self.done,
-            "succeeded": self.succeeded,
-            "failed": self.failed,
-            "message": self.message,
-            "updated_at": self.updated_at,
-        }
+        with self.progress_lock:
+            return {
+                "status": self.status,
+                "round": self.round,
+                "total": self.total,
+                "done": self.done,
+                "succeeded": self.succeeded,
+                "failed": self.failed,
+                "message": self.message,
+                "errors": list(self.errors),
+                "updated_at": self.updated_at,
+            }
 
 
 class SkuRepullRunner:
@@ -222,16 +238,37 @@ class SkuRepullRunner:
         return self.state(actor=actor, run=run)
 
     def _execute(self, actor: Any, job: SkuRepullJob, targets: list[Any]) -> None:
+        """线程入口：任何异常都必须把 job 落到终态，不能让它永久停在 running。
+
+        ``running`` 会被 ``start()`` 当成「已有轮次在跑」直接返回，一旦线程异常退出
+        而状态没改，用户后续点补齐就再也不会启动，只能重启进程。
+        """
+        try:
+            self._run_round(actor, job, targets)
+        except Exception as exc:  # noqa: BLE001 - 线程内兜底，避免僵尸 running
+            with job.progress_lock:
+                job.status = "failed"
+                job.message = f"第 {job.round} 轮补齐失败：{str(exc)[:160]}"
+                job.updated_at = _now()
+        finally:
+            with job.progress_lock:
+                if job.status == "running":  # 理论上不会发生，兜底同异常分支
+                    job.status = "failed"
+                    job.message = f"第 {job.round} 轮补齐异常结束"
+                    job.updated_at = _now()
+            self._persist(actor, job)
+
+    def _run_round(self, actor: Any, job: SkuRepullJob, targets: list[Any]) -> None:
         try:
             from .service import _platform_config
 
             config = _platform_config(self._provider_config_resolver(actor), job.platform)
             provider = self._provider_factory(config)
         except Exception:
-            job.status = "failed"
-            job.message = "采集服务未配置，无法补齐 SKU"
-            job.updated_at = _now()
-            self._persist(actor, job)
+            with job.progress_lock:
+                job.status = "failed"
+                job.message = "采集服务未配置，无法补齐 SKU"
+                job.updated_at = _now()
             return
         from .normalizer import enrich_candidate_with_detail
 
@@ -254,20 +291,21 @@ class SkuRepullRunner:
                     for pending in futures:
                         pending.cancel()
                     break
-        if job.status == "running" and job.cancel_event.is_set():
-            # 取消标志可能在某个候选取回期间被设置：以用户请求为准，
-            # 本轮标记为已中断而不是已完成。
-            job.status = "cancelled"
-            job.message = f"第 {job.round} 轮已中断：完成 {job.done}/{job.total}"
+        with job.progress_lock:
+            if job.cancel_event.is_set():
+                # 取消标志可能在某个候选取回期间被设置：以用户请求为准，
+                # 本轮标记为已中断而不是已完成。
+                job.status = "cancelled"
+                job.message = f"第 {job.round} 轮已中断：完成 {job.done}/{job.total}"
+            else:
+                job.status = "completed"
+                job.message = (
+                    f"第 {job.round} 轮补齐完成：成功 {job.succeeded}，"
+                    f"失败 {job.failed}"
+                )
+                if job.failed and job.errors:
+                    job.message += f"（首个失败：{_error_summary(job.errors[0])}）"
             job.updated_at = _now()
-        elif job.status == "running":
-            job.status = "completed"
-            job.message = (
-                f"第 {job.round} 轮补齐完成：成功 {job.succeeded}，"
-                f"失败 {job.failed}"
-            )
-            job.updated_at = _now()
-        self._persist(actor, job)
 
     def _repull_one(
         self,
@@ -292,15 +330,36 @@ class SkuRepullRunner:
                 with job.progress_lock:
                     job.succeeded += 1
             else:
-                with job.progress_lock:
-                    job.failed += 1
-        except Exception:
-            with job.progress_lock:
-                job.failed += 1
+                self._record_failure(
+                    job,
+                    offer_id=str(candidate.offer_id),
+                    code=str(getattr(response.error, "code", "") or "upstream_failed"),
+                    message=str(getattr(response.error, "message", "") or ""),
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._record_failure(
+                job,
+                offer_id=str(getattr(candidate, "offer_id", "") or ""),
+                code="exception",
+                message=str(exc),
+            )
         finally:
             with job.progress_lock:
                 job.done += 1
                 job.updated_at = _now()
+
+    @staticmethod
+    def _record_failure(job: SkuRepullJob, *, offer_id: str, code: str, message: str) -> None:
+        with job.progress_lock:
+            job.failed += 1
+            if len(job.errors) < _MAX_RECORDED_ERRORS:
+                job.errors.append(
+                    {
+                        "offer_id": offer_id,
+                        "code": code[:40],
+                        "message": " ".join(message.split())[:160],
+                    }
+                )
 
     def _persist(self, actor: Any, job: SkuRepullJob) -> None:
         """Record the round outcome in run metadata so it survives restarts."""

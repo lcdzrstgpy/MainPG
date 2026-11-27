@@ -11,6 +11,8 @@ const HISTORY_PAGE_SIZE = 20;
 type Props = {
   onOpenTask: (taskId: number) => void;
   onOpenPrecheck: (taskId: number) => void;
+  /** processing=普通 AI 处理；marketing=精选处理。两边的历史互不混入。 */
+  kind?: "processing" | "marketing";
 };
 
 function api(): ApiContext {
@@ -60,8 +62,11 @@ function canEnterPrecheck(task: TaskHistoryItem): boolean {
  * 如「选品·1688·狗衣服·11-12 14:08」）。旧版每行都叫「产品处理任务」，
  * 既认不出批次也看不出处理了什么。
  */
-function taskDisplayName(task: TaskHistoryItem): string {
+function taskDisplayName(task: TaskHistoryItem, kind: "processing" | "marketing" = "processing"): string {
   const names = task.batch_names ?? [];
+  if (kind === "marketing" && !names.length) {
+    return `#${task.task_id} · ${task.title || "精选处理任务"}`;
+  }
   if (!names.length) return `#${task.task_id} · 手动导入`;
   const extra = names.length > 1 ? ` +${names.length - 1} 个批次` : "";
   return `#${task.task_id} · ${names[0]}${extra}`;
@@ -77,7 +82,8 @@ function taskDisplayHint(task: TaskHistoryItem): string {
   return lines.join("\n") || task.title || `处理任务 #${task.task_id}`;
 }
 
-export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Props) {
+export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck, kind = "processing" }: Props) {
+  const marketing = kind === "marketing";
   const ctx = api();
   const [tasks, setTasks] = useState<TaskHistoryItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -99,6 +105,7 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
     const params = new URLSearchParams({
       limit: String(HISTORY_PAGE_SIZE),
       offset: String((nextPage - 1) * HISTORY_PAGE_SIZE),
+      kind,
     });
     if (nextDateFrom) params.set("date_from", nextDateFrom);
     if (nextDateTo) params.set("date_to", nextDateTo);
@@ -142,8 +149,12 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
     <div className="verify-page processing-history-page">
       <header className="verify-commandbar">
         <div className="verify-command-title">
-          <h1>历史记录</h1>
-          <p>所有 AI 处理批次都会保存在这里；关闭任务页不会中断后台处理，可随时重新打开查看进度、结果和输出文件。</p>
+          <h1>{marketing ? "精选处理历史" : "历史记录"}</h1>
+          <p>
+            {marketing
+              ? "所有精选处理批次都会保存在这里；关闭任务页不会中断后台处理，可随时重新打开查看进度、结果和输出文件。"
+              : "所有 AI 处理批次都会保存在这里；关闭任务页不会中断后台处理，可随时重新打开查看进度、结果和输出文件。"}
+          </p>
         </div>
         <div className="processing-history-hero-visual">
           <svg className="processing-history-hero-art" viewBox="0 0 132 66" aria-hidden="true" focusable="false">
@@ -180,9 +191,9 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
       </section>
 
       {error && <div className="verify-message error">{error}</div>}
-      <section className="verify-section processing-history-list" aria-label="AI处理历史记录">
+      <section className="verify-section processing-history-list" aria-label={marketing ? "精选处理历史记录" : "AI处理历史记录"}>
         <div className="verify-section-head">
-          <h2>AI 处理批次</h2>
+          <h2>{marketing ? "精选处理批次" : "AI 处理批次"}</h2>
           <span className="verify-sub">共 {total} 条</span>
         </div>
         {loading && (
@@ -224,7 +235,7 @@ export function ProductProcessingHistoryPage({ onOpenTask, onOpenPrecheck }: Pro
                   <i className={`iconfont ${statusIcon(task.status)}`} />
                 </span>
                 <div className="processing-history-primary">
-                  <strong title={taskDisplayHint(task)}>{taskDisplayName(task)}</strong>
+                  <strong title={taskDisplayHint(task)}>{taskDisplayName(task, kind)}</strong>
                   <span className={`verify-badge status-${task.status}`}>{statusLabel(task.status)}</span>
                   <span>{task.target_site} · {task.target_language_label}</span>
                 </div>

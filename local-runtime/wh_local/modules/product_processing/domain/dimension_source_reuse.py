@@ -9,8 +9,11 @@
 from __future__ import annotations
 
 import io
+import os
 import re
+import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageOps
@@ -22,12 +25,17 @@ _MIN_FOREGROUND_EXTENT = 0.2
 
 # rembg 每次 remove() 不传 session 时会内部新建 onnx 会话并重新加载分割权重（数百 MB、
 # 数秒），尺寸卡批量烧图等于每张都重建一次：CPU 打满、内存翻倍、进程被系统杀掉。
-# 这里与 combo_kit.autosegment 一致，进程内只建一次会话，并用信号量把推理串行化，
+# 这里与 combo_kit.autosegment 一致，进程内按模型只建一次会话，并用信号量把推理串行化，
 # 避免「预取线程 2 路 + 渲染线程 3 路」同时各跑一份抠图。
-_SESSION: Any = None
-_SESSION_ERROR: str | None = None
+_SESSIONS: dict[str, Any] = {}
+_SESSION_ERRORS: dict[str, str] = {}
 _SESSION_LOCK = threading.Lock()
 _MASK_SEMAPHORE = threading.BoundedSemaphore(1)
+
+# 随包分发的分割权重目录（wh_local/models/rembg/models/<name>/<name>.onnx）。
+# 目录存在时把它设为 rembg 的数据根，避免客户机首次出图去 GitHub 下载权重。
+# 默认用 u2netp（4.4MB）：尺寸图复用与白底主图都够用，不再依赖 176MB 的 u2net。
+_DEFAULT_MASK_MODEL = "u2netp"
 
 _TOKEN_RE = re.compile(
     r"尺寸|长|宽|高|大小|规格|厘米|毫米|"
@@ -79,7 +87,9 @@ def find_dimension_source_index(
     return None
 
 
-def clean_product_canvas(content: bytes, *, side: int = 800) -> bytes | None:
+def clean_product_canvas(
+    content: bytes, *, side: int = 800, model_name: str = _DEFAULT_MASK_MODEL
+) -> bytes | None:
     """抠出商品主体并归一化到纯白 1:1 画布；不可信时返回 None。"""
 
     try:
@@ -96,7 +106,7 @@ def clean_product_canvas(content: bytes, *, side: int = 800) -> bytes | None:
     # 抠图前先限制长边：输出只有 800px，2000px 详情图直接跑 rembg 纯属浪费。
     if max(image.size) > 1280:
         image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
-    mask = _subject_mask(image)
+    mask = _subject_mask(image, model_name=model_name)
     if mask is None:
         return None
     mask = mask.convert("L")
@@ -142,14 +152,53 @@ def clean_product_canvas(content: bytes, *, side: int = 800) -> bytes | None:
     return buffer.getvalue()
 
 
-def _subject_mask(image: Image.Image) -> Any:
+def subject_bbox_ratios(
+    content: bytes, *, model_name: str = _DEFAULT_MASK_MODEL
+) -> tuple[float, float, float, float] | None:
+    """用本地抠图蒙版估算商品在画面里的归一化包围盒（左, 上, 右, 下）。
+
+    用于信息图决定 2×2 小卡放左边还是右边：商品在左就放右，反之放左，
+    避免卡片压住商品。抠图不可信时返回 None，由调用方回退到默认位置。
+    """
+
+    try:
+        opened = Image.open(io.BytesIO(content))
+        try:
+            opened.draft("RGB", (1280, 1280))
+        except Exception:
+            pass
+        image = opened.convert("RGB")
+    except Exception:
+        return None
+    if max(image.size) > 1280:
+        image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+    mask = _subject_mask(image, model_name=model_name)
+    if mask is None:
+        return None
+    binary = mask.convert("L").point(lambda value: 255 if value >= 128 else 0)
+    bbox = binary.getbbox()
+    if not bbox:
+        return None
+    width, height = image.size
+    left, top, right, bottom = bbox
+    if max(1, (right - left) * (bottom - top)) / max(1, width * height) < 0.02:
+        return None
+    return (
+        max(0.0, left / width),
+        max(0.0, top / height),
+        min(1.0, right / width),
+        min(1.0, bottom / height),
+    )
+
+
+def _subject_mask(image: Image.Image, *, model_name: str = _DEFAULT_MASK_MODEL) -> Any:
     """本地 rembg 前景蒙版；未安装/权重不可用/推理失败一律返回 None。"""
 
     try:
         from rembg import remove  # type: ignore
     except Exception:
         return None
-    session = _mask_session()
+    session = _mask_session(model_name)
     if session is None:
         return None
     try:
@@ -165,19 +214,36 @@ def _subject_mask(image: Image.Image) -> Any:
         return None
 
 
-def _mask_session() -> Any | None:
+def _bundled_rembg_home() -> Path | None:
+    """随包分发的 rembg 数据根；不存在时返回 None（退回 rembg 默认位置）。"""
+    candidates: list[Path] = []
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        candidates.append(Path(bundle_root) / "wh_local" / "models" / "rembg")
+    candidates.append(Path(__file__).resolve().parents[3] / "models" / "rembg")
+    for candidate in candidates:
+        if (candidate / "models").is_dir():
+            return candidate
+    return None
+
+
+def _mask_session(model_name: str = _DEFAULT_MASK_MODEL) -> Any | None:
     """懒加载并复用 rembg 会话：权重只加载一次，失败结果也缓存，避免每张图重试。"""
 
-    global _SESSION, _SESSION_ERROR
-    if _SESSION is not None or _SESSION_ERROR is not None:
-        return _SESSION
+    name = str(model_name or _DEFAULT_MASK_MODEL).strip() or _DEFAULT_MASK_MODEL
+    if name in _SESSIONS or name in _SESSION_ERRORS:
+        return _SESSIONS.get(name)
     with _SESSION_LOCK:
-        if _SESSION is None and _SESSION_ERROR is None:
+        if name not in _SESSIONS and name not in _SESSION_ERRORS:
             try:
+                bundled = _bundled_rembg_home()
+                if bundled is not None:
+                    # 只在不覆盖用户既有配置时接管，避免影响本机已有的 ~/.u2net。
+                    os.environ.setdefault("REMBG_HOME", str(bundled))
                 from rembg import new_session  # type: ignore
 
-                _SESSION = new_session()
+                _SESSIONS[name] = new_session(name)
             except Exception as exc:  # 权重缺失/依赖不全：后续直接走回退，不再重试
-                _SESSION_ERROR = f"{exc.__class__.__name__}: {str(exc)[:160]}"
-    return _SESSION
+                _SESSION_ERRORS[name] = f"{exc.__class__.__name__}: {str(exc)[:160]}"
+    return _SESSIONS.get(name)
 

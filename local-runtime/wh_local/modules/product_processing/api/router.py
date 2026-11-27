@@ -772,6 +772,7 @@ def create_product_processing_router(
         offset: int = Query(default=0, ge=0),
         date_from: str | None = Query(default=None),
         date_to: str | None = Query(default=None),
+        kind: Literal["processing", "marketing"] | None = Query(default=None),
         workspace_id: str = Header(default="local", alias="X-Workspace-ID"),
     ) -> dict[str, Any]:
         return service.task_history(
@@ -780,6 +781,7 @@ def create_product_processing_router(
             offset=offset,
             date_from=date_from,
             date_to=date_to,
+            marketing=None if kind is None else kind == "marketing",
         )
 
     @router.get("/tasks/{task_id}/outputs")

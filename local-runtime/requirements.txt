@@ -37,3 +37,6 @@ rapidocr-onnxruntime>=1.4,<2
 # 传递依赖会带入 opencv-python-headless（autosegment 的轮廓处理依赖）。
 rembg>=2.0.50,<3
 redis>=5.0
+# 精选处理营销图排版：HTML/CSS → PNG。优先驱动系统 Edge/Chrome（零体积）；
+# 浏览器不可用或渲染失败时自动回退 PIL 合成，不影响出图。
+playwright>=1.50,<2

@@ -19,6 +19,9 @@ type PrecheckMaterialLibraryProps = {
 
 const CATEGORY_ORDER = ["generated", "dimension", "upload", "source"] as const;
 
+// 本地拼装入口暂时隐藏：拼装成品质量未达标，待重做后再放开（逻辑与抽屉保留）。
+const COMPOSE_ENTRY_HIDDEN = true;
+
 const CATEGORY_LABELS: Record<string, string> = {
   generated: "AI 处理图",
   dimension: "尺寸图",
@@ -153,7 +156,7 @@ export function PrecheckMaterialLibrary({
           <h3>处理后素材库</h3>
           <p>AI 处理图、尺寸图与本地导入自动进入素材库；手动加入的原图也在此显示。</p>
         </div>
-        {onCompose && assets.length > 0 && (
+        {!COMPOSE_ENTRY_HIDDEN && onCompose && assets.length > 0 && (
           <button
             type="button"
             className="btn-mini primary"

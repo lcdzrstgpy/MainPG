@@ -29,6 +29,8 @@ export function AppleAppGlyph({ name }: AppleAppGlyphProps) {
       return <svg {...common}><circle cx="12" cy="12" r="8" /><path d="m15.5 8.5-2.1 4.9-4.9 2.1 2.1-4.9 4.9-2.1Z" /><circle cx="12" cy="12" r=".7" fill="currentColor" stroke="none" /></svg>;
     case "product_processing_history":
       return <svg {...common}><path d="M4.7 8.2V4.6M4.7 4.6h3.6" /><path d="M5.3 5.2A8 8 0 1 1 4 14" /><path d="M12 7.5V12l3 1.8" /></svg>;
+    case "product_processing_marketing":
+      return <svg {...common}><path d="m12 3 2.6 5.4 6 .9-4.3 4.2 1 6-5.3-2.8L6.7 19.5l1-6L3.4 9.3l6-.9L12 3Z" /></svg>;
     case "dimension_canvas":
       return <svg {...common}><path d="M4 7h16v10H4z" /><path d="M7 7v3M10 7v2M13 7v3M16 7v2" /><path d="M7 14h10" /></svg>;
     case "profit_activity":
